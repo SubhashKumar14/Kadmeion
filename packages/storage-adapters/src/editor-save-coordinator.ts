@@ -14,10 +14,15 @@ export type EditorSaveResult =
   | { status: 'LOCAL_FAILED'; reason: string };
 
 export class EditorSaveCoordinator {
+  private readonly local: Pick<IndexedDbEditorDraftStore, 'save'>;
+  private readonly cloud: Pick<SupabasePortfolioRevisionStore, 'commit'>;
   constructor(
-    private readonly local: Pick<IndexedDbEditorDraftStore, 'save'>,
-    private readonly cloud: Pick<SupabasePortfolioRevisionStore, 'commit'>
-  ) {}
+    local: Pick<IndexedDbEditorDraftStore, 'save'>,
+    cloud: Pick<SupabasePortfolioRevisionStore, 'commit'>
+  ) {
+    this.local=local;
+    this.cloud=cloud;
+  }
 
   private async commitCloud(
     portfolioId: string,
