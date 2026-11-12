@@ -1,5 +1,7 @@
 -- Structural pgTAP checks. Run with supabase test db in disposable local DB.
 begin;
+create extension if not exists pgtap with schema extensions;
+set local search_path to public, extensions;
 select plan(13);
 select has_table('public', 'profiles', 'owner profiles exist');
 select has_table('public', 'profile_sharing_preferences', 'private sharing intent exists');
@@ -13,6 +15,11 @@ select is((select count(*)::integer from pg_policies where schemaname='public' a
 select ok(not has_table_privilege('anon','public.profiles','SELECT'), 'anon cannot read private profiles');
 select ok(not has_table_privilege('anon','public.profile_sharing_preferences','SELECT'), 'anon cannot read sharing intents');
 select ok(not has_schema_privilege('authenticated','kadmeion_private','USAGE'), 'client has no operator schema usage');
-select ok(not has_function_privilege('anon','public.rls_auto_enable()','EXECUTE'), 'DDL helper not anonymously executable');
+select ok(
+  case when to_regprocedure('public.rls_auto_enable()') is null then true
+       else not has_function_privilege('anon','public.rls_auto_enable()','EXECUTE')
+  end,
+  'Optional RLS event helper is absent or inaccessible to anonymous clients'
+);
 select * from finish();
 rollback;

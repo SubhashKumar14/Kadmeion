@@ -2,7 +2,13 @@
 -- No public profile delivery endpoint exists until the B4 hosting verification gate.
 
 -- This pre-existing DDL event-trigger helper must not be an exposed RPC surface.
-revoke execute on function public.rls_auto_enable() from public, anon, authenticated;
+do $$
+begin
+  if to_regprocedure('public.rls_auto_enable()') is not null then
+    execute 'revoke execute on function public.rls_auto_enable() from public, anon, authenticated';
+  end if;
+end;
+$$;
 
 create schema if not exists kadmeion_private;
 revoke all on schema kadmeion_private from public, anon, authenticated;

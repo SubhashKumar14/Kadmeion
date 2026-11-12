@@ -1,5 +1,7 @@
 -- Structural pgTAP B2 checks; separate remote transaction rollback tests verify cross-user outcomes.
 begin;
+create extension if not exists pgtap with schema extensions;
+set local search_path to public, extensions;
 select plan(9);
 select has_table('public','projects','private projects table');
 select has_table('public','project_exposure_intents','exposure intent table');

@@ -1,13 +1,17 @@
-name: Foundation CI
+name: Application and Database CI
+
 on:
   push:
     branches: ["feat/**"]
   pull_request:
+
 permissions:
   contents: read
+
 jobs:
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,4 +22,15 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run check:file-budget
-# DB RLS tests require Docker/Supabase CLI and are not claimed by this job.
+
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: supabase start
+      - run: supabase test db
+# Only an ephemeral local Supabase stack: no cloud secrets, no production writes.
