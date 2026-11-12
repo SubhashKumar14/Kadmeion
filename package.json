@@ -9,7 +9,8 @@
   },
   "workspaces": [
     "packages/contracts",
-    "packages/editor-core"
+    "packages/editor-core",
+    "packages/storage-adapters"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
