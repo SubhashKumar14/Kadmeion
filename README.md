@@ -1,23 +1,32 @@
 # Kadmeion · Build · Showcase · Evolve
 
-> Status: B0 backend foundation started. The repository includes typed contracts, local Supabase configuration, and an una​​pplied private-profile migration; this is not a completed backend or live application.
+**Implementation status (12 November 2026):** B0 foundation, B1 private identity and authorization groundwork, B2 private project and asset persistence groundwork. No frontend, publish host, email provider, production-ready Auth flows or full app deployment yet.
 
-## B0 foundation
+## Backend implemented
 
-- Node 22, npm workspaces, strict TypeScript domain contracts
-- Private identity table migration and owner-scoped RLS policies (not applied to any cloud database)
-- Email confirmation enabled in local Supabase config; Brevo delivery is not verified
-- Contract tests and GitHub Actions checks
+- Node 22/npm monorepo, TypeScript contracts and GitHub Actions CI.
+- Supabase Auth profile bootstrap, owner-private profiles and sharing preferences, isolated operator role grants.
+- Private link-based projects, private project exposure requests, asset metadata and a private image Storage bucket.
+- RLS policies for profiles, sharing, projects, exposure intents, assets and Storage objects.
+- Synthetic A/B tenant-negative checks performed against dedicated Kadmeion PostgreSQL and rolled back.
+- Database migration filenames match the hosted Supabase migration history.
 
-Run `npm ci && npm run typecheck && npm test && npm run check:file-budget` from the repository root.
+## Verification commands
 
-PostgreSQL migration, pgTAP role tests, end-to-end Auth, and hosted CI require independent verification. Do not run `supabase db push` against a hosted project without owner approval.
+- npm ci
+- npm run typecheck
+- npm test
+- npm run check:file-budget
 
-## Authoritative specifications
+Local pgTAP SQL tests in supabase/tests require Docker and Supabase CLI; they are not claimed as executed. Hosted signup, email recovery, SMTP, OAuth, object upload/download and browser E2E remain unverified.
 
-- [Implementation handoff](project-docs/NEXT_SESSION_HANDOFF.md)
-- [Design](project-docs/design.md)
-- [Documentation index](project-docs/README.md)
-- [Application-only proposed tree](project-docs/FULL_REPOSITORY_FILE_TREE.txt)
+Never expose privileged/service-role keys in client bundles. Project exposure settings represent intent only and do not make projects publicly accessible until independent B4 delivery proof.
 
-Planning documents in `project-docs/` and this README are excluded from the 200-file authored application baseline. B1–B6 remain unfinished.
+## Documentation (not counted as code)
+
+- [Handoff](project-docs/NEXT_SESSION_HANDOFF.md)
+- [Approved design](project-docs/design.md)
+- [Database/RLS model](project-docs/docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md)
+- [File-count policy](project-docs/FILE_COUNT_REPORT.md)
+
+All project-docs files remain unchanged.
