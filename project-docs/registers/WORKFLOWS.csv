@@ -1,0 +1,54 @@
+﻿Workflow ID,Name,Domain,Actor,Trigger,Decisions,Spec file,Implementation,Tests
+WF-001,Email/password sign-in,AUTH,Guest,Email/password submitted,"UI-01–05,09–10,15",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-002,Register developer with handle,AUTH,Guest,Sign-up submit,"UI-06,11–12,108",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-003,Switch sign-in and signup panels,AUTH,Guest,User selects alternate auth mode,"UI-01–02,04–05,10,15",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-004,Google OAuth with safe callback,AUTH,Guest,Google sign-in selected,"UI-03,08,14",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-005,Request password recovery,AUTH,Guest,Forgot Password action,"UI-03,07,13",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-006,Reset password using link,AUTH,Guest with one-use reset grant,Valid reset link opened,"UI-07,13,94",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-007,Manage email verification badges,AUTH,Owner,Account email verification state changes,"UI-12,94",docs/03_workflows/01_AUTHENTICATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-008,First-use welcome and skipping,IDENTITY,New owner,First authenticated login,UI-23–25,docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md,NOT_IMPLEMENTED,NOT_RUN
+WF-009,Edit private profile and publish identity hub,IDENTITY,Owner,Edit profile / Publish Profile,"UI-24,27–28,87–88,108",docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md,NOT_IMPLEMENTED,NOT_RUN
+WF-010,Rename handle / public URL,IDENTITY,Owner,Handle or slug update,"UI-11,70,107",docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md,NOT_IMPLEMENTED,NOT_RUN
+WF-011,Share profile and portfolio,IDENTITY,Author or visitor,Share/Copy action,"UI-35,71,108",docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md,NOT_IMPLEMENTED,NOT_RUN
+WF-012,Quick-add project (no repository import),PROJECT,Owner,Add Project action,"UI-25,40,43,109",docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,NOT_IMPLEMENTED,NOT_RUN
+WF-013,Create/replace website preview thumbnail,PROJECT,Owner,Live URL saved/changed,"UI-29–30,41,51",docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,NOT_IMPLEMENTED,NOT_RUN
+WF-014,Edit detailed project case study,PROJECT,Owner,Open project detail,"UI-31–32,42–43,109",docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,NOT_IMPLEMENTED,NOT_RUN
+WF-015,Choose where each project is public,PROJECT,Owner,Project exposure toggle,"UI-43,88,109",docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,NOT_IMPLEMENTED,NOT_RUN
+WF-016,Open public project destinations,PROJECT,Public visitor,Case-study/project-card click,"UI-29–32,107,109",docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,NOT_IMPLEMENTED,NOT_RUN
+WF-017,"Search, sort and filter project library",PROJECT,Owner,Project browsing,"UI-39,44",docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,NOT_IMPLEMENTED,NOT_RUN
+WF-018,Create portfolio from preset or Blank,EDITOR,Owner on qualified device,Create Portfolio,"UI-44,46,55,60,110",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-019,Edit content with one transactional writer,EDITOR,Owner on qualified device,Field/inspector edit,"UI-47,50,54,57,65",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-020,Delete component into EMPTY slot and Undo,EDITOR,Owner on qualified device,Delete selected component,"UI-48,53–54,56",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-021,Add/drag/reorder compatible component,EDITOR,Owner on qualified device,Add or drag onto slot,"UI-48–49,56,63–64",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-022,Protected swap of S1/S2 owned source,EDITOR,Owner on qualified device,Replace modified component,"UI-48,52–53,59",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-023,Change section layout / reorder,EDITOR,Owner on qualified device,Choose alternate L1–L8 or drag section,"UI-56,58,63",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-024,Edit tiered theme tokens,EDITOR,Owner on qualified device,Change typography/color/spacing,"UI-57–58,101,106",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-025,Make and reuse My Component,EDITOR,Owner on qualified device,Customize trusted library block,"UI-49,52,59",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-026,"Preview, edit invalid source and recover",EDITOR,Owner on qualified device,Source buffer invalid or preview requested,"UI-61–62,65,73",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-027,Recover conflicting tabs/local-folder changes,EDITOR,Owner on qualified device,CAS/hash mismatch,"UI-54,65,95",docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-028,Author Preview vs Preview as Published,PUBLISH,Owner,Preview selected revision,"UI-58,62,66,73",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-029,Create expiring reviewer link,PUBLISH,Owner,Stage revision,"UI-62,67",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-030,Run publication preflight,PUBLISH,Owner,Request Publish,"UI-66,68,71,73",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-031,Build immutable release and verify live route,PUBLISH,Owner,Confirm Publish,"UI-68–72,75,107",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-032,Edit after publishing and republish,PUBLISH,Owner,Modify live portfolio in editor,"UI-54,69,72",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-033,Rollback a release,PUBLISH,Owner,Select historic release,"UI-69,75",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-034,"Unpublish, visibility and delete",PUBLISH,Owner,Unpublish or delete selected portfolio,"UI-68,74,91,112",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-035,Change published URL / SEO metadata,PUBLISH,Owner,Rename slug or edit social preview,"UI-70–71,107",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-036,Portable export and provider outage,PUBLISH,Owner,Export or host publishing failure,"UI-65,73,75,110",docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,NOT_IMPLEMENTED,NOT_RUN
+WF-037,Connect a public platform handle,GROWTH,Owner,Enter GitHub/other public handle,"UI-77–79,89",docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-038,Manually sync/handle stale data,GROWTH,Owner,Sync Now,"UI-77–79,85,89",docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-039,Enable and inspect aggregate analytics,GROWTH,Owner,Enable portfolio analytics,"UI-80–81,115",docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-040,Explain private DevScore,GROWTH,Owner,Open DevScore,UI-82–83,docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-041,Create and update personal goal,GROWTH,Owner,Create Goal,"UI-24,84–85",docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-042,Disconnect platform and delete imported facts,GROWTH,Owner,Disconnect,"UI-79,89",docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,NOT_IMPLEMENTED,NOT_RUN
+WF-043,Edit account/profile and privacy,SETTINGS,Owner,Change profile/privacy,"UI-86–88,108–109",docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-044,Manage active sessions and login methods,SETTINGS,Owner,Open Security,"UI-03,12–14,94",docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-045,Read actionable notifications,SETTINGS,Owner,Open inbox,"UI-90,95",docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-046,Delete item to Trash then restore,SETTINGS,Owner,Delete project/portfolio,"UI-74,91,112",docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-047,Export and delete account,SETTINGS,Owner,Delete Account confirmation,"UI-92,112",docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-048,"Global offline, quota and device fallback",SETTINGS,All,Network/quota/device failure,"UI-44,55,65,85,95,103",docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-049,Review user and restrict/restore access,ADMIN,Restricted operator,User incident/review,"UI-74,93,113",docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-050,Report abusive public portfolio,ADMIN,Public visitor/operator,Abuse report,"UI-74,93,113",docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-051,Temporarily unpublish abusive public release,ADMIN,Restricted operator,Qualified serious abuse case,"UI-74,93,113",docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-052,Process appeal and restore permitted content,ADMIN,Restricted operator,Owner appeals action,"UI-74,93,113",docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,NOT_IMPLEMENTED,NOT_RUN
+WF-053,Defer advanced administration/AI,ADMIN,Product owner,Future phase planning,"UI-74,113–114",docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,NOT_IMPLEMENTED,NOT_RUN
