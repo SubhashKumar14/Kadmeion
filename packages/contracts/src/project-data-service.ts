@@ -30,19 +30,30 @@ export class SupabasePrivateProjectService {
     if (!publishableKey) throw new ContractError('VALIDATION', 'Publishable key is required.');
   }
 
-  private async send(path: string, method: string, payload?: unknown, contentType = 'application/json') {
+  private async send(path: string, method: string, payload?: unknown, contentType = 'application/json', upsert = false) {
     const jwt = await this.token();
     if (!jwt) throw new ProjectServiceError('AUTH_EXPIRED', 'Sign in to access private projects.');
-    const headers: Record<string,string> = { apikey: this.publishableKey, Authorization: 'Bearer ' + jwt };
+    const headers: Record<string,string> = {
+      apikey: this.publishableKey, Authorization: 'Bearer ' + jwt
+    };
     if (payload !== undefined) headers['Content-Type'] = contentType;
-    if (method === 'POST' && path.startsWith('/rest/v1/')) headers.Prefer = 'return=representation';
-    const response = await this.fetcher(this.supabaseUrl.replace(/\/$/,'') + path, {
-      method, headers,
-      body: payload === undefined ? undefined : (contentType === 'application/json' ? JSON.stringify(payload) : payload as BodyInit)
-    });
+    if (method === 'POST' && path.startsWith('/rest/v1/'))
+      headers.Prefer = upsert ? 'resolution=merge-duplicates,return=representation' : 'return=representation';
+    let response: Response;
+    try {
+      response = await this.fetcher(this.supabaseUrl.replace(/\/$/,'') + path, {
+        method, headers,
+        body: payload === undefined ? undefined : (contentType === 'application/json' ? JSON.stringify(payload) : payload as BodyInit)
+      });
+    } catch {
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','The provider is unreachable; preserve the unsaved draft.');
+    }
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) throw new ProjectServiceError('AUTH_EXPIRED','Access denied.');
-      if (response.status === 409) throw new ProjectServiceError('REVISION_CONFLICT','Project was modified elsewhere.');
+      const cause=await response.json().catch(()=>null) as {code?:string;message?:string}|null;
+      if (cause?.code==='40001' || cause?.message==='REVISION_CONFLICT')
+        throw new ProjectServiceError('REVISION_CONFLICT','Project was modified elsewhere.');
+      if (response.status===401 || response.status===403)
+        throw new ProjectServiceError('AUTH_EXPIRED','Access denied.');
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Project request was not accepted.');
     }
     return response.status === 204 ? null : response.json() as Promise<unknown>;
@@ -111,12 +122,66 @@ export class SupabasePrivateProjectService {
     return rows[0].id;
   }
 
+  /**
+   * A private owner request only; never reports a live public URL.
+   * B4 must build, publish and independently verify every public surface.
+   */
+  async requestProjectExposureIntent(
+    projectId:string,ownerUserId:string,selection:{showOnProfile:boolean;showCaseStudy:boolean}
+  ):Promise<'saved_private_intent'> {
+    if (!selection || typeof selection.showOnProfile!=='boolean' || typeof selection.showCaseStudy!=='boolean')
+      throw new ContractError('VALIDATION','Explicit exposure choices are required.');
+    const result=await this.send('/rest/v1/project_exposure_intents?on_conflict=project_id','POST',{
+      project_id:projectId,owner_user_id:ownerUserId,
+      show_on_profile:selection.showOnProfile,
+      show_case_study:selection.showCaseStudy,
+      requested_at:selection.showOnProfile||selection.showCaseStudy?new Date().toISOString():null
+    },'application/json',true) as Array<{project_id:string;owner_user_id:string}>;
+    if (!Array.isArray(result) || result.length!==1 ||
+        result[0].project_id!==projectId || result[0].owner_user_id!==ownerUserId)
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Exposure preference was not acknowledged.');
+    return 'saved_private_intent';
+  }
+
+  async readPrivateImage(
+    ownerUserId:string,assetId:string,filename:string
+  ):Promise<{mime:string;bytes:Uint8Array}> {
+    if (!/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(ownerUserId) ||
+        !/^[A-Za-z0-9_-]{1,64}$/.test(assetId) ||
+        !/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}$/.test(filename) ||
+        filename.includes('..')) {
+      throw new ProjectServiceError('INVALID_UPLOAD','Invalid owned asset reference.');
+    }
+    const jwt=await this.token();
+    if (!jwt)throw new ProjectServiceError('AUTH_EXPIRED','Sign in to read private images.');
+    let res:Response;
+    try {
+      res=await this.fetcher(this.supabaseUrl.replace(/\/$/,'')+
+        '/storage/v1/object/kadmeion-private-assets/'+ownerUserId+'/'+assetId+'/'+filename,{
+          method:'GET',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt}
+        });
+    }catch {
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Private image is unreachable.');
+    }
+    if(!res.ok) {
+      if(res.status===401||res.status===403)throw new ProjectServiceError('AUTH_EXPIRED','Private image not authorized.');
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Private image unavailable.');
+    }
+    const mime=(res.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
+    if(!['image/png','image/jpeg','image/webp','image/avif'].includes(mime))
+      throw new ProjectServiceError('INVALID_UPLOAD','Unexpected image content type.');
+    const bytes=new Uint8Array(await res.arrayBuffer());
+    if(!bytes.length||bytes.length>5*1024*1024||!matchesImageSignature(mime,bytes))
+      throw new ProjectServiceError('INVALID_UPLOAD','Invalid or oversized private image content.');
+    return {mime,bytes};
+  }
+
   async uploadPrivateImage(
     ownerId: string, assetId: string, filename: string,
     mime: 'image/png'|'image/jpeg'|'image/webp'|'image/avif', bytes: Uint8Array
   ): Promise<string> {
     if (!/^[0-9a-f-]{36}$/i.test(ownerId) || !/^[A-Za-z0-9_-]{1,64}$/.test(assetId) ||
-        !/^[A-Za-z0-9_.-]{1,100}$/.test(filename) ||
+        (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}$/.test(filename) || filename.includes('..')) ||
         !(bytes instanceof Uint8Array) || bytes.length===0 || bytes.length>5*1024*1024 ||
         !matchesImageSignature(mime,bytes)) {
       throw new ProjectServiceError('INVALID_UPLOAD','Use a supported image up to 5 MiB.');
