@@ -1,17 +1,23 @@
 # Kadmeion · Build · Showcase · Evolve
 
-> **Status:** Documentation-first greenfield capstone. No backend, frontend or deployment has been verified as implemented.
+> Status: B0 backend foundation started. The repository includes typed contracts, local Supabase configuration, and an una​​pplied private-profile migration; this is not a completed backend or live application.
 
-## Start here
+## B0 foundation
 
-- [New-session backend-first continuation](project-docs/NEXT_SESSION_HANDOFF.md)
+- Node 22, npm workspaces, strict TypeScript domain contracts
+- Private identity table migration and owner-scoped RLS policies (not applied to any cloud database)
+- Email confirmation enabled in local Supabase config; Brevo delivery is not verified
+- Contract tests and GitHub Actions checks
+
+Run `npm ci && npm run typecheck && npm test && npm run check:file-budget` from the repository root.
+
+PostgreSQL migration, pgTAP role tests, end-to-end Auth, and hosted CI require independent verification. Do not run `supabase db push` against a hosted project without owner approval.
+
+## Authoritative specifications
+
+- [Implementation handoff](project-docs/NEXT_SESSION_HANDOFF.md)
+- [Design](project-docs/design.md)
 - [Documentation index](project-docs/README.md)
-- [Approved design contract](project-docs/design.md)
-- [Application-only file tree](project-docs/FULL_REPOSITORY_FILE_TREE.txt)
-- [Application-only manifest](project-docs/FULL_REPOSITORY_FILE_MANIFEST.csv)
-- [File-count policy](project-docs/FILE_COUNT_REPORT.md)
-- [PRD](project-docs/docs/01_product/PRODUCT_REQUIREMENTS_PRD.md), [SRS](project-docs/docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md)
-- [Screen catalog](project-docs/docs/02_design/SCREEN_CATALOG.md)
-- [Feature workflows](project-docs/docs/03_workflows/README.md)
+- [Application-only proposed tree](project-docs/FULL_REPOSITORY_FILE_TREE.txt)
 
-**Documentation under `project-docs/` does not count against the planned 200 authored application source/config/test files.** All source paths in the manifest are proposals until implemented. Public documentation redacts private Notion page URLs. Never commit secrets or claim tests ran without evidence.
+Planning documents in `project-docs/` and this README are excluded from the 200-file authored application baseline. B1–B6 remain unfinished.
