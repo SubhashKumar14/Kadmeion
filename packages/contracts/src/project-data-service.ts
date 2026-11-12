@@ -8,19 +8,21 @@ export interface OwnedProjectRow extends JsonRecord {
 export type TokenSupplier = () => Promise<string | null>;
 
 export class ProjectServiceError extends Error {
-  constructor(public readonly code: 'AUTH_EXPIRED' | 'PROVIDER_UNAVAILABLE' | 'REVISION_CONFLICT' | 'INVALID_UPLOAD', message: string) {
-    super(message); this.name = 'ProjectServiceError';
+  readonly code: 'AUTH_EXPIRED' | 'PROVIDER_UNAVAILABLE' | 'REVISION_CONFLICT' | 'INVALID_UPLOAD';
+  constructor(code: 'AUTH_EXPIRED' | 'PROVIDER_UNAVAILABLE' | 'REVISION_CONFLICT' | 'INVALID_UPLOAD', message: string) {
+    super(message); this.name = 'ProjectServiceError'; this.code=code;
   }
 }
 
 /** REST uses only the publishable key and the real user JWT. Never a service key. */
 export class SupabasePrivateProjectService {
-  constructor(
-    private readonly supabaseUrl: string,
-    private readonly publishableKey: string,
-    private readonly token: TokenSupplier,
-    private readonly fetcher: typeof fetch = fetch
-  ) {
+  private readonly supabaseUrl: string;
+  private readonly publishableKey: string;
+  private readonly token: TokenSupplier;
+  private readonly fetcher: typeof fetch;
+  constructor(supabaseUrl: string, publishableKey: string, token: TokenSupplier, fetcher: typeof fetch = fetch) {
+    this.supabaseUrl=supabaseUrl; this.publishableKey=publishableKey;
+    this.token=token; this.fetcher=fetcher;
     const url = new URL(supabaseUrl);
     if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1')
       throw new ContractError('VALIDATION', 'Supabase endpoint must use HTTPS.');
@@ -32,6 +34,7 @@ export class SupabasePrivateProjectService {
     if (!jwt) throw new ProjectServiceError('AUTH_EXPIRED', 'Sign in to access private projects.');
     const headers: Record<string,string> = { apikey: this.publishableKey, Authorization: 'Bearer ' + jwt };
     if (payload !== undefined) headers['Content-Type'] = contentType;
+    if (method === 'POST' && path.startsWith('/rest/v1/projects?')) headers.Prefer = 'return=representation';
     const response = await this.fetcher(this.supabaseUrl.replace(/\/$/,'') + path, {
       method, headers,
       body: payload === undefined ? undefined : (contentType === 'application/json' ? JSON.stringify(payload) : payload as BodyInit)

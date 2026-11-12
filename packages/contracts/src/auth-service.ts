@@ -21,10 +21,10 @@ export interface AuthPort {
 }
 
 export class AuthFlowError extends Error {
-  constructor(
-    public readonly code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED',
-    message: string
-  ) { super(message); this.name = 'AuthFlowError'; }
+  readonly code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED';
+  constructor(code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED', message: string) {
+    super(message); this.name = 'AuthFlowError'; this.code=code;
+  }
 }
 
 export function validateAuthEmail(value: unknown): string {
@@ -54,14 +54,10 @@ function passwordForCreation(password: string): void {
 }
 
 export class AuthService {
-  constructor(
-    private readonly auth: AuthPort,
-    private readonly config: {
-      siteOrigin: string;
-      emailDeliveryVerified: boolean;
-      googleOAuthConfigured: boolean;
-    }
-  ) {
+  private readonly auth: AuthPort;
+  private readonly config: { siteOrigin:string; emailDeliveryVerified:boolean; googleOAuthConfigured:boolean };
+  constructor(auth: AuthPort, config: {siteOrigin:string;emailDeliveryVerified:boolean;googleOAuthConfigured:boolean}) {
+    this.auth=auth; this.config=config;
     if (!/^https?:\/\/[^/]+$/.test(config.siteOrigin))
       throw new AuthFlowError('VALIDATION', 'Invalid application origin.');
   }
