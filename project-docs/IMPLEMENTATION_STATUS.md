@@ -1,3 +1,5 @@
+# Implementation Status (historical)
+
 # Kadmeion · Build · Showcase · Evolve
 
 **Implementation status (12 November 2026):** B0 foundation, B1 private identity and authorization groundwork, B2 private project and asset persistence groundwork. No frontend, publish host, email provider, production-ready Auth flows or full app deployment yet.
@@ -30,3 +32,6 @@ Never expose privileged/service-role keys in client bundles. Project exposure se
 - [File-count policy](project-docs/FILE_COUNT_REPORT.md)
 
 All project-docs files remain unchanged.
+
+
+> B0–B2 snapshot before further backend milestones. Superseded by later code/CI evidence.
