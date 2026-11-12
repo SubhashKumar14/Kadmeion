@@ -1,9 +1,21 @@
 {
   "compilerOptions": {
-    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
-    "lib": ["ES2022", "DOM"], "strict": true, "noEmit": true,
-    "verbatimModuleSyntax": true, "allowImportingTsExtensions": true,
-    "skipLibCheck": true, "forceConsistentCasingInFileNames": true
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
   },
-  "include": ["packages/contracts/src/**/*.ts"]
+  "include": [
+    "packages/contracts/src/**/*.ts",
+    "packages/editor-core/src/**/*.ts"
+  ]
 }
