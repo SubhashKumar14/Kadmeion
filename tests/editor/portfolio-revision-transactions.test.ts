@@ -30,14 +30,26 @@ test('customize protected source S0 => S1; user edit => S2, without rewriting li
   assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'forged'})));
   const copy=applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'export const x=1;'}),{'title-stacked@1':'export const x=1;'});
   assert.equal(copy.snapshot.slots.hero.state,'S1');
-  assert.equal(copy.snapshot.files['slots/hero/index.tsx'],'export const x=1;');
+  const firstPath=copy.snapshot.slots.hero.sourcePath!;
+  assert.match(firstPath,/^slots\/hero\/owned\/[0-9a-f-]+\/component-source\.tsx$/);
+  assert.equal(copy.snapshot.files[firstPath],'export const x=1;');
   const edit=applyEditorTransaction(copy,op(copy,{kind:'EDIT_OWNED_SOURCE',slotKey:'hero',source:'export const x=2;'}));
   assert.equal(edit.snapshot.slots.hero.state,'S2');
-  assert.equal(copy.snapshot.files['slots/hero/index.tsx'],'export const x=1;');
+  assert.equal(copy.snapshot.files[firstPath],'export const x=1;');
   assert.throws(()=>applyEditorTransaction(edit,op(edit,{kind:'ASSIGN_COMPONENT',slotKey:'hero',componentId:'new-hero@1'})));
   const replaced=applyEditorTransaction(edit,op(edit,{kind:'ASSIGN_COMPONENT',slotKey:'hero',componentId:'new-hero@1',confirmOwnedReplacement:true}));
   assert.equal(replaced.snapshot.stashes.hero.at(-1)?.state,'S2');
-  assert.equal(replaced.snapshot.files['slots/hero/index.tsx'],'export const x=2;');
+  assert.equal(replaced.snapshot.files[firstPath],'export const x=2;');
+  const nextCustomization=applyEditorTransaction(
+    replaced,
+    op(replaced,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'export const next = 3;'}),
+    {'new-hero@1':'export const next = 3;'}
+  );
+  const secondPath=nextCustomization.snapshot.slots.hero.sourcePath!;
+  assert.notEqual(secondPath,firstPath);
+  assert.equal(nextCustomization.snapshot.files[firstPath],'export const x=2;');
+  assert.equal(nextCustomization.snapshot.files[secondPath],'export const next = 3;');
+  assert.equal(nextCustomization.snapshot.slots.hero.state,'S1');
 });
 
 test('stale base revisions and invalid writes never mutate the previously saved head',()=>{

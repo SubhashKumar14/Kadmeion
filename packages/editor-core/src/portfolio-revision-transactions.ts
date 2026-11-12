@@ -169,7 +169,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
             trustedLibrarySources[slot.componentId] !== intent.copiedSource) {
           throw new ContractError('VALIDATION', 'Cannot claim pristine S1 without verified pinned library bytes.');
         }
-        const path='slots/'+intent.slotKey+'/index.tsx';
+        const path='slots/'+intent.slotKey+'/owned/'+command.operationId.toLowerCase()+'/component-source.tsx';
         assertOwnedSourcePath(path);
         if (new TextEncoder().encode(intent.copiedSource).byteLength>MAX_FILE_BYTES)
           throw new ContractError('VALIDATION', 'Owned source too large.');

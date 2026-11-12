@@ -16,7 +16,9 @@ export function assertManagedPath(path: string): void {
 }
 
 export function assertOwnedSourcePath(path: string): void {
-  if (typeof path !== 'string' || !/^slots\/[a-z0-9_-]{1,64}\/index\.(tsx|css)$/.test(path)) {
+  const legacy = /^slots\/[a-z0-9_-]{1,64}\/index\.(tsx|css)$/;
+  const versioned = /^slots\/[a-z0-9_-]{1,64}\/owned\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/component-source\.tsx$/;
+  if (typeof path !== 'string' || !(legacy.test(path) || versioned.test(path))) {
     throw new ContractError('VALIDATION', 'Owned source must remain in its dedicated slot folder.');
   }
 }
