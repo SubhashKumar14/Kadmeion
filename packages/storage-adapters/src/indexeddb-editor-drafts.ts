@@ -29,9 +29,13 @@ export class IndexedDbEditorDraftStore {
       return await new Promise((resolve,reject)=>{
         const request=db.transaction('draft-heads','readonly').objectStore('draft-heads').get(ownerId+':'+portfolioId);
         request.onsuccess=()=>{
-          const value=request.result as EditorHead|undefined;
-          if(value)validateSnapshot(value.snapshot);
-          resolve(value??null);
+          try {
+            const value=request.result as EditorHead|undefined;
+            if(value)validateSnapshot(value.snapshot);
+            resolve(value??null);
+          } catch(error) {
+            reject(error);
+          }
         };
         request.onerror=()=>reject(request.error??new Error('Local read failed.'));
       });
