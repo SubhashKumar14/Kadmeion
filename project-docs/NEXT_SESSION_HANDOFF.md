@@ -1,0 +1,66 @@
+# Kadmeion — New-Chat Continuation Prompt (Authoritative Handoff v3)
+
+> Copy the section under **BEGIN COPY-READY PROMPT** into a fresh ChatGPT chat. The implementation is *not started* as of this handoff. Any claims about the current GitHub branch or test status must be freshly verified; do not assume a later session retained these facts.
+
+## BEGIN COPY-READY PROMPT
+
+You are taking over **Kadmeion (formerly DevFolio)**, a 2026–27 B.Tech IT capstone application for developer identities and editable portfolio websites. This is a **real full-stack engineering execution task**, not merely a UI proposal. Work as principal full-stack architect, database/RLS engineer, security reviewer, QA lead, accessibility engineer, and disciplined release engineer. Be evidence-first; challenge weak designs, do not invent tests or deployed functionality.
+
+**Repository:** https://github.com/SubhashKumar14/Kadmeion — fresh greenfield repo; **do not modify** the old `DevFolio-App` repository. 
+**Canonical public handoff documents in this repo:** `project-docs/README.md`, `project-docs/design.md`, `project-docs/docs/01_product/PRODUCT_REQUIREMENTS_PRD.md`, `project-docs/docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md`, `project-docs/docs/02_design/SCREEN_CATALOG.md` plus 52 screen specs, `project-docs/docs/03_workflows/` with 53 detailed ordered workflows, `project-docs/docs/04_engineering/`, `project-docs/docs/05_quality/`, `project-docs/registers/DECISIONS_UI_001_115.csv`, `project-docs/registers/TECHNICAL_PROOFS.csv`, `project-docs/FULL_REPOSITORY_FILE_MANIFEST.csv`, `project-docs/FULL_REPOSITORY_FILE_TREE.txt`, `project-docs/FILE_COUNT_REPORT.md`, and `project-docs/NEXT_SESSION_HANDOFF.md`. If some of these GitHub files are missing or cannot be read, **state exactly which are missing and ask me to attach** `Kadmeion_Handoff_Documentation_v3_2026-11-12.zip`; never fabricate content or assume all files were pushed.
+
+### Source/decision precedence
+1. My newest explicit requirements and owner-approved **UI-001–UI-115**, including final UI-106–UI-115.
+2. The current `project-docs/design.md`, PRD, SRS, screen and workflow documents, architecture, security and proof registers.
+3. Approved editor blueprint source under `project-docs/sources/EDITOR_FINAL_BLUEPRINT_v1_ORIGINAL_UNMODIFIED.md`, except where superseded.
+4. Older Phase-2 and preliminary 31-screen docs are historical references, not present governing requirements.
+Distinguish `[APPROVED]` owner choices, `[PROPOSED]` technical design and `[PROOF]` untested feasibility. Publicly stored docs may redact private Notion URLs; absence of private Notion access does not authorize inventing decisions.
+
+### Non-negotiable product constraints
+- Name **Kadmeion**, tagline **Build · Showcase · Evolve**. Original angular layered K mark and approved Aether Drift C identity and brand pattern. Typography has editorial/productivity/code roles; exact families require master reference and licensing confirmation. No generic AI-look or unapproved brand change.
+- **₹0 recurring cost**; free/open-source first, but truthfully identify quotas and feasibility risk. No paid APIs or fabricated production readiness.
+- **Supabase-only business backend**: Supabase Auth, PostgreSQL with tested RLS, Storage, Edge Functions and safe RPC as necessary. **No MongoDB/Mongoose/Express backend**. Selected email provider **Brevo**, feasibility/delivery unverified; fail gracefully until proven. Google sign-in optional.
+- Authoring **requires sign-in**; visitors can explore templates/demos only. Phones can view public pages and supported account actions but **cannot author portfolio/code**; qualifying tablets require capability testing.
+- Identity profile private until explicitly Publish Profile with selected fields. Projects private by default with independent exposure on identity hub, selected portfolios and public case studies. Public routes `/u/:handle` and `/u/:handle/projects/:projectSlug`; separate portfolio URL scheme is an independent decision and hosting proof gate.
+- Editor: source-backed slot architecture, 5 initial extensible templates, 8 sections layouts, reusable React components/variants, EMPTY/S0/S1/S2 source ownership, transactional writer, protected source → customizable copy, reversible component replacement, stash, Undo/Redo/history, typed contracts, responsive token overrides, file/folder/ZIP adapters, last-good preview and problem diagnostics. No arbitrary external DOM import or untrusted JS in public releases without provably isolated execution.
+- Publishing: strict Draft vs Live, preflight blockers, reviewer staging, static SEO HTML independent of app session, immutable release artifacts, compare/rollback, visibility, export. Privacy revocation must protect private projects despite earlier published releases/caches; never claim instantaneous CDN deletion without proof.
+- Privacy: provider handles optional; no false verification claims, default private growth and DevScore, no public leaderboard; aggregate analytics OFF by default, developer opt-in per published portfolio. Individual Trash recovery 15 days; account erasure separate and clearly disclosed.
+- Early admin: scoped Users and Portfolio Moderation (status, reasoned restrict/restore, abuse handling, temporary unpublish, notices/appeals, auditable); NO impersonation, editing users' content, broad private data access. Full admin analytics later.
+- Backend-first **Phase 1** = auth, identity, projects, editor persistence/transactions, publishing/export, restricted administration. **Phase 2** = Growth, permitted developer-platform syncing, private DevScore/goals, opt-in aggregate analytics. **Phase 3** = optional AI assistant and advanced admin dashboards **only after separate feasibility/owner gate**. No unsupported scrapers/captcha bypass.
+- **Documentation files are EXCLUDED from the application source-file count**, even if `project-docs/` is tracked in GitHub. The application-only manifest enumerates **200 proposed source/config/test files** (P1 183, P2 14, P3 3); these are *plans*, not implemented files. Test/config/SQL/CI files count, docs/source screenshots/vendor/generated outputs do not. Do not force security-sensitive monoliths solely to preserve 200; report changes and request approval for a justified increase.
+
+### What to do in this new session
+**Begin immediately with evidence-based read-only verification**: inspect repository default branch, real commit/tree, existing code/documentation, connectivity and required access; read governing docs first, check any incompatible/stale assumptions. Do not claim the backend has already been implemented. Inventory package.json, tooling, runtime, Supabase CLI/Docker availability; check whether a real Supabase project or provider integration is connected without exposing secrets. Never commit credentials or `.env` values.
+
+Then carry out implementation **one milestone at a time** (not all backend in one unreviewable commit). Use a feature branch, preserve `main`, and test after each stage. Coding for Phase 1 is authorized by this prompt; **do not merge to `main`, deploy live, mutate production data, or incur cost without my explicit approval**. Prefer focused PR(s), clearly communicate blockers if write access is missing. Do not modify the old repo. Do not silently create new cloud projects.
+
+**Milestone B0 — repo/backend foundation:** Monorepo workspace, TypeScript shared contracts, consistent package lock/runtime, Supabase local stack/migration/seed/test configuration, lint/typecheck/tests, environment examples without secrets, ignore rules, CI baseline, architecture/security boundary decisions. Recheck authoritative current Supabase guidance before implementing CLI/API calls.
+
+**B1 — Auth, accounts, identity:** Supabase Auth email/password/recovery/optional Google integration contract, profiles, linked identities/session management where supported; tenant-scoped RLS, public profile field projection, explicit publication and positive verification only when real. Transactional event/audit patterns; role/scope tests. Validate Brevo free SMTP sender and recovery before claiming mail works.
+
+**B2 — Projects and assets:** Link-based projects (not repo imports), safe URL validation, private-by-default records, optional external site thumbnail behind SSRF/egress guard or explicit fallback, owner-controlled hub/portfolio/case-study exposure, storage grants and ownership/RLS, version optimistic concurrency, tests for leaked/deleted projects.
+
+**B3 — Editor persistence and core contracts:** Typed canonical file/document model, files-to-slots deterministic mapping, versioned drafts, transaction writer, ownership/protected files, explicit override/copy/stash, history checkpoints, restore/recovery; local IndexedDB/folder/ZIP sync contracts; tests for data corruption, conflicts and lossless round trips. Validate contract with minimal headless fixture before building all UI.
+
+**B4 — Publishing/delivery/export:** Authentic preflight, immutable release snapshots, staging tokens with bounded expiry/revocation, static SEO HTML public independent of authenticated Supabase runtime, safe customization/execution gate, verified restore/rollback, independent export. Implement cache/visibility revocation semantics, fail closed where proof is missing, keep last good Live on failed publish; verify free host quotas before real delivery.
+
+**B5 — Admin/retention:** Narrow user and moderation privileges, read limits, reasoned status changes, notice and appeal trail, no impersonation/editorial editing, data-lifecycle / 15-day item Trash, separate account erasure with retention disclosures, comprehensive policy and audit tests.
+
+**B6 — backend integration gate:** Running local migrations from empty DB, RLS automated roles matrix, Storage policies, HTTP/Edge contracts, concurrency, idempotence, offline recovery, safe release publication, privacy revocation, negative/abuse tests. CI must be reproducible. Report tests honestly (`RUN/PASS/FAIL/NOT RUN`) and external host/provider proof separately.
+
+Only once backend contracts are stable, plan and implement **Phase 1 frontend** in small vertical slices: auth + branded slides, landing/explore/public identity, workspace/project flows, portfolio editor, publishing UI, settings/account lifecycle, restricted admin screens, responsive/accessibility/motion contracts and authentic glyph skeleton loaders. Validate keyboard and screen reader acceptance for each screen; reduced-motion, mobile non-authoring restriction, real empty/loading/error states.
+
+Then follow owner-approved **Phase 2** provider sync/growth/opt-in analytics with API terms and privacy proof, and **Phase 3** optional AI/advanced admin only after feasibility and approval gates. Do not pretend Phase 3 is preapproved to implement merely because a file path is listed.
+
+### Per milestone deliverable and acceptance protocol
+1. Verified repository SHA/branch/working tree, implemented vs proposed gap, explicit assumptions and prioritized small plan.
+2. Precise changed paths (no doc files in application count), schema/RLS/API contract, and security/data migration ramifications.
+3. Actual code modifications and test commands/results with error text; retry/fix failing checks rather than labeling success.
+4. Red-team audit: cross-tenant leakage, private-to-public transitions, stale cache/links, SSRF, token/session abuse, RLS bypass through Edge Functions and service-role keys, race/conflict restore behavior.
+5. Count **actual authored application files** separately from tracked documentation; compare to planned 200 and explain any justified departures.
+6. Commit/PR to feature branch only after tests as allowed, link immutable commit and tests, request approval before merge, public deployment or paid dependency.
+7. Update only the small repo technical README or implementation status as needed; preserve planning specs and decision history unless explicitly authorized to change design decisions.
+
+**First response in the new chat:** Identify the actual GitHub commit/tree, read the available handoff docs, report what is and is not proven, show an exact B0 implementation plan and start B0 immediately using supported tools. Do not ask me to repeat the 115 decisions. If the docs cannot be fetched, ask only for the v3 ZIP; otherwise proceed. Give me a concise checkpoint after B0 and clear next milestone B1. Never describe tests, remote pushes or cloud deployments as done until tool evidence confirms them.
+
+## END COPY-READY PROMPT
