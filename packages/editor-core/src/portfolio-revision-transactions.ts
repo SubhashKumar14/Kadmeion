@@ -87,6 +87,12 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
     assertSlotKey(key);
     if (!slot || !['EMPTY','S0','S1','S2'].includes(slot.state)) throw new ContractError('VALIDATION', 'Invalid slot state.');
     validateContent(slot.content);
+    if (slot.state==='EMPTY' && (slot.componentId || slot.sourcePath || Object.keys(slot.content).length>0))
+      throw new ContractError('VALIDATION', 'An EMPTY slot cannot retain an active assignment.');
+    if (slot.state!=='EMPTY' && (!slot.componentId || !COMPONENT_PIN.test(slot.componentId)))
+      throw new ContractError('VALIDATION', 'Assigned components require a pinned version.');
+    if (slot.state==='S0' && slot.sourcePath)
+      throw new ContractError('VALIDATION', 'Trusted library source must remain read-only.');
     if (slot.sourcePath) {
       assertOwnedSourcePath(slot.sourcePath);
       if (!slot.sourcePath.startsWith('slots/'+key+'/') || !isOwned(slot) || !Object.hasOwn(snapshot.files,slot.sourcePath))
@@ -104,7 +110,7 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
   }
 }
 
-export function applyEditorTransaction(head: EditorHead, command: EditorCommand): EditorHead {
+export function applyEditorTransaction(head: EditorHead, command: EditorCommand, trustedLibrarySources: Readonly<Record<string,string>> = {}): EditorHead {
   if (!OP_ID.test(command.operationId)) throw new ContractError('VALIDATION', 'Operation ID must be a UUID.');
   const intentHash = JSON.stringify(command);
   const seen = head.operations[command.operationId];
@@ -159,6 +165,10 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand)
       case 'CUSTOMIZE_COMPONENT': {
         if (slot.state!=='S0' || !slot.componentId)
           throw new ContractError('VALIDATION', 'Only a trusted library component can be customized.');
+        if (!Object.hasOwn(trustedLibrarySources, slot.componentId) ||
+            trustedLibrarySources[slot.componentId] !== intent.copiedSource) {
+          throw new ContractError('VALIDATION', 'Cannot claim pristine S1 without verified pinned library bytes.');
+        }
         const path='slots/'+intent.slotKey+'/index.tsx';
         assertOwnedSourcePath(path);
         if (new TextEncoder().encode(intent.copiedSource).byteLength>MAX_FILE_BYTES)

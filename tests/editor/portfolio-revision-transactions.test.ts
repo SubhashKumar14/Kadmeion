@@ -27,7 +27,8 @@ test('clearing a slot preserves content in stash and restore is reversible',()=>
 
 test('customize protected source S0 => S1; user edit => S2, without rewriting library code',()=>{
   const head=make();
-  const copy=applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'export const x=1;'}));
+  assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'forged'})));
+  const copy=applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'export const x=1;'}),{'title-stacked@1':'export const x=1;'});
   assert.equal(copy.snapshot.slots.hero.state,'S1');
   assert.equal(copy.snapshot.files['slots/hero/index.tsx'],'export const x=1;');
   const edit=applyEditorTransaction(copy,op(copy,{kind:'EDIT_OWNED_SOURCE',slotKey:'hero',source:'export const x=2;'}));
