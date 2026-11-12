@@ -6,3 +6,4 @@ export * from './projects.ts';
 export * from './auth-service.ts';
 export * from './project-data-service.ts';
 export * from './private-identity-service.ts';
+export * from './private-project-case-studies.ts';

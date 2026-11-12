@@ -1,3 +1,4 @@
+import { normalizePrivateCaseStudy, type PrivateCaseStudy } from './private-project-case-studies.ts';
 import { ContractError } from './project.ts';
 import { normalizeProjectDraft, type PrivateProjectDraft } from './projects.ts';
 
@@ -34,7 +35,7 @@ export class SupabasePrivateProjectService {
     if (!jwt) throw new ProjectServiceError('AUTH_EXPIRED', 'Sign in to access private projects.');
     const headers: Record<string,string> = { apikey: this.publishableKey, Authorization: 'Bearer ' + jwt };
     if (payload !== undefined) headers['Content-Type'] = contentType;
-    if (method === 'POST' && path.startsWith('/rest/v1/projects?')) headers.Prefer = 'return=representation';
+    if (method === 'POST' && path.startsWith('/rest/v1/')) headers.Prefer = 'return=representation';
     const response = await this.fetcher(this.supabaseUrl.replace(/\/$/,'') + path, {
       method, headers,
       body: payload === undefined ? undefined : (contentType === 'application/json' ? JSON.stringify(payload) : payload as BodyInit)
@@ -78,6 +79,36 @@ export class SupabasePrivateProjectService {
     if (!result?.id || !Number.isSafeInteger(result.revision))
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','No revision acknowledgement received.');
     return result;
+  }
+
+  async updateCaseStudyWithRevision(projectId:string,revision:number,caseStudy:unknown):
+    Promise<{id:string;revision:number}> {
+    const sections:PrivateCaseStudy=normalizePrivateCaseStudy(caseStudy);
+    if(!Number.isSafeInteger(revision)||revision<0)
+      throw new ContractError('VALIDATION','Invalid revision.');
+    const result=await this.send('/rest/v1/rpc/update_private_project_case_study','POST',{
+      p_project_id:projectId,p_base_revision:revision,p_case_study:sections
+    }) as {id:string;revision:number}|null;
+    if(!result?.id||!Number.isSafeInteger(result.revision))
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Case study was not acknowledged.');
+    return result;
+  }
+
+  async linkPrivateImageMetadata(
+    projectId:string,ownerUserId:string,objectPath:string,
+    mime:'image/png'|'image/jpeg'|'image/webp'|'image/avif',
+    size:number,altText:string
+  ):Promise<string> {
+    if(!Number.isSafeInteger(size)||size<1||size>5*1024*1024||
+       !objectPath.startsWith(ownerUserId+'/')||typeof altText!=='string'||altText.length>500)
+      throw new ProjectServiceError('INVALID_UPLOAD','Invalid owned image metadata.');
+    const rows=await this.send('/rest/v1/project_assets?select=id','POST',{
+      owner_user_id:ownerUserId,project_id:projectId,object_path:objectPath,
+      mime_type:mime,byte_size:size,alt_text:altText
+    }) as Array<{id:string}>;
+    if(!Array.isArray(rows)||!rows[0]?.id)
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Image metadata was not durably saved.');
+    return rows[0].id;
   }
 
   async uploadPrivateImage(
