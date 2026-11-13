@@ -8,3 +8,5 @@ export * from './project-data-service.ts';
 export * from './private-identity-service.ts';
 export * from './private-project-case-studies.ts';
 export * from './private-onboarding-service.ts';
+
+export * from './private-trash-service.ts';
