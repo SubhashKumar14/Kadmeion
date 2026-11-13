@@ -16,12 +16,11 @@ export type PrivateTrashEntry = {
 };
 
 export class PrivateTrashError extends Error {
-  constructor(
-    public readonly code: 'AUTH_EXPIRED' | 'PROVIDER_UNAVAILABLE' | 'TRASH_EXPIRED' | 'INVALID_STATE',
-    message: string
-  ) {
+  readonly code: 'AUTH_EXPIRED' | 'PROVIDER_UNAVAILABLE' | 'TRASH_EXPIRED' | 'INVALID_STATE';
+  constructor(code: 'AUTH_EXPIRED' | 'PROVIDER_UNAVAILABLE' | 'TRASH_EXPIRED' | 'INVALID_STATE', message: string) {
     super(message);
     this.name = 'PrivateTrashError';
+    this.code = code;
   }
 }
 
@@ -49,12 +48,18 @@ function validateAck(value: unknown, kind: PrivateTrashKind, id: string,
 /** Owner-only Supabase REST + JWT client. It does not claim assets were purged or public URLs revoked. */
 export class SupabasePrivateTrashService {
   private readonly base: string;
+  private readonly publishableKey: string;
+  private readonly accessToken: () => Promise<string | null>;
+  private readonly fetcher: typeof fetch;
   constructor(
     endpoint: string,
-    private readonly publishableKey: string,
-    private readonly accessToken: () => Promise<string | null>,
-    private readonly fetcher: typeof fetch = fetch
+    publishableKey: string,
+    accessToken: () => Promise<string | null>,
+    fetcher: typeof fetch = fetch
   ) {
+    this.publishableKey = publishableKey;
+    this.accessToken = accessToken;
+    this.fetcher = fetcher;
     const url = new URL(endpoint);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' &&
         (url.hostname === 'localhost' || url.hostname === '127.0.0.1')))
