@@ -22,6 +22,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run build:auth
       - run: npm run smoke:auth
+      - name: Build and verify isolated auth preview bundle
+        run: npm run build:auth:preview && npm run verify:auth:preview
+        env:
+          VITE_SUPABASE_URL: https://scyooqjitjzjdxgtanso.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_test_only
       - run: npm test
       - run: npm run check:file-budget
 

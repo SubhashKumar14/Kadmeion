@@ -18,7 +18,9 @@
     "check:file-budget": "node scripts/check-file-budget.mjs",
     "build:auth": "tsc -p apps/auth-web/tsconfig.json",
     "dev:auth": "npm run build:auth && node apps/auth-web/dev-server.mjs",
-    "smoke:auth": "node scripts/smoke-auth-server.mjs"
+    "smoke:auth": "node scripts/smoke-auth-server.mjs",
+    "build:auth:preview": "npm run build:auth && node scripts/prepare-auth-preview.mjs",
+    "verify:auth:preview": "node scripts/verify-auth-preview.mjs"
   },
   "devDependencies": {
     "typescript": "5.8.3"

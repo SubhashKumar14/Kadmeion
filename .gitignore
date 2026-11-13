@@ -12,3 +12,6 @@ supabase/.temp/
 .DS_Store
 
 .auth-build/
+
+apps/auth-web/vercel-dist/
+.vercel/
