@@ -7,3 +7,4 @@ export * from './editor-save-coordinator.ts';
 export * from './static-preview-export.ts';
 
 export * from './private-frozen-revision-loader.ts';
+export * from './private-immutable-artifact.ts';
