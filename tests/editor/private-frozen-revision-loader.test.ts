@@ -63,7 +63,7 @@ test('cross-owner, missing, trashed and damaged database receipts fail closed',a
 });
 test('mismatched pins, missing fields and public claims are rejected',async()=>{
   for(const invalid of [
-    {...receipt,requestId:portfolioId},{...receipt,portfolioId:reqId},
+    {...receipt,requestId:portfolioId},{...receipt,portfolioId:'not-a-uuid'},
     {...receipt,revision:0},{...receipt,snapshotSha256:'bad'},
     {...receipt,visibilityIntent:'PRIVATE'},{...receipt,status:'LIVE'},
     {...receipt,publicUrl:'https://example.invalid'},
