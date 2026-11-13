@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(16);
+select plan(19);
 select has_table('public','private_reviewer_grants','review grant registry exists');
 select ok((select relrowsecurity from pg_class where oid='public.private_reviewer_grants'::regclass),
   'review grant registry has RLS');
