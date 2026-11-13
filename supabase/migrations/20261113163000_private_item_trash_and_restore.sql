@@ -154,9 +154,12 @@ grant execute on function public.restore_private_item(text,uuid) to authenticate
 -- Disallow new exposure intent on trashed projects, including concurrent inserts.
 -- FOR SHARE serializes against project Trash's UPDATE row lock.
 create function kadmeion_private.prevent_trashed_project_exposure()
-returns trigger language plpgsql set search_path=''
+returns trigger language plpgsql security definer set search_path=''
 as $$
 begin
+  if (select auth.uid()) is null or new.owner_user_id is distinct from (select auth.uid()) then
+    raise exception using errcode='42501',message='PRIVATE_EXPOSURE_OWNER_REQUIRED';
+  end if;
   if new.show_on_profile or new.show_case_study then
     perform 1 from public.projects p
     where p.id=new.project_id and p.owner_user_id=new.owner_user_id
