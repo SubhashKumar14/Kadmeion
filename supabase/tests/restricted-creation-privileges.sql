@@ -10,7 +10,7 @@ select ok(not has_column_privilege('authenticated','public.portfolios','created_
 select ok(has_column_privilege('authenticated','public.projects','title','INSERT'),'can create private project');
 select ok(not has_column_privilege('authenticated','public.projects','revision','INSERT'),'cannot forge project revision');
 select ok(not has_column_privilege('authenticated','public.projects','updated_at','INSERT'),'cannot forge update timestamp');
-select ok(has_column_privilege('authenticated','public.project_assets','object_path','INSERT'),'can add owned image reference');
+select ok(not has_column_privilege('authenticated','public.project_assets','object_path','INSERT'),'image metadata must go through verified owner RPC');
 select ok(not has_column_privilege('authenticated','public.project_assets','created_at','INSERT'),'cannot forge asset creation timestamp');
 select ok(not has_column_privilege('authenticated','public.portfolio_revisions','snapshot','INSERT'),'no direct revision creation');
 select * from finish();
