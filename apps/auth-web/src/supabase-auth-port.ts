@@ -4,6 +4,10 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
 const STORAGE_KEY = 'kadmeion.auth.session.v1';
+class AuthHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
 
 function userFrom(value: unknown): AuthUser | null {
   if (!value || typeof value !== 'object') return null;
@@ -34,7 +38,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(endpoint.hostname)))
       throw new Error('Supabase URL must use HTTPS.');
     const application = new URL(input.appOrigin);
-    if (!['http:', 'https:'].includes(application.protocol) || application.pathname !== '/')
+    if ((application.protocol !== 'https:' && !(application.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(application.hostname))) || application.pathname !== '/')
       throw new Error('Invalid application origin.');
     if (!input.publishableKey || input.publishableKey.startsWith('replace-with-'))
       throw new Error('Missing Supabase publishable key.');
@@ -84,7 +88,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const data = (payload && typeof payload === 'object' ? payload : {}) as Json;
       const code = typeof data.error_code === 'string' ? data.error_code : '';
       if (response.status === 429) throw new Error('Too many requests. Try again later.');
-      if (response.status === 401 || response.status === 403) throw new Error('The authentication session or credentials were rejected.');
+      if (response.status === 401 || response.status === 403) throw new AuthHttpError(response.status, 'The authentication session or credentials were rejected.');
       if (code === 'otp_expired') throw new Error('This email link has expired. Request a new one.');
       throw new Error('Authentication request failed (' + response.status + ').');
     }
@@ -160,10 +164,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       try {
         const data = await this.request('/user', 'GET', undefined, session.access_token);
         const user = userFrom(data);
-        if (!user) throw new Error('User verification failed.');
+        if (!user) {
+          this.store(null);
+          throw new Error('User verification failed.');
+        }
         return { user };
       } catch (error) {
-        try { this.store(null); } catch { /* storage already failed */ }
+        // Keep an otherwise valid session on transient network failures.
+        if (error instanceof AuthHttpError && [401, 403].includes(error.status)) {
+          try { this.store(null); } catch { /* storage already failed */ }
+        }
         throw error;
       }
     });
