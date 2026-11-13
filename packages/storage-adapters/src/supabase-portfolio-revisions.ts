@@ -89,7 +89,7 @@ export class SupabasePortfolioRevisionStore {
   }
 
   async loadHead(portfolioId:string):Promise<{revision:number;snapshot:PortfolioSnapshot|null}> {
-    const query='?id=eq.'+encodeURIComponent(portfolioId)+'&select=id,head_revision&limit=1';
+    const query='?id=eq.'+encodeURIComponent(portfolioId)+'&trashed_at=is.null&select=id,head_revision&limit=1';
     const rows=await this.request('/rest/v1/portfolios'+query,'GET') as Array<{head_revision:number}>;
     if(!Array.isArray(rows)||rows.length!==1||!Number.isSafeInteger(rows[0]?.head_revision))
       throw new RevisionStorageError('PROVIDER_UNAVAILABLE','Portfolio not found or inaccessible.');

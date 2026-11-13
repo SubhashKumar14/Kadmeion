@@ -150,5 +150,30 @@ $$;
 revoke all on function public.restore_private_item(text,uuid) from public,anon;
 grant execute on function public.restore_private_item(text,uuid) to authenticated;
 
+
+-- Disallow new exposure intent on trashed projects, including concurrent inserts.
+-- FOR SHARE serializes against project Trash's UPDATE row lock.
+create function kadmeion_private.prevent_trashed_project_exposure()
+returns trigger language plpgsql set search_path=''
+as $
+begin
+  if new.show_on_profile or new.show_case_study then
+    perform 1 from public.projects p
+    where p.id=new.project_id and p.owner_user_id=new.owner_user_id
+      and p.trashed_at is null
+    for share;
+    if not found then
+      raise exception using errcode='55000',message='PRIVATE_ITEM_TRASHED';
+    end if;
+  end if;
+  return new;
+end;
+$;
+revoke all on function kadmeion_private.prevent_trashed_project_exposure()
+  from public,anon,authenticated;
+create trigger kd_exposure_reject_trashed
+  before insert or update on public.project_exposure_intents
+  for each row execute function kadmeion_private.prevent_trashed_project_exposure();
+
 -- Do not grant direct UPDATE of trashed_at, INSERT/UPDATE of Trash or any DELETE.
 -- Restricted admin and publisher operations must not reuse these owner RPCs.

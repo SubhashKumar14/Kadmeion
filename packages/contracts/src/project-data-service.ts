@@ -73,7 +73,7 @@ export class SupabasePrivateProjectService {
   }
 
   async listPrivateProjects(): Promise<OwnedProjectRow[]> {
-    const result = await this.send('/rest/v1/projects?select=id,owner_user_id,revision,slug,title&order=created_at.desc&limit=100','GET');
+    const result = await this.send('/rest/v1/projects?select=id,owner_user_id,revision,slug,title&trashed_at=is.null&order=created_at.desc&limit=100','GET');
     if (!Array.isArray(result)) throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Invalid projects response.');
     return result as OwnedProjectRow[];
   }
