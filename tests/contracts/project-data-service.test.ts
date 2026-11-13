@@ -32,3 +32,31 @@ test('unsafe asset content is rejected before any Storage request', async () => 
     (async()=>{throw Error('Should not call the network');}) as typeof fetch);
   await assert.rejects(service.uploadPrivateImage('00000000-0000-4000-8000-0000000000a1','asset','bad.png','image/png',new Uint8Array([60,115,118,103])),ProjectServiceError);
 });
+
+test('asset registration uses only the owner-verified Storage-RPC, never direct metadata inserts',async()=>{
+  const calls: Array<{url:string;body:Record<string,unknown>;headers:Record<string,string>}>=[];
+  const service=new SupabasePrivateProjectService('https://project.supabase.co','sb_publishable_mock',async()=> 'owner-jwt',
+    (async(url:RequestInfo|URL,opts?:RequestInit)=>{
+      const body=JSON.parse(String(opts?.body)) as Record<string,unknown>;
+      calls.push({url:String(url),body,headers:opts?.headers as Record<string,string>});
+      return new Response(JSON.stringify({id:'00000000-0000-4000-8000-00000000a001',
+        object_path:body.p_object_path,verified:true}),{status:200});
+    }) as typeof fetch);
+  const owner='00000000-0000-4000-8000-0000000000a1';
+  const path=owner+'/image01/cover.png';
+  const id=await service.linkPrivateImageMetadata('10000000-0000-4000-8000-0000000000a1',owner,path,'image/png',1024,'Portfolio cover');
+  assert.equal(id,'00000000-0000-4000-8000-00000000a001');
+  assert.equal(calls.length,1);
+  assert.match(calls[0].url,/\/rest\/v1\/rpc\/register_private_project_image$/);
+  assert.equal(calls[0].headers.Authorization,'Bearer owner-jwt');
+  assert.equal(calls[0].body.p_object_path,path);
+  assert.equal(calls[0].body.p_byte_size,1024);
+  assert.equal('owner_user_id' in calls[0].body,false);
+});
+test('an unverified Storage RPC response cannot be represented as saved image metadata',async()=>{
+  const owner='00000000-0000-4000-8000-0000000000a1';
+  const service=new SupabasePrivateProjectService('https://project.supabase.co','sb_publishable_mock',async()=> 'owner-jwt',
+    (async()=>new Response(JSON.stringify({id:'asset',verified:false}),{status:200})) as typeof fetch);
+  await assert.rejects(service.linkPrivateImageMetadata('10000000-0000-4000-8000-0000000000a1',owner,
+    owner+'/img/cover.png','image/png',200,'Title'),ProjectServiceError);
+});

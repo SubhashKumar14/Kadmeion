@@ -113,13 +113,13 @@ export class SupabasePrivateProjectService {
     if(!Number.isSafeInteger(size)||size<1||size>5*1024*1024||
        !objectPath.startsWith(ownerUserId+'/')||typeof altText!=='string'||altText.length>500)
       throw new ProjectServiceError('INVALID_UPLOAD','Invalid owned image metadata.');
-    const rows=await this.send('/rest/v1/project_assets?select=id','POST',{
-      owner_user_id:ownerUserId,project_id:projectId,object_path:objectPath,
-      mime_type:mime,byte_size:size,alt_text:altText
-    }) as Array<{id:string}>;
-    if(!Array.isArray(rows)||!rows[0]?.id)
-      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Image metadata was not durably saved.');
-    return rows[0].id;
+    const result=await this.send('/rest/v1/rpc/register_private_project_image','POST',{
+      p_project_id:projectId,p_object_path:objectPath,p_mime_type:mime,
+      p_byte_size:size,p_alt_text:altText
+    }) as {id?:string;object_path?:string;verified?:boolean}|null;
+    if(!result?.id||result.object_path!==objectPath||result.verified!==true)
+      throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Image metadata was not durably verified.');
+    return result.id;
   }
 
   /**
