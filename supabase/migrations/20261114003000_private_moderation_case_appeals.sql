@@ -1,10 +1,12 @@
 -- B5 audit-only moderation/appeal registry. DOES NOT restrict Auth access,
--- modify user content or unpublish any public route. Separate verified public
+-- modify user content or unpublish any public route.
+-- Operator identifiers are nulled after actor erasure, while owner cases cascade
+-- on target account deletion. Audit actions and rationale remain until owner erasure. Separate verified public
 -- delivery/revocation enforcement is required before such claims are permitted.
 create table public.private_moderation_cases (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid not null references auth.users(id) on delete cascade,
-  opened_by uuid not null references auth.users(id),
+  opened_by uuid references auth.users(id) on delete set null,
   operation_id uuid not null,
   reason_code text not null check (reason_code in ('ABUSE','SECURITY','LEGAL','SPAM')),
   summary text not null check (char_length(btrim(summary)) between 20 and 500),
@@ -26,7 +28,7 @@ create table public.private_moderation_events (
   id uuid primary key default gen_random_uuid(),
   case_id uuid not null,
   owner_user_id uuid not null,
-  actor_user_id uuid not null references auth.users(id),
+  actor_user_id uuid references auth.users(id) on delete set null,
   operation_id uuid not null,
   event_type text not null check (event_type in ('OPENED','OWNER_APPEAL','OPERATOR_DECISION')),
   detail text not null check (char_length(btrim(detail)) between 12 and 2000),

@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(19);
+select plan(23);
 select has_table('public','private_moderation_cases','scoped moderation case registry exists');
 select has_table('public','private_moderation_events','immutable moderation event journal exists');
 select ok((select relrowsecurity from pg_class where oid='public.private_moderation_cases'::regclass),
@@ -112,5 +112,18 @@ select is(public.operator_close_moderation_case(
   '30000000-0000-4000-8000-0000000000b1',
   'Reviewed owner appeal and recorded the decision without enforcement'
 )->>'status','CLOSED','Operator can close a case with auditable rationale');
+reset role;
+delete from auth.users where id='00000000-0000-4000-8000-0000000000b1';
+select is((select count(*) from public.private_moderation_cases),1::bigint,
+  'Operator erasure does not block target moderation case lifecycle');
+select ok((select opened_by is null from public.private_moderation_cases
+  where id=current_setting('kadmeion.test_mod_case')::uuid),
+  'Erased operator identifier is removed from retained case');
+select is((select count(*) from public.private_moderation_events where actor_user_id is null),
+  2::bigint,'Erased operator identity is removed without losing review rationale');
+delete from auth.users where id='00000000-0000-4000-8000-0000000000b2';
+select ok((select count(*)=0 from public.private_moderation_cases) and
+  (select count(*)=0 from public.private_moderation_events),
+  'Target account erasure cascades moderation case and appeal data');
 select * from finish();
 rollback;
