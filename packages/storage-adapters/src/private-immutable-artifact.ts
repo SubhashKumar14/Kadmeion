@@ -1,5 +1,6 @@
 import { ContractError } from '../../contracts/src/project.ts';
 import { prepareSafeStaticPreview, type SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
+import { assertAttestedPrivateFrozenRevision } from './private-frozen-revision-loader.ts';
 
 const encoder = new TextEncoder();
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -44,8 +45,9 @@ const record=(value:unknown):value is Record<string,unknown>=>
 /**
  * Host-neutral, PRIVATE B4 candidate, not a public release or deployment adapter.
  * The input MUST come from the authenticated atomic frozen-revision loader, with
- * a trusted, pinned render plan. SHA-256 binds bytes to that verified input; it
- * does not independently establish owner authorization or revocation.
+ * a trusted, pinned render plan. Process-local attestation rejects cloned or
+ * mutable snapshots after load. SHA-256 binds bytes to that verified input; it
+ * does not independently establish future owner authorization or revocation.
  *
  * Only the preflight's scriptless HTML projection is included. No owner source,
  * private assets, credentials, release URL or host capability is copied.
@@ -53,6 +55,9 @@ const record=(value:unknown):value is Record<string,unknown>=>
 export async function createPrivateImmutableArtifact(
   input:SafePreviewInput
 ):Promise<PrivateImmutableArtifactCandidate> {
+  // Caller-supplied matching hashes are not evidence. Only the owner-RPC loader
+  // registers the canonical, recursively frozen snapshot object.
+  assertAttestedPrivateFrozenRevision(input);
   const preview=prepareSafeStaticPreview(input);
   if(preview.status!=='PREVIEW_ONLY'||preview.publicationReady!==false||
      typeof preview.previewHtml!=='string'||
