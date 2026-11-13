@@ -9,82 +9,87 @@ const sha='a'.repeat(64);
 const snapshot={formatVersion:1,files:{
   'kadmeion.json':JSON.stringify({formatVersion:1,seo:{title:'Owner',description:'Projects'}})
 },slots:{hero:{state:'S0',componentId:'title-stacked@1',content:{title:'Hello'}}},stashes:{}};
-const request={id:reqId,portfolio_id:portfolioId,revision:1,snapshot_sha256:sha,
-  visibility_intent:'PUBLIC',status:'FROZEN'};
-const revision={portfolio_id:portfolioId,revision:1,snapshot_sha256:sha,snapshot};
-function make(input:{frozen?:unknown;portfolio?:unknown;revision?:unknown;status?:number;disconnect?:boolean}={}) {
-  const calls: Array<{url:string;options:RequestInit}>=[];
-  const fetcher=(async(url:string|URL|Request,options?:RequestInit)=>{
-    calls.push({url:String(url),options:options??{}});
-    if(input.disconnect)throw new Error('Offline');
-    const parsed=new URL(String(url));
-    const rows=parsed.pathname.endsWith('private_release_requests')?
-      input.frozen??[request]:parsed.pathname.endsWith('/portfolios')?
-      input.portfolio??[{id:portfolioId,trashed_at:null}]:
-      input.revision??[revision];
-    return new Response(JSON.stringify(rows),{status:input.status??200,
-      headers:{'Content-Type':'application/json'}});
-  }) as typeof fetch;
-  return {loader:new SupabasePrivateFrozenRevisionLoader(
-    'https://unit.supabase.co','sb_publishable_test_only',async()=> 'real.jwt.auth',fetcher),calls};
-}
-test('authenticated frozen revision reload uses three owner-only uncached REST reads',async()=>{
-  const {loader,calls}=make();
+const receipt={requestId:reqId,portfolioId,revision:1,snapshotSha256:sha,
+  visibilityIntent:'PUBLIC',status:'FROZEN',publicUrl:null,snapshot};
+const origin='https://unit.supabase.co';
+const client=(http:typeof fetch,jwt:string|null='real.jwt.auth')=>
+  new SupabasePrivateFrozenRevisionLoader(origin,'sb_publishable_test_only',async()=>jwt,http);
+
+test('atomic owner RPC returns pinned private snapshot with no public authority',async()=>{
+  let calls=0;
+  const loader=client(async(url,init)=>{
+    calls++;
+    assert.equal(String(url),origin+'/rest/v1/rpc/load_private_frozen_revision');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.cache,'no-store');
+    assert.equal(init?.redirect,'error');
+    assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer real.jwt.auth');
+    assert.equal((init?.headers as Record<string,string>).apikey,'sb_publishable_test_only');
+    assert.deepEqual(JSON.parse(init?.body as string),{p_request_id:reqId});
+    return Response.json({...receipt,unrelatedPrivateData:'not projected'});
+  });
   const loaded=await loader.load(reqId);
+  assert.equal(calls,1);
+  assert.deepEqual(loaded.snapshot,snapshot);
+  assert.equal(loaded.loadedPortfolioId,portfolioId);
   assert.equal(loaded.loadedRevision,1);
   assert.equal(loaded.loadedSnapshotSha256,sha);
   assert.equal(loaded.frozen.publicUrl,null);
-  assert.deepEqual(loaded.snapshot,snapshot);
-  assert.equal(calls.length,3);
-  for(const call of calls){
-    assert.equal(call.options.method,'GET');
-    assert.equal((call.options.headers as Record<string,string>).Authorization,'Bearer real.jwt.auth');
-    assert.equal(call.options.credentials,'omit');
-    assert.equal(call.options.cache,'no-store');
-    assert.equal(call.options.redirect,'error');
-    assert.doesNotMatch(call.url,/service_role|secret/);
-  }
+  assert.equal('unrelatedPrivateData' in loaded,false);
   const preview=prepareSafeStaticPreview({...loaded,plan:[
     {slotKey:'hero',componentId:'title-stacked@1',kind:'heading',required:true}
   ]});
   assert.equal(preview.status,'PREVIEW_ONLY');
   assert.equal(preview.publicationReady,false);
 });
-test('private frozen owner query not found and lack of session both reject',async()=>{
-  await assert.rejects(make({frozen:[]}).loader.load(reqId),{code:'NOT_FOUND'});
-  const {calls}=make();
-  const missing=new SupabasePrivateFrozenRevisionLoader('https://unit.supabase.co','key',
-    async()=>null,async()=>{throw new Error('Must not be called')} );
-  await assert.rejects(missing.load(reqId),{code:'AUTH_EXPIRED'});
-  assert.equal(calls.length,0);
+test('unauthenticated requests and invalid IDs fail before network',async()=>{
+  let calls=0;
+  const fail=async()=>{calls++;throw Error('network must not be called');};
+  await assert.rejects(client(fail).load('../secret'),{code:'VALIDATION'});
+  await assert.rejects(client(fail,null).load(reqId),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,0);
 });
-test('stale digest, wrong revision, cross-owner and deleted portfolio fail closed',async()=>{
-  for(const data of [
-    {revision:[{...revision,snapshot_sha256:'b'.repeat(64)}]},
-    {revision:[{...revision,revision:2}]},
-    {revision:[]},
-    {portfolio:[]},
-    {portfolio:[{id:portfolioId,trashed_at:'2026-01-01T00:00:00Z'}]},
-    {frozen:[{...request,id:'30000000-0000-4000-8000-000000000003'}]},
-    {frozen:[{...request,status:'LIVE'}]}
-  ])await assert.rejects(make(data).loader.load(reqId));
+test('cross-owner, missing, trashed and damaged database receipts fail closed',async()=>{
+  for(const [status,message,code] of [
+    [400,'PRIVATE_FROZEN_REVISION_NOT_FOUND','NOT_FOUND'],
+    [403,'PRIVATE_FROZEN_REVISION_NOT_FOUND','NOT_FOUND'],
+    [400,'PRIVATE_FROZEN_REVISION_INTEGRITY','INTEGRITY_FAILED'],
+    [401,'AUTH_REQUIRED','AUTH_EXPIRED'],
+    [500,'UNKNOWN','PROVIDER_UNAVAILABLE']
+  ] as const){
+    await assert.rejects(client(async()=>Response.json({message},{status})).load(reqId),{code});
+  }
 });
-test('malformed snapshot, duplicate rows and invalid digest are not previewable',async()=>{
-  await assert.rejects(make({revision:[{...revision,snapshot:{formatVersion:1}}]}).loader.load(reqId),
+test('mismatched pins, missing fields and public claims are rejected',async()=>{
+  for(const invalid of [
+    {...receipt,requestId:portfolioId},{...receipt,portfolioId:reqId},
+    {...receipt,revision:0},{...receipt,snapshotSha256:'bad'},
+    {...receipt,visibilityIntent:'PRIVATE'},{...receipt,status:'LIVE'},
+    {...receipt,publicUrl:'https://example.invalid'},
+    {...receipt,snapshot:{formatVersion:1}},
+    {...receipt,snapshot:null},null,[],{}
+  ]){
+    await assert.rejects(client(async()=>Response.json(invalid)).load(reqId),
+      {code:'INTEGRITY_FAILED'});
+  }
+});
+test('provider outages, invalid JSON and auth denial do not return private bytes',async()=>{
+  await assert.rejects(client(async()=>{throw Error('offline');}).load(reqId),
+    {code:'PROVIDER_UNAVAILABLE'});
+  await assert.rejects(client(async()=>new Response('not json')).load(reqId),
     {code:'INTEGRITY_FAILED'});
-  await assert.rejects(make({frozen:[request,request]}).loader.load(reqId),{code:'NOT_FOUND'});
-  await assert.rejects(make({frozen:[{...request,snapshot_sha256:'bad'}]}).loader.load(reqId),
-    {code:'INTEGRITY_FAILED'});
+  await assert.rejects(client(async()=>Response.json({}, {status:403})).load(reqId),
+    {code:'AUTH_EXPIRED'});
 });
-test('network failure or REST denial does not return unverified bytes',async()=>{
-  await assert.rejects(make({disconnect:true}).loader.load(reqId),{code:'PROVIDER_UNAVAILABLE'});
-  await assert.rejects(make({status:401}).loader.load(reqId),{code:'AUTH_EXPIRED'});
-  await assert.rejects(make({status:403}).loader.load(reqId),{code:'AUTH_EXPIRED'});
-  await assert.rejects(make({status:500}).loader.load(reqId),{code:'PROVIDER_UNAVAILABLE'});
-  await assert.rejects(make({frozen:{id:reqId}}).loader.load(reqId),{code:'INTEGRITY_FAILED'});
-});
-test('invalid HTTP origin or request identifiers reject before network access',async()=>{
-  assert.throws(()=>new SupabasePrivateFrozenRevisionLoader('http://example.com','key',async()=>null),
+test('only a clean trusted Supabase API origin is accepted',()=>{
+  for(const bad of [
+    'not a url','http://remote.example','https://user:password@unit.supabase.co',
+    origin+'/rest/v1',origin+'/?x=1',origin+'/#fragment'
+  ]){
+    assert.throws(()=>new SupabasePrivateFrozenRevisionLoader(bad,'key',async()=>null),
+      {code:'VALIDATION'});
+  }
+  assert.throws(()=>new SupabasePrivateFrozenRevisionLoader(origin,' ',async()=>null),
     {code:'VALIDATION'});
-  await assert.rejects(make().loader.load('../secret'),{code:'VALIDATION'});
 });

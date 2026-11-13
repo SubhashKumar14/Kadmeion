@@ -24,19 +24,14 @@ export interface LoadedPrivateFrozenRevision {
   loadedRevision:number;
   loadedSnapshotSha256:string;
 }
-type JsonRecord=Record<string,unknown>;
-function row(value:unknown):JsonRecord|null {
-  return !!value&&typeof value==='object'&&!Array.isArray(value)?value as JsonRecord:null;
-}
-function exactlyOne(value:unknown):JsonRecord|null {
-  return Array.isArray(value)&&value.length===1?row(value[0]):null;
-}
+const record=(x:unknown):x is Record<string,unknown>=>
+  !!x&&typeof x==='object'&&!Array.isArray(x);
 
 /**
- * Owner-JWT only, read-only bridge from immutable DB revision to B4 preflight.
- * It verifies DB foreign keys/digests but does not independently recompute
- * PostgreSQL jsonb::text SHA-256; that digest is trusted from the same DB.
- * Do not use this as public-serving authority or reviewer-token validation.
+ * Authenticated owner-only B4 preflight input. One SQL RPC locks the portfolio,
+ * checks Trash and recomputes the canonical snapshot SHA within one transaction.
+ * This is NOT an authorization token for public delivery, staging or publishing:
+ * revocation after the read remains a separate host-level problem.
  */
 export class SupabasePrivateFrozenRevisionLoader {
   private readonly origin:string;
@@ -44,70 +39,64 @@ export class SupabasePrivateFrozenRevisionLoader {
   private readonly token:()=>Promise<string|null>;
   private readonly http:typeof fetch;
   constructor(origin:string,publishableKey:string,token:()=>Promise<string|null>,http:typeof fetch=fetch) {
-    const u=new URL(origin);
+    let u:URL;
+    try{u=new URL(origin);}
+    catch{throw new ContractError('VALIDATION','Only a trusted Supabase API origin is permitted.');}
     if((u.protocol!=='https:'&&!(u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)))||
        u.username||u.password||u.pathname!=='/'||u.search||u.hash)
-      throw new ContractError('VALIDATION','Only a trusted Supabase origin is permitted.');
-    if(!publishableKey)throw new ContractError('VALIDATION','Publishable key is required.');
+      throw new ContractError('VALIDATION','Only a trusted Supabase API origin is permitted.');
+    if(typeof publishableKey!=='string'||!publishableKey.trim())
+      throw new ContractError('VALIDATION','Publishable key is required.');
     this.origin=u.origin;this.key=publishableKey;this.token=token;this.http=http;
   }
-  private async read(path:string,jwt:string):Promise<JsonRecord|null> {
+  async load(requestId:string):Promise<LoadedPrivateFrozenRevision> {
+    if(typeof requestId!=='string'||!UUID.test(requestId))
+      throw new ContractError('VALIDATION','Invalid frozen request identifier.');
+    const jwt=await this.token();
+    if(!jwt)throw new FrozenLoadError('AUTH_EXPIRED','Sign in before loading private preview.');
     let response:Response;
     try{
-      response=await this.http(this.origin+'/rest/v1/'+path,{
-        method:'GET',headers:{apikey:this.key,Authorization:'Bearer '+jwt,
-          Accept:'application/json','Cache-Control':'no-store'},
+      response=await this.http(this.origin+'/rest/v1/rpc/load_private_frozen_revision',{
+        method:'POST',
+        headers:{apikey:this.key,Authorization:'Bearer '+jwt,
+          Accept:'application/json','Content-Type':'application/json',
+          'Cache-Control':'no-store'},
+        body:JSON.stringify({p_request_id:requestId}),
         cache:'no-store',credentials:'omit',redirect:'error'
       });
     }catch{
       throw new FrozenLoadError('PROVIDER_UNAVAILABLE','Private database is unreachable.');
     }
-    if(response.status===401||response.status===403)
-      throw new FrozenLoadError('AUTH_EXPIRED','Session was rejected.');
-    if(!response.ok)
-      throw new FrozenLoadError('PROVIDER_UNAVAILABLE','Private read failed.');
+    if(!response.ok){
+      const problem:unknown=await response.json().catch(()=>null);
+      const message=record(problem)?problem.message:null;
+      if(message==='PRIVATE_FROZEN_REVISION_NOT_FOUND')
+        throw new FrozenLoadError('NOT_FOUND','Private frozen request was not found.');
+      if(message==='PRIVATE_FROZEN_REVISION_INTEGRITY')
+        throw new FrozenLoadError('INTEGRITY_FAILED','Frozen revision integrity check failed.');
+      if(response.status===401||response.status===403)
+        throw new FrozenLoadError('AUTH_EXPIRED','Session was rejected or access denied.');
+      throw new FrozenLoadError('PROVIDER_UNAVAILABLE','Private frozen revision read failed.');
+    }
     const raw:unknown=await response.json().catch(()=>null);
-    if(!Array.isArray(raw))
-      throw new FrozenLoadError('INTEGRITY_FAILED','Private REST response was not a row list.');
-    return exactlyOne(raw);
-  }
-
-  async load(requestId:string):Promise<LoadedPrivateFrozenRevision> {
-    if(!UUID.test(requestId))
-      throw new ContractError('VALIDATION','Invalid frozen request identifier.');
-    const jwt=await this.token();
-    if(!jwt)throw new FrozenLoadError('AUTH_EXPIRED','Sign in before loading private preview.');
-    const request=await this.read(
-      'private_release_requests?select=id,portfolio_id,revision,snapshot_sha256,visibility_intent,status'+
-      '&id=eq.'+encodeURIComponent(requestId)+'&limit=2',jwt);
-    if(!request)throw new FrozenLoadError('NOT_FOUND','Private frozen request was not found.');
-    const portfolioId=request.portfolio_id;
-    const revision=request.revision;
-    const sha=request.snapshot_sha256;
-    if(request.id!==requestId||typeof portfolioId!=='string'||!UUID.test(portfolioId)||
-       typeof revision!=='number'||!Number.isSafeInteger(revision)||revision<1||
-       typeof sha!=='string'||!SHA.test(sha)||
-       request.status!=='FROZEN'||!['PUBLIC','UNLISTED'].includes(String(request.visibility_intent)))
-      throw new FrozenLoadError('INTEGRITY_FAILED','Frozen request contains invalid pins.');
-    const portfolio=await this.read(
-      'portfolios?select=id,trashed_at&id=eq.'+encodeURIComponent(portfolioId)+'&limit=2',jwt);
-    if(!portfolio||portfolio.id!==portfolioId||portfolio.trashed_at!==null)
-      throw new FrozenLoadError('NOT_FOUND','Frozen portfolio is missing or trashed.');
-    const revisionRow=await this.read(
-      'portfolio_revisions?select=portfolio_id,revision,snapshot_sha256,snapshot'+
-      '&portfolio_id=eq.'+encodeURIComponent(portfolioId)+
-      '&revision=eq.'+revision+'&limit=2',jwt);
-    if(!revisionRow||revisionRow.portfolio_id!==portfolioId||
-       revisionRow.revision!==revision||revisionRow.snapshot_sha256!==sha)
-      throw new FrozenLoadError('INTEGRITY_FAILED','Frozen pin differs from the stored immutable revision.');
-    try{validateSnapshot(revisionRow.snapshot as PortfolioSnapshot);}
+    if(!record(raw)||raw.requestId!==requestId||
+       typeof raw.portfolioId!=='string'||!UUID.test(raw.portfolioId)||
+       typeof raw.revision!=='number'||!Number.isSafeInteger(raw.revision)||raw.revision<1||
+       typeof raw.snapshotSha256!=='string'||!SHA.test(raw.snapshotSha256)||
+       (raw.visibilityIntent!=='PUBLIC'&&raw.visibilityIntent!=='UNLISTED')||
+       raw.status!=='FROZEN'||raw.publicUrl!==null)
+      throw new FrozenLoadError('INTEGRITY_FAILED','Invalid atomic frozen revision receipt.');
+    try{validateSnapshot(raw.snapshot as PortfolioSnapshot);}
     catch{throw new FrozenLoadError('INTEGRITY_FAILED','Stored revision snapshot is not supported.');}
     return {
-      snapshot:revisionRow.snapshot as PortfolioSnapshot,
-      frozen:{portfolioId,revision,snapshotSha256:sha,
-        visibilityIntent:request.visibility_intent as 'PUBLIC'|'UNLISTED',
+      snapshot:raw.snapshot as PortfolioSnapshot,
+      frozen:{portfolioId:raw.portfolioId,revision:raw.revision,
+        snapshotSha256:raw.snapshotSha256,
+        visibilityIntent:raw.visibilityIntent as 'PUBLIC'|'UNLISTED',
         status:'FROZEN',publicUrl:null},
-      loadedPortfolioId:portfolioId,loadedRevision:revision,loadedSnapshotSha256:sha
+      loadedPortfolioId:raw.portfolioId,
+      loadedRevision:raw.revision,
+      loadedSnapshotSha256:raw.snapshotSha256
     };
   }
 }

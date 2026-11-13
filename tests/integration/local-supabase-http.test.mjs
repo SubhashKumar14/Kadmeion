@@ -242,6 +242,24 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
       'Cross-account release listing');
     assert.deepEqual(foreign,[]);
   });
+  await t.test('one owner-JWT RPC atomically reads pinned snapshot; no cross-owner access',async()=>{
+    const rpc='/rest/v1/rpc/load_private_frozen_revision',body={p_request_id:request};
+    const strangerRead=await send(rpc,{...json(stranger),method:'POST',body});
+    assert.ok(!strangerRead.ok,'Foreign owner loaded private frozen snapshot');
+    const anonymousRead=await send(rpc,{method:'POST',
+      headers:{'Content-Type':'application/json'},body});
+    assert.ok(!anonymousRead.ok,'Anonymous caller loaded private frozen snapshot');
+    const loaded=successful(await send(rpc,{...json(owner),method:'POST',body}),
+      'Atomic owner frozen snapshot load');
+    assert.equal(loaded.requestId,request);
+    assert.equal(loaded.portfolioId,id);
+    assert.equal(loaded.revision,revision);
+    assert.equal(loaded.status,'FROZEN');
+    assert.equal(loaded.visibilityIntent,'UNLISTED');
+    assert.equal(loaded.publicUrl,null);
+    assert.deepEqual(loaded.snapshot,snapshot);
+    assert.match(loaded.snapshotSha256,/^[0-9a-f]{64}$/);
+  });
   await t.test('reviewer grants are hashed, private, one-time token receipts; no serving URL',async()=>{
     const params={p_request_id:request,p_operation_id:randomUUID(),p_valid_minutes:60};
     const issue='/rest/v1/rpc/issue_private_reviewer_grant';
@@ -282,6 +300,9 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
     const trashed=successful(await send(move,{...json(owner),method:'POST',body:p}),
       'Owner Trash');
     assert.equal(trashed.status,'trashed');
+    const blockedRead=await send('/rest/v1/rpc/load_private_frozen_revision',{
+      ...json(owner),method:'POST',body:{p_request_id:request}});
+    assert.ok(!blockedRead.ok,'Trashed portfolio still returned an old frozen snapshot');
     const duplicate=successful(await send(move,{...json(owner),method:'POST',body:p}),
       'Idempotent Trash');
     assert.equal(duplicate.status,'already_trashed');
@@ -300,5 +321,10 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
       'Owner restore before 15-day expiry');
     assert.equal(back.status,'restored');
     assert.equal(back.public_visibility,'private');
+    const restoredRead=successful(await send('/rest/v1/rpc/load_private_frozen_revision',{
+      ...json(owner),method:'POST',body:{p_request_id:request}}),
+      'Restored owner-private frozen snapshot');
+    assert.equal(restoredRead.status,'FROZEN');
+    assert.equal(restoredRead.publicUrl,null);
   });
 });
