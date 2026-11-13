@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(26);
+select plan(29);
 select has_table('public','private_release_requests','private frozen release records exist');
 select ok((select relrowsecurity from pg_class where oid='public.private_release_requests'::regclass),
   'RLS protects frozen release metadata');
@@ -60,6 +60,18 @@ select ok(public.load_private_frozen_revision(
 select ok(public.load_private_frozen_revision(
   (select id from public.private_release_requests limit 1))->'publicUrl'='null'::jsonb,
   'atomic read never grants a public URL');
+select is(public.load_private_frozen_revision(
+  (select id from public.private_release_requests limit 1))->>'snapshotCanonicalJson',
+  (select snapshot::text from public.portfolio_revisions limit 1),
+  'canonical evidence uses the exact PostgreSQL jsonb text bytes');
+select is(encode(sha256(convert_to(public.load_private_frozen_revision(
+  (select id from public.private_release_requests limit 1))->>'snapshotCanonicalJson','UTF8')),'hex'),
+  (select snapshot_sha256 from public.portfolio_revisions limit 1),
+  'canonical evidence hashes to the immutable revision pin');
+select ok((public.load_private_frozen_revision(
+  (select id from public.private_release_requests limit 1))->>'snapshotCanonicalJson')::jsonb =
+  (select snapshot from public.portfolio_revisions limit 1),
+  'canonical evidence parses to exactly the frozen snapshot');
 
 select set_config('kd.test.frozen_id',
   (select id::text from public.private_release_requests limit 1),true);

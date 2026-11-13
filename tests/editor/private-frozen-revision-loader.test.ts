@@ -1,15 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {SupabasePrivateFrozenRevisionLoader} from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {prepareSafeStaticPreview} from '../../packages/editor-core/src/publish-preflight.ts';
 
 const reqId='10000000-0000-4000-8000-000000000001';
 const portfolioId='20000000-0000-4000-8000-000000000002';
-const sha='a'.repeat(64);
 const snapshot={formatVersion:1,files:{
   'kadmeion.json':JSON.stringify({formatVersion:1,seo:{title:'Owner',description:'Projects'}})
 },slots:{hero:{state:'S0',componentId:'title-stacked@1',content:{title:'Hello'}}},stashes:{}};
+const snapshotCanonicalJson=JSON.stringify(snapshot);
+const sha=createHash('sha256').update(snapshotCanonicalJson).digest('hex');
 const receipt={requestId:reqId,portfolioId,revision:1,snapshotSha256:sha,
+  snapshotCanonicalJson,
   visibilityIntent:'PUBLIC',status:'FROZEN',publicUrl:null,snapshot};
 const origin='https://unit.supabase.co';
 const client=(http:typeof fetch,jwt:string|null='real.jwt.auth')=>
@@ -32,6 +35,8 @@ test('atomic owner RPC returns pinned private snapshot with no public authority'
   const loaded=await loader.load(reqId);
   assert.equal(calls,1);
   assert.deepEqual(loaded.snapshot,snapshot);
+  assert.ok(Object.isFrozen(loaded.snapshot));
+  assert.ok(Object.isFrozen(loaded.snapshot.slots.hero.content));
   assert.equal(loaded.loadedPortfolioId,portfolioId);
   assert.equal(loaded.loadedRevision,1);
   assert.equal(loaded.loadedSnapshotSha256,sha);
@@ -68,7 +73,12 @@ test('mismatched pins, missing fields and public claims are rejected',async()=>{
     {...receipt,visibilityIntent:'PRIVATE'},{...receipt,status:'LIVE'},
     {...receipt,publicUrl:'https://example.invalid'},
     {...receipt,snapshot:{formatVersion:1}},
-    {...receipt,snapshot:null},null,[],{}
+    {...receipt,snapshot:null},
+    {...receipt,snapshotCanonicalJson:'{}'},
+    {...receipt,snapshotCanonicalJson:'not-json'},
+    {...receipt,snapshotSha256:'f'.repeat(64)},
+    {...receipt,snapshot:{...snapshot,slots:{}}},
+    null,[],{}
   ]){
     await assert.rejects(client(async()=>Response.json(invalid)).load(reqId),
       {code:'INTEGRITY_FAILED'});
@@ -92,4 +102,19 @@ test('only a clean trusted Supabase API origin is accepted',()=>{
   }
   assert.throws(()=>new SupabasePrivateFrozenRevisionLoader(origin,' ',async()=>null),
     {code:'VALIDATION'});
+});
+
+test('post-load mutations cannot alter the attested render input',async()=>{
+  const loaded=await client(async()=>Response.json(receipt)).load(reqId);
+  assert.throws(()=>{loaded.snapshot.slots.hero.content.title='Injected';},TypeError);
+  assert.equal(loaded.snapshot.slots.hero.content.title,'Hello');
+  const cloned=structuredClone(loaded.snapshot);
+  assert.notStrictEqual(cloned,loaded.snapshot);
+});
+test('a forged canonical string cannot borrow the database SHA',async()=>{
+  const altered=JSON.stringify({...snapshot,slots:{...snapshot.slots,
+    hero:{...snapshot.slots.hero,content:{title:'Forged'}}}});
+  await assert.rejects(client(async()=>Response.json({
+    ...receipt,snapshotCanonicalJson:altered,snapshot:JSON.parse(altered)
+  })).load(reqId),{code:'INTEGRITY_FAILED'});
 });

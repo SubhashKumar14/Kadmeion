@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID,createHash } from 'node:crypto';
 
 function localSupabaseCredentials() {
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION, '1',
@@ -259,6 +259,10 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
     assert.equal(loaded.publicUrl,null);
     assert.deepEqual(loaded.snapshot,snapshot);
     assert.match(loaded.snapshotSha256,/^[0-9a-f]{64}$/);
+    assert.equal(typeof loaded.snapshotCanonicalJson,'string');
+    assert.deepEqual(JSON.parse(loaded.snapshotCanonicalJson),loaded.snapshot);
+    assert.equal(createHash('sha256').update(loaded.snapshotCanonicalJson).digest('hex'),
+      loaded.snapshotSha256);
   });
   await t.test('reviewer grants are hashed, private, one-time token receipts; no serving URL',async()=>{
     const params={p_request_id:request,p_operation_id:randomUUID(),p_valid_minutes:60};

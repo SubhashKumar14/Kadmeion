@@ -1,8 +1,34 @@
 import { validateSnapshot, type PortfolioSnapshot } from '../../editor-core/src/portfolio-revision-transactions.ts';
 import { ContractError } from '../../contracts/src/project.ts';
+import type { SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA=/^[0-9a-f]{64}$/;
+const encoder=new TextEncoder();
+const MAX_CANONICAL_BYTES=12*1024*1024;
+
+interface PrivateAttestation {
+  portfolioId:string;revision:number;snapshotSha256:string;
+  visibilityIntent:'PUBLIC'|'UNLISTED';
+}
+const verifiedSnapshots=new WeakMap<PortfolioSnapshot,PrivateAttestation>();
+function freezeJson(value:unknown):void {
+  if(value!==null&&typeof value==='object'&&!Object.isFrozen(value)){
+    for(const child of Object.values(value))freezeJson(child);
+    Object.freeze(value);
+  }
+}
+/** A private, process-local proof that the renderer is using the exact owner-RPC bytes. */
+export function assertAttestedPrivateFrozenRevision(input:SafePreviewInput):void {
+  const proof=input?.snapshot&&verifiedSnapshots.get(input.snapshot);
+  const frozen=input?.frozen;
+  if(!proof||!frozen||frozen.portfolioId!==proof.portfolioId||
+     frozen.revision!==proof.revision||frozen.snapshotSha256!==proof.snapshotSha256||
+     frozen.visibilityIntent!==proof.visibilityIntent||frozen.status!=='FROZEN'||
+     frozen.publicUrl!==null||input.loadedPortfolioId!==proof.portfolioId||
+     input.loadedRevision!==proof.revision||input.loadedSnapshotSha256!==proof.snapshotSha256)
+    throw new ContractError('VALIDATION','Private artifact requires an intact attested frozen revision.');
+}
 
 export class FrozenLoadError extends Error {
   readonly code:'AUTH_EXPIRED'|'NOT_FOUND'|'INTEGRITY_FAILED'|'PROVIDER_UNAVAILABLE';
@@ -86,10 +112,34 @@ export class SupabasePrivateFrozenRevisionLoader {
        (raw.visibilityIntent!=='PUBLIC'&&raw.visibilityIntent!=='UNLISTED')||
        raw.status!=='FROZEN'||raw.publicUrl!==null)
       throw new FrozenLoadError('INTEGRITY_FAILED','Invalid atomic frozen revision receipt.');
-    try{validateSnapshot(raw.snapshot as PortfolioSnapshot);}
-    catch{throw new FrozenLoadError('INTEGRITY_FAILED','Stored revision snapshot is not supported.');}
+    // The server hashes PostgreSQL jsonb::text, not JavaScript JSON.stringify.
+    // Hash those exact server-provided bytes before trusting a renderable object.
+    if(typeof raw.snapshotCanonicalJson!=='string'||
+       encoder.encode(raw.snapshotCanonicalJson).byteLength>MAX_CANONICAL_BYTES)
+      throw new FrozenLoadError('INTEGRITY_FAILED','Canonical snapshot evidence is missing or oversized.');
+    const canonicalBytes=encoder.encode(raw.snapshotCanonicalJson);
+    const digest=await crypto.subtle.digest('SHA-256',canonicalBytes);
+    const canonicalSha=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+    if(canonicalSha!==raw.snapshotSha256)
+      throw new FrozenLoadError('INTEGRITY_FAILED','Canonical frozen snapshot digest does not match.');
+    let snapshot:PortfolioSnapshot;
+    try{
+      snapshot=JSON.parse(raw.snapshotCanonicalJson) as PortfolioSnapshot;
+      validateSnapshot(snapshot);
+      if(JSON.stringify(snapshot)!==JSON.stringify(raw.snapshot))
+        throw new Error('Response snapshot disagrees with canonical evidence.');
+    }catch{
+      throw new FrozenLoadError('INTEGRITY_FAILED','Stored revision snapshot is not supported or disagrees with its digest.');
+    }
+    // Only this newly parsed and recursively frozen object gets an attestation.
+    // A clone or caller-reconstructed object cannot inherit the WeakMap proof.
+    freezeJson(snapshot);
+    verifiedSnapshots.set(snapshot,{
+      portfolioId:raw.portfolioId,revision:raw.revision,
+      snapshotSha256:raw.snapshotSha256,visibilityIntent:raw.visibilityIntent
+    });
     return {
-      snapshot:raw.snapshot as PortfolioSnapshot,
+      snapshot,
       frozen:{portfolioId:raw.portfolioId,revision:raw.revision,
         snapshotSha256:raw.snapshotSha256,
         visibilityIntent:raw.visibilityIntent as 'PUBLIC'|'UNLISTED',
