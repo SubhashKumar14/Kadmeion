@@ -40,7 +40,7 @@ begin
     '10000000-0000-4000-8000-0000000000f1',
     '00000000-0000-4000-8000-0000000000f1/asset1/cover.png',
     'image/png',512,'Cover');
-  if v->>'verified'<>'true' then raise exception 'Valid upload not verified'; end if;
+  if v->>'storage_metadata_matched'<>'true' then raise exception 'Valid upload not verified'; end if;
   v2:=public.register_private_project_image(
     '10000000-0000-4000-8000-0000000000f1',
     '00000000-0000-4000-8000-0000000000f1/asset1/cover.png',

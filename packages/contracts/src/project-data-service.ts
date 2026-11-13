@@ -116,8 +116,8 @@ export class SupabasePrivateProjectService {
     const result=await this.send('/rest/v1/rpc/register_private_project_image','POST',{
       p_project_id:projectId,p_object_path:objectPath,p_mime_type:mime,
       p_byte_size:size,p_alt_text:altText
-    }) as {id?:string;object_path?:string;verified?:boolean}|null;
-    if(!result?.id||result.object_path!==objectPath||result.verified!==true)
+    }) as {id?:string;object_path?:string;storage_metadata_matched?:boolean}|null;
+    if(!result?.id||result.object_path!==objectPath||result.storage_metadata_matched!==true)
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Image metadata was not durably verified.');
     return result.id;
   }

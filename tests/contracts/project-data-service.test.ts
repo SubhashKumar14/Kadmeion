@@ -40,7 +40,7 @@ test('asset registration uses only the owner-verified Storage-RPC, never direct 
       const body=JSON.parse(String(opts?.body)) as Record<string,unknown>;
       calls.push({url:String(url),body,headers:opts?.headers as Record<string,string>});
       return new Response(JSON.stringify({id:'00000000-0000-4000-8000-00000000a001',
-        object_path:body.p_object_path,verified:true}),{status:200});
+        object_path:body.p_object_path,storage_metadata_matched:true}),{status:200});
     }) as typeof fetch);
   const owner='00000000-0000-4000-8000-0000000000a1';
   const path=owner+'/image01/cover.png';

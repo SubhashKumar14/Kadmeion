@@ -62,7 +62,7 @@ begin
     v_id:=v_existing.id;
   end if;
 
-  return jsonb_build_object('id',v_id,'object_path',p_object_path,'verified',true);
+  return jsonb_build_object('id',v_id,'object_path',p_object_path,'storage_metadata_matched',true);
 end;
 $$;
 revoke all on function public.register_private_project_image(uuid,text,text,bigint,text)
