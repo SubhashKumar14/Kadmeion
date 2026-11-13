@@ -166,3 +166,139 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
     assert.deepEqual(successful(unseen,'Cross-user asset metadata list'),[]);
   });
 });
+
+
+test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and Trash',{timeout:120_000},async t=>{
+  const owner=await adminUser('portfolio-owner');
+  const stranger=await adminUser('portfolio-outsider');
+  const create=await send('/rest/v1/portfolios?select=id,owner_user_id,head_revision',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug:'private-cloud-'+randomUUID().slice(0,8),
+      title:'Private CI workspace',template_id:'starter'}
+  });
+  const portfolios=successful(create,'Owner private portfolio creation');
+  assert.equal(portfolios.length,1);
+  const id=portfolios[0].id;
+  assert.equal(portfolios[0].owner_user_id,owner.id);
+  assert.equal(portfolios[0].head_revision,0);
+  const snapshot={formatVersion:1,files:{
+    'kadmeion.json':JSON.stringify({formatVersion:1,seo:{title:'CI portfolio',description:'Real API test'}})
+  },slots:{
+    hero:{state:'S0',componentId:'title-stacked@1',content:{title:'CI author'}}
+  },stashes:{}};
+  const operation=randomUUID(), commitRpc='/rest/v1/rpc/commit_portfolio_revision';
+  const commitBody={p_portfolio_id:id,p_operation_id:operation,p_base_revision:0,p_snapshot:snapshot};
+  let revision,request,grant;
+  await t.test('only owner can commit a snapshot to an immutable cloud head',async()=>{
+    const foreignRead=await send('/rest/v1/portfolios?select=id',{...bearer(stranger)});
+    assert.deepEqual(successful(foreignRead,'Cross-user portfolio listing'),[]);
+    const foreign=await send(commitRpc,{...json(stranger),method:'POST',body:commitBody});
+    assert.ok(!foreign.ok,'Cross-user wrote to private editor journal');
+    const first=successful(await send(commitRpc,{...json(owner),method:'POST',body:commitBody}),
+      'Owner cloud revision commit');
+    revision=first.revision;
+    assert.equal(revision,1);
+    assert.equal(first.alreadyCommitted,false);
+    assert.match(first.snapshotSha256,/^[0-9a-f]{64}$/);
+    const duplicate=successful(await send(commitRpc,{...json(owner),method:'POST',body:commitBody}),
+      'Replay editor operation');
+    assert.equal(duplicate.revision,revision);
+    assert.equal(duplicate.alreadyCommitted,true);
+    assert.equal(duplicate.snapshotSha256,first.snapshotSha256);
+    const stale=await send(commitRpc,{...json(owner),method:'POST',body:{
+      ...commitBody,p_operation_id:randomUUID()}});
+    assert.ok(!stale.ok,'Stale base revision unexpectedly overwrote cloud head');
+    const head=successful(await send('/rest/v1/portfolios?select=head_revision&id=eq.'+id,bearer(owner)),
+      'Read current portfolio head');
+    assert.equal(head[0].head_revision,1);
+    const immutable=successful(await send('/rest/v1/portfolio_revisions?select=revision,snapshot_sha256&portfolio_id=eq.'+id,
+      bearer(owner)),'Read immutable journal');
+    assert.equal(immutable.length,1);
+    assert.equal(immutable[0].snapshot_sha256,first.snapshotSha256);
+    const hidden=successful(await send('/rest/v1/portfolio_revisions?select=revision&portfolio_id=eq.'+id,
+      bearer(stranger)),'Cross-user revision listing');
+    assert.deepEqual(hidden,[]);
+  });
+  await t.test('freeze pins exactly the stored immutable revision; no public URL is created',async()=>{
+    const params={p_portfolio_id:id,p_operation_id:randomUUID(),
+      p_revision:revision,p_visibility_intent:'UNLISTED'};
+    const stolen=await send('/rest/v1/rpc/freeze_private_release_request',{
+      ...json(stranger),method:'POST',body:params});
+    assert.ok(!stolen.ok,'Other user froze an owner revision');
+    const first=successful(await send('/rest/v1/rpc/freeze_private_release_request',{
+      ...json(owner),method:'POST',body:params}),'Owner freeze');
+    request=first.requestId;
+    assert.equal(first.status,'FROZEN');
+    assert.equal(first.visibilityIntent,'UNLISTED');
+    assert.equal(first.publicUrl,null);
+    assert.equal(first.alreadyFrozen,false);
+    assert.match(first.snapshotSha256,/^[0-9a-f]{64}$/);
+    const duplicate=successful(await send('/rest/v1/rpc/freeze_private_release_request',{
+      ...json(owner),method:'POST',body:params}),'Idempotent frozen request');
+    assert.equal(duplicate.alreadyFrozen,true);
+    assert.equal(duplicate.requestId,request);
+    const foreign=successful(await send('/rest/v1/private_release_requests?select=id',bearer(stranger)),
+      'Cross-account release listing');
+    assert.deepEqual(foreign,[]);
+  });
+  await t.test('reviewer grants are hashed, private, one-time token receipts; no serving URL',async()=>{
+    const params={p_request_id:request,p_operation_id:randomUUID(),p_valid_minutes:60};
+    const issue='/rest/v1/rpc/issue_private_reviewer_grant';
+    const strangerAttempt=await send(issue,{...json(stranger),method:'POST',body:params});
+    assert.ok(!strangerAttempt.ok,'Cross-owner issued a reviewer grant');
+    const first=successful(await send(issue,{...json(owner),method:'POST',body:params}),
+      'Issue private reviewer grant');
+    grant=first.grantId;
+    assert.match(first.rawToken,/^[0-9a-f]{64}$/);
+    assert.equal(first.status,'REGISTERED_UNSERVABLE');
+    assert.equal(first.alreadyRegistered,false);
+    const receiptAgain=successful(await send(issue,{...json(owner),method:'POST',body:params}),
+      'Idempotent reviewer token request');
+    assert.equal(receiptAgain.grantId,grant);
+    assert.equal(receiptAgain.rawToken,null);
+    const ownerRows=successful(await send('/rest/v1/private_reviewer_grants?select=id,request_id,expires_at',
+      bearer(owner)),'Owner grant metadata');
+    assert.equal(ownerRows.length,1);
+    assert.equal(ownerRows[0].id,grant);
+    const outsiderRows=successful(await send('/rest/v1/private_reviewer_grants?select=id',
+      bearer(stranger)),'Cross-user grant metadata');
+    assert.deepEqual(outsiderRows,[]);
+    const hashes=await send('/rest/v1/private_reviewer_grants?select=token_sha256',bearer(owner));
+    assert.ok(!hashes.ok,'Token digest leaked through browser-facing REST');
+    const outsiderRevoke=await send('/rest/v1/rpc/revoke_private_reviewer_grant',{
+      ...json(stranger),method:'POST',body:{p_grant_id:grant}});
+    assert.ok(!outsiderRevoke.ok,'Foreign user revoked token');
+    const revoke=successful(await send('/rest/v1/rpc/revoke_private_reviewer_grant',{
+      ...json(owner),method:'POST',body:{p_grant_id:grant}}),'Owner reviewer grant revoke');
+    assert.equal(revoke.status,'REVOKED');
+    assert.equal(revoke.publicRevocationVerified,false);
+  });
+  await t.test('private Trash refuses foreign operations and blocks frozen revision reuse',async()=>{
+    const move='/rest/v1/rpc/trash_private_item',restore='/rest/v1/rpc/restore_private_item';
+    const p={p_item_type:'portfolio',p_item_id:id};
+    const foreign=await send(move,{...json(stranger),method:'POST',body:p});
+    assert.ok(!foreign.ok,'Stranger trashed owner portfolio');
+    const trashed=successful(await send(move,{...json(owner),method:'POST',body:p}),
+      'Owner Trash');
+    assert.equal(trashed.status,'trashed');
+    const duplicate=successful(await send(move,{...json(owner),method:'POST',body:p}),
+      'Idempotent Trash');
+    assert.equal(duplicate.status,'already_trashed');
+    const blocked=await send('/rest/v1/rpc/freeze_private_release_request',{
+      ...json(owner),method:'POST',
+      body:{p_portfolio_id:id,p_operation_id:randomUUID(),p_revision:revision,
+        p_visibility_intent:'PUBLIC'}});
+    assert.ok(!blocked.ok,'Trashed portfolio was frozen');
+    const blockedGrant=await send('/rest/v1/rpc/issue_private_reviewer_grant',{
+      ...json(owner),method:'POST',
+      body:{p_request_id:request,p_operation_id:randomUUID(),p_valid_minutes:60}});
+    assert.ok(!blockedGrant.ok,'Trashed portfolio received a new private reviewer grant');
+    const foreignRestore=await send(restore,{...json(stranger),method:'POST',body:p});
+    assert.ok(!foreignRestore.ok,'Stranger restored owner portfolio');
+    const back=successful(await send(restore,{...json(owner),method:'POST',body:p}),
+      'Owner restore before 15-day expiry');
+    assert.equal(back.status,'restored');
+    assert.equal(back.public_visibility,'private');
+  });
+});
