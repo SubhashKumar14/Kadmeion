@@ -40,4 +40,11 @@ jobs:
           version: latest
       - run: supabase start
       - run: supabase test db
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Test real GoTrue + PostgREST + private Storage over HTTP
+        run: node --test tests/integration/local-supabase-http.test.mjs
+        env:
+          KADMEION_LOCAL_INTEGRATION: '1'
 # Only an ephemeral local Supabase stack: no cloud secrets, no production writes.
