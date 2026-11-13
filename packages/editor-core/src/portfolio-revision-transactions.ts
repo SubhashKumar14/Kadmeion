@@ -45,10 +45,12 @@ export interface EditorCommand {
 
 const COMPONENT_PIN = /^[a-z][a-z0-9-]*@[0-9]+(?:\.[0-9]+){0,2}$/;
 const SLOT_KEY = /^[a-z0-9_-]{1,64}$/;
+const RESERVED_KEYS = new Set(['__proto__','constructor','prototype']);
 const OP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function assertSlotKey(key: string) {
-  if (!SLOT_KEY.test(key)) throw new ContractError('VALIDATION', 'Invalid slot key.');
+  if (!SLOT_KEY.test(key) || RESERVED_KEYS.has(key))
+    throw new ContractError('VALIDATION', 'Invalid or reserved slot key.');
 }
 
 function isOwned(slot: SlotAssignment): boolean {
@@ -59,9 +61,48 @@ function validateContent(content: Record<string,string>) {
   if (!content || typeof content !== 'object' || Array.isArray(content) || Object.keys(content).length>100)
     throw new ContractError('VALIDATION', 'Invalid component content.');
   for (const [field,value] of Object.entries(content)) {
-    if (!SLOT_KEY.test(field) || typeof value!=='string' || value.length>12000)
+    if (!SLOT_KEY.test(field) || RESERVED_KEYS.has(field) ||
+        typeof value!=='string' || value.length>12000)
       throw new ContractError('VALIDATION', 'Invalid component field.');
   }
+}
+
+/** Validate active AND stashed assignments so restore and ZIP import cannot hide invalid source. */
+function validateSlotAssignment(key:string,slot:SlotAssignment,snapshot:PortfolioSnapshot):void {
+  assertSlotKey(key);
+  if (!slot || typeof slot!=='object' || Array.isArray(slot) ||
+      !['EMPTY','S0','S1','S2'].includes(slot.state))
+    throw new ContractError('VALIDATION','Invalid slot or stashed assignment.');
+  if (Object.keys(slot).some(field=>!['state','componentId','content','sourcePath','originalSource'].includes(field)))
+    throw new ContractError('VALIDATION','Unexpected assignment property.');
+  validateContent(slot.content);
+  if (slot.originalSource!==undefined &&
+      (typeof slot.originalSource!=='string' ||
+       new TextEncoder().encode(slot.originalSource).byteLength>MAX_FILE_BYTES))
+    throw new ContractError('VALIDATION','Invalid owned source provenance.');
+  if (slot.state==='EMPTY') {
+    if (slot.componentId!==undefined||slot.sourcePath!==undefined||
+        slot.originalSource!==undefined||Object.keys(slot.content).length!==0)
+      throw new ContractError('VALIDATION','An EMPTY assignment cannot contain source or content.');
+    return;
+  }
+  if (typeof slot.componentId!=='string'||!COMPONENT_PIN.test(slot.componentId))
+    throw new ContractError('VALIDATION','An assignment must use a pinned component.');
+  if (slot.state==='S0') {
+    if (slot.sourcePath!==undefined||slot.originalSource!==undefined)
+      throw new ContractError('VALIDATION','Library source is read-only.');
+    return;
+  }
+  if (typeof slot.sourcePath!=='string'||typeof slot.originalSource!=='string')
+    throw new ContractError('VALIDATION','Owned assignments need source and pristine provenance.');
+  assertOwnedSourcePath(slot.sourcePath);
+  if (!slot.sourcePath.startsWith('slots/'+key+'/') ||
+      !Object.hasOwn(snapshot.files,slot.sourcePath))
+    throw new ContractError('VALIDATION','Stashed or active owned source file is missing.');
+  const current=snapshot.files[slot.sourcePath];
+  if ((slot.state==='S1'&&current!==slot.originalSource) ||
+      (slot.state==='S2'&&current===slot.originalSource))
+    throw new ContractError('VALIDATION','Owned source state disagrees with its file bytes.');
 }
 
 export function createEditorHead(snapshot: PortfolioSnapshot): EditorHead {
@@ -84,29 +125,15 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
     else { assertManagedPath(path); validateManagedJson(path,source); }
   }
   for (const [key,slot] of Object.entries(snapshot.slots)) {
-    assertSlotKey(key);
-    if (!slot || !['EMPTY','S0','S1','S2'].includes(slot.state)) throw new ContractError('VALIDATION', 'Invalid slot state.');
-    validateContent(slot.content);
-    if (slot.state==='EMPTY' && (slot.componentId || slot.sourcePath || Object.keys(slot.content).length>0))
-      throw new ContractError('VALIDATION', 'An EMPTY slot cannot retain an active assignment.');
-    if (slot.state!=='EMPTY' && (!slot.componentId || !COMPONENT_PIN.test(slot.componentId)))
-      throw new ContractError('VALIDATION', 'Assigned components require a pinned version.');
-    if (slot.state==='S0' && slot.sourcePath)
-      throw new ContractError('VALIDATION', 'Trusted library source must remain read-only.');
-    if (slot.sourcePath) {
-      assertOwnedSourcePath(slot.sourcePath);
-      if (!slot.sourcePath.startsWith('slots/'+key+'/') || !isOwned(slot) || !Object.hasOwn(snapshot.files,slot.sourcePath))
-        throw new ContractError('VALIDATION', 'Owned source binding mismatch.');
-    }
-    if (isOwned(slot) && !slot.sourcePath) throw new ContractError('VALIDATION', 'Owned slot must reference its own source.');
+    validateSlotAssignment(key,slot,snapshot);
   }
+  if (Object.keys(snapshot.slots).length>100 || Object.keys(snapshot.stashes).length>100)
+    throw new ContractError('VALIDATION','Snapshot has too many slot or stash keys.');
   for (const [key,items] of Object.entries(snapshot.stashes)) {
     assertSlotKey(key);
-    if (!Array.isArray(items) || items.length>100) throw new ContractError('VALIDATION', 'Invalid stash history.');
-    for (const item of items) {
-      if (!item || !['EMPTY','S0','S1','S2'].includes(item.state)) throw new ContractError('VALIDATION', 'Invalid stashed slot.');
-      validateContent(item.content);
-    }
+    if (!Array.isArray(items) || items.length>100)
+      throw new ContractError('VALIDATION', 'Invalid stash history.');
+    for (const item of items) validateSlotAssignment(key,item,snapshot);
   }
 }
 
@@ -139,7 +166,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     next.files[intent.path]=intent.source; // exact user bytes; no implicit formatting
   } else {
     assertSlotKey(intent.slotKey);
-    const slot = next.slots[intent.slotKey];
+    const slot = Object.hasOwn(next.slots,intent.slotKey) ? next.slots[intent.slotKey] : undefined;
     if (!slot) throw new ContractError('VALIDATION', 'Unknown slot.');
     const stash = next.stashes[intent.slotKey] ?? [];
     switch(intent.kind) {
