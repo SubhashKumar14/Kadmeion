@@ -24,7 +24,14 @@ try {
   }
   assert.ok(response, 'Test server did not start.');
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /id="login-form"/);
+  const markup = await response.text();
+  assert.match(markup, /id="login-form"/);
+  assert.match(markup, /id="register-form"/);
+  assert.match(markup, /data-auth-switch="register"/);
+  assert.match(markup, /class="password-toggle"/);
+  assert.match(markup, /id="signup-confirm"/);
+  assert.match(markup, /name="handle"/);
+  assert.match(markup, /id="theme-button"/);
   assert.match(response.headers.get('content-security-policy') ?? '', /script-src 'self'/);
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
 

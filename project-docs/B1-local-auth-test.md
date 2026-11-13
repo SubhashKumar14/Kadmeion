@@ -29,7 +29,7 @@ No wildcard allowlist is required for this local verification. These settings ar
 ## Acceptance checklist
 
 - Request a new invitation to a test inbox after the server is running. Default Supabase invitation links use an implicit access-token fragment; a supported token_hash template is handled as well.
-- Click the invite link; set a 12–128 character password; confirm authenticated placeholder is shown.
+- Click the invite link; set a 8–128 character password; confirm authenticated placeholder is shown.
 - Sign out, sign in with the new password, reload /workspace, and verify the session remains usable.
 - Create a fresh account from /register, receive and click email confirmation, then sign in.
 - Request password recovery; click link; save a new password; sign out and sign in with new credentials.
@@ -43,3 +43,11 @@ No wildcard allowlist is required for this local verification. These settings ar
 - Persistence uses browser localStorage, matching a common client-side model, but is sensitive to XSS. Review the Content Security Policy and upgrade to the supported official auth client before production.
 - All live signup, acceptance, recovery, and redirect checks must be performed interactively. CI only verifies mocked auth contracts and static compilation.
 - Do not paste invitation links, access tokens, refresh tokens, passwords, SMTP keys, or private API keys into issue trackers or chat.
+
+## Preview UX and release gate (2026-11-13)
+
+The previous one-column dark engineering form was not the approved Kadmeion authentication interface. The following provisional implementation corrects significant gaps: an Aether Drift light-first split shell, switchable dark mode, reversible 300ms desktop sign-in/register panel movement, direct `/signin`/`/signup` routes and legacy aliases, visible password toggles, confirmation field, normalized @handles with helpful hints, and an 8-character minimum (subject to actual Supabase provider policy). CSS art is an approximation rather than the original K/logo or approved design asset. Exact master token/logo/vector implementation remains an explicit visual acceptance gate. Header/footer labels must not imply full product implementation.
+
+**Critical security hold:** Chrome was reported to display a red “Dangerous” warning for a Vercel preview URL. Do not enter credentials or override Chrome warnings until the exact classification has been independently investigated and corrected. Passing CI, HTTPS, a Vercel READY state, or SSO alone does not invalidate the browser security warning. If users entered reused passwords, rotate them via the affected trusted service.
+
+**Still missing:** verified handle availability and durable claim, complete account onboarding, real invitation/signup/recovery acceptance, OAuth, and browser accessibility/visual regression verification. User-visible success must not assert these are done.
