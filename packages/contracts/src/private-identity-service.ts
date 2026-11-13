@@ -98,4 +98,48 @@ export class SupabasePrivateIdentityService {
     // NEVER imply the public route is active; publication has a separate B4 gate.
     return 'saved_private_intent';
   }
+
+  /**
+   * Complete B1's two-stage signup: Auth creates a private profile first,
+   * then an authenticated owner claims the untrusted requested handle.
+   * An existing persisted handle always wins over editable auth metadata.
+   * Never marks the profile, portfolio or projects as published.
+   */
+  async completeInitialIdentity():Promise<
+    {status:'claimed';handle:string;emailVerified:boolean} |
+    {status:'needs_handle';emailVerified:boolean} |
+    {status:'handle_conflict';requestedHandle:string;emailVerified:boolean}
+  > {
+    const raw=await this.request('/auth/v1/user','GET') as {
+      id?:unknown;email_confirmed_at?:unknown;
+      user_metadata?:{handle_candidate?:unknown}|null;
+    }|null;
+    if (!raw || typeof raw.id!=='string' || !/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(raw.id))
+      throw new PrivateIdentityError('AUTH_EXPIRED','Unable to verify the current account.');
+    const emailVerified=typeof raw.email_confirmed_at==='string' && raw.email_confirmed_at.length>0;
+    const rows=await this.request('/rest/v1/profiles?select=user_id,handle&user_id=eq.'+raw.id,'GET') as
+      Array<{user_id?:unknown;handle?:unknown}>|null;
+    if (!Array.isArray(rows) || rows.length!==1 || rows[0]?.user_id!==raw.id)
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record is missing.');
+    if (typeof rows[0].handle==='string')
+      return {status:'claimed',handle:normalizeHandle(rows[0].handle),emailVerified};
+    const candidate=raw.user_metadata?.handle_candidate;
+    if (typeof candidate!=='string')return {status:'needs_handle',emailVerified};
+    let handle:string;
+    try { handle=normalizeHandle(candidate); }
+    catch { return {status:'needs_handle',emailVerified}; }
+    try {
+      const confirmed=await this.request('/rest/v1/profiles?user_id=eq.'+raw.id,'PATCH',{handle}) as
+        Array<{user_id?:unknown;handle?:unknown}>|null;
+      if (!Array.isArray(confirmed)||confirmed.length!==1||
+          confirmed[0]?.user_id!==raw.id||confirmed[0]?.handle!==handle)
+        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Handle was not durably acknowledged.');
+      return {status:'claimed',handle,emailVerified};
+    } catch(error) {
+      if(error instanceof PrivateIdentityError && error.code==='HANDLE_CONFLICT')
+        return {status:'handle_conflict',requestedHandle:handle,emailVerified};
+      throw error;
+    }
+  }
+
 }
