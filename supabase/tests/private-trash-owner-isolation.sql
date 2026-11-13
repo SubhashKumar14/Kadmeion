@@ -10,6 +10,8 @@ insert into public.projects(id,owner_user_id,slug,title) values
 ('10000000-0000-4000-8000-0000000000d1','00000000-0000-4000-8000-0000000000d1','trash-sample','Trashed Project');
 insert into public.portfolios(id,owner_user_id,slug,title,template_id) values
 ('20000000-0000-4000-8000-0000000000d1','00000000-0000-4000-8000-0000000000d1','trash-portfolio','Private Portfolio','starter');
+-- Trigger requires the same owner JWT as ordinary authenticated writes.
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000d1',true);
 insert into public.project_exposure_intents(project_id,owner_user_id,show_on_profile,show_case_study)
 values ('10000000-0000-4000-8000-0000000000d1','00000000-0000-4000-8000-0000000000d1',true,true);
 
