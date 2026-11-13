@@ -155,7 +155,7 @@ grant execute on function public.restore_private_item(text,uuid) to authenticate
 -- FOR SHARE serializes against project Trash's UPDATE row lock.
 create function kadmeion_private.prevent_trashed_project_exposure()
 returns trigger language plpgsql set search_path=''
-as $
+as $$
 begin
   if new.show_on_profile or new.show_case_study then
     perform 1 from public.projects p
@@ -168,7 +168,7 @@ begin
   end if;
   return new;
 end;
-$;
+$$;
 revoke all on function kadmeion_private.prevent_trashed_project_exposure()
   from public,anon,authenticated;
 create trigger kd_exposure_reject_trashed
