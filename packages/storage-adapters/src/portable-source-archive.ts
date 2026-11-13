@@ -24,27 +24,35 @@ function u16(view:DataView,at:number,value:number):void{view.setUint16(at,value,
 function u32(view:DataView,at:number,value:number):void{view.setUint32(at,value,true);}
 
 interface Entry {name:string;nameBytes:Uint8Array;bytes:Uint8Array;crc:number;offset:number}
-export function exportPortfolioSourceZip(snapshot:PortfolioSnapshot):Uint8Array {
-  validateSnapshot(snapshot);
-  const paths=Object.keys(snapshot.files).sort();
-  const manifest=JSON.stringify({
-    kind:'kadmeion-source-archive',formatVersion:1,
-    files:paths,slots:snapshot.slots,stashes:snapshot.stashes
+export interface StoredZipPart { name:string; bytes:Uint8Array }
+export interface StoredZipLimits { maxEntries:number; maxBytes:number; maxEntryBytes:number }
+/** Byte-stable ZIP-STORE writer; caller decides what data is safe to include. */
+export function writeStoredZip(parts:readonly StoredZipPart[],limits:StoredZipLimits):Uint8Array {
+  check(Array.isArray(parts)&&parts.length>0&&Number.isSafeInteger(limits.maxEntries)&&
+    parts.length<=limits.maxEntries&&limits.maxEntries<=101 &&
+    Number.isSafeInteger(limits.maxBytes)&&limits.maxBytes>22&&limits.maxBytes<=2*1024*1024 &&
+    Number.isSafeInteger(limits.maxEntryBytes)&&limits.maxEntryBytes>0&&
+    limits.maxEntryBytes<=limits.maxBytes,'Invalid ZIP resource limits.');
+  const seen=new Set<string>();
+  const entries:Entry[]=parts.map(part=>{
+    const name=part?.name;
+    check(typeof name==='string' && name.length<=160 &&
+      /^[a-zA-Z0-9][a-zA-Z0-9_./-]*$/.test(name) && !name.includes('..') &&
+      !name.includes('//') && !name.endsWith('/') && !seen.has(name),
+      'Unsafe or duplicate ZIP filename.');
+    seen.add(name);
+    check(part.bytes instanceof Uint8Array && part.bytes.byteLength<=limits.maxEntryBytes,
+      'Oversized ZIP entry.');
+    return {name,nameBytes:encoder.encode(name),bytes:part.bytes,crc:crc32(part.bytes),offset:0};
   });
-  const entries:Entry[]=[
-    {name:MANIFEST,nameBytes:encoder.encode(MANIFEST),bytes:encoder.encode(manifest),crc:0,offset:0},
-    ...paths.map(name=>({name,nameBytes:encoder.encode(name),bytes:encoder.encode(snapshot.files[name]),crc:0,offset:0}))
-  ];
-  check(entries.length<=MAX_ENTRIES,'Too many archive entries.');
   const localBytes=entries.reduce((n,e)=>n+30+e.nameBytes.length+e.bytes.length,0);
   const centralBytes=entries.reduce((n,e)=>n+46+e.nameBytes.length,0);
   const total=localBytes+centralBytes+22;
-  check(total<=LIMIT,'Portable archive exceeds 2 MiB.');
+  check(total<=limits.maxBytes,'Portable ZIP exceeds size limit.');
   const out=new Uint8Array(total),view=new DataView(out.buffer);
   let pos=0;
   for(const e of entries){
-    check(e.bytes.length<=256*1024,'Archive entry too large.');
-    e.offset=pos;e.crc=crc32(e.bytes);
+    e.offset=pos;
     u32(view,pos,0x04034b50);u16(view,pos+4,20);u16(view,pos+6,0x800);
     u16(view,pos+8,0);u16(view,pos+10,0);u16(view,pos+12,0);
     u32(view,pos+14,e.crc);u32(view,pos+18,e.bytes.length);u32(view,pos+22,e.bytes.length);
@@ -65,8 +73,20 @@ export function exportPortfolioSourceZip(snapshot:PortfolioSnapshot):Uint8Array 
   u16(view,pos+8,entries.length);u16(view,pos+10,entries.length);
   u32(view,pos+12,pos-centralOffset);u32(view,pos+16,centralOffset);u16(view,pos+20,0);
   pos+=22;
-  check(pos===total,'Portable archive length mismatch.');
+  check(pos===total,'ZIP layout offset mismatch.');
   return out;
+}
+export function exportPortfolioSourceZip(snapshot:PortfolioSnapshot):Uint8Array {
+  validateSnapshot(snapshot);
+  const paths=Object.keys(snapshot.files).sort();
+  const manifest=JSON.stringify({
+    kind:'kadmeion-source-archive',formatVersion:1,
+    files:paths,slots:snapshot.slots,stashes:snapshot.stashes
+  });
+  return writeStoredZip([
+    {name:MANIFEST,bytes:encoder.encode(manifest)},
+    ...paths.map(name=>({name,bytes:encoder.encode(snapshot.files[name])}))
+  ],{maxEntries:MAX_ENTRIES,maxBytes:LIMIT,maxEntryBytes:256*1024});
 }
 
 export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
