@@ -15,6 +15,10 @@ test('review token is supplied by server, never generated from user input',async
   const service=client(async(url,init)=>{
     calls++;
     assert.match(String(url),/\/rpc\/issue_private_reviewer_grant$/);
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.cache,'no-store');
+    assert.equal(init?.redirect,'error');
     assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer user-jwt');
     assert.deepEqual(JSON.parse(init?.body as string),{
       p_request_id:requestId,p_operation_id:opId,p_valid_minutes:60
@@ -54,4 +58,34 @@ test('provider errors do not produce fake reviewer grants',async()=>{
   await assert.rejects(quota.issue(requestId,opId,60),{code:'QUOTA_EXCEEDED'});
   const down=client(async()=>{throw Error('network down');});
   await assert.rejects(down.issue(requestId,opId,60),{code:'PROVIDER_UNAVAILABLE'});
+});
+
+test('reviewer client rejects malformed or credentialed Supabase API origins',()=>{
+  for(const origin of [
+    'bad-origin','http://evil.example','https://user:password@service.supabase.co',
+    'https://service.supabase.co/rest/v1','https://service.supabase.co/?x=1',
+    'https://service.supabase.co/#fragment'
+  ]){
+    assert.throws(()=>new SupabasePrivateReviewerService(origin,'publishable',
+      async()=>null),{code:'VALIDATION'});
+  }
+  assert.throws(()=>new SupabasePrivateReviewerService('https://service.supabase.co',
+    ' ',async()=>null),{code:'VALIDATION'});
+});
+
+test('reviewer client canonicalizes localhost endpoint without path duplication',async()=>{
+  let target='';
+  const service=new SupabasePrivateReviewerService('http://127.0.0.1:54321/',
+    'publishable',async()=> 'user-jwt',async(url)=>{
+      target=String(url);return Response.json(receipt);
+    });
+  await service.issue(requestId,opId,60);
+  assert.equal(target,'http://127.0.0.1:54321/rest/v1/rpc/issue_private_reviewer_grant');
+});
+
+test('reviewer grant expiry must be a date-time string, not a parseable number',async()=>{
+  for(const expiresAt of [0,2026,null,'not-a-date']){
+    await assert.rejects(client(async()=>Response.json({...receipt,expiresAt})).issue(
+      requestId,opId,60),{code:'INVALID_ACK'});
+  }
 });

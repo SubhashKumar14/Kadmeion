@@ -33,12 +33,17 @@ export class SupabasePrivateReleaseService {
 
   constructor(endpoint: string, publishableKey: string,
       accessToken: () => Promise<string | null>, fetcher: typeof fetch = fetch) {
-    const parsed = new URL(endpoint);
-    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' &&
-        ['localhost','127.0.0.1'].includes(parsed.hostname)))
-      throw new ContractError('VALIDATION', 'Use a trusted HTTPS Supabase endpoint.');
-    if (!publishableKey) throw new ContractError('VALIDATION', 'Publishable key is missing.');
-    this.endpoint = endpoint.replace(/\/$/, '');
+    let parsed: URL;
+    try { parsed = new URL(endpoint); }
+    catch { throw new ContractError('VALIDATION', 'Use a trusted Supabase API origin.'); }
+    if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' &&
+          ['localhost','127.0.0.1'].includes(parsed.hostname))) ||
+        parsed.username || parsed.password || parsed.pathname !== '/' ||
+        parsed.search || parsed.hash)
+      throw new ContractError('VALIDATION', 'Use a trusted Supabase API origin.');
+    if (typeof publishableKey !== 'string' || !publishableKey.trim())
+      throw new ContractError('VALIDATION', 'Publishable key is missing.');
+    this.endpoint = parsed.origin;
     this.key = publishableKey;
     this.token = accessToken;
     this.fetcher = fetcher;
@@ -59,8 +64,12 @@ export class SupabasePrivateReleaseService {
         headers:{
           apikey:this.key,
           Authorization:'Bearer '+jwt,
-          'Content-Type':'application/json'
+          'Content-Type':'application/json',
+          Accept:'application/json'
         },
+        credentials:'omit',
+        cache:'no-store',
+        redirect:'error',
         body:JSON.stringify({
           p_portfolio_id:portfolioId,
           p_operation_id:operationId,

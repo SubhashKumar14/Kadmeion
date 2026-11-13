@@ -23,11 +23,16 @@ export class SupabasePrivateReviewerService {
   private readonly token:()=>Promise<string|null>;
   private readonly fetcher:typeof fetch;
   constructor(origin:string,key:string,token:()=>Promise<string|null>,fetcher:typeof fetch=fetch){
-    const url=new URL(origin);
-    if(url.protocol!=='https:'&&!(url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname)))
-      throw new ContractError('VALIDATION','Use a trusted Supabase HTTPS endpoint.');
-    if(!key)throw new ContractError('VALIDATION','Publishable key is required.');
-    this.origin=origin.replace(/\/$/,'');this.key=key;this.token=token;this.fetcher=fetcher;
+    let url:URL;
+    try{url=new URL(origin);}
+    catch{throw new ContractError('VALIDATION','Use a trusted Supabase API origin.');}
+    if((url.protocol!=='https:'&&!(url.protocol==='http:'&&
+      ['localhost','127.0.0.1'].includes(url.hostname)))||
+      url.username||url.password||url.pathname!=='/'||url.search||url.hash)
+      throw new ContractError('VALIDATION','Use a trusted Supabase API origin.');
+    if(typeof key!=='string'||!key.trim())
+      throw new ContractError('VALIDATION','Publishable key is required.');
+    this.origin=url.origin;this.key=key;this.token=token;this.fetcher=fetcher;
   }
   private async rpc(name:string,payload:Record<string,unknown>):Promise<unknown>{
     const jwt=await this.token();
@@ -36,7 +41,9 @@ export class SupabasePrivateReviewerService {
     try{
       response=await this.fetcher(this.origin+'/rest/v1/rpc/'+name,{
         method:'POST',
-        headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json'},
+        headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json',
+          Accept:'application/json'},
+        credentials:'omit',cache:'no-store',redirect:'error',
         body:JSON.stringify(payload)
       });
     }catch{
@@ -61,7 +68,7 @@ export class SupabasePrivateReviewerService {
     }) as PrivateReviewerGrant|null;
     if(!ack||!UUID.test(ack.grantId)||ack.requestId!==requestId||
        ack.status!=='REGISTERED_UNSERVABLE'||typeof ack.alreadyRegistered!=='boolean'||
-       !Number.isFinite(Date.parse(ack.expiresAt))||
+       typeof ack.expiresAt!=='string'||!Number.isFinite(Date.parse(ack.expiresAt))||
        (ack.alreadyRegistered ? ack.rawToken!==null : typeof ack.rawToken!=='string'||!TOKEN.test(ack.rawToken)))
       throw new ReviewerGrantError('INVALID_ACK','Reviewer grant was not verified.');
     return ack; // Raw token appears once. Do not persist it or log it.
