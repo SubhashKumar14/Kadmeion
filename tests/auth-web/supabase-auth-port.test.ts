@@ -91,3 +91,29 @@ test('password recovery validates its exact local redirect destination', async (
   assert.equal((await port.resetPasswordForEmail('dev@example.com', { redirectTo: 'https://evil.test/reset-password' })).error !== null, true);
   assert.equal((await port.resetPasswordForEmail('dev@example.com', { redirectTo: 'http://localhost:3000/reset-password' })).error, null);
 });
+
+test('temporary network failure does not silently discard the locally saved session', async () => {
+  let offline = true;
+  const saved = storage();
+  const { port } = mock((async (url: string | URL | Request) => {
+    if (String(url).includes('grant_type=password')) return json(tokens);
+    if (offline) throw new Error('offline');
+    return json(user);
+  }) as typeof fetch, saved);
+  assert.equal((await port.signInWithPassword({ email: user.email, password: 'pass' })).error, null);
+  assert.ok((await port.getUser()).error);
+  assert.equal(saved.data.size, 1, 'transient network failure should not force logout');
+  offline = false;
+  assert.equal((await port.getUser()).data.user?.id, user.id);
+});
+
+test('rejected server session immediately clears the browser token', async () => {
+  const saved = storage();
+  const { port } = mock((async (url: string | URL | Request) => {
+    if (String(url).includes('grant_type=password')) return json(tokens);
+    return json({ message: 'expired' }, 401);
+  }) as typeof fetch, saved);
+  assert.equal((await port.signInWithPassword({ email: user.email, password: 'pass' })).error, null);
+  assert.ok((await port.getUser()).error);
+  assert.equal(saved.data.size, 0);
+});
