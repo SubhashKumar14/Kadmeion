@@ -9,8 +9,8 @@ const currentUser = document.querySelector<HTMLParagraphElement>('#current-user'
 if (!notice || !currentUser) throw new Error('Authentication shell is incomplete.');
 
 function message(value: string, error = false): void {
-  notice.textContent = value;
-  notice.classList.toggle('error', error);
+  notice!.textContent = value;
+  notice!.classList.toggle('error', error);
 }
 function show(name: typeof sections[number]): void {
   for (const id of sections) {
@@ -24,7 +24,7 @@ function errorText(error: unknown): string {
 }
 function values(form: HTMLFormElement): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const [key, value] of new FormData(form)) if (typeof value === 'string') result[key] = value;
+  new FormData(form).forEach((value, key) => { if (typeof value === 'string') result[key] = value; });
   return result;
 }
 async function busy(form: HTMLFormElement, action: () => Promise<void>): Promise<void> {
