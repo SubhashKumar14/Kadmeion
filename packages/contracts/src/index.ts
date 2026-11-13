@@ -14,3 +14,4 @@ export * from './private-trash-service.ts';
 export * from './private-release-service.ts';
 
 export * from './private-reviewer-service.ts';
+export * from './private-moderation-service.ts';
