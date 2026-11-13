@@ -12,7 +12,7 @@ try {
   if (u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(u.hostname))) apiOrigin = u.origin;
 } catch { /* Configuration page will describe the missing setting. */ }
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
-const routes = new Set(['/', '/login', '/register', '/forgot-password', '/reset-password', '/set-password', '/auth/callback', '/workspace']);
+const routes = new Set(['/', '/login', '/register', '/signin', '/signup', '/forgot-password', '/reset-password', '/set-password', '/auth/callback', '/workspace']);
 const security = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',

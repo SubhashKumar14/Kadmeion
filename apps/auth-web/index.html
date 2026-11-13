@@ -1,36 +1,109 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#fafaf9">
   <title>Kadmeion — Account access</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main class="panel">
-    <header><div class="wordmark">K<span>·</span> KADMEION</div><p class="eyebrow">Build · Showcase · Evolve</p></header>
-    <p id="notice" role="status" aria-live="polite"></p>
-    <section id="login" hidden><h1>Sign in</h1><p>Access your private workspace.</p>
-      <form id="login-form"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form>
-      <nav><a href="/register">Create account</a><a href="/forgot-password">Forgot password?</a></nav>
+  <main id="auth-shell" class="auth-shell" data-auth-mode="login">
+    <section class="form-side" aria-label="Account access">
+      <div class="form-shell">
+        <header class="page-header">
+          <a href="/signin" class="wordmark" aria-label="Kadmeion — sign in">KADMEION</a>
+          <button id="theme-button" class="theme-control" type="button" aria-label="Switch to dark theme">Dark mode</button>
+        </header>
+        <div class="form-stage">
+          <p id="notice" role="status" aria-live="polite" class="notice"></p>
+          <section id="login" class="auth-view" hidden>
+            <p class="kicker">Your workspace</p>
+            <h1 tabindex="-1">Welcome back.</h1>
+            <p class="lede">Sign in to continue building your developer identity.</p>
+            <form id="login-form" class="auth-form">
+              <label for="login-email">Email address</label>
+              <input id="login-email" name="email" type="email" autocomplete="username" inputmode="email" required>
+              <div class="label-row"><label for="login-password">Password</label><a href="/forgot-password">Forgot password?</a></div>
+              <div class="password-field"><input id="login-password" name="password" type="password" autocomplete="current-password" required><button type="button" class="password-toggle" aria-controls="login-password" aria-pressed="false">Show</button></div>
+              <button class="primary-action" type="submit">Sign in <span aria-hidden="true">↗</span></button>
+            </form>
+            <p class="switch-prompt">New to Kadmeion? <a href="/signup" data-auth-switch="register">Create an account</a></p>
+          </section>
+          <section id="register" class="auth-view" hidden>
+            <p class="kicker">Begin here</p>
+            <h1 tabindex="-1">Make your work yours.</h1>
+            <p class="lede">One identity for projects, portfolios and the work ahead.</p>
+            <form id="register-form" class="auth-form">
+              <label for="signup-name">Display name</label>
+              <input id="signup-name" name="displayName" type="text" autocomplete="name" maxlength="80" required placeholder="How should we call you?">
+              <label for="signup-handle">Your handle</label>
+              <div class="handle-field"><span aria-hidden="true">@</span><input id="signup-handle" name="handle" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="31" aria-describedby="handle-hint handle-error" required placeholder="yourname"></div>
+              <p id="handle-hint" class="field-hint">3–30 letters, numbers or underscores; starts with a letter. The @ is added automatically.</p>
+              <p id="handle-error" class="field-error" role="alert" hidden></p>
+              <label for="signup-email">Email address</label>
+              <input id="signup-email" name="email" type="email" autocomplete="email" inputmode="email" required>
+              <label for="signup-password">Create a password</label>
+              <div class="password-field"><input id="signup-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" aria-describedby="signup-password-hint" required><button type="button" class="password-toggle" aria-controls="signup-password" aria-pressed="false">Show</button></div>
+              <p id="signup-password-hint" class="field-hint">At least 8 characters. A unique passphrase is a good choice.</p>
+              <label for="signup-confirm">Confirm password</label>
+              <div class="password-field"><input id="signup-confirm" name="confirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required><button type="button" class="password-toggle" aria-controls="signup-confirm" aria-pressed="false">Show</button></div>
+              <button class="primary-action" type="submit">Create account <span aria-hidden="true">↗</span></button>
+            </form>
+            <p class="switch-prompt">Already have an account? <a href="/signin" data-auth-switch="login">Sign in</a></p>
+          </section>
+          <section id="forgot-password" class="auth-view" hidden>
+            <p class="kicker">Account recovery</p>
+            <h1 tabindex="-1">Reset your password.</h1>
+            <p class="lede">We'll request a recovery link for your email address, if an account exists.</p>
+            <form id="forgot-form" class="auth-form">
+              <label for="forgot-email">Email address</label>
+              <input id="forgot-email" name="email" type="email" autocomplete="email" inputmode="email" required>
+              <button class="primary-action" type="submit">Request reset link <span aria-hidden="true">↗</span></button>
+            </form>
+            <p class="switch-prompt"><a href="/signin">Return to sign in</a></p>
+          </section>
+          <section id="set-password" class="auth-view" hidden>
+            <p class="kicker">Secure your account</p>
+            <h1 tabindex="-1">Choose a password.</h1>
+            <p class="lede">Complete your invitation or recovery to continue.</p>
+            <form id="password-form" class="auth-form">
+              <label for="new-password">New password</label>
+              <div class="password-field"><input id="new-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required><button type="button" class="password-toggle" aria-controls="new-password" aria-pressed="false">Show</button></div>
+              <p class="field-hint">Use 8 characters or more. Avoid reusing another account's password.</p>
+              <label for="confirm-password">Confirm password</label>
+              <div class="password-field"><input id="confirm-password" name="confirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required><button type="button" class="password-toggle" aria-controls="confirm-password" aria-pressed="false">Show</button></div>
+              <button class="primary-action" type="submit">Save password <span aria-hidden="true">↗</span></button>
+            </form>
+          </section>
+          <section id="workspace" class="auth-view" hidden>
+            <p class="kicker">Authenticated session</p>
+            <h1 tabindex="-1">You're signed in.</h1>
+            <p id="current-user" class="lede"></p>
+            <p class="workspace-note">This is the B1 authentication preview. The full Kadmeion workspace and portfolio editor are not connected yet.</p>
+            <button id="logout-button" class="primary-action" type="button">Sign out <span aria-hidden="true">↗</span></button>
+          </section>
+          <section id="callback" class="auth-view" hidden>
+            <p class="kicker">Confirming access</p>
+            <h1 tabindex="-1">Checking your link…</h1>
+            <p class="lede">Validating the one-time authentication request.</p>
+          </section>
+        </div>
+        <footer class="form-footer"><span>Build · Showcase · Evolve</span><span>Authentication preview</span></footer>
+      </div>
     </section>
-    <section id="register" hidden><h1>Create an account</h1><p>Your work remains private until explicitly published.</p>
-      <form id="register-form"><label>Display name<input name="displayName" autocomplete="name" maxlength="80" required></label><label>Handle<input name="handle" minlength="3" maxlength="30" required></label><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password <small>(12–128 characters)</small><input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button type="submit">Create account</button></form>
-      <nav><a href="/login">Already have an account?</a></nav>
-    </section>
-    <section id="forgot-password" hidden><h1>Password recovery</h1><p>If the address belongs to an account, a recovery email may be sent.</p>
-      <form id="forgot-form"><label>Email<input name="email" type="email" autocomplete="email" required></label><button type="submit">Request recovery link</button></form>
-      <nav><a href="/login">Back to sign in</a></nav>
-    </section>
-    <section id="set-password" hidden><h1>Set your password</h1><p>Complete your invitation or account recovery.</p>
-      <form id="password-form"><label>New password<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><label>Confirm password<input name="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button type="submit">Save password</button></form>
-    </section>
-    <section id="workspace" hidden><h1>You're signed in</h1><p id="current-user"></p><p>The full Kadmeion workspace and editor are not attached to this B1 verification shell.</p>
-      <button id="logout-button" type="button">Sign out</button>
-    </section>
-    <section id="callback" hidden><h1>Completing sign-in…</h1><p>Checking your authentication link.</p></section>
-    <footer><span>Authentication verification · Not a public portfolio</span></footer>
+    <aside class="brand-side" aria-label="Kadmeion identity">
+      <div class="brand-pattern" aria-hidden="true"><span class="blue-trace"></span><span class="coral-arc"></span><span class="trace-rule"></span></div>
+      <div class="brand-contents">
+        <p class="brand-overline">Developer identity platform</p>
+        <div>
+          <h2>Made to carry<br><em>your work.</em></h2>
+          <p>Document the thinking. Show the craft. Grow a body of work that belongs to you.</p>
+        </div>
+        <div class="brand-sequence"><span>01 &nbsp; Identity</span><span>02 &nbsp; Projects</span><span>03 &nbsp; Portfolio</span></div>
+      </div>
+    </aside>
   </main>
   <script type="module" src="/compiled/apps/auth-web/src/main.js"></script>
 </body>

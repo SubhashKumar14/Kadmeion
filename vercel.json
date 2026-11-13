@@ -4,6 +4,14 @@
   "outputDirectory": "apps/auth-web/vercel-dist",
   "rewrites": [
     {
+      "source": "/signin",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/signup",
+      "destination": "/index.html"
+    },
+    {
       "source": "/login",
       "destination": "/index.html"
     },

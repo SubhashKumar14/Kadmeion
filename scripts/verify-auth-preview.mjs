@@ -17,7 +17,7 @@ assert.equal(config.supabaseUrl, 'https://scyooqjitjzjdxgtanso.supabase.co');
 assert.ok(config.publishableKey.startsWith('sb_publishable_') || config.publishableKey.startsWith('eyJ'));
 const vercel = JSON.parse(await readFile(resolve('vercel.json'), 'utf8'));
 assert.equal(vercel.outputDirectory, 'apps/auth-web/vercel-dist');
-for (const route of ['/login', '/register', '/auth/callback', '/reset-password', '/workspace'])
+for (const route of ['/signin', '/signup', '/login', '/register', '/auth/callback', '/reset-password', '/workspace'])
   assert.ok(vercel.rewrites.some(row => row.source === route && row.destination === '/index.html'));
 assert.ok(vercel.headers[0].headers.some(row => row.key === 'Content-Security-Policy'));
 console.log('Vercel auth preview bundle: 10 assertions passed.');

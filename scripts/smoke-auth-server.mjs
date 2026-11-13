@@ -28,7 +28,7 @@ try {
   assert.match(response.headers.get('content-security-policy') ?? '', /script-src 'self'/);
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
 
-  for (const path of ['/register', '/forgot-password', '/auth/callback', '/reset-password', '/workspace']) {
+  for (const path of ['/signup', '/signin', '/register', '/forgot-password', '/auth/callback', '/reset-password', '/workspace']) {
     const page = await fetch('http://127.0.0.1:3000' + path);
     assert.equal(page.status, 200, path);
     assert.match(await page.text(), /KADMEION/);

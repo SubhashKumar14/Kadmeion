@@ -49,8 +49,8 @@ export function safeAfterAuthPath(value: string | null): string {
 }
 
 function passwordForCreation(password: string): void {
-  if (typeof password !== 'string' || password.length < 12 || password.length > 128)
-    throw new AuthFlowError('VALIDATION', 'Use a 12–128 character password.');
+  if (typeof password !== 'string' || password.length < 8 || password.length > 128)
+    throw new AuthFlowError('VALIDATION', 'Use an 8–128 character password.');
 }
 
 export class AuthService {

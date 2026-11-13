@@ -1,6 +1,7 @@
 import { AuthService } from '../../../packages/contracts/src/auth-service.ts';
 import { parseAuthRedirect } from './auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from './supabase-auth-port.ts';
+import { cleanHandleInput, checkHandleInput, validatePasswordPair } from './form-helpers.ts';
 
 type Config = { supabaseUrl?: string; publishableKey?: string };
 const sections = ['login', 'register', 'forgot-password', 'set-password', 'workspace', 'callback'] as const;
@@ -17,6 +18,8 @@ function show(name: typeof sections[number]): void {
     const section = document.getElementById(id);
     if (section) section.hidden = id !== name;
   }
+  const shell = document.getElementById('auth-shell');
+  if (shell) shell.dataset.authMode = name === 'register' ? 'register' : 'login';
   document.title = 'Kadmeion — ' + name.replaceAll('-', ' ');
 }
 function errorText(error: unknown): string {
@@ -77,6 +80,65 @@ async function main(): Promise<void> {
     return;
   }
 
+  const themeRoot = document.documentElement;
+  const themeToggle = document.getElementById('theme-button');
+  const savedTheme = window.localStorage.getItem('kadmeion.theme');
+  function applyTheme(theme: 'light' | 'dark'): void {
+    themeRoot.dataset.theme = theme;
+    if (themeToggle) {
+      themeToggle.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
+      themeToggle.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+    }
+  }
+  applyTheme(savedTheme === 'dark' ? 'dark' : 'light');
+  themeToggle?.addEventListener('click', () => {
+    const next = themeRoot.dataset.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    try { window.localStorage.setItem('kadmeion.theme', next); } catch { /* private browser fallback */ }
+  });
+
+  // Switch panels in place, preserving unsent entries without new history entries.
+  document.querySelectorAll<HTMLAnchorElement>('[data-auth-switch]').forEach(link => {
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      const mode = link.dataset.authSwitch;
+      if (mode !== 'login' && mode !== 'register') return;
+      history.replaceState(null, '', mode === 'register' ? '/signup' : '/signin');
+      show(mode);
+      message('');
+      document.querySelector<HTMLElement>('#' + mode + ' h1')?.focus({ preventScroll: true });
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('.password-toggle').forEach(button => {
+    button.addEventListener('click', () => {
+      const target = document.getElementById(button.getAttribute('aria-controls') ?? '');
+      if (!(target instanceof HTMLInputElement)) return;
+      const visible = target.type === 'password';
+      target.type = visible ? 'text' : 'password';
+      button.textContent = visible ? 'Hide' : 'Show';
+      button.setAttribute('aria-pressed', String(visible));
+      target.focus({ preventScroll: true });
+    });
+  });
+  const handleField = document.querySelector<HTMLInputElement>('#signup-handle');
+  const handleError = document.querySelector<HTMLElement>('#handle-error');
+  function handleFeedback(): string | null {
+    if (!handleField || !handleError) return null;
+    const error = checkHandleInput(handleField.value);
+    handleError.textContent = error ?? '';
+    handleError.hidden = !error;
+    handleField.setAttribute('aria-invalid', String(!!error));
+    return error;
+  }
+  handleField?.addEventListener('blur', () => {
+    handleField.value = cleanHandleInput(handleField.value);
+    if (handleField.value) handleFeedback();
+  });
+  handleField?.addEventListener('input', () => {
+    if (handleError && !handleError.hidden) handleFeedback();
+  });
+
   bind('login-form', async input => {
     await service.login(input.email, input.password);
     const result = await auth.getUser();
@@ -85,8 +147,11 @@ async function main(): Promise<void> {
     navigate('workspace', 'Signed in successfully.');
   });
   bind('register-form', async input => {
+    if (handleFeedback()) throw new Error('Please correct your handle before continuing.');
+    const pairError = validatePasswordPair(input.password, input.confirm);
+    if (pairError) throw new Error(pairError);
     const result = await service.register({
-      email: input.email, password: input.password, handle: input.handle, displayName: input.displayName
+      email: input.email, password: input.password, handle: cleanHandleInput(input.handle), displayName: input.displayName
     });
     if (result.status === 'signed_in') {
       navigate('workspace', 'Account created.');
@@ -99,7 +164,8 @@ async function main(): Promise<void> {
     navigate('login', 'If an account exists for this email, a recovery link may be sent.');
   });
   bind('password-form', async input => {
-    if (input.password !== input.confirm) throw new Error('Passwords do not match.');
+    const pairError = validatePasswordPair(input.password, input.confirm);
+    if (pairError) throw new Error(pairError);
     const verified = await auth.getUser();
     if (!verified.data?.user) throw new Error('Your invitation or recovery session has expired. Request another link.');
     await service.updatePassword(input.password);
@@ -137,7 +203,7 @@ async function main(): Promise<void> {
   }
 
   const route = location.pathname;
-  if (route === '/register') show('register');
+  if (route === '/register' || route === '/signup') show('register');
   else if (route === '/forgot-password') show('forgot-password');
   else if (route === '/auth/callback' || route === '/reset-password' || route === '/set-password') {
     navigate('login');
