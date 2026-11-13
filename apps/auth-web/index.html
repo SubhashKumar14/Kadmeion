@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Kadmeion — Account access</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="panel">
+    <header><div class="wordmark">K<span>·</span> KADMEION</div><p class="eyebrow">Build · Showcase · Evolve</p></header>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <section id="login" hidden><h1>Sign in</h1><p>Access your private workspace.</p>
+      <form id="login-form"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form>
+      <nav><a href="/register">Create account</a><a href="/forgot-password">Forgot password?</a></nav>
+    </section>
+    <section id="register" hidden><h1>Create an account</h1><p>Your work remains private until explicitly published.</p>
+      <form id="register-form"><label>Display name<input name="displayName" autocomplete="name" maxlength="80" required></label><label>Handle<input name="handle" minlength="3" maxlength="30" required></label><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password <small>(12–128 characters)</small><input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button type="submit">Create account</button></form>
+      <nav><a href="/login">Already have an account?</a></nav>
+    </section>
+    <section id="forgot-password" hidden><h1>Password recovery</h1><p>If the address belongs to an account, a recovery email may be sent.</p>
+      <form id="forgot-form"><label>Email<input name="email" type="email" autocomplete="email" required></label><button type="submit">Request recovery link</button></form>
+      <nav><a href="/login">Back to sign in</a></nav>
+    </section>
+    <section id="set-password" hidden><h1>Set your password</h1><p>Complete your invitation or account recovery.</p>
+      <form id="password-form"><label>New password<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><label>Confirm password<input name="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button type="submit">Save password</button></form>
+    </section>
+    <section id="workspace" hidden><h1>You're signed in</h1><p id="current-user"></p><p>The full Kadmeion workspace and editor are not attached to this B1 verification shell.</p>
+      <button id="logout-button" type="button">Sign out</button>
+    </section>
+    <section id="callback" hidden><h1>Completing sign-in…</h1><p>Checking your authentication link.</p></section>
+    <footer><span>Local authentication verification · No public publishing</span></footer>
+  </main>
+  <script type="module" src="/compiled/apps/auth-web/src/main.js"></script>
+</body>
+</html>

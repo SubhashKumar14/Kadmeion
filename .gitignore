@@ -10,3 +10,5 @@ supabase/.profiles/
 supabase/.temp/
 *.log
 .DS_Store
+
+.auth-build/

@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "../..",
+    "outDir": "../../.auth-build",
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}

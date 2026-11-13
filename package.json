@@ -14,8 +14,10 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --experimental-strip-types --test tests/contracts/*.test.ts tests/editor/*.test.ts",
-    "check:file-budget": "node scripts/check-file-budget.mjs"
+    "test": "node --experimental-strip-types --test tests/contracts/*.test.ts tests/editor/*.test.ts tests/auth-web/*.test.ts",
+    "check:file-budget": "node scripts/check-file-budget.mjs",
+    "build:auth": "tsc -p apps/auth-web/tsconfig.json",
+    "dev:auth": "npm run build:auth && node apps/auth-web/dev-server.mjs"
   },
   "devDependencies": {
     "typescript": "5.8.3"

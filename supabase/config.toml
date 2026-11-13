@@ -1,8 +1,8 @@
 project_id = "kadmeion"
 
 [auth]
-site_url = "http://localhost:5173"
-additional_redirect_urls = ["http://localhost:5173/auth/callback", "http://localhost:5173/reset-password"]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/auth/callback", "http://localhost:3000/reset-password"]
 enable_anonymous_sign_ins = false
 
 [auth.email]
