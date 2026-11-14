@@ -1,6 +1,29 @@
+import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const entities = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
+const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
+const textWithin = (value, max) => value === undefined ||
+  (typeof value === 'string' && value.length <= max &&
+   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
+function validProjection(row, handle, slug) {
+  if (!isRecord(row) || row.handle !== handle) return false;
+  const keys = slug
+    ? ['handle','slug','title','summary','description','repositoryUrl','liveUrl','sections']
+    : ['handle','displayName','headline','bio'];
+  if (Object.keys(row).some(key => !keys.includes(key))) return false;
+  if (!slug) return textWithin(row.displayName,160) &&
+    textWithin(row.headline,320) && textWithin(row.bio,12000);
+  if (row.slug !== slug || typeof row.title !== 'string' ||
+      !row.title.trim() || !textWithin(row.title,200) ||
+      !textWithin(row.summary,1000) || !textWithin(row.description,12000) ||
+      !textWithin(row.repositoryUrl,2048) || !textWithin(row.liveUrl,2048) ||
+      !Array.isArray(row.sections) || row.sections.length > 24) return false;
+  return row.sections.every(section => isRecord(section) &&
+    Object.keys(section).every(key => key === 'title' || key === 'body') &&
+    typeof section.title === 'string' && section.title.length <= 200 &&
+    typeof section.body === 'string' && section.body.length <= 12000);
+}
 
 function escape(value) {
   return typeof value === 'string' ? value.replace(/[&<>"']/g, char => entities[char]) : '';
@@ -40,6 +63,10 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     res.statusCode = status;
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
+    res.setHeader('CDN-Cache-Control', 'no-store');
+    res.setHeader('Surrogate-Control', 'no-store');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Robots-Tag', status === 200 ? 'index, follow' : 'noindex');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
@@ -72,7 +99,7 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   const key = env.KADMEION_SUPABASE_SERVICE_ROLE_KEY;
   if ((!local && supabase.origin !== 'https://scyooqjitjzjdxgtanso.supabase.co') ||
       supabase.username || supabase.password || supabase.pathname !== '/' ||
-      supabase.search || supabase.hash || typeof key !== 'string' || !key.startsWith('eyJ')) {
+      supabase.search || supabase.hash || typeof key !== 'string' || !key.startsWith('eyJ') || key.length < 70) {
     return reply(503, 'Temporarily unavailable');
   }
   try {
@@ -87,13 +114,9 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
       await upstream.body?.cancel();
       return reply(503, 'Temporarily unavailable');
     }
-    const row = await upstream.json();
+    const row = await readBoundedRpcJson(upstream);
     if (row === null) return reply(404, 'Not found');
-    if (row?.handle !== handle || (slug && (row.slug !== slug || typeof row.title !== 'string' ||
-        !Array.isArray(row.sections) || row.sections.length > 24 ||
-        row.sections.some(section => !section || typeof section.title !== 'string' || typeof section.body !== 'string')))) {
-      return reply(503, 'Temporarily unavailable');
-    }
+    if (!validProjection(row, handle, slug)) return reply(503, 'Temporarily unavailable');
     return reply(200, render(row, slug));
   } catch {
     return reply(503, 'Temporarily unavailable');
