@@ -145,8 +145,6 @@ declare
   v_intent public.private_unlisted_publication_intents%rowtype;
   v_pointer public.private_release_visibility_pointers%rowtype;
   v_stage kadmeion_private.private_reviewer_stage_artifacts%rowtype;
-  v_current kadmeion_private.unlisted_release_routes%rowtype;
-  v_next bigint;
 begin
   if p_intent_id is null then
     raise exception using errcode='22023',message='INVALID_UNLISTED_INTENT';end if;
@@ -174,16 +172,15 @@ begin
   if not found or
     encode(sha256(convert_to(v_stage.html,'UTF8')),'hex')<>v_stage.html_sha256 then
     raise exception using errcode='22023',message='UNLISTED_ARTIFACT_INVALID';end if;
-  select * into v_current from kadmeion_private.unlisted_release_routes
-    where portfolio_id=v_intent.portfolio_id for update;
-  v_next:=case when found then v_current.release_generation+1 else 1 end;
-  if v_next>9223372036854775806 then
-    raise exception using errcode='54000',message='UNLISTED_GENERATION_LIMIT';end if;
+  -- The pointer generation advances for every candidate, including one that
+  -- never goes live. A replacement with identical HTML must invalidate a
+  -- delayed activation from the previous probe.
   insert into kadmeion_private.unlisted_release_pending(
     portfolio_id,owner_user_id,request_id,intent_id,stage_generation,
     release_generation,html_sha256,expires_at
   ) values(v_intent.portfolio_id,v_intent.owner_user_id,v_intent.request_id,
-    v_intent.id,v_intent.expected_pointer_generation,v_next,
+    v_intent.id,v_intent.expected_pointer_generation,
+    v_intent.expected_pointer_generation,
     v_stage.html_sha256,v_intent.expires_at)
   on conflict(portfolio_id) do update set
     owner_user_id=excluded.owner_user_id,request_id=excluded.request_id,
@@ -194,7 +191,7 @@ begin
   update public.private_unlisted_publication_intents set status='USED'
     where id=p_intent_id;
   return jsonb_build_object('portfolioId',v_intent.portfolio_id,
-    'releaseGeneration',v_next,'status','PROBE_PENDING',
+    'releaseGeneration',v_intent.expected_pointer_generation,'status','PROBE_PENDING',
     'htmlSha256',v_stage.html_sha256,'publicServingEnabled',false,
     'publicUrl',null);
 end;
@@ -215,7 +212,8 @@ begin
     join public.private_release_visibility_pointers v on v.portfolio_id=r.portfolio_id
     join kadmeion_private.private_reviewer_stage_artifacts s
       on s.portfolio_id=r.portfolio_id and s.pointer_generation=r.stage_generation
-      and s.request_id=r.request_id
+      and s.request_id=r.request_id and s.owner_user_id=r.owner_user_id
+      and s.html_sha256=r.html_sha256
     where r.portfolio_id=p_portfolio_id and r.expires_at>clock_timestamp()
       and p.trashed_at is null and v.status='PREPARED_PRIVATE'
       and v.generation=r.stage_generation
@@ -312,7 +310,8 @@ begin
     join public.private_release_visibility_pointers v on v.portfolio_id=r.portfolio_id
     join kadmeion_private.private_reviewer_stage_artifacts s
       on s.portfolio_id=r.portfolio_id and s.pointer_generation=r.stage_generation
-      and s.request_id=r.request_id
+      and s.request_id=r.request_id and s.owner_user_id=r.owner_user_id
+      and s.html_sha256=r.html_sha256
     where r.portfolio_id=p_portfolio_id and r.status='LIVE'
       and fr.visibility_intent='UNLISTED' and fr.status='FROZEN'
       and p.trashed_at is null and v.status='PREPARED_PRIVATE'

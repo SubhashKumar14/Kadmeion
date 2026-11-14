@@ -310,7 +310,47 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.match(site.headers.get('content-security-policy'),/script-src 'none'/);
 
 
-    const direct={requestId:frozen.requestId,expectedGeneration:1,
+    async function prepareReplacement(previousGeneration) {
+      const next = await pointer.prepare(portfolioId, frozen.requestId,
+        artifact.manifestSha256, previousGeneration, randomUUID());
+      await bindPrivateArtifactToPointer(ctx);
+      ok(await api('/rest/v1/rpc/store_private_reviewer_stage_artifact', {
+        method: 'POST', jwt: cfg.service, key: cfg.service,
+        body: {p_request_id: frozen.requestId, p_expected_generation: next.generation,
+          p_html: site.body}
+      }), 'Store replacement bytes');
+      const consent = ok(await api('/rest/v1/rpc/owner_request_unlisted_publication', {
+        method: 'POST', jwt: owner.jwt,
+        body: {p_request_id: frozen.requestId, p_expected_generation: next.generation,
+          p_operation_id: randomUUID(), p_confirmation: 'PUBLISH UNLISTED'}
+      }), 'Authorize replacement');
+      ok(await api('/rest/v1/rpc/service_prepare_unlisted_release', {
+        method: 'POST', key: cfg.service, jwt: cfg.service,
+        body: {p_intent_id: consent.intentId}
+      }), 'Prepare replacement');
+      return ok(await api('/rest/v1/rpc/service_probe_unlisted_release', {
+        method: 'POST', key: cfg.service, jwt: cfg.service,
+        body: {p_portfolio_id: portfolioId}
+      }), 'Probe replacement');
+    }
+    const superseded = await prepareReplacement(prepared.generation);
+    const replacement = await prepareReplacement(superseded.releaseGeneration);
+    assert.equal(replacement.htmlSha256, superseded.htmlSha256);
+    assert.equal((await publicHostRead()).body, site.body,
+      'The current live release stays available while replacements are pending');
+    const activateReplacement = (probe) => api('/rest/v1/rpc/service_activate_unlisted_release', {
+      method: 'POST', key: cfg.service, jwt: cfg.service,
+      body: {p_portfolio_id: portfolioId, p_expected_generation: probe.releaseGeneration,
+        p_html_sha256: probe.htmlSha256}
+    });
+    const staleProbe = await activateReplacement(superseded);
+    assert.equal(staleProbe.data?.code, '40001',
+      'A superseded probe cannot activate a replacement with identical bytes');
+    const promoted = ok(await activateReplacement(replacement), 'Promote the current replacement');
+    assert.equal(promoted.releaseGeneration, replacement.releaseGeneration);
+    assert.equal((await publicHostRead()).body, site.body);
+
+    const direct={requestId:frozen.requestId,expectedGeneration:replacement.releaseGeneration,
       manifestJson:JSON.stringify(artifact.manifest),
       html:new TextDecoder().decode(artifact.files[0].bytes)};
     // Each attempt is rejected by the actual DB, not by a mock query port.
@@ -318,7 +358,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       {html:direct.html.replace('Owner&#39;s','Forged')},
       {manifestJson:direct.manifestJson+' '},
       {manifestJson:'{"kind":"forged"}'},
-      {expectedGeneration:2},
+      {expectedGeneration:replacement.releaseGeneration-1},
       {requestId:randomUUID()}
     ]){
       await assert.rejects(writer.bindPrivateArtifact({...direct,...patch}),
