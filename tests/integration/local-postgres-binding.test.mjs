@@ -24,6 +24,7 @@ import {DirectSqlPrivateArtifactBindingWriter}
   from '../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts';
 import {openPrivateArtifactPgWorker}
   from '../../packages/storage-adapters/src/private-artifact-pg-worker.ts';
+import {handleReviewerRequest} from '../../api/reviewer.mjs';
 
 function localSettings(){
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION,'1',
@@ -222,6 +223,26 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     const getStaged=()=>api('/rest/v1/rpc/read_private_reviewer_stage_artifact',{
       method:'POST',jwt:cfg.service,key:cfg.service,
       body:{p_grant_id:reviewer.grantId,p_raw_token:reviewer.rawToken}});
+    async function serveByHeader(){
+      const request={method:'GET',url:'/api/reviewer?g='+reviewer.grantId,
+        headers:{authorization:'Bearer '+reviewer.rawToken}};
+      const response={
+        statusCode:0,body:null,headers:new Map(),
+        setHeader(name,value){this.headers.set(name.toLowerCase(),value);},
+        end(body){this.body=body;}
+      };
+      await handleReviewerRequest(request,response,{env:{
+        KADMEION_STAGING_DELIVERY_ENABLED:'true',
+        KADMEION_LOCAL_INTEGRATION:'1',
+        KADMEION_SUPABASE_URL:cfg.origin,
+        KADMEION_SUPABASE_SERVICE_ROLE_KEY:cfg.service
+      },http:fetch});
+      return response;
+    }
+    const served=await serveByHeader();
+    assert.equal(served.statusCode,200);
+    assert.equal(served.body,new TextDecoder().decode(artifact.files[0].bytes));
+    assert.match(served.headers.get('cache-control'),/no-store/);
     const bytes=ok(await getStaged(),'Read real reviewer staging bytes');
     assert.equal(bytes.html,new TextDecoder().decode(artifact.files[0].bytes));
     assert.equal(bytes.publicServingEnabled,false);
@@ -229,6 +250,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       method:'POST',jwt:owner.jwt,body:{p_grant_id:reviewer.grantId}
     }),'Revoke real reviewer token');
     assert.equal(ok(await getStaged(),'Read revoked reviewer grant'),null);
+    assert.equal((await serveByHeader()).statusCode,404);
 
     const direct={requestId:frozen.requestId,expectedGeneration:1,
       manifestJson:JSON.stringify(artifact.manifest),
