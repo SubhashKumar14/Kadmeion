@@ -425,6 +425,33 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal((await recoverRelease(activeAgain)).data?.code, '40001',
       'A failure report cannot undo an acknowledged release');
 
+    const timeline = ok(await api('/rest/v1/verified_unlisted_releases?select=intent_id,request_id,verified_at', {
+      jwt: owner.jwt
+    }), 'List verified release history');
+    assert.deepEqual(new Set(timeline.map(release => release.intent_id)),
+      new Set([initialConsent.intentId, activeAgain.intentId]));
+    assert.deepEqual(ok(await api('/rest/v1/verified_unlisted_releases?select=intent_id', {
+      jwt: outsider.jwt
+    }), 'Outsider cannot list verified release history'), []);
+    const rollbackOperation = randomUUID();
+    await assert.rejects(outsiderPointer.requestUnlistedRollback(
+      initialConsent.intentId, activeAgain.intentId, replacement.releaseGeneration,
+      rollbackOperation, 'ROLL BACK UNLISTED'), {code: 'FORBIDDEN'});
+    await assert.rejects(pointer.requestUnlistedRollback(
+      initialConsent.intentId, activeAgain.intentId, replacement.releaseGeneration - 1,
+      rollbackOperation, 'ROLL BACK UNLISTED'), {code: 'CONFLICT'});
+    const rollback = await pointer.requestUnlistedRollback(
+      initialConsent.intentId, activeAgain.intentId, replacement.releaseGeneration,
+      rollbackOperation, 'ROLL BACK UNLISTED');
+    assert.equal((await pointer.requestUnlistedRollback(
+      initialConsent.intentId, activeAgain.intentId, replacement.releaseGeneration,
+      rollbackOperation, 'ROLL BACK UNLISTED')).intentId, rollback.intentId);
+    assert.deepEqual(await publishConsentedUnlistedRelease(rollback.intentId, verificationPorts),
+      expectedDelivery);
+    assert.deepEqual(ok(await api('/rest/v1/verified_unlisted_releases?select=intent_id&intent_id=eq.' +
+      rollback.intentId, {jwt: owner.jwt}), 'Read acknowledged rollback'), [{intent_id: rollback.intentId}]);
+    assert.equal((await pointer.read(portfolioId)).generation, replacement.releaseGeneration);
+
     const direct={requestId:frozen.requestId,expectedGeneration:replacement.releaseGeneration,
       manifestJson:JSON.stringify(artifact.manifest),
       html:new TextDecoder().decode(artifact.files[0].bytes)};
@@ -453,7 +480,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(ok(await publicRead(),'Blocked unlisted route'),null);
     assert.equal((await publicHostRead()).statusCode,404,
       'Owner unpublish must deny the previously live unlisted HTTP URL');
-    assert.equal((await recoverRelease(activeAgain)).data?.code, '40001',
+    assert.equal((await recoverRelease(rollback)).data?.code, '40001',
       'A host failure report must not revive an unpublished release');
     const after=await pointer.read(portfolioId);
     assert.equal(after.status,'BLOCKED');

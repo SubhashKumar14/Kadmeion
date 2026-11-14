@@ -8,6 +8,9 @@ create table public.private_unlisted_publication_intents (
   owner_user_id uuid not null,
   request_id uuid not null,
   operation_id uuid not null,
+  rollback_target_id uuid references public.private_unlisted_publication_intents(id) on delete cascade,
+  rollback_from_id uuid references public.private_unlisted_publication_intents(id) on delete cascade,
+  check ((rollback_target_id is null) = (rollback_from_id is null)),
   expected_pointer_generation bigint not null check(expected_pointer_generation>=1),
   status text not null default 'AWAITING_HOST' check(status in ('AWAITING_HOST','USED')),
   created_at timestamptz not null default transaction_timestamp(),
@@ -48,6 +51,26 @@ alter table kadmeion_private.unlisted_release_routes enable row level security;
 revoke all on kadmeion_private.unlisted_release_routes from public,anon,authenticated;
 comment on table kadmeion_private.unlisted_release_routes is
   'Service-only noindex UNLISTED text-only releases. Public URLs are not currently hosted or proved. Direct immutable asset serving is forbidden.';
+
+-- Verified releases form an owner-readable timeline. HTML remains private.
+create table public.verified_unlisted_releases (
+  intent_id uuid primary key references public.private_unlisted_publication_intents(id) on delete cascade,
+  portfolio_id uuid not null,
+  owner_user_id uuid not null,
+  request_id uuid not null,
+  stage_generation bigint not null,
+  html_sha256 text not null check(html_sha256 ~ '^[0-9a-f]{64}$'),
+  verified_at timestamptz not null,
+  foreign key (request_id,portfolio_id,owner_user_id)
+    references public.private_release_requests(id,portfolio_id,owner_user_id) on delete cascade
+);
+create index kd_verified_unlisted_timeline on public.verified_unlisted_releases
+  (portfolio_id,verified_at desc,intent_id);
+alter table public.verified_unlisted_releases enable row level security;
+revoke all on public.verified_unlisted_releases from public,anon,authenticated,service_role;
+grant select (intent_id,portfolio_id,request_id,verified_at) on public.verified_unlisted_releases to authenticated;
+create policy kd_owner_verified_unlisted_releases on public.verified_unlisted_releases
+  for select to authenticated using ((select auth.uid())=owner_user_id);
 
 -- One prior live target for compensating a failed host check. Keep the
 -- release bytes in their original immutable staging row.
@@ -124,7 +147,7 @@ begin
     where owner_user_id=v_owner and operation_id=p_operation_id for update;
   if found then
     if v_intent.request_id<>p_request_id or
-       v_intent.expected_pointer_generation<>p_expected_generation then
+       v_intent.expected_pointer_generation<>p_expected_generation or v_intent.rollback_target_id is not null then
       raise exception using errcode='23505',message='UNLISTED_OPERATION_REUSED';end if;
     return jsonb_build_object('intentId',v_intent.id,'status',v_intent.status,
       'alreadyRecorded',true,'publicServingEnabled',false,'publicUrl',null);
@@ -156,6 +179,72 @@ revoke all on function public.owner_request_unlisted_publication(uuid,bigint,uui
 grant execute on function public.owner_request_unlisted_publication(uuid,bigint,uuid,text)
   to authenticated;
 
+create function public.owner_request_unlisted_rollback(
+  p_target_intent_id uuid,p_current_intent_id uuid,p_expected_generation bigint,
+  p_operation_id uuid,p_confirmation text
+) returns jsonb language plpgsql security definer set search_path=''
+as $function$
+declare
+  v_owner uuid := (select auth.uid());
+  v_target public.verified_unlisted_releases%rowtype;
+  v_intent public.private_unlisted_publication_intents%rowtype;
+begin
+  perform kadmeion_private.require_live_exit_auth_session();
+  if p_target_intent_id is null or p_current_intent_id is null or p_operation_id is null
+    or p_target_intent_id=p_current_intent_id or p_expected_generation is null
+    or p_expected_generation<1 or p_confirmation is distinct from 'ROLL BACK UNLISTED' then
+    raise exception using errcode='22023',message='INVALID_UNLISTED_ROLLBACK';
+  end if;
+  select * into v_target from public.verified_unlisted_releases
+    where intent_id=p_target_intent_id and owner_user_id=v_owner;
+  if not found then
+    raise exception using errcode='42501',message='UNLISTED_SOURCE_UNAVAILABLE';
+  end if;
+  perform 1 from public.portfolios where id=v_target.portfolio_id and owner_user_id=v_owner
+    and trashed_at is null for update;
+  if not found or exists(select 1 from kadmeion_private.moderation_portfolio_holds
+    where portfolio_id=v_target.portfolio_id) then
+    raise exception using errcode='42501',message='UNLISTED_PORTFOLIO_BLOCKED';
+  end if;
+  select * into v_intent from public.private_unlisted_publication_intents
+    where owner_user_id=v_owner and operation_id=p_operation_id;
+  if found then
+    if v_intent.rollback_target_id is distinct from p_target_intent_id
+      or v_intent.rollback_from_id is distinct from p_current_intent_id
+      or v_intent.expected_pointer_generation<>p_expected_generation then
+      raise exception using errcode='23505',message='UNLISTED_OPERATION_REUSED';
+    end if;
+    return jsonb_build_object('intentId',v_intent.id,'status',v_intent.status,
+      'alreadyRecorded',true,'publicServingEnabled',false,'publicUrl',null);
+  end if;
+  perform 1 from public.private_release_visibility_pointers pointer
+    join kadmeion_private.unlisted_release_routes route using(portfolio_id)
+    where pointer.portfolio_id=v_target.portfolio_id and pointer.status='PREPARED_PRIVATE'
+      and pointer.generation=p_expected_generation
+      and v_target.stage_generation>pointer.revocation_generation
+      and route.intent_id=p_current_intent_id and route.status='LIVE'
+      and route.verified_at is not null;
+  if not found then
+    raise exception using errcode='40001',message='UNLISTED_POINTER_CONFLICT';
+  end if;
+  if (select count(*) from public.private_unlisted_publication_intents
+    where owner_user_id=v_owner and created_at>transaction_timestamp()-interval '24 hours')>=20 then
+    raise exception using errcode='54000',message='UNLISTED_INTENT_QUOTA_REACHED';
+  end if;
+  insert into public.private_unlisted_publication_intents(
+    portfolio_id,owner_user_id,request_id,operation_id,expected_pointer_generation,
+    rollback_target_id,rollback_from_id
+  ) values(v_target.portfolio_id,v_owner,v_target.request_id,p_operation_id,
+    p_expected_generation,p_target_intent_id,p_current_intent_id) returning * into v_intent;
+  return jsonb_build_object('intentId',v_intent.id,'status',v_intent.status,
+    'alreadyRecorded',false,'publicServingEnabled',false,'publicUrl',null);
+end;
+$function$;
+revoke all on function public.owner_request_unlisted_rollback(uuid,uuid,bigint,uuid,text)
+  from public,anon,service_role;
+grant execute on function public.owner_request_unlisted_rollback(uuid,uuid,bigint,uuid,text)
+  to authenticated;
+
 -- The trusted host must independently verify the release route and privacy
 -- behavior. This function only makes the PRIVATE candidate probeable via a
 -- privileged read, never directly public.
@@ -166,6 +255,7 @@ declare
   v_intent public.private_unlisted_publication_intents%rowtype;
   v_pointer public.private_release_visibility_pointers%rowtype;
   v_stage kadmeion_private.private_reviewer_stage_artifacts%rowtype;
+  v_target public.verified_unlisted_releases%rowtype;
 begin
   if p_intent_id is null then
     raise exception using errcode='22023',message='INVALID_UNLISTED_INTENT';end if;
@@ -193,13 +283,23 @@ begin
   if v_intent.expires_at<=clock_timestamp()
     or not found or v_pointer.status<>'PREPARED_PRIVATE'
     or v_pointer.generation<>v_intent.expected_pointer_generation
-    or v_pointer.candidate_request_id<>v_intent.request_id then
+    or (v_intent.rollback_target_id is null and v_pointer.candidate_request_id<>v_intent.request_id) then
     raise exception using errcode='40001',message='UNLISTED_PREPARE_CONFLICT';end if;
+  if v_intent.rollback_target_id is not null then
+    select * into v_target from public.verified_unlisted_releases
+      where intent_id=v_intent.rollback_target_id and portfolio_id=v_intent.portfolio_id
+        and stage_generation>v_pointer.revocation_generation;
+    if not found or not exists(select 1 from kadmeion_private.unlisted_release_routes
+      where portfolio_id=v_intent.portfolio_id and intent_id=v_intent.rollback_from_id
+        and status='LIVE' and verified_at is not null) then
+      raise exception using errcode='40001',message='UNLISTED_PREPARE_CONFLICT';
+    end if;
+  end if;
   select * into v_stage from kadmeion_private.private_reviewer_stage_artifacts
     where portfolio_id=v_intent.portfolio_id
-      and pointer_generation=v_intent.expected_pointer_generation
+      and pointer_generation=coalesce(v_target.stage_generation,v_intent.expected_pointer_generation)
       and request_id=v_intent.request_id;
-  if not found or
+  if not found or (v_target.intent_id is not null and v_target.html_sha256<>v_stage.html_sha256) or
     encode(sha256(convert_to(v_stage.html,'UTF8')),'hex')<>v_stage.html_sha256 then
     raise exception using errcode='22023',message='UNLISTED_ARTIFACT_INVALID';end if;
   -- The pointer generation advances for every candidate, including one that
@@ -217,7 +317,7 @@ begin
       portfolio_id,owner_user_id,request_id,intent_id,stage_generation,
       release_generation,html_sha256,expires_at
     ) values(v_intent.portfolio_id,v_intent.owner_user_id,v_intent.request_id,
-      v_intent.id,v_intent.expected_pointer_generation,
+      v_intent.id,v_stage.pointer_generation,
       v_intent.expected_pointer_generation,
       v_stage.html_sha256,v_intent.expires_at)
     on conflict(portfolio_id) do update set
@@ -248,6 +348,7 @@ begin
   select s.html,s.html_sha256,r.release_generation,r.intent_id
     into v_found from kadmeion_private.unlisted_release_pending r
     join public.portfolios p on p.id=r.portfolio_id
+    join public.private_unlisted_publication_intents intent on intent.id=r.intent_id
     join public.private_release_visibility_pointers v on v.portfolio_id=r.portfolio_id
     join kadmeion_private.private_reviewer_stage_artifacts s
       on s.portfolio_id=r.portfolio_id and s.pointer_generation=r.stage_generation
@@ -255,8 +356,12 @@ begin
       and s.html_sha256=r.html_sha256
     where r.portfolio_id=p_portfolio_id and r.expires_at>clock_timestamp()
       and p.trashed_at is null and v.status='PREPARED_PRIVATE'
-      and v.generation=r.stage_generation
-      and v.candidate_request_id=r.request_id
+      and v.generation=r.release_generation
+      and r.stage_generation>v.revocation_generation
+      and (case when intent.rollback_target_id is null then v.candidate_request_id=r.request_id
+        else exists(select 1 from kadmeion_private.unlisted_release_routes
+          where portfolio_id=r.portfolio_id and intent_id=intent.rollback_from_id
+            and status='LIVE' and verified_at is not null) end)
       and not exists(select 1 from kadmeion_private.moderation_portfolio_holds h
         where h.portfolio_id=r.portfolio_id);
   if not found or
@@ -283,6 +388,7 @@ declare
   v_pending kadmeion_private.unlisted_release_pending%rowtype;
   v_pointer public.private_release_visibility_pointers%rowtype;
   v_stage kadmeion_private.private_reviewer_stage_artifacts%rowtype;
+  v_rollback_from uuid;
 begin
   if p_portfolio_id is null or p_expected_generation is null or
     p_intent_id is null or p_html_sha256 is null or p_html_sha256 !~ '^[0-9a-f]{64}$' then
@@ -296,6 +402,8 @@ begin
     where portfolio_id=p_portfolio_id for update;
   if not found then
     raise exception using errcode='40001',message='UNLISTED_ACTIVATION_CONFLICT';end if;
+  select rollback_from_id into v_rollback_from from public.private_unlisted_publication_intents
+    where id=v_pending.intent_id;
   select * into v_pointer from public.private_release_visibility_pointers
     where portfolio_id=p_portfolio_id for update;
   if not found or v_pending.expires_at<=clock_timestamp() or
@@ -303,8 +411,12 @@ begin
     v_pending.release_generation<>p_expected_generation or
     v_pending.html_sha256<>p_html_sha256 or
     v_pointer.status<>'PREPARED_PRIVATE' or
-    v_pointer.generation<>v_pending.stage_generation or
-    v_pointer.candidate_request_id<>v_pending.request_id then
+    v_pointer.generation<>v_pending.release_generation or
+    v_pending.stage_generation<=v_pointer.revocation_generation or
+    (case when v_rollback_from is null then v_pointer.candidate_request_id<>v_pending.request_id
+      else not exists(select 1 from kadmeion_private.unlisted_release_routes
+        where portfolio_id=p_portfolio_id and intent_id=v_rollback_from
+          and status='LIVE' and verified_at is not null) end) then
     raise exception using errcode='40001',message='UNLISTED_ACTIVATION_CONFLICT';end if;
   select * into v_stage from kadmeion_private.private_reviewer_stage_artifacts
     where portfolio_id=p_portfolio_id
@@ -407,6 +519,12 @@ begin
   if not found then
     raise exception using errcode='40001',message='UNLISTED_ACKNOWLEDGMENT_CONFLICT';
   end if;
+  insert into public.verified_unlisted_releases(
+    intent_id,portfolio_id,owner_user_id,request_id,stage_generation,html_sha256,verified_at
+  )
+  select intent_id,portfolio_id,owner_user_id,request_id,stage_generation,html_sha256,verified_at
+    from kadmeion_private.unlisted_release_routes where portfolio_id=p_portfolio_id
+  on conflict(intent_id) do nothing;
   delete from kadmeion_private.unlisted_release_fallbacks where portfolio_id=p_portfolio_id;
   return true;
 end;

@@ -170,6 +170,22 @@ export class SupabasePrivateReleasePointerService {
       p_request_id:requestId,p_expected_generation:expectedGeneration,
       p_operation_id:operationId,p_confirmation:confirmation
     });
+    return this.consentReceipt(raw);
+  }
+  async requestUnlistedRollback(targetIntentId:string,currentIntentId:string,
+    expectedGeneration:number,operationId:string,
+    confirmation:'ROLL BACK UNLISTED'):Promise<UnlistedPublicationConsent>{
+    if(!uuid(targetIntentId)||!uuid(currentIntentId)||targetIntentId===currentIntentId||
+       !generation(expectedGeneration)||expectedGeneration<1||!uuid(operationId)||
+       confirmation!=='ROLL BACK UNLISTED')
+      throw new PrivatePointerError('VALIDATION','Explicit rollback confirmation is required.');
+    const raw=await this.call('owner_request_unlisted_rollback',{
+      p_target_intent_id:targetIntentId,p_current_intent_id:currentIntentId,
+      p_expected_generation:expectedGeneration,p_operation_id:operationId,p_confirmation:confirmation
+    });
+    return this.consentReceipt(raw);
+  }
+  private consentReceipt(raw:unknown):UnlistedPublicationConsent{
     if(!record(raw)||!uuid(raw.intentId)||typeof raw.alreadyRecorded!=='boolean'||
        (raw.status!=='AWAITING_HOST'&&!(raw.status==='USED'&&raw.alreadyRecorded))||
        raw.publicServingEnabled!==false||raw.publicUrl!==null)
