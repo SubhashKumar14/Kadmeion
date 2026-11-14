@@ -45,6 +45,29 @@ export interface AccountExitPreflight {
   integrations:'NOT_TRACKED';
   deletionAllowed:false;
 }
+/** Immutable owner-only database metadata inventory, NOT a full export or purge list. */
+export interface AccountExitInventoryReceipt {
+  snapshotId:string;
+  schemaVersion:1;
+  capturedAt:string;
+  alreadyCaptured:boolean;
+  inventory:{
+    status:'METADATA_SNAPSHOT_ONLY';
+    maxCountPerCategory:1000;
+    countsCapped:boolean;
+    counts:AccountExitPreflight['counts'];
+    consistency:'SINGLE_STATEMENT_MVCC';
+    publicRoutes:'UNVERIFIED';
+    objectStorage:'METADATA_ONLY';
+    exports:'NOT_READY';
+    integrations:'NOT_TRACKED';
+    backupRetention:'UNVERIFIED';
+    recentReauthVerified:false;
+    publicRevocationVerified:false;
+    deletionAllowed:false;
+  };
+  deletionAllowed:false;
+}
 export interface PrivateAccountErasureEntry {
   id:string;
   status:AccountErasureRequestStatus;
@@ -76,6 +99,43 @@ function proofFlags(x:Record<string,unknown>,snake=false):boolean {
     ? ['public_revocation_verified','reauth_verified','access_terminated','erasure_executed','retention_verified']
     : ['publicRevocationVerified','reauthVerified','accessTerminated','erasureExecuted','retentionVerified'];
   return keys.every(k=>x[k]===false);
+}
+function inventoryReceipt(raw:unknown,expectedId?:string):AccountExitInventoryReceipt {
+  const names=[
+    'projects','portfolios','portfolioRevisions','projectExposureIntents',
+    'projectAssetMetadata','frozenReleaseRequests','reviewerGrants',
+    'trashRecords','accountExitRequests'
+  ] as const;
+  const inv=record(raw)?raw.inventory:null;
+  const counts=record(inv)&&record(inv.counts)?inv.counts:null;
+  if(!record(raw)||!uuid(raw.snapshotId)||
+    (expectedId!==undefined&&raw.snapshotId!==expectedId)||
+    raw.schemaVersion!==1||!date(raw.capturedAt)||
+    typeof raw.alreadyCaptured!=='boolean'||raw.deletionAllowed!==false||
+    !record(inv)||counts===null||
+    inv.status!=='METADATA_SNAPSHOT_ONLY'||inv.maxCountPerCategory!==1000||
+    typeof inv.countsCapped!=='boolean'||
+    !names.every(k=>typeof counts[k]==='number'&&Number.isSafeInteger(counts[k])&&
+      (counts[k] as number)>=0&&(counts[k] as number)<=1000)||
+    inv.consistency!=='SINGLE_STATEMENT_MVCC'||
+    inv.publicRoutes!=='UNVERIFIED'||inv.objectStorage!=='METADATA_ONLY'||
+    inv.exports!=='NOT_READY'||inv.integrations!=='NOT_TRACKED'||
+    inv.backupRetention!=='UNVERIFIED'||inv.recentReauthVerified!==false||
+    inv.publicRevocationVerified!==false||inv.deletionAllowed!==false)
+    throw new PrivateAccountErasureError('INVALID_ACK','Unverified account-exit inventory snapshot.');
+  return {
+    snapshotId:raw.snapshotId,schemaVersion:1,capturedAt:raw.capturedAt as string,
+    alreadyCaptured:raw.alreadyCaptured as boolean,deletionAllowed:false,
+    inventory:{
+      status:'METADATA_SNAPSHOT_ONLY',maxCountPerCategory:1000,
+      countsCapped:inv.countsCapped as boolean,
+      counts:Object.fromEntries(names.map(k=>[k,counts[k]])) as AccountExitPreflight['counts'],
+      consistency:'SINGLE_STATEMENT_MVCC',publicRoutes:'UNVERIFIED',
+      objectStorage:'METADATA_ONLY',exports:'NOT_READY',
+      integrations:'NOT_TRACKED',backupRetention:'UNVERIFIED',
+      recentReauthVerified:false,publicRevocationVerified:false,deletionAllowed:false
+    }
+  };
 }
 function receipt(raw:unknown,expectedId?:string,withdraw=false):AccountErasureReceipt {
   if(!record(raw)||!uuid(raw.requestId)||!status(raw.status)||
@@ -137,13 +197,15 @@ export class SupabasePrivateAccountErasureService {
       if(response.status===403)
         throw new PrivateAccountErasureError('FORBIDDEN','Account exit access denied.');
       if(message==='ACCOUNT_ERASURE_REQUEST_QUOTA_REACHED'||
-        message==='REAUTH_CHALLENGE_QUOTA_REACHED')
+        message==='REAUTH_CHALLENGE_QUOTA_REACHED'||
+        message==='INVENTORY_SNAPSHOT_QUOTA_REACHED')
         throw new PrivateAccountErasureError('QUOTA_EXCEEDED','Request limit reached.');
       if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL')
         throw new PrivateAccountErasureError('VALIDATION','Invalid account exit request.');
       if(response.status===409||message==='ACCOUNT_ERASURE_ALREADY_REQUESTED'||
         message==='ERASURE_WITHDRAWAL_OPERATION_REUSED'||
-        message==='REAUTH_OPERATION_REUSED'||message==='REAUTH_PROOF_ALREADY_BOUND')
+        message==='REAUTH_OPERATION_REUSED'||message==='REAUTH_PROOF_ALREADY_BOUND'||
+        message==='INVENTORY_OPERATION_REUSED')
         throw new PrivateAccountErasureError('CONFLICT','Account exit request conflicts with existing state.');
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit operation failed.');
     }
@@ -179,6 +241,25 @@ export class SupabasePrivateAccountErasureService {
       throw new PrivateAccountErasureError('INVALID_ACK','Unverified new-sign-in evidence.');
     return {challengeId,status:'NEW_SIGN_IN_VERIFIED',expiresAt:raw.expiresAt as string,
       alreadyVerified:raw.alreadyVerified,deletionAllowed:false};
+  }
+  /** Captures bounded owner metadata only; never exports content or authorizes deletion. */
+  async captureInventory(operationId:string,requestId:string|null=null):
+    Promise<AccountExitInventoryReceipt>{
+    if(!uuid(operationId)||(requestId!==null&&!uuid(requestId)))
+      throw new ContractError('VALIDATION','Invalid inventory operation or request ID.');
+    const raw=await this.send('rpc/create_private_account_exit_inventory',{
+      p_operation_id:operationId,p_request_id:requestId
+    });
+    return inventoryReceipt(raw);
+  }
+  /** Replays the original immutable snapshot; foreign snapshot IDs are denied by the RPC. */
+  async getInventory(snapshotId:string):Promise<AccountExitInventoryReceipt>{
+    if(!uuid(snapshotId))
+      throw new ContractError('VALIDATION','Invalid inventory snapshot ID.');
+    const raw=await this.send('rpc/get_private_account_exit_inventory',{
+      p_snapshot_id:snapshotId
+    });
+    return inventoryReceipt(raw,snapshotId);
   }
   /** Advisory only: session presence/fresh login is NOT an erasure authorisation. */
   async preflight():Promise<AccountExitPreflight>{
