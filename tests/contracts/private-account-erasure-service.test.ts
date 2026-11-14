@@ -309,3 +309,70 @@ test('inventory provider outage, conflict, quota and absent session fail closed'
     message:'INVENTORY_SNAPSHOT_QUOTA_REACHED'},{status:400})).captureInventory(operationId),
     {code:'QUOTA_EXCEEDED'});
 });
+
+const reconciled={
+  snapshotId:requestId,inventoryCapturedAt:'2026-11-14T08:00:00Z',
+  status:'METADATA_MATCH_ONLY',maxObjectsPerSide:100,limitExceeded:false,
+  registeredAssets:1,storageObjects:1,missingObjects:0,orphanObjects:0,
+  metadataMismatches:0,inventoryDrift:false,
+  consistency:'LIVE_METADATA_NOT_ATOMIC_WITH_INVENTORY',
+  storageBytesVerified:false,downloadableExportReady:false,
+  externalProviders:'UNVERIFIED',backupRetention:'UNVERIFIED',
+  publicRevocationVerified:false,deletionAllowed:false
+} as const;
+
+test('reconciliation never implies exported bytes, revocation or deletion',async()=>{
+  const service=client(async(url,init)=>{
+    assert.equal(url,origin+'/rest/v1/rpc/reconcile_private_account_exit_storage');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.cache,'no-store');
+    assert.equal(init?.redirect,'error');
+    assert.equal(init?.credentials,'omit');
+    assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:requestId});
+    return ok({...reconciled,internalPath:'not forwarded'});
+  });
+  assert.deepEqual(await service.reconcileStorage(requestId),reconciled);
+  await assert.rejects(service.reconcileStorage('bad'),{code:'VALIDATION'});
+});
+
+test('reconciliation rejects fabricated provider success and inconsistent counts',async()=>{
+  const invalid=[
+    {...reconciled,snapshotId:operationId},
+    {...reconciled,storageBytesVerified:true},
+    {...reconciled,downloadableExportReady:true},
+    {...reconciled,deletionAllowed:true},
+    {...reconciled,publicRevocationVerified:true},
+    {...reconciled,externalProviders:'VERIFIED'},
+    {...reconciled,backupRetention:'VERIFIED'},
+    {...reconciled,registeredAssets:101},
+    {...reconciled,missingObjects:-1},
+    {...reconciled,inventoryDrift:'false'},
+    {...reconciled,status:'DISCREPANCY'},
+    {...reconciled,status:'METADATA_MATCH_ONLY',orphanObjects:1},
+    {...reconciled,status:'LIMIT_EXCEEDED',limitExceeded:false},
+    {...reconciled,consistency:'ATOMIC_WITH_INVENTORY'}
+  ];
+  for(const value of invalid){
+    await assert.rejects(client(async()=>ok(value)).reconcileStorage(requestId),
+      {code:'INVALID_ACK'});
+  }
+  const discrepancy={...reconciled,status:'DISCREPANCY',orphanObjects:1,
+    inventoryDrift:true};
+  assert.equal((await client(async()=>ok(discrepancy)).reconcileStorage(requestId))
+    .status,'DISCREPANCY');
+  const limited={...reconciled,status:'LIMIT_EXCEEDED',limitExceeded:true,
+    registeredAssets:100,storageObjects:100,inventoryDrift:true};
+  assert.equal((await client(async()=>ok(limited)).reconcileStorage(requestId))
+    .status,'LIMIT_EXCEEDED');
+});
+
+test('reconciliation requires a live owner JWT and fails closed on provider outage',async()=>{
+  let calls=0;
+  await assert.rejects(client(async()=>{calls++;throw Error('unexpected');},null)
+    .reconcileStorage(requestId),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,0);
+  await assert.rejects(client(async()=>{throw Error('offline');})
+    .reconcileStorage(requestId),{code:'PROVIDER_UNAVAILABLE'});
+  await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
+    {status:403})).reconcileStorage(requestId),{code:'AUTH_EXPIRED'});
+});
