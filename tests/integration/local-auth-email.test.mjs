@@ -76,7 +76,8 @@ test('local Auth email confirmation and password recovery via Mailpit are real, 
       const signup=await go('/auth/v1/signup',{email,password:firstPassword,
         data:{display_name:'Local Auth Email CI'}});
       assert.equal(signup.ok,true,'Local signup API unavailable');
-      assert.ok(signup.data?.user?.id);
+      // GoTrue /signup returns the user directly when confirmation is required.
+      assert.ok(signup.data?.id ?? signup.data?.user?.id);
       assert.equal(signup.data?.access_token??null,null,
         'Confirmed-email mode unexpectedly created immediate session');
       const before=await go('/auth/v1/token?grant_type=password',{
@@ -98,6 +99,7 @@ test('local Auth email confirmation and password recovery via Mailpit are real, 
       assert.ok(typeof signed.data?.access_token==='string');
     });
     await t.test('recovery mail is separate and permits password rotation',async()=>{
+      await pause(1100); // Respect GoTrue per-address email frequency guard.
       // Local test deliberately sends no email to an external inbox.
       const recovery=await go('/auth/v1/recover?redirect_to='+
         encodeURIComponent('http://localhost:3000/reset-password'),{email});
