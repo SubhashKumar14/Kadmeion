@@ -431,3 +431,59 @@ adapter with an actual `pg` client against the existing private binding RPC,
 including concurrent owner block/Trash and tampered HTML/manifest. Do not
 enable public serving or production credentials. Then continue moderation
 operator block-only and remaining B4/B5/B6 gates.
+
+## 14 November 2026 — B4 local direct PostgreSQL binding integration
+
+**Verified baseline:** Active `SubhashKumar14/Kadmeion` branch
+`feat/b0-backend-foundation`, starting from `dc1aa32`; Notion latest
+approval register confirms **52/52 original LIGHT mockups approved** with
+no DARK mockup set authorized. Prior direct SQL adapter and private
+artifact binding contracts were already implemented and not recreated.
+
+**Added (local-only, no provider secrets):**
+`tests/integration/local-postgres-binding.test.mjs`, run in the
+database CI job with explicit `KADMEION_LOCAL_INTEGRATION=1`.
+It requires local Supabase URLs `127.0.0.1:54321` (API) and
+`127.0.0.1:54322` (PostgreSQL), generates a random local temporary
+PostgreSQL LOGIN role, grants only private schema USAGE and EXECUTE of
+`kadmeion_private.bind_private_artifact_candidate`, and revokes/drops it
+after the test. It checks that role cannot directly SELECT the
+binding journal or UPDATE the private pointer.
+
+The test uses **real PostgreSQL's psql wire client** with a prepared SQL
+statement and quoted variables as an injected `pg`-compatible query port,
+rather than installing a runtime `pg` package. It authenticates a real
+local GoTrue owner, creates a private portfolio, commits and freezes an
+immutable revision, loads the owner-attested revision, builds a scriptless
+artifact, prepares the private pointer, binds bytes through the restricted
+SQL executor and confirms idempotency, current generation, no public URL,
+and no host serving. Negative cases include outsider owner-loader reads,
+tampered HTML/manifest, wrong request/generation, a block between pointer
+read and SQL bind (database must reject), and a Trash-triggered denial.
+No additional production runtime packages or hosted credentials were added.
+
+**Verified CI evidence:** [Run 43555748754](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43555748754)
+passed both application and database jobs at commit `709f824`:
+**184/184 Node tests**, **268 pgTAP assertions**, **27/27 real local
+GoTrue/PostgREST/Storage HTTP tests**, **1/1 restricted PostgreSQL
+wire integration test**, TypeScript, auth build/smoke/preview and source
+file budget **136/200**. Initial failed runs were corrected: Node 22
+test type-stripping flag and PostgreSQL boolean display test assumption.
+The additional byte tampering and TOCTOU revocation coverage are in
+the final passing run. These results do not demonstrate real host
+revocation, uptime, public publishing or browser accessibility.
+
+**Remaining:** The production Node `pg` Pool/client, connection lifecycle,
+password/TLS provisioning, external host trust boundary, cache/direct
+immutable asset interception and a deployed restricted worker are
+not implemented or tested. The CI-only `psql` bridge MUST NOT be used as
+a production server adapter. The internal DB binding is never a public
+serving authorization. Account erasure stays disabled. No manual Vercel
+deploy, production DB mutation, or frontend work occurred.
+
+**Next:** Introduce a pinned, lockfile-managed `pg` driver for a
+server-only restricted worker, test its real connection lifecycle and
+hard fail-closed behavior locally without exposing credentials to a static
+bundle; then continue operator moderation BLOCK-only and B6 gates.
+Any public host, production deployment, irreversible deletion or
+new design requires separate authorization.

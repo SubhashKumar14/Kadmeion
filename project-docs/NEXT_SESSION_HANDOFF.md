@@ -213,3 +213,40 @@ actual direct PostgreSQL driver**. Do not use a browser Supabase client,
 PostgREST, hosted service credentials, public-serving endpoints or production
 writes. No selected/approved public host or direct-asset/cache revocation
 proof exists. Operator moderation BLOCK-only and backend B6 remain pending.
+
+## 14 November 2026 — latest B4 verified local PostgreSQL handoff
+
+Repo `SubhashKumar14/Kadmeion`, `feat/b0-backend-foundation`.
+Freshly verify HEAD before any next write; latest implemented and
+tested commit `709f824`. Local-only
+`tests/integration/local-postgres-binding.test.mjs` uses the actual
+PostgreSQL wire protocol via `psql` plus a prepared query to exercise
+the existing `DirectSqlPrivateArtifactBindingWriter`, real authenticated
+owner frozen revision, trusted render plan and manifest hash. A temporary
+random LOGIN worker role has schema USAGE + specific function EXECUTE,
+not table SELECT or pointer UPDATE, and is dropped in test cleanup.
+DB rechecks a pointer block injected between read and bind; forged HTML,
+manifest, request ID, generation, cross-owner reads and Trash fail closed.
+It is deliberately **NOT** a production `pg` Pool runtime, and no DB
+service-role credentials are exposed to frontends or production.
+
+Verified green CI:
+[run 43555748754](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43555748754)
+(184 Node, 268 pgTAP, 27 local HTTP, one direct PostgreSQL integration,
+TypeScript/builds, 136/200 application source files).
+Subsequent documentation commits need separate CI checks.
+Earlier CI failures were fixed, not omitted from the audit trail.
+
+**Start next run:** implement a production-suitable, server-only
+`node-postgres` (`pg`) driver adapter on a compatible pinned/locked
+version and test a least-privileged connection lifecycle against the
+ephemeral local database. Retain SQL CAS, attested loader + trusted plan,
+strict secret isolation, no public PostgREST binding, no owner-provided
+hash authorization, and no browser bundle exports. If an actual host
+or credentials require approval, keep those boundaries unconfigured and
+continue moderation operator BLOCK-only / B6 tests instead.
+No public publishing, CDN/direct asset revocation, production data
+mutation, Vercel manual deployment, or account purge is authorized.
+Use only the 52 latest owner-approved original LIGHT screens when the
+backend gate is complete; do not use rejected Canva mockups or create
+DARK screen sets.
