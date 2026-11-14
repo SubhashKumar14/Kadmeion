@@ -250,3 +250,18 @@ produce existing nonproduction auth previews.
 **Next action:** Verify final-head CI and repair failures; then implement
 a moderation-case-bound operator BLOCK-only path with role/tenant-negative
 tests, never operator prepare/publish authority. Keep public serving disabled.
+
+
+**Post-run CI verification and correction:** The first stale-replay regression
+test insertion contained a malformed SQL dollar-quote, causing database
+CI failures (e.g. [43547031920](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43547031920)).
+No runtime migration failure was reported; the pgTAP file stopped parsing.
+[6ec95f6](https://github.com/SubhashKumar14/Kadmeion/commit/6ec95f69c0ae50f0742d1b4062963d5cfb49a4d8)
+replaced the malformed delimiter with a named SQL dollar quote.
+[Final code CI 43547240987](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43547240987)
+completed **both jobs PASS** on that fix: 169/169 Node tests; 229 pgTAP
+assertions across 16 files; 25/25 real local Supabase HTTP subtests;
+TypeScript, auth build/smoke, isolated auth-preview verification and
+125/200 authored application/config/test file budget. This proves the
+ephemeral local CI paths, not a hosted provider, browser E2E, CDN revocation,
+production security, lint, SAST or accessibility. No public route enabled.
