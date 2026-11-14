@@ -8,3 +8,4 @@ export * from './static-preview-export.ts';
 
 export * from './private-frozen-revision-loader.ts';
 export * from './private-immutable-artifact.ts';
+export * from './public-delivery-policy.ts';
