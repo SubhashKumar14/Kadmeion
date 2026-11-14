@@ -69,7 +69,8 @@ async function digestHtml(response: Response, indexable: boolean): Promise<strin
 /** Trusted worker only. The configured origin must come from server configuration. */
 export async function verifyActivatedUnlistedRelease(
   activation: Activation,
-  {origin, rpc, http = fetch}: VerificationPorts
+  {origin, rpc, http = fetch}: VerificationPorts,
+  policy: 'RECOVER_UNVERIFIED_ACTIVATION' | 'CHECK_ACKNOWLEDGED_ONLY' = 'RECOVER_UNVERIFIED_ACTIVATION'
 ): Promise<DeliveryVerification> {
   const {portfolioId, intentId, htmlSha256, publicPath} = activation;
   const host = deliveryHost(origin);
@@ -93,6 +94,8 @@ export async function verifyActivatedUnlistedRelease(
   }
 
   if (actualDigest === htmlSha256) {
+    if (policy === 'CHECK_ACKNOWLEDGED_ONLY')
+      return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
     const ack = await rpc('service_acknowledge_unlisted_release', {
       p_portfolio_id: portfolioId, p_intent_id: intentId, p_html_sha256: htmlSha256
     });
@@ -100,6 +103,10 @@ export async function verifyActivatedUnlistedRelease(
     return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
   }
 
+  // A transient outage of an already-acknowledged release must not
+  // roll back or mutate a previously verified live pointer on a read.
+  if (policy === 'CHECK_ACKNOWLEDGED_ONLY')
+    throw new Error('Acknowledged release failed its current external HTTP check.');
   const receipt = await rpc('service_recover_failed_unlisted_release', {
     p_portfolio_id: portfolioId, p_failed_intent_id: intentId
   });
@@ -158,7 +165,8 @@ export async function publishConsentedUnlistedRelease(
   }
   switch (prepared.status) {
     case 'ACKNOWLEDGED':
-      return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
+      return verifyActivatedUnlistedRelease(
+        {portfolioId, intentId, htmlSha256, publicPath}, ports, 'CHECK_ACKNOWLEDGED_ONLY');
     case 'AWAITING_VERIFICATION':
       break;
     case 'PROBE_PENDING': {
