@@ -37,8 +37,9 @@ values('00000000-0000-4000-8000-0000000000d1',
   '00000000-0000-0000-0000-000000000000',
   'authenticated','authenticated','public-boundary@testing.invalid',now(),now());
 
-insert into public.profiles(user_id,handle,display_name)
-values('00000000-0000-4000-8000-0000000000d1','release_owner','Release Owner');
+-- The Auth signup trigger has already created the private owner profile.
+update public.profiles set handle='release_owner',display_name='Release Owner'
+where user_id='00000000-0000-4000-8000-0000000000d1';
 insert into public.portfolios(id,owner_user_id,slug,title,template_id,head_revision)
 values('10000000-0000-4000-8000-0000000000d1',
   '00000000-0000-4000-8000-0000000000d1',
