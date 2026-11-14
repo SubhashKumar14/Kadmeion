@@ -547,3 +547,15 @@ connection lifecycle against ephemeral local Supabase, without exposing DB
 credentials in any browser bundle. Continue B6 moderation/revocation negative
 tests; public serving remains disabled pending approved host and canonical
 route/direct-asset/CDN revocation proof.
+
+
+**Post-run CI confirmation:** [GitHub Actions 43557275632](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43557275632)
+completed both contracts and database jobs **PASS** on the final code
+commit `eda8be5`. The new local PostgREST nonoperator/anonymous and
+private-hold-denial test passed. Totals: **187/187 Node tests**,
+**289/289 pgTAP assertions**, **28/28 local HTTP tests** and
+**1/1 local direct PostgreSQL binding integration**, plus TypeScript,
+auth build/smoke/preview and 138/200 file budget. The later
+`696185c` handoff commit changed documentation only. This confirmation
+supersedes the pending-CI wording above; it does not prove hosted
+provider or public-host revocation.

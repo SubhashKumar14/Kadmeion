@@ -277,3 +277,10 @@ TLS policy and revocation races. Do not wire secrets into the Vercel
 auth preview or start frontend until backend B6 gates are complete.
 The exact original 52 approved LIGHT image references are in Notion;
 no DARK set and no rejected Canva designs.
+
+
+**Final-code verification addendum:** [CI 43557275632](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43557275632)
+passed both jobs on `eda8be5`: 187 Node, 289 pgTAP, 28 local HTTP,
+1 direct PostgreSQL integration, TypeScript and auth builds; 138/200
+file budget. This supersedes the earlier pending-HTTP-test note.
+Documentation-only follow-up commits need no new code-completeness claim.
