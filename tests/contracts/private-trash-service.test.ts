@@ -66,3 +66,51 @@ test('owner-only RLS-backed list and broken response rejection', async () => {
   const invalid=makeClient(async () => Response.json({error:'unexpected'}));
   await assert.rejects(invalid.list(),{code:'INVALID_STATE'});
 });
+
+// Internal Edge scheduler regression coverage; no external calls or real deletion.
+import {handlePurgeExpiredTrash} from '../../supabase/functions/purge-expired-trash/index.ts';
+const sweepSecret='x'.repeat(40),serviceJwt='eyJ'+'.'.repeat(70);
+const sweepEnv={SUPABASE_URL:'https://scyooqjitjzjdxgtanso.supabase.co',
+  SUPABASE_SERVICE_ROLE_KEY:serviceJwt,KADMEION_TRASH_SWEEP_SECRET:sweepSecret,
+  KADMEION_TRASH_SWEEP_ENABLED:'true'};
+const scheduled=(auth='Bearer '+sweepSecret)=>new Request('https://internal.example/sweep',{
+  method:'POST',headers:{authorization:auth}});
+test('sweep is closed without explicit enablement, credentials or secret',async()=>{
+  let calls=0;const http=(async()=>{calls++;throw Error('Unexpected request');}) as typeof fetch;
+  assert.equal((await handlePurgeExpiredTrash(scheduled(),{env:{...sweepEnv,KADMEION_TRASH_SWEEP_ENABLED:'false'},http})).status,404);
+  assert.equal((await handlePurgeExpiredTrash(scheduled('Bearer not-the-secret'),{env:sweepEnv,http})).status,401);
+  assert.equal((await handlePurgeExpiredTrash(scheduled(),{env:{...sweepEnv,SUPABASE_URL:'https://evil.invalid'},http})).status,404);
+  assert.equal(calls,0);
+});
+test('scheduler deletes Storage first and purges only after database confirmation',async()=>{
+  const row={trash_id:id,item_type:'project',object_paths:[id+'/cover/image.png']};
+  const paths:string[]=[];
+  const http=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    paths.push(String(input).replace(sweepEnv.SUPABASE_URL,''));
+    assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer '+serviceJwt);
+    if(paths.length===1)return Response.json([row]);
+    if(paths.length===2){assert.equal(init?.method,'DELETE');assert.deepEqual(JSON.parse(String(init.body)),{prefixes:row.object_paths});return Response.json([]);}
+    return Response.json('PURGED');
+  }) as typeof fetch;
+  const r=await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http});
+  assert.equal(r.status,200);assert.deepEqual(await r.json(),{purged:1,pending:0});
+  assert.deepEqual(paths,['/rest/v1/rpc/service_list_expired_trash',
+    '/storage/v1/object/kadmeion-private-assets','/rest/v1/rpc/service_purge_expired_trash']);
+});
+test('malformed owner scope and oversized provider response fail closed',async()=>{
+  const bad=(async()=>Response.json([{trash_id:id,item_type:'project',object_paths:['../../danger']}])) as typeof fetch;
+  const r=await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http:bad});
+  assert.equal(r.status,503);
+  const huge=(async()=>new Response(JSON.stringify([]),{headers:{'Content-Type':'application/json','Content-Length':'999999'}})) as typeof fetch;
+  assert.equal((await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http:huge})).status,503);
+});
+test('expired trash worker reports individual failure and continues without false purge',async()=>{
+  let calls=0;
+  const http=(async()=>{
+    calls++;
+    if(calls===1)return Response.json([{trash_id:id,item_type:'portfolio',object_paths:[]}]);
+    return Response.json('STATE_CHANGED');
+  }) as typeof fetch;
+  const r=await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http});
+  assert.equal(r.status,207);assert.deepEqual(await r.json(),{purged:0,pending:1});
+});
