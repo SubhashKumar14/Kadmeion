@@ -148,3 +148,108 @@ grant execute on function public.operator_block_private_portfolio(uuid,uuid,uuid
   to authenticated;
 comment on function public.operator_block_private_portfolio(uuid,uuid,uuid) is
   'Role- and case-scoped permanent private candidate hold. Does NOT prove public host, CDN, or immutable asset revocation.';
+
+
+-- B5 reasoned, administrator-only release of an INTERNAL moderation hold.
+-- A closed case and an immutable decision entry are mandatory. This never
+-- publishes/reprepares a portfolio or claims external host/CDN revocation.
+alter table public.private_release_visibility_events
+  drop constraint private_release_visibility_events_event_type_check;
+alter table public.private_release_visibility_events
+  add constraint private_release_visibility_events_event_type_check
+  check (event_type in ('PREPARE','OWNER_BLOCK','TRASH_BLOCK','OPERATOR_BLOCK',
+    'OPERATOR_HOLD_LIFT'));
+alter table public.private_moderation_events
+  drop constraint private_moderation_events_event_type_check;
+alter table public.private_moderation_events
+  add constraint private_moderation_events_event_type_check
+  check (event_type in ('OPENED','OWNER_APPEAL','OPERATOR_DECISION',
+    'OPERATOR_HOLD_LIFT'));
+
+create function public.operator_lift_private_moderation_hold(
+  p_case_id uuid,p_portfolio_id uuid,p_operation_id uuid,p_rationale text
+) returns jsonb language plpgsql security definer set search_path=''
+as $$
+declare
+  v_actor uuid := (select auth.uid());
+  v_owner uuid;
+  v_case public.private_moderation_cases%rowtype;
+  v_hold kadmeion_private.moderation_portfolio_holds%rowtype;
+  v_pointer public.private_release_visibility_pointers%rowtype;
+  v_event public.private_moderation_events%rowtype;
+  v_generation bigint;
+begin
+  if v_actor is null or not exists(select 1
+    from kadmeion_private.operator_roles
+    where user_id=v_actor and role='administrator') then
+    raise exception using errcode='42501',message='ADMINISTRATOR_REQUIRED';
+  end if;
+  if p_case_id is null or p_portfolio_id is null or p_operation_id is null
+     or p_rationale is null or char_length(btrim(p_rationale))<20
+     or char_length(p_rationale)>2000 then
+    raise exception using errcode='22023',message='INVALID_HOLD_LIFT';
+  end if;
+  select owner_user_id into v_owner from public.portfolios
+    where id=p_portfolio_id for update;
+  if not found or v_owner=v_actor then
+    raise exception using errcode='42501',message='PRIVATE_PORTFOLIO_NOT_FOUND'; end if;
+  select * into v_case from public.private_moderation_cases
+    where id=p_case_id and owner_user_id=v_owner for share;
+  if not found or v_case.status<>'CLOSED' then
+    raise exception using errcode='42501',message='MODERATION_CASE_NOT_RESOLVED'; end if;
+
+  select * into v_event from public.private_moderation_events
+    where case_id=p_case_id and operation_id=p_operation_id;
+  if found then
+    if v_event.actor_user_id is distinct from v_actor or
+       v_event.event_type<>'OPERATOR_HOLD_LIFT' or
+       v_event.detail<>btrim(p_rationale) then
+      raise exception using errcode='23505',message='HOLD_LIFT_OPERATION_REUSED'; end if;
+    select * into v_pointer from public.private_release_visibility_pointers
+      where portfolio_id=p_portfolio_id;
+    if not found or v_pointer.status<>'BLOCKED' then
+      raise exception using errcode='40001',message='HOLD_LIFT_STATE_CHANGED';end if;
+    return jsonb_build_object('caseId',p_case_id,'portfolioId',p_portfolio_id,
+      'generation',v_pointer.generation,'status','RELEASED_PRIVATE',
+      'alreadyRecorded',true,'publicServingEnabled',false,
+      'publicUrl',null,'hostRevocationVerified',false);
+  end if;
+  select * into v_hold from kadmeion_private.moderation_portfolio_holds
+    where portfolio_id=p_portfolio_id for update;
+  if not found or v_hold.case_id<>p_case_id or v_hold.owner_user_id<>v_owner then
+    raise exception using errcode='42501',message='HOLD_CASE_SCOPE_MISMATCH';end if;
+  select * into v_pointer from public.private_release_visibility_pointers
+    where portfolio_id=p_portfolio_id for update;
+  if not found or v_pointer.status<>'BLOCKED'
+    or v_pointer.generation>=9223372036854775806 then
+    raise exception using errcode='40001',message='HOLD_LIFT_POINTER_CONFLICT';end if;
+  v_generation:=v_pointer.generation+1;
+  delete from kadmeion_private.moderation_portfolio_holds
+    where portfolio_id=p_portfolio_id and case_id=p_case_id;
+  -- Extra revocation generation prevents reuse of any pre-hold artifact.
+  update public.private_release_visibility_pointers
+    set status='BLOCKED',candidate_request_id=null,
+        candidate_manifest_sha256=null,generation=v_generation,
+        revocation_generation=v_generation,updated_at=transaction_timestamp()
+    where portfolio_id=p_portfolio_id;
+  insert into public.private_release_visibility_events(
+    portfolio_id,owner_user_id,actor_user_id,operation_id,event_type,
+    expected_generation,resulting_generation
+  ) values(p_portfolio_id,v_owner,v_actor,p_operation_id,
+    'OPERATOR_HOLD_LIFT',v_pointer.generation,v_generation);
+  insert into public.private_moderation_events(
+    case_id,owner_user_id,actor_user_id,operation_id,event_type,detail
+  ) values(p_case_id,v_owner,v_actor,p_operation_id,
+    'OPERATOR_HOLD_LIFT',btrim(p_rationale));
+  return jsonb_build_object('caseId',p_case_id,'portfolioId',p_portfolio_id,
+    'generation',v_generation,'status','RELEASED_PRIVATE',
+    'alreadyRecorded',false,'publicServingEnabled',false,
+    'publicUrl',null,'hostRevocationVerified',false);
+end;
+$$;
+revoke all on function public.operator_lift_private_moderation_hold(uuid,uuid,uuid,text)
+  from public,anon;
+grant execute on function public.operator_lift_private_moderation_hold(uuid,uuid,uuid,text)
+  to authenticated;
+comment on function public.operator_lift_private_moderation_hold(uuid,uuid,uuid,text) is
+  'Administrator-only case-resolved internal hold lift. Leaves pointer BLOCKED and requires explicit new owner preparation; no public-host restoration.';
