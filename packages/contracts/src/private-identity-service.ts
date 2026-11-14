@@ -45,7 +45,7 @@ function platformHandle(provider:PrivatePlatformProvider,raw:unknown):string{
 }
 function verifiedPlatformLink(value:unknown,owner:string):value is PrivatePlatformLink{
   if(!record(value)||Object.keys(value).sort().join(',')!==
-      'connection_mode,created_at,handle,id,owner_user_id,profile_url,provenance,provider,sync_status,updated_at,ownership_verified'||
+      'connection_mode,created_at,handle,id,owner_user_id,ownership_verified,profile_url,provenance,provider,sync_status,updated_at'||
      typeof value.id!=='string'||!UUID.test(value.id)||
      value.owner_user_id!==owner||!providerKey(value.provider)||
      typeof value.handle!=='string'||value.provenance!=='USER_SUPPLIED'||
