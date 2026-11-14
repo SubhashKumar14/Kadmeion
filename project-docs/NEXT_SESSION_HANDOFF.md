@@ -342,3 +342,14 @@ disabled. No frontend work until the backend critical path is verified.
 Notion confirms 52/52 original LIGHT mockups approved; the original PNG
 addresses are session-local, and DARK/previously rejected Canva designs
 are not authorized.
+
+
+## Latest verified B6 handoff — local HTTP deny-only canonical/direct-asset gate (14 November 2026)
+
+Active repository: SubhashKumar14/Kadmeion, branch feat/b0-backend-foundation; starting SHA 963a7cc. Code commits [75924ff](https://github.com/SubhashKumar14/Kadmeion/commit/75924ff21672d3e79d27466a2ff23c46b8c90a47), [c2a4d8](https://github.com/SubhashKumar14/Kadmeion/commit/c2a4d873318afa16445ed7347f74c0cb35b82336), [0488c71](https://github.com/SubhashKumar14/Kadmeion/commit/0488c714eb58d738b9373aa6bb963a89488cd50e), [a77c574](https://github.com/SubhashKumar14/Kadmeion/commit/a77c57433def3a57529b1a5a212a473b65baa5b4). Existing tests/integration/local-supabase-http.test.mjs now runs a loopback HTTP fixture using the actual restricted SQL private_delivery_denial_gate via pg.Pool, including fresh reads for canonical HTML and immutable direct assets; tests prepared private pointer, operator hold, Trash/restore, cross-tenant denial, outage, malformed state/path and HEAD. The fixture always returns uniform 404 and never exposes artifact bytes. No public allow path, production host, new package or migration.
+
+[GitHub Actions run 43572035732](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43572035732) on a77c574: both jobs PASS. 191 Node tests, 289 pgTAP assertions, 29 local HTTP tests, 1 restricted PostgreSQL binding integration and 1 moderation/pg.Pool race integration; TypeScript, auth build/smoke/preview and 141/200 application file budget PASS. Dedicated lint/SAST, hosted Supabase/TLS, email, real host route and direct-asset/CDN revocation, browser E2E, accessibility and irreversible erasure remain NOT VERIFIED.
+
+Notion's latest explicit owner decision approves exactly 52 original LIGHT screen images; no DARK screen set or rejected Canva substitutions. The image addresses are session-local, so recover exact originals before frontend work. No frontend started, manual Vercel deployment, production modification, public publish or main merge. Git integration automatically produced nonproduction feature-branch previews.
+
+**Next run concrete starting point:** Implement a strictly non-destructive, owner-only account-exit export/erasure inventory manifest with versioned/idempotent snapshot and cross-tenant/negative tests. The existing advisory account-exit counts are not an atomic purge manifest. Keep actual deletion and public serving disabled until independently verified recent reauthentication, canonical AND direct immutable-asset revocation, and provider retention proof. Verify fresh HEAD and CI first.
