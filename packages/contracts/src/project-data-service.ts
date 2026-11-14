@@ -22,12 +22,19 @@ export class SupabasePrivateProjectService {
   private readonly token: TokenSupplier;
   private readonly fetcher: typeof fetch;
   constructor(supabaseUrl: string, publishableKey: string, token: TokenSupplier, fetcher: typeof fetch = fetch) {
-    this.supabaseUrl=supabaseUrl; this.publishableKey=publishableKey;
+    let url: URL;
+    try { url=new URL(supabaseUrl); }
+    catch { throw new ContractError('VALIDATION','Invalid Supabase project origin.'); }
+    const hosted=url.protocol==='https:' && /^[a-z0-9-]+\.supabase\.co$/.test(url.hostname);
+    const local=url.protocol==='http:' && url.port==='54321' &&
+      ['localhost','127.0.0.1'].includes(url.hostname);
+    if ((!hosted&&!local) || url.username || url.password ||
+        url.pathname!=='/' || url.search || url.hash)
+      throw new ContractError('VALIDATION', 'Trusted Supabase project origin required.');
+    if (typeof publishableKey!=='string' || !publishableKey.trim())
+      throw new ContractError('VALIDATION', 'Publishable key is required.');
+    this.supabaseUrl=url.origin; this.publishableKey=publishableKey;
     this.token=token; this.fetcher=fetcher;
-    const url = new URL(supabaseUrl);
-    if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1')
-      throw new ContractError('VALIDATION', 'Supabase endpoint must use HTTPS.');
-    if (!publishableKey) throw new ContractError('VALIDATION', 'Publishable key is required.');
   }
 
   private async send(path: string, method: string, payload?: unknown, contentType = 'application/json', upsert = false) {
@@ -43,7 +50,9 @@ export class SupabasePrivateProjectService {
     try {
       response = await this.fetcher(this.supabaseUrl.replace(/\/$/,'') + path, {
         method, headers,
-        body: payload === undefined ? undefined : (contentType === 'application/json' ? JSON.stringify(payload) : payload as BodyInit)
+        body: payload === undefined ? undefined : (contentType === 'application/json' ? JSON.stringify(payload) : payload as BodyInit),
+        credentials:'omit',cache:'no-store',redirect:'error',
+        signal:AbortSignal.timeout(10000)
       });
     } catch {
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','The provider is unreachable; preserve the unsaved draft.');
@@ -158,7 +167,9 @@ export class SupabasePrivateProjectService {
     try {
       res=await this.fetcher(this.supabaseUrl.replace(/\/$/,'')+
         '/storage/v1/object/kadmeion-private-assets/'+ownerUserId+'/'+assetId+'/'+filename,{
-          method:'GET',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt}
+          method:'GET',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt},
+          credentials:'omit',cache:'no-store',redirect:'error',
+          signal:AbortSignal.timeout(10000)
         });
     }catch {
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Private image is unreachable.');
@@ -170,8 +181,8 @@ export class SupabasePrivateProjectService {
     const mime=(res.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
     if(!['image/png','image/jpeg','image/webp','image/avif'].includes(mime))
       throw new ProjectServiceError('INVALID_UPLOAD','Unexpected image content type.');
-    const bytes=new Uint8Array(await res.arrayBuffer());
-    if(!bytes.length||bytes.length>5*1024*1024||!matchesImageSignature(mime,bytes))
+    const bytes=await readBoundedPrivateImageBytes(res,5*1024*1024);
+    if(!bytes.length||!matchesImageSignature(mime,bytes))
       throw new ProjectServiceError('INVALID_UPLOAD','Invalid or oversized private image content.');
     return {mime,bytes};
   }
@@ -203,4 +214,34 @@ export function matchesImageSignature(mime: string, bytes: Uint8Array): boolean 
     String.fromCharCode(...bytes.slice(4,8))==='ftyp' &&
     ['avif','avis'].includes(String.fromCharCode(...bytes.slice(8,12)));
   return false;
+}
+
+
+/** Bound the actual body stream, not just a Content-Length claim. */
+async function readBoundedPrivateImageBytes(response:Response,max:number):Promise<Uint8Array> {
+  const declared=response.headers.get('content-length');
+  if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)>max))
+    throw new ProjectServiceError('INVALID_UPLOAD','Private image exceeds the supported size.');
+  if(!response.body)throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Private image has no body.');
+  const reader=response.body.getReader(),parts:Uint8Array[]=[];
+  let count=0;
+  try {
+    for(;;) {
+      const {done,value}=await reader.read();
+      if(done)break;
+      if(!(value instanceof Uint8Array))throw new ProjectServiceError('INVALID_UPLOAD','Bad private image stream.');
+      count+=value.byteLength;
+      if(count>max){
+        await reader.cancel();
+        throw new ProjectServiceError('INVALID_UPLOAD','Private image exceeds the supported size.');
+      }
+      parts.push(value);
+    }
+  } finally {reader.releaseLock();}
+  if(declared!==null&&Number(declared)!==count)
+    throw new ProjectServiceError('INVALID_UPLOAD','Private image bytes changed in transit.');
+  const bytes=new Uint8Array(count);
+  let offset=0;
+  for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
+  return bytes;
 }

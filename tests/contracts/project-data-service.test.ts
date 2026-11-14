@@ -24,6 +24,9 @@ test('private project requests require user JWT and never attach service keys', 
   assert.equal(headers.apikey,'public-test-key');
   assert.equal(headers.Authorization,'Bearer user-jwt');
   assert.equal(used[0].options.method,'POST');
+  assert.equal(used[0].options.cache,'no-store');
+  assert.equal(used[0].options.credentials,'omit');
+  assert.equal(used[0].options.redirect,'error');
   await assert.rejects(new SupabasePrivateProjectService('https://project.supabase.co','public-test-key',async()=>null,fetcher as typeof fetch).listPrivateProjects(), ProjectServiceError);
 });
 
@@ -59,4 +62,40 @@ test('an unverified Storage RPC response cannot be represented as saved image me
     (async()=>new Response(JSON.stringify({id:'asset',verified:false}),{status:200})) as typeof fetch);
   await assert.rejects(service.linkPrivateImageMetadata('10000000-0000-4000-8000-0000000000a1',owner,
     owner+'/img/cover.png','image/png',200,'Title'),ProjectServiceError);
+});
+
+
+test('reject fake project origins with embedded credentials or redirects',()=>{
+  for(const endpoint of ['https://malicious.example',
+    'https://project.supabase.co/path','https://user:pass@project.supabase.co',
+    'https://project.supabase.co?token=x','http://project.supabase.co',
+    'http://localhost:3000']){
+    assert.throws(()=>new SupabasePrivateProjectService(endpoint,'pub',async()=>null),{
+      code:'VALIDATION'
+    });
+  }
+});
+test('private image GET has bounded streaming and fail-closed redirects',async()=>{
+  const owner='00000000-0000-4000-8000-0000000000a1';
+  const attempts:RequestInit[]=[];
+  const make=(response:Response)=>new SupabasePrivateProjectService(
+    'https://project.supabase.co','pub',async()=>'jwt',
+    (async(_input:RequestInfo|URL,init?:RequestInit)=>{
+      attempts.push(init??{});return response;
+    }) as typeof fetch
+  );
+  const path=['img','cover.png'] as const;
+  const good=new Response(new Uint8Array([137,80,78,71,13,10,26,10]),
+    {headers:{'content-type':'image/png'}});
+  const data=await make(good).readPrivateImage(owner,...path);
+  assert.equal(data.bytes.byteLength,8);
+  assert.equal(attempts[0].redirect,'error');
+  assert.equal(attempts[0].credentials,'omit');
+  assert.equal(attempts[0].cache,'no-store');
+  await assert.rejects(make(new Response(new Uint8Array(5*1024*1024+1),{
+    headers:{'content-type':'image/png'}
+  })).readPrivateImage(owner,...path),{code:'INVALID_UPLOAD'});
+  await assert.rejects(make(new Response(new Uint8Array(8),{
+    headers:{'content-type':'image/png','content-length':String(5*1024*1024+1)}
+  })).readPrivateImage(owner,...path),{code:'INVALID_UPLOAD'});
 });
