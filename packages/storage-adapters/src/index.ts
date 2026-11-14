@@ -11,3 +11,5 @@ export * from './private-immutable-artifact.ts';
 export * from './public-delivery-policy.ts';
 export * from './private-delivery-denial-gate.ts';
 export * from './private-account-data-export.ts';
+
+export * from './journaled-editor-folder.ts';
