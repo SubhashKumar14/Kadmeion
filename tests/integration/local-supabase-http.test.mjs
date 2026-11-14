@@ -655,7 +655,7 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
   {timeout:180_000},async()=>{
   // Deliberately nondeployable fixture: no public allow path or artifact bytes.
   const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
-  const match=raw.match(/^DB_URL=(.*)$/m);
+  const match=raw.match(/^(?:export )?DB_URL=(.*)$/m);
   assert.ok(match,'Local Supabase DB URL required');
   const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
   assert.equal(db.protocol,'postgresql:');
