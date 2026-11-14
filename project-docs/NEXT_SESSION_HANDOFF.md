@@ -403,3 +403,16 @@ completed both jobs PASS on `5c28d791`, including local Supabase
 startup and all database integration gates. This supersedes the
 earlier pending workflow-fix note. Code remains non-destructive and
 metadata-only; next implement verified export readiness, not deletion.
+
+
+## Latest verified B5 handoff — Storage reconciliation and metadata hardening (14 November 2026)
+
+**Active source:** `SubhashKumar14/Kadmeion`, `feat/b0-backend-foundation`; starting SHA `613d292`. Notion's final owner approval is 52/52 **original LIGHT-theme images only**. Original sandbox image addresses are session-local; recover the exact images/checksums before frontend. No rejected Canva designs or DARK mockup set.
+
+**New backend code:** `supabase/migrations/20261114123000_private_account_exit_storage_reconciliation.sql` implements live-session owner-only bounded comparison between `project_assets` and `storage.objects` for the owner's private bucket, bound to an existing inventory snapshot. Returns counts and explicit `METADATA_MATCH_ONLY`, `DISCREPANCY` or `LIMIT_EXCEEDED`, with inventory drift and all export/revocation/erasure proof flags false. The same migration revokes unsafe client updates to registered asset identity fields while allowing `alt_text`. Typed client `SupabasePrivateAccountErasureService.reconcileStorage(snapshotId)` rejects forged readiness and false-success receipts. pgTAP and local HTTP tests verify privilege isolation, real upload/orphan registration, cross-owner and stale-session denial, and post-registration tamper rejection. Latest code SHA [187de67](https://github.com/SubhashKumar14/Kadmeion/commit/187de67ac95a4be17799dafe3d80db3f45bb264c).
+
+**CI verified:** [run 43580753110](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43580753110), both jobs PASS on `187de67`: 197 Node, 308 pgTAP/21 files, 37 local HTTP, one restricted PostgreSQL and one operator race integration; TypeScript, auth builds/smoke, preview check, file budget 145/200 PASS. Documentation-only commits after this code SHA do not extend the code evidence.
+
+**Strict boundaries:** Metadata reconciliation is NOT a downloadable full data export, byte integrity proof, backup retention verification, CDN/direct asset revocation, or deletion authorization. It does not expose object paths; 100-object cap per side fails closed on overflow. No public delivery, account erasure, manual Vercel deployment, production change, frontend or main merge.
+
+**Next iteration starting point:** implement a bounded, downloadable owner export of private project/profile/portfolio records plus private Storage bytes. Prove each object's size/hash, detect missing/orphan/changed objects, enforce safe ZIP/JSON limits, and return honest partial-failure results. Do not mark export complete until bytes and data categories are actually covered. Then continue independent host canonical-route and direct-asset revocation proof; keep public serving and erasure disabled until proven.
