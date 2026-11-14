@@ -246,11 +246,11 @@ export class JournaledEditorFolderStore {
       requireSafe(await read(this.root,META+'/'+HEAD)===newSerialized,'IO_FAILURE');
       try{
         await erase(this.root,META+'/'+JOURNAL);
-        return {status:'FOLDER_SAVED',revision:head.revision,
-          externalProcessAtomic:false};
+        return {status:'FOLDER_SAVED' as const,revision:head.revision,
+          externalProcessAtomic:false as const};
       }catch{
-        return {status:'FOLDER_SAVED_JOURNAL_PENDING',revision:head.revision,
-          externalProcessAtomic:false};
+        return {status:'FOLDER_SAVED_JOURNAL_PENDING' as const,revision:head.revision,
+          externalProcessAtomic:false as const};
       }
     }).catch((error:unknown)=>{
       if(error instanceof FolderCommitError)throw error;
