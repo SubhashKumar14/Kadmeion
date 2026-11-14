@@ -21,12 +21,6 @@ select ok(not exists(
   where n.nspname='public' and p.prosecdef
     and has_function_privilege('anon',p.oid,'EXECUTE')
 ), 'Anonymous role cannot execute public SECURITY DEFINER functions');
-select diag('PRIVATE EXECUTABLES: '||coalesce((
-  select string_agg(p.proname||'('||pg_get_function_identity_arguments(p.oid)||')',', ')
-  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-  where n.nspname='kadmeion_private'
-    and has_function_privilege('anon',p.oid,'EXECUTE')
-),'none'));
 select ok(not exists(
   select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='kadmeion_private'
