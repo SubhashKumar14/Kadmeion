@@ -446,3 +446,40 @@ Owner private Storage paths are now **write-once** via migration `20261114140000
 [CI 43595827191](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43595827191) PASS both jobs on `2fe68dea`: 210 Node, 309 pgTAP, 39 local HTTP, 1 restricted pg, 1 moderator pg race, typecheck/auth builds/smoke/preview and 148/200 file budget. Intermediate SQL-policy-count and normalized-info assumptions caused failing runs and were corrected; never cite those runs as green. No hosted, browser, lint/SAST or accessibility proof; no production deploy, public serving, account deletion or main merge.
 
 **Start next iteration:** recheck current branch HEAD/CI; then implement a narrowly scoped **server-verified expected SHA-256** for registered private Storage assets, with immutable owner-scoped association and byte quota, and compare against export bytes. Prove real local same-size privileged overwrite denial and missing/hash-mismatch fail-closed. Do not accept a client-submitted digest as proof or claim S3 historical version retention. Keep public route AND direct immutable asset revocation, external backup retention, complete export and erasure gates blocked. Only start frontend after backend critical path is independently verified.
+
+
+## Latest B5 handoff — server-verified private asset SHA-256 (14 November 2026)
+
+**Active source:** `SubhashKumar14/Kadmeion` /
+`feat/b0-backend-foundation`; previous HEAD `e311f8b`.
+The old `DevFolio-App` remains reference-only. Notion confirms all
+52 original LIGHT screen images approved, with session-local PNG addresses.
+Rejected Canva screens and DARK variants are not approved.
+
+**Implemented on the feature branch:** A private RLS/write-once
+`private_asset_content_attestations` table, service-role-only digest
+recording RPC and live-owner-only read RPC; server-only Node byte attestor
+computing SHA-256 from owner-JWT-authorized Storage bytes with before/after
+object-version checks; bounded account export now requires matching trusted
+hashes and fails closed on missing pins or same-size altered content.
+Attestation cannot be forged by a browser JWT. This is NOT a provider-signed
+hash, immutable version-addressed download, complete export or deletion proof.
+The trusted worker is **not yet connected to the registration workflow**;
+existing assets require a secure backfill before export succeeds.
+
+**Verified CI:** [43600553448](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43600553448)
+both jobs PASS on `23d8fbe`: Node 217, pgTAP 318, local HTTP 39,
+restricted PostgreSQL 1, moderation race 1; typecheck/auth build/smoke,
+preview and source budget 152/200 PASS. New idempotency/conflict assertions
+in code commit `460690d` were added afterward; verify their own CI.
+
+**Start next iteration:** (1) verify current branch HEAD and final CI;
+(2) connect the attestor to an authenticated, server-only asset-registration
+completion path, without a browser-accessible service-role key or arbitrary
+user-provided digest; (3) test missing/unattested assets, owner/tenant
+isolation, repeated registration, concurrent privileged same-size overwrite,
+and malformed/oversized bytes on real ephemeral Supabase; (4) retain
+`BOUNDED_PARTIAL_EXPORT`, no public publishing or account deletion.
+Then proceed to canonical-route AND direct-asset host revocation and provider
+retention evidence. No manual Vercel deployment, production mutation,
+frontend code or merge to `main` is authorized.
