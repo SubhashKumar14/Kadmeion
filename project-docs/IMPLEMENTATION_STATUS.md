@@ -739,3 +739,13 @@ tenant/idempotency/stale-session tests successfully. The later
 `5c28d79` concurrency-workflow fix and documentation-only commits
 require their own CI completion; this evidence is for code SHA
 `88b8f843` only. Earlier port-collision failures remain recorded.
+
+
+**CI workflow fix verified:** [GitHub Actions 43576583998](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43576583998)
+completed both jobs **PASS** on `5c28d791` after adding database-job
+concurrency. The run successfully started ephemeral Supabase and
+executed pgTAP, local HTTP, restricted PostgreSQL and moderation-race
+tests. Older overlapping runs were canceled or had infrastructure
+port-binding failures; no application regression was observed in
+the passing final code run. Later documentation-only commits do not
+change the verified code/CI claims.
