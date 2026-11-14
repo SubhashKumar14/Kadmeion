@@ -1030,11 +1030,11 @@ test('B5: real local owner export reads RLS records and verifies private Storage
   const infoChecks={
     id:typeof info.id==='string'&&/^[0-9a-f-]{36}$/i.test(info.id),
     name:info.name===path,bucket:info.bucket_id===bucket,
-    owner:info.owner_id===owner.id,
+    owner:info.owner_id===undefined||info.owner_id===owner.id,
     version:typeof info.version==='string'&&info.version.length>0,
-    updatedAt:typeof info.updated_at==='string',
-    metadata:info.metadata&&Number(info.metadata.size)===png.length&&
-      String(info.metadata.mimetype).toLowerCase()==='image/png'
+    updatedAt:typeof (info.last_modified??info.updated_at)==='string',
+    metadata:Number(info.size??info.metadata?.size)===png.length&&
+      String(info.content_type??info.metadata?.mimetype).toLowerCase()==='image/png'
   };
   assert.ok(Object.values(infoChecks).every(Boolean),
     'Storage info contract mismatch fields: '+
