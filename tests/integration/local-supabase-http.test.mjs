@@ -693,6 +693,43 @@ test('B5: deliberate account-exit reauthentication requires a NEW live owner sig
   });
 });
 
+test('account erasure removes active account data only after fresh owner confirmation', {timeout: 60_000}, async () => {
+  const owner = await adminUser('erasure-execute');
+  const outsider = await adminUser('erasure-outsider');
+  const post = (actor, rpc, body) => send('/rest/v1/rpc/' + rpc, {
+    ...json(actor), method: 'POST', body
+  });
+  const request = successful(await post(owner, 'request_private_account_erasure', {
+    p_operation_id: randomUUID(), p_confirmation: 'DELETE MY ACCOUNT'
+  }), 'Request account erasure');
+  const challenge = successful(await post(owner, 'begin_private_account_exit_reauth', {
+    p_operation_id: randomUUID()
+  }), 'Begin account erasure proof');
+  const inputs = {p_request_id: request.requestId, p_challenge_id: challenge.challengeId,
+    p_confirmation: 'DELETE MY ACCOUNT'};
+  const execute = (actor, args = inputs) => post(actor, 'owner_execute_account_erasure', args);
+  assert.equal((await execute(outsider)).ok, false);
+  assert.equal((await execute(owner)).data?.message, 'ERASURE_REAUTH_REQUIRED');
+  const login = successful(await send('/auth/v1/token?grant_type=password', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: {email: owner.email, password: owner.password}
+  }), 'New erasure session');
+  const fresh = {...owner, token: login.access_token};
+  successful(await post(fresh, 'complete_private_account_exit_reauth', {
+    p_challenge_id: challenge.challengeId
+  }), 'Verify account erasure sign-in');
+  assert.equal((await execute(fresh, {...inputs, p_confirmation: 'DELETE'})).ok, false);
+  const receipt = successful(await execute(fresh), 'Erase active account');
+  assert.equal(receipt.status, 'ACTIVE_ACCOUNT_ERASED');
+  assert.equal(receipt.accessTerminated, true);
+  assert.equal(receipt.backupErasureVerified, false);
+  assert.equal(receipt.externalCopiesErased, false);
+  assert.match(receipt.receiptId, /^[0-9a-f-]{36}$/i);
+  assert.equal((await execute(fresh)).ok, false);
+  assert.equal((await send('/auth/v1/user', bearer(fresh))).ok, false);
+  assert.equal((await send('/auth/v1/user', bearer(outsider))).ok, true);
+});
+
 test('B4: future private host denial RPC is not exposed on the Data API',
   {timeout:30_000},async()=>{
   const body={p_portfolio_id:randomUUID(),p_resource:'CANONICAL_HTML'};
