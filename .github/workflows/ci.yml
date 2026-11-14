@@ -31,6 +31,11 @@ jobs:
       - run: npm run check:file-budget
 
   database:
+    # Supabase CLI uses fixed localhost ports; serialize database jobs across
+    # push/PR runs so overlapping runs cannot race for 54321/54322.
+    concurrency:
+      group: kadmeion-ephemeral-supabase-database
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
