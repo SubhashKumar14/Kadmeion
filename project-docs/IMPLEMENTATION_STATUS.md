@@ -110,3 +110,39 @@ All project-docs files remain unchanged.
 - Tests cover malformed receipts, unauthenticated/forged requests, tenant-scoped live
   GoTrue JWT preflight and signed-out session rejection. Check actual latest CI run
   before marking database tests as passed; no hosted Supabase changes authorized.
+
+
+## B5: explicit recent reauthentication evidence (14 November 2026)
+
+**Verified code (not account deletion):** Commits `62bca5a`, `09fc5c9` and
+`046c126` add a server-only 5-minute reauthentication challenge table,
+begin/complete RPCs, a typed client and response-specific errors. The owner
+starts the challenge under one *live* GoTrue session, then performs a second real
+sign-in to create a *different* session for the same owner. Completion proves
+that the second session was created after the challenge, remains in
+`auth.sessions`, belongs to the same owner, and is within the 5-minute window.
+Old-session replay, cross-user completion, missing session, private-table access,
+and false deletion receipts are rejected by tests. This is a deliberate recent
+sign-in proof, **not proof of MFA, host revocation, or erasure readiness**.
+The erasure-request journal retains its DB-enforced false proof flags; there
+is no deleting worker, access termination, published content or hosted setup.
+
+**CI evidence:** [GitHub Actions 43539180463](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43539180463)
+passed 150 Node tests, 24 local Supabase HTTP integration tests, database pgTAP,
+TypeScript, auth builds and file budget on commit `09fc5c9`. Subsequent
+client error-mapping and documentation commits require separate CI confirmation.
+The earlier B5 preflight commit `e823fe3` passed 147 Node and 20 HTTP tests
+in [CI 43538636801](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43538636801).
+
+**Evidence/scope limitations:** Counts are bounded informational snapshots,
+not a transactionally frozen deletion inventory. Public routes and direct assets
+are NOT verified, object Storage is only counted by registered metadata, and
+exports/integrations are NOT TRACKED. Challenge retention cleanup is unimplemented.
+No hosted data was queried or modified. No frontend screens were produced.
+The latest Notion approval record supersedes older pending lists and confirms
+52/52 original LIGHT screens approved; no DARK mockup set is authorized.
+
+**Next backend critical path:** Design and test a host-neutral public route
+visibility/revocation pointer plus direct immutable-asset denial contract, with
+fail-closed privacy semantics and no deployment. Do not start destructive account
+cleanup or claim public revocation before real host and cache tests are approved.

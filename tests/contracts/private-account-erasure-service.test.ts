@@ -227,3 +227,14 @@ test('reauth network failure, expired session and malformed proof fail closed',a
   await assert.rejects(client(async()=>ok({...challengeReceipt,deletionAllowed:true}))
     .beginReauth(operationId),{code:'INVALID_ACK'});
 });
+
+test('reauth errors distinguish stale sessions, missing second login and expired challenge',async()=>{
+  for(const [message,code] of [
+    ['LIVE_SESSION_REQUIRED','AUTH_EXPIRED'],
+    ['NEW_SIGN_IN_REQUIRED','REAUTH_REQUIRED'],
+    ['REAUTH_CHALLENGE_EXPIRED','CHALLENGE_EXPIRED']
+  ] as const){
+    const service=client(async()=>Response.json({message},{status:403}));
+    await assert.rejects(service.completeReauth(challengeId),{code});
+  }
+});

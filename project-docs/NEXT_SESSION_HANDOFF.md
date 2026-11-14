@@ -74,3 +74,43 @@ Active implementation repository: `SubhashKumar14/Kadmeion`, branch `feat/b0-bac
 Account requests are `REQUESTED_BLOCKED`, not a deletion commitment. `reauth_verified`, `public_revocation_verified`, `access_terminated`, `erasure_executed`, and `retention_verified` are DB-constrained false. There is no destructive worker, no account access termination, no verified backup/cache retention window and no public-host revocation proof. Account deletion is separate from 15-day item Trash. Read `project-docs/IMPLEMENTATION_STATUS.md` newest B5 section and source UI-92/112 + WF-047.
 
 Next implement **bounded owner-only account-exit preflight/inventory and a verified recent-reauth contract**, with negative tenant and stale-session tests; do not create a purge or pretend JWT possession alone proves recent reauthentication. Public hosting, rollback, direct-asset revocation, hosted Brevo email, browser accessibility, dedicated lint/SAST and B6 backend integration gates remain open. Use only 52 explicitly approved original LIGHT images after backend completion; no DARK mockup set or rejected Canva designs. Do not deploy manually or change production without approval; existing Git integration automatically produces nonproduction auth previews.
+
+
+## B5 implementation continuation — verified update (14 November 2026)
+
+Newest implementation work is on `SubhashKumar14/Kadmeion`
+branch `feat/b0-backend-foundation` (never edit the old DevFolio repo).
+Freshly verify HEAD and CI before writing. The B5 account-exit milestone added:
+
+1. `private_account_exit_preflight()`: owner-only bounded counts of projects,
+   portfolios, revisions, exposure intents, private asset metadata, frozen
+   release intents, reviewer grants, Trash and erasure requests. Requires a
+   matching live GoTrue `auth.sessions` row; JWT possession alone is insufficient.
+   Public routes and external export/integration inventory remain unverified.
+2. `begin_private_account_exit_reauth(uuid)` and
+   `complete_private_account_exit_reauth(uuid)`: explicit 5-minute challenge,
+   a subsequent *different* real login session for the same owner, owner-private
+   challenge journal with RLS, denial of original-session/foreign-session replay.
+   Proof is informational and not linked to an erasure worker.
+3. Tests exercise missing/stale sessions, cross-tenant visibility, hard caps,
+   challenge replays, malformed receipts and an actual second password sign-in
+   through ephemeral local Supabase Auth. See [CI 43539180463](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43539180463)
+   for verified 150 Node + 24 local HTTP tests and passing database pgTAP at
+   commit `09fc5c9`. Later commits require fresh CI checks.
+
+**No destructive operation is authorized or implemented.** Request-only
+`reauth_verified`, `public_revocation_verified`, `access_terminated`,
+`erasure_executed`, `retention_verified` continue to be constrained false.
+Do not treat a fresh sign-in *candidate* as evidence of the explicit
+second-session challenge; do not treat even a completed challenge as
+permission to delete without independently verified host revocation and
+retention/backup handling. The 52 owner-approved LIGHT screen images exist as
+session-local artifact references in Notion and must be recovered before any
+frontend fidelity claim; never generate DARK variants or use rejected Canva
+mockups.
+
+**Next action:** Implement and negative-test host-neutral route-state and
+direct-asset revocation semantics without deploying. Verify host selection,
+cache controls, direct immutable URLs and rollback before anyone can claim a
+published link revoked. Continue backend-first and obtain approval before any
+Vercel static preview, production change, or irreversible deletion.
