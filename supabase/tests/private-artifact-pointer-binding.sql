@@ -273,7 +273,7 @@ select ok(not has_function_privilege('authenticated',
   'public.service_prepare_unlisted_release(uuid)','EXECUTE'),
   'owners cannot activate a public route directly');
 select ok(not has_function_privilege('authenticated',
-  'public.service_activate_unlisted_release(uuid,bigint,text)','EXECUTE'),
+  'public.service_activate_unlisted_release(uuid,bigint,uuid,text)','EXECUTE'),
   'owners cannot forge host verification');
 select ok(not has_function_privilege('anon',
   'public.service_read_unlisted_release(uuid)','EXECUTE'),

@@ -206,7 +206,7 @@ as $function$
 declare v_found record;
 begin
   if p_portfolio_id is null then return null;end if;
-  select s.html,s.html_sha256,r.release_generation
+  select s.html,s.html_sha256,r.release_generation,r.intent_id
     into v_found from kadmeion_private.unlisted_release_pending r
     join public.portfolios p on p.id=r.portfolio_id
     join public.private_release_visibility_pointers v on v.portfolio_id=r.portfolio_id
@@ -224,7 +224,8 @@ begin
     encode(sha256(convert_to(v_found.html,'UTF8')),'hex')<>v_found.html_sha256
     then return null;end if;
   return jsonb_build_object('status','PROBE_PENDING',
-    'releaseGeneration',v_found.release_generation,'html',v_found.html,
+    'releaseGeneration',v_found.release_generation,'intentId',v_found.intent_id,
+    'html',v_found.html,
     'htmlSha256',v_found.html_sha256,'publicServingEnabled',false);
 end;
 $function$;
@@ -236,7 +237,7 @@ grant execute on function public.service_probe_unlisted_release(uuid) to service
 -- that a remote CDN/route accepted those bytes; the host must additionally
 -- probe canonical HTML and direct-asset denial and acknowledge the result.
 create function public.service_activate_unlisted_release(
-  p_portfolio_id uuid,p_expected_generation bigint,p_html_sha256 text
+  p_portfolio_id uuid,p_expected_generation bigint,p_intent_id uuid,p_html_sha256 text
 ) returns jsonb language plpgsql security definer set search_path=''
 as $function$
 declare
@@ -245,7 +246,7 @@ declare
   v_stage kadmeion_private.private_reviewer_stage_artifacts%rowtype;
 begin
   if p_portfolio_id is null or p_expected_generation is null or
-    p_html_sha256 is null or p_html_sha256 !~ '^[0-9a-f]{64}$' then
+    p_intent_id is null or p_html_sha256 is null or p_html_sha256 !~ '^[0-9a-f]{64}$' then
     raise exception using errcode='22023',message='INVALID_UNLISTED_ACTIVATION';end if;
   perform 1 from public.portfolios
     where id=p_portfolio_id and trashed_at is null for update;
@@ -259,6 +260,7 @@ begin
   select * into v_pointer from public.private_release_visibility_pointers
     where portfolio_id=p_portfolio_id for update;
   if not found or v_pending.expires_at<=clock_timestamp() or
+    v_pending.intent_id<>p_intent_id or
     v_pending.release_generation<>p_expected_generation or
     v_pending.html_sha256<>p_html_sha256 or
     v_pointer.status<>'PREPARED_PRIVATE' or
@@ -291,9 +293,9 @@ begin
     'publicUrl',null);
 end;
 $function$;
-revoke all on function public.service_activate_unlisted_release(uuid,bigint,text)
+revoke all on function public.service_activate_unlisted_release(uuid,bigint,uuid,text)
   from public,anon,authenticated;
-grant execute on function public.service_activate_unlisted_release(uuid,bigint,text)
+grant execute on function public.service_activate_unlisted_release(uuid,bigint,uuid,text)
   to service_role;
 
 create function public.service_read_unlisted_release(p_portfolio_id uuid)

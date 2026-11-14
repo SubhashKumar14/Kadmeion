@@ -282,7 +282,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     const activated=ok(await api('/rest/v1/rpc/service_activate_unlisted_release',{
       method:'POST',key:cfg.service,jwt:cfg.service,
       body:{p_portfolio_id:portfolioId,
-        p_expected_generation:hostStage.releaseGeneration,
+        p_expected_generation:hostStage.releaseGeneration,p_intent_id:candidate.intentId,
         p_html_sha256:bound.htmlSha256}
     }),'Internal unlisted activation without external host proof');
     assert.equal(activated.status,'ACTIVATED_NEEDS_EXTERNAL_HTTP_VERIFICATION');
@@ -319,9 +319,12 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
         body: {p_request_id: frozen.requestId, p_expected_generation: next.generation,
           p_html: site.body}
       }), 'Store replacement bytes');
+      return consentAndProbe(next.generation);
+    }
+    async function consentAndProbe(generation) {
       const consent = ok(await api('/rest/v1/rpc/owner_request_unlisted_publication', {
         method: 'POST', jwt: owner.jwt,
-        body: {p_request_id: frozen.requestId, p_expected_generation: next.generation,
+        body: {p_request_id: frozen.requestId, p_expected_generation: generation,
           p_operation_id: randomUUID(), p_confirmation: 'PUBLISH UNLISTED'}
       }), 'Authorize replacement');
       ok(await api('/rest/v1/rpc/service_prepare_unlisted_release', {
@@ -334,18 +337,21 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       }), 'Probe replacement');
     }
     const superseded = await prepareReplacement(prepared.generation);
-    const replacement = await prepareReplacement(superseded.releaseGeneration);
+    const distinctGeneration = await prepareReplacement(superseded.releaseGeneration);
+    const replacement = await consentAndProbe(distinctGeneration.releaseGeneration);
     assert.equal(replacement.htmlSha256, superseded.htmlSha256);
     assert.equal((await publicHostRead()).body, site.body,
       'The current live release stays available while replacements are pending');
     const activateReplacement = (probe) => api('/rest/v1/rpc/service_activate_unlisted_release', {
       method: 'POST', key: cfg.service, jwt: cfg.service,
       body: {p_portfolio_id: portfolioId, p_expected_generation: probe.releaseGeneration,
-        p_html_sha256: probe.htmlSha256}
+        p_intent_id: probe.intentId, p_html_sha256: probe.htmlSha256}
     });
-    const staleProbe = await activateReplacement(superseded);
-    assert.equal(staleProbe.data?.code, '40001',
-      'A superseded probe cannot activate a replacement with identical bytes');
+    for (const probe of [superseded, distinctGeneration]) {
+      const staleProbe = await activateReplacement(probe);
+      assert.equal(staleProbe.data?.code, '40001',
+        'A superseded consent cannot activate a replacement with identical bytes');
+    }
     const promoted = ok(await activateReplacement(replacement), 'Promote the current replacement');
     assert.equal(promoted.releaseGeneration, replacement.releaseGeneration);
     assert.equal((await publicHostRead()).body, site.body);
