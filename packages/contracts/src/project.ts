@@ -3,7 +3,8 @@ export const HANDLE_PATTERN = /^[a-z][a-z0-9_]{2,29}$/;
 export const RESERVED_HANDLES = new Set([
   'admin', 'api', 'auth', 'dashboard', 'edit', 'explore', 'help',
   'login', 'logout', 'new', 'profile', 'projects', 'settings',
-  'signup', 'support', 'templates', 'u'
+  'signup', 'signin', 'register', 'workspace', 'status', 'r', 'app',
+  'support', 'templates', 'u'
 ]);
 
 export class ContractError extends Error {

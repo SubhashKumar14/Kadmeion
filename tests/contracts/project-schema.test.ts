@@ -4,7 +4,8 @@ import { normalizeHandle, normalizeExternalHttpsUrl, ContractError } from '../..
 
 test('handles normalize and reject reserved, malformed and overlong names', () => {
   assert.equal(normalizeHandle('  Dev_123  '), 'dev_123');
-  for (const value of ['admin', 'API', 'ab', '2start', 'with-dash', 'a'.repeat(31), '', null]) {
+  for (const value of ['admin', 'API', 'app', 'r', 'signin', 'register', 'status',
+    'workspace', 'ab', '2start', 'with-dash', 'a'.repeat(31), '', null]) {
     assert.throws(() => normalizeHandle(value), ContractError);
   }
 });

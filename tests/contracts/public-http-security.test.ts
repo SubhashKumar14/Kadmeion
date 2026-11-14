@@ -69,6 +69,15 @@ test('public route rejects malformed paths and methods without privileged calls'
     const {res,calls}=await invoke(handlePublicPortfolio,{url});
     assert.equal(res.statusCode,404);assert.equal(calls.length,0);
   }
+  for(const reserved of ['app','auth','api','signin','register','workspace','status',
+    'templates','explore','admin','r']){
+    for(const url of ['/api/public-portfolio?handle='+reserved+'&slug=sample-site',
+      '/'+reserved+'/sample-site']){
+      const denied=await invoke(handlePublicPortfolio,{url});
+      assert.equal(denied.res.statusCode,404);
+      assert.equal(denied.calls.length,0,'Reserved handle reached privileged delivery');
+    }
+  }
   const {res,calls}=await invoke(handlePublicPortfolio,{method:'POST'});
   assert.equal(res.statusCode,405);assert.equal(calls.length,0);
 });

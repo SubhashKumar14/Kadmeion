@@ -187,5 +187,18 @@ select is((select status from kadmeion_private.unlisted_release_routes
 set local role service_role;
 select is(public.service_read_public_portfolio('renamed_owner','release-fixture'),
   null::jsonb,'blocked route remains unavailable at trusted read boundary');
+-- The database must reject newly reserved application route handles even if
+-- an old account happened to own one before the forward-only constraint.
+do $body$
+declare denied boolean:=false;
+begin
+  begin
+    update public.profiles set handle='app'
+      where user_id='00000000-0000-4000-8000-0000000000d1';
+  exception when check_violation then denied:=true;
+  end;
+  if not denied then raise exception 'Reserved portfolio route accepted'; end if;
+end $body$;
+select pass('app route is reserved by the database identity constraint');
 select * from finish();
 rollback;

@@ -3,6 +3,11 @@ import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const reservedHandles = new Set([
+  'admin','api','auth','dashboard','edit','explore','help','login',
+  'logout','new','profile','projects','settings','signup','signin',
+  'register','workspace','status','r','app','support','templates','u'
+]);
 const stagedRobots = '<meta name="robots" content="noindex,nofollow,noarchive">';
 const publicRobots = '<meta name="robots" content="index,follow">';
 
@@ -32,7 +37,8 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     const rewritten = target.pathname === '/api/public-portfolio';
     const handle = rewritten ? target.searchParams.get('handle') : path?.[1];
     const slug = rewritten ? target.searchParams.get('slug') : path?.[2];
-    if (!handlePattern.test(handle ?? '') || !slugPattern.test(slug ?? '')) return reply(404, 'Not found');
+    if (!handlePattern.test(handle ?? '') || reservedHandles.has(handle) ||
+        !slugPattern.test(slug ?? '')) return reply(404, 'Not found');
 
     const origin = new URL(env.KADMEION_SUPABASE_URL);
     const local = env.KADMEION_LOCAL_INTEGRATION === '1' && origin.origin === 'http://127.0.0.1:54321';
