@@ -137,26 +137,33 @@ export class SupabasePrivateAccountDataExporter {
   }
   /**
    * Read Storage's owner-authorized object identity. This is a change detector,
-   * NOT immutable versioned download or an expected provider content hash.
-   * Private object GETs are not version-addressable in this API.
+   * NOT a provider-signed content hash or proof of an immutable historical
+   * download. Version identifiers alone do not guarantee retention of bytes.
    */
   private async objectInfo(path:string,ownerId:string,mime:string,size:number):
     Promise<{id:string;version:string;updatedAt:string}> {
     const objectPath=path.split('/').map(encodeURIComponent).join('/');
     const raw=await this.json('/storage/v1/object/info/authenticated/kadmeion-private-assets/'+
       objectPath,65536);
+    // Supabase Storage's info renderer returns normalized size/content_type/
+    // last_modified fields, not necessarily raw storage.objects metadata.
+    const infoSize=object(raw)?(raw.size??(object(raw.metadata)?raw.metadata.size:null)):null;
+    const infoMime=object(raw)?(raw.content_type??
+      (object(raw.metadata)?raw.metadata.mimetype:null)):null;
+    const modified=object(raw)?(raw.last_modified??raw.updated_at):null;
     requireCondition(object(raw)&&isUuid(raw.id)&&
       raw.name===path&&raw.bucket_id==='kadmeion-private-assets'&&
-      raw.owner_id===ownerId&&typeof raw.version==='string'&&
-      raw.version.length>0&&raw.version.length<=128&&
-      typeof raw.updated_at==='string'&&
-      !Number.isNaN(Date.parse(raw.updated_at))&&object(raw.metadata)&&
-      Number.isSafeInteger(Number(raw.metadata.size))&&Number(raw.metadata.size)===size&&
-      typeof raw.metadata.mimetype==='string'&&
-      raw.metadata.mimetype.toLowerCase()===mime,
+      (raw.owner_id===undefined||raw.owner_id===ownerId)&&
+      typeof raw.version==='string'&&raw.version.length>0&&
+      raw.version.length<=128&&typeof modified==='string'&&
+      !Number.isNaN(Date.parse(modified))&&
+      Number.isSafeInteger(Number(infoSize))&&Number(infoSize)===size&&
+      typeof infoMime==='string'&&infoMime.toLowerCase()===mime,
       'INTEGRITY','Storage object identity or version is missing or mismatched.');
+    // Owner authorization is enforced by the private Storage route's RLS;
+    // this normalized info response intentionally omits owner_id.
     return {id:raw.id as string,version:raw.version as string,
-      updatedAt:raw.updated_at as string};
+      updatedAt:modified as string};
   }
   private async rows(table:typeof TABLES[number][0],column:string,ownerId:string):
     Promise<JsonObject[]> {
