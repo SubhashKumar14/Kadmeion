@@ -135,3 +135,30 @@ test('bad inputs fail before loader, renderer, pointer or binding writer',async(
   await assert.rejects(bindPrivateArtifactToPointer(f.ctx),{code:'VALIDATION'});
   assert.equal(loads,0);
 });
+
+
+test('trusted artifact orchestration reaches the private SQL RPC with rebuilt bytes',async()=>{
+  const {DirectSqlPrivateArtifactBindingWriter}=
+    await import('../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts');
+  const f=await fixture();
+  let queries=0;
+  f.ctx.writer=new DirectSqlPrivateArtifactBindingWriter({
+    query:async(sql,params)=>{
+      queries++;
+      assert.match(sql,/kadmeion_private\\.bind_private_artifact_candidate/);
+      assert.equal(params[0],requestId);
+      assert.equal(params[1],f.pointer.generation);
+      assert.equal(createHash('sha256').update(params[2] as string).digest('hex'),
+        f.artifact.manifestSha256);
+      assert.equal(createHash('sha256').update(params[3] as string).digest('hex'),
+        f.artifact.manifest.files[0].sha256);
+      return {rows:[{receipt:f.receipt}]};
+    }
+  });
+  assert.deepEqual(await bindPrivateArtifactToPointer(f.ctx),f.receipt);
+  assert.equal(queries,1);
+  f.ctx.writer=new DirectSqlPrivateArtifactBindingWriter({
+    query:async()=>{throw new Error('40001: pointer revoked during binding');}
+  });
+  await assert.rejects(bindPrivateArtifactToPointer(f.ctx),{code:'BINDING_UNCONFIRMED'});
+});
