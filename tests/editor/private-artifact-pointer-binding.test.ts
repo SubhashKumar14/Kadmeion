@@ -145,7 +145,7 @@ test('trusted artifact orchestration reaches the private SQL RPC with rebuilt by
   f.ctx.writer=new DirectSqlPrivateArtifactBindingWriter({
     query:async(sql,params)=>{
       queries++;
-      assert.match(sql,/kadmeion_private\\.bind_private_artifact_candidate/);
+      assert.match(sql,/kadmeion_private\.bind_private_artifact_candidate/);
       assert.equal(params[0],requestId);
       assert.equal(params[1],f.pointer.generation);
       assert.equal(createHash('sha256').update(params[2] as string).digest('hex'),
