@@ -14,6 +14,7 @@ import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {SupabasePrivateAccountErasureService} from '../../packages/contracts/src/private-account-erasure-service.ts';
 import {handlePublishedIdentity} from '../../api/published-identity.mjs';
+import {handlePublicPortfolio} from '../../api/public-portfolio.mjs';
 import {randomBytes} from 'node:crypto';
 import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/src/private-delivery-denial-gate.ts';
 import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapters/src/private-account-data-export.ts';
@@ -1331,4 +1332,140 @@ test('B5: real local same-size provider overwrite during export fails version re
     async()=>owner.token,intercept);
   await assert.rejects(exporter.export(snapshot.snapshotId),{code:'INTEGRITY'});
   assert.equal(replaced,true,'Fixture did not exercise provider overwrite');
+});
+
+
+test('B4/B6: local real HTTP public release is revoked after owner project privacy withdrawal',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('privacy-transport');
+  const handle='ci_'+randomUUID().slice(0,8);
+  const slug='release-'+randomUUID().slice(0,8);
+  successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+    ...json(owner),method:'PATCH',body:{handle}
+  }),'Set release owner handle');
+  const project=successful(await send('/rest/v1/projects?select=id',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug:'privacy-'+randomUUID().slice(0,8),
+      title:'Privacy-dependent public release'}
+  }),'Create project')[0];
+  const portfolio=successful(await send('/rest/v1/portfolios?select=id',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug,title:'Private release dependency',template_id:'starter'}
+  }),'Create portfolio')[0];
+  successful(await send('/rest/v1/project_exposure_intents?select=project_id',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{project_id:project.id,owner_user_id:owner.id,
+      show_on_profile:true,show_case_study:true}
+  }),'Create explicit project exposure');
+
+  const env=execFileSync('supabase',['status','-o','env'],{
+    encoding:'utf8',timeout:20_000});
+  const match=env.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(match,'Local SQL fixture URL is missing');
+  const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');
+  assert.equal(db.username,'postgres');
+  const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false});
+
+  const operation=randomUUID(),requestId=randomUUID(),intentId=randomUUID();
+  const html='<!doctype html><html><head>'+
+    '<meta name="robots" content="noindex,nofollow,noarchive"></head>'+
+    '<body><h1>Privacy dependent HTML</h1></body></html>';
+  const digest=createHash('sha256').update(html).digest('hex');
+  const manifest='a'.repeat(64),params=[portfolio.id,owner.id,requestId];
+  let server;
+  try{
+    await pg.connect();
+    await pg.query('BEGIN');
+    await pg.query('UPDATE public.portfolios SET head_revision=1 WHERE id=$1::uuid',[portfolio.id]);
+    await pg.query(
+      'INSERT INTO public.portfolio_revisions(portfolio_id,owner_user_id,revision,base_revision,operation_id,snapshot,snapshot_sha256) '+
+      'VALUES($1::uuid,$2::uuid,1,0,$3::uuid,$4::jsonb,encode(sha256(convert_to(($4::jsonb)::text,\'UTF8\')),\'hex\'))',
+      [portfolio.id,owner.id,randomUUID(),
+        JSON.stringify({formatVersion:1,files:{},slots:{},stashes:{}})]);
+    await pg.query(
+      'INSERT INTO public.private_release_requests(id,portfolio_id,owner_user_id,operation_id,revision,snapshot_sha256,visibility_intent) '+
+      'SELECT $3::uuid,portfolio_id,owner_user_id,$4::uuid,1,snapshot_sha256,\'PUBLIC\' '+
+      'FROM public.portfolio_revisions WHERE portfolio_id=$1::uuid AND owner_user_id=$2::uuid',
+      [...params,operation]);
+    await pg.query(
+      'INSERT INTO public.private_release_visibility_pointers(portfolio_id,owner_user_id,status,candidate_request_id,candidate_manifest_sha256,generation,revocation_generation) '+
+      'VALUES($1::uuid,$2::uuid,\'PREPARED_PRIVATE\',$3::uuid,$4,1,0)',
+      [...params,manifest]);
+    await pg.query(
+      'INSERT INTO kadmeion_private.private_artifact_bindings(portfolio_id,owner_user_id,request_id,pointer_generation,manifest_sha256,html_sha256,html_byte_length) '+
+      'VALUES($1::uuid,$2::uuid,$3::uuid,1,$4,$5,$6)',
+      [...params,manifest,digest,Buffer.byteLength(html)]);
+    await pg.query(
+      'INSERT INTO kadmeion_private.private_reviewer_stage_artifacts(portfolio_id,owner_user_id,request_id,pointer_generation,html,html_sha256) '+
+      'VALUES($1::uuid,$2::uuid,$3::uuid,1,$4,$5)',
+      [...params,html,digest]);
+    await pg.query(
+      'INSERT INTO public.private_unlisted_publication_intents(id,portfolio_id,owner_user_id,request_id,operation_id,expected_pointer_generation,public_handle,public_slug,status) '+
+      'VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,1,$6,$7,\'USED\')',
+      [intentId,...params,randomUUID(),handle,slug]);
+    await pg.query(
+      'INSERT INTO kadmeion_private.unlisted_release_routes(portfolio_id,owner_user_id,request_id,intent_id,stage_generation,release_generation,status,verified_at,html_sha256) '+
+      'VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,1,1,\'LIVE\',transaction_timestamp(),$5)',
+      [...params,intentId,digest]);
+    await pg.query('COMMIT');
+
+    const runtime={KADMEION_LOCAL_INTEGRATION:'1',
+      KADMEION_PUBLIC_PORTFOLIO_ENABLED:'true',
+      KADMEION_SUPABASE_URL:cfg.origin,
+      KADMEION_SUPABASE_SERVICE_ROLE_KEY:cfg.service};
+    server=createServer((req,res)=>void handlePublicPortfolio(req,res,{env:runtime}));
+    server.listen(0,'127.0.0.1');
+    await once(server,'listening');
+    const address='http://127.0.0.1:'+server.address().port+
+      '/api/public-portfolio?handle='+handle+'&slug='+slug;
+    const read=()=>fetch(address,{redirect:'error',cache:'no-store',
+      signal:AbortSignal.timeout(5000)});
+    const before=await read();
+    assert.equal(before.status,200);
+    assert.match(await before.text(),/Privacy dependent HTML/);
+    assert.equal(before.headers.get('cache-control'),'private, no-store');
+
+    const withdrawal=successful(await send(
+      '/rest/v1/project_exposure_intents?project_id=eq.'+project.id+
+      '&select=show_case_study',{
+        ...json(owner),method:'PATCH',
+        headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+        body:{show_case_study:false}
+      }),'Owner project visibility withdrawal');
+    assert.equal(withdrawal.length,1);
+    assert.equal(withdrawal[0].show_case_study,false);
+    const after=await read();
+    assert.equal(after.status,404,'Withdrawal failed to revoke old immutable HTML');
+    assert.equal(await after.text(),'Not found');
+    assert.equal(after.headers.get('x-robots-tag'),'noindex');
+    const current=successful(await send('/rest/v1/rpc/service_read_public_portfolio',{
+      method:'POST',key:cfg.service,bearer:cfg.service,
+      headers:{'Content-Type':'application/json'},
+      body:{p_handle:handle,p_slug:slug}
+    }),'Trusted current public projection read');
+    assert.equal(current,null);
+    const status=await pg.query(
+      'SELECT p.status,p.revocation_generation,r.status AS route_status '+
+      'FROM public.private_release_visibility_pointers p '+
+      'JOIN kadmeion_private.unlisted_release_routes r ON r.portfolio_id=p.portfolio_id '+
+      'WHERE p.portfolio_id=$1::uuid',[portfolio.id]);
+    assert.equal(status.rows.length,1);
+    assert.equal(status.rows[0].status,'BLOCKED');
+    assert.equal(status.rows[0].route_status,'REVOKED');
+    assert.equal(Number(status.rows[0].revocation_generation),2);
+    const events=await pg.query(
+      'SELECT event_type FROM public.private_release_visibility_events '+
+      'WHERE portfolio_id=$1::uuid AND event_type=\'PROJECT_PRIVACY_BLOCK\'',[portfolio.id]);
+    assert.equal(events.rows.length,1);
+  }finally{
+    if(server)await new Promise(resolve=>server.close(resolve));
+    await pg.end().catch(()=>{});
+  }
 });
