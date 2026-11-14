@@ -144,9 +144,9 @@ test('list output rejects unbounded arrays and nonstring values',()=>{
 test('metric, badge and project fields fail closed without inventing claims',()=>{
   for(const [kind,content,code] of [
     ['badge',{text:'Hello',secret:'do-not-release'},'INVALID_BADGE'],
-    ['metric',{label:'Followers',value:'123',providerVerified:'true'},'INVALID_METRIC'],
+    ['metric',{label:'Followers',value:'123',provider_verified:'true'},'INVALID_METRIC'],
     ['project-card',{title:'Project',summary:'Real',url:'javascript:alert(1)'},'UNSAFE_LINK'],
-    ['project-card',{title:'Project',summary:'Real',privateNotes:'secret'},'INVALID_PROJECT_CARD']
+    ['project-card',{title:'Project',summary:'Real',private_notes:'secret'},'INVALID_PROJECT_CARD']
   ] as const){
     const snapshot=structuredClone(fixture.snapshot);
     snapshot.slots.extra={state:'S0',componentId:'safe-card@1',content};
