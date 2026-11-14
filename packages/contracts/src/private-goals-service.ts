@@ -157,6 +157,25 @@ export class SupabasePrivateGoalsService {
       throw new PrivateGoalsError('INVALID_ACK');
     return raw;
   }
+  /**
+   * A dropped 201 response must not create a duplicate goal/progress/milestone.
+   * Exact operation UUID collisions are resolved by reading the owner-RLS row;
+   * mismatched payloads remain conflicts, never an optimistic success.
+   */
+  private async insertOrReplay<T>(
+    table:'private_goals'|'private_goal_progress_events'|'private_goal_milestones',
+    operationId:string,body:Record<string,unknown>,valid:(row:unknown)=>row is T
+  ):Promise<{row:T;replayed:boolean}> {
+    try{
+      const row=this.one(await this.send(table+'?select=*','POST',body),valid);
+      return {row,replayed:false};
+    }catch(error){
+      if(!(error instanceof PrivateGoalsError)||error.code!=='CONFLICT')throw error;
+      const path=table+'?select=*&operation_id=eq.'+operationId+'&limit=2';
+      const raw=await this.send(path,'GET');
+      return {row:this.one(raw,valid),replayed:true};
+    }
+  }
   async createGoal(operationId:string,title:string,description='',
     targetValue:number|null=null,unit:string|null=null,dueOn:string|null=null):Promise<PrivateGoal>{
     if(!validId(operationId)||!validText(title,1,160)||
@@ -164,15 +183,16 @@ export class SupabasePrivateGoalsService {
        (targetValue!==null&&(!numeric(targetValue)||targetValue<=0))||
        (unit!==null&&!validText(unit,1,32))||(dueOn!==null&&!date(dueOn)))
       throw new PrivateGoalsError('VALIDATION');
-    const raw=await this.send('private_goals?select=*','POST',{
+    operationId=operationId.toLowerCase();
+    const {row,replayed}=await this.insertOrReplay('private_goals',operationId,{
       operation_id:operationId,title,description,target_value:targetValue,unit,due_on:dueOn
-    });
-    const result=this.one(raw,validGoal);
-    if(result.operation_id!==operationId||result.title!==title||
-       result.description!==description||result.target_value!==targetValue||
-       result.unit!==unit||result.due_on!==dueOn||result.status!=='ACTIVE')
-      throw new PrivateGoalsError('INVALID_ACK');
-    return result;
+    },validGoal);
+    if(row.operation_id!==operationId||row.title!==title||
+       row.description!==description||row.target_value!==targetValue||
+       row.unit!==unit||row.due_on!==dueOn||
+       (!replayed&&row.status!=='ACTIVE'))
+      throw new PrivateGoalsError(replayed?'CONFLICT':'INVALID_ACK');
+    return row;
   }
   async listGoals():Promise<PrivateGoal[]> {
     return this.many(await this.send('private_goals?select=*&order=created_at.desc&limit=100','GET'),validGoal);
@@ -188,6 +208,7 @@ export class SupabasePrivateGoalsService {
        (fields.due_on!==undefined&&fields.due_on!==null&&!date(fields.due_on))||
        (fields.status!==undefined&&!goalStatuses.has(fields.status)))
       throw new PrivateGoalsError('VALIDATION');
+    id=id.toLowerCase();
     const raw=await this.send('private_goals?id=eq.'+id+'&select=*','PATCH',fields);
     const result=this.one(raw,validGoal);
     if(result.id!==id||Object.entries(fields).some(([k,v])=>
@@ -196,6 +217,7 @@ export class SupabasePrivateGoalsService {
   }
   async deleteGoal(id:string):Promise<string> {
     if(!validId(id))throw new PrivateGoalsError('VALIDATION');
+    id=id.toLowerCase();
     const raw=await this.send('private_goals?id=eq.'+id+'&select=*','DELETE');
     const result=this.one(raw,validGoal);
     if(result.id!==id)throw new PrivateGoalsError('INVALID_ACK');
@@ -204,16 +226,18 @@ export class SupabasePrivateGoalsService {
   async addProgress(goalId:string,operationId:string,value:number,note=''):Promise<GoalProgress>{
     if(!validId(goalId)||!validId(operationId)||!numeric(value)||!validText(note,0,500))
       throw new PrivateGoalsError('VALIDATION');
-    const raw=await this.send('private_goal_progress_events?select=*','POST',{
+    goalId=goalId.toLowerCase();operationId=operationId.toLowerCase();
+    const {row,replayed}=await this.insertOrReplay('private_goal_progress_events',operationId,{
       goal_id:goalId,operation_id:operationId,value,note
-    });
-    const result=this.one(raw,validProgress);
-    if(result.goal_id!==goalId||result.operation_id!==operationId||
-       result.value!==value||result.note!==note)throw new PrivateGoalsError('INVALID_ACK');
-    return result;
+    },validProgress);
+    if(row.goal_id!==goalId||row.operation_id!==operationId||
+       row.value!==value||row.note!==note)
+      throw new PrivateGoalsError(replayed?'CONFLICT':'INVALID_ACK');
+    return row;
   }
   async listProgress(goalId:string):Promise<GoalProgress[]> {
     if(!validId(goalId))throw new PrivateGoalsError('VALIDATION');
+    goalId=goalId.toLowerCase();
     const path='private_goal_progress_events?select=*&goal_id=eq.'+goalId+
       '&order=created_at.desc,id.desc&limit=100';
     const values=this.many(await this.send(path,'GET'),validProgress);
@@ -225,17 +249,18 @@ export class SupabasePrivateGoalsService {
     dueOn:string|null=null):Promise<GoalMilestone>{
     if(!validId(goalId)||!validId(operationId)||!validText(title,1,160)||
        (dueOn!==null&&!date(dueOn)))throw new PrivateGoalsError('VALIDATION');
-    const raw=await this.send('private_goal_milestones?select=*','POST',{
+    goalId=goalId.toLowerCase();operationId=operationId.toLowerCase();
+    const {row,replayed}=await this.insertOrReplay('private_goal_milestones',operationId,{
       goal_id:goalId,operation_id:operationId,title,due_on:dueOn
-    });
-    const result=this.one(raw,validMilestone);
-    if(result.goal_id!==goalId||result.operation_id!==operationId||
-       result.title!==title||result.due_on!==dueOn||result.completed_at!==null)
-      throw new PrivateGoalsError('INVALID_ACK');
-    return result;
+    },validMilestone);
+    if(row.goal_id!==goalId||row.operation_id!==operationId||
+       row.title!==title||row.due_on!==dueOn||(!replayed&&row.completed_at!==null))
+      throw new PrivateGoalsError(replayed?'CONFLICT':'INVALID_ACK');
+    return row;
   }
   async listMilestones(goalId:string):Promise<GoalMilestone[]> {
     if(!validId(goalId))throw new PrivateGoalsError('VALIDATION');
+    goalId=goalId.toLowerCase();
     const path='private_goal_milestones?select=*&goal_id=eq.'+goalId+
       '&order=created_at.asc&limit=100';
     const values=this.many(await this.send(path,'GET'),validMilestone);
@@ -251,6 +276,7 @@ export class SupabasePrivateGoalsService {
        (fields.completed_at!==undefined&&fields.completed_at!==null&&
          !timestamp(fields.completed_at)))
       throw new PrivateGoalsError('VALIDATION');
+    id=id.toLowerCase();
     const raw=await this.send('private_goal_milestones?id=eq.'+id+'&select=*','PATCH',fields);
     const result=this.one(raw,validMilestone);
     if(result.id!==id||Object.entries(fields).some(([k,v])=>
@@ -259,6 +285,7 @@ export class SupabasePrivateGoalsService {
   }
   async deleteMilestone(id:string):Promise<string> {
     if(!validId(id))throw new PrivateGoalsError('VALIDATION');
+    id=id.toLowerCase();
     const raw=await this.send('private_goal_milestones?id=eq.'+id+'&select=*','DELETE');
     const result=this.one(raw,validMilestone);
     if(result.id!==id)throw new PrivateGoalsError('INVALID_ACK');

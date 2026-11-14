@@ -114,3 +114,34 @@ test('private goal transport handles auth expiry, conflict, malformed and oversi
   const html=make(async()=>new Response('<html></html>',{headers:{'Content-Type':'text/html'}}));
   await assert.rejects(html.listGoals(),{code:'INVALID_ACK'});
 });
+
+
+test('identical network retries recover existing owner-scoped records; changed intents conflict',async()=>{
+  let calls:string[]=[];
+  const client=make(async(url,init)=>{
+    const path=String(url).replace(origin+'/rest/v1/','');
+    calls.push(path+':'+init?.method);
+    if(init?.method==='POST')return Response.json({code:'23505'},{status:409});
+    if(path.startsWith('private_goals?'))return Response.json([{...goal,status:'PAUSED'}]);
+    if(path.startsWith('private_goal_progress_events?'))return Response.json([progress]);
+    return Response.json([{...milestone,completed_at:now}]);
+  });
+  assert.equal((await client.createGoal(operation,goal.title,'',25,'sessions','2027-03-01')).status,'PAUSED');
+  assert.equal((await client.addProgress(goalId,operation,4,'Completed sessions')).source,'MANUAL');
+  assert.equal((await client.addMilestone(goalId,operation,'Finish joins')).completed_at,now);
+  assert.equal(calls.length,6);
+  assert.ok(calls.every((v,i)=>i%2===0?v.endsWith(':POST'):v.endsWith(':GET')));
+  await assert.rejects(client.addProgress(goalId,operation,5,'Completed sessions'),{code:'CONFLICT'});
+  await assert.rejects(client.createGoal(operation,'Different title','',25,'sessions','2027-03-01'),
+    {code:'CONFLICT'});
+});
+test('UUID case is canonicalized before owner-bound writes and acknowledgments',async()=>{
+  const client=make(async(url,init)=>{
+    assert.ok(!String(url).includes('90000000-0000-4000-8000-00000000000A'));
+    const body=JSON.parse(String(init?.body));
+    assert.equal(body.operation_id,'90000000-0000-4000-8000-000000000004');
+    return Response.json([goal]);
+  });
+  assert.equal((await client.createGoal(operation.toUpperCase(),goal.title,'',25,'sessions',
+    '2027-03-01')).operation_id,operation);
+});
