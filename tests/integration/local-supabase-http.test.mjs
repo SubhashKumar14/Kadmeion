@@ -1046,6 +1046,18 @@ test('B5: real local owner export reads RLS records and verifies private Storage
   assert.equal(attestation.attestations.length,1);
   assert.equal(attestation.attestations[0].expectedSha256,
     createHash('sha256').update(png).digest('hex'));
+  assert.deepEqual(await attestor.attest(registered[0].id,owner.token),
+    {assetId:registered[0].id,status:'WRITE_ONCE_ATTESTED'},
+    'Identical trusted attestation must be idempotent');
+  const conflicting=await send('/rest/v1/rpc/record_private_asset_content_attestation',{
+    method:'POST',key:cfg.service,bearer:cfg.service,
+    headers:{'Content-Type':'application/json'},
+    body:{p_asset_id:registered[0].id,
+      p_storage_object_id:attestation.attestations[0].objectId,
+      p_storage_version:attestation.attestations[0].version,
+      p_expected_sha256:'0'.repeat(64)}
+  });
+  assert.ok(!conflicting.ok,'A second privileged digest overwrote the immutable pin');
   const foreignPin=await send('/rest/v1/rpc/read_private_asset_content_attestations',{
     ...json(outsider),method:'POST',body:{p_snapshot_id:snapshot.snapshotId}
   });
