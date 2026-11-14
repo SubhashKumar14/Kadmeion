@@ -66,8 +66,11 @@ export class PrivateServerAssetByteAttestor {
   constructor(endpoint:string,publishableKey:string,serviceKey:string,http:typeof fetch=fetch){
     let url:URL;
     try{url=new URL(endpoint);}catch{throw new PrivateAssetAttestationError('VALIDATION');}
+    const localRuntime=typeof Deno!=='undefined'&&
+      Deno.env?.get('KADMEION_LOCAL_INTEGRATION')==='1';
     requireValid((url.protocol==='https:'||
-      (url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname)))&&
+      (url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname))||
+      (url.origin==='http://kong:8000'&&localRuntime))&&
       url.pathname==='/'&&!url.username&&!url.password&&!url.search&&!url.hash,
       'VALIDATION');
     requireValid(typeof publishableKey==='string'&&publishableKey.length>0&&

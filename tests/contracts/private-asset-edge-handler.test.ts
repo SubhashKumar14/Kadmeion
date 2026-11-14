@@ -97,6 +97,13 @@ test('bounded request does not invoke provider on oversized or malformed JSON',a
   }
   assert.equal(calls,0);
 });
+test('CLI-internal gateway origin is accepted ONLY under local integration flag',async()=>{
+  calls=0;
+  const local={...env,SUPABASE_URL:'http://kong:8000',KADMEION_LOCAL_INTEGRATION:'1'};
+  assert.equal((await run(req({body:'{"assetId":"invalid"}'}),local)).status,400);
+  assert.equal((await run(req(),{...local,KADMEION_LOCAL_INTEGRATION:'0'})).status,503);
+  assert.equal(calls,0);
+});
 test('unverified deployment configuration denies all privileged requests',async()=>{
   calls=0;
   for(const conf of [

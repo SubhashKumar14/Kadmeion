@@ -50,7 +50,10 @@ function serverEnv():Env {
 function configured(env:Env):{endpoint:string;publishable:string;service:string}|null {
   try{
     const url=new URL(env.SUPABASE_URL??'');
-    const local=url.origin==='http://127.0.0.1:54321'&&env.KADMEION_LOCAL_INTEGRATION==='1';
+    const local=env.KADMEION_LOCAL_INTEGRATION==='1'&&
+      (url.origin==='http://127.0.0.1:54321'||
+       url.origin==='http://localhost:54321'||
+       url.origin==='http://kong:8000');
     if(url.origin!=='https://scyooqjitjzjdxgtanso.supabase.co'&&!local)return null;
     if(url.username||url.password||url.pathname!=='/'||url.search||url.hash)return null;
     const publishable=env.SUPABASE_PUBLISHABLE_KEY??env.SUPABASE_ANON_KEY;
