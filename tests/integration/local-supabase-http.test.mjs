@@ -9,6 +9,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID,createHash } from 'node:crypto';
+import {Client,Pool} from 'pg';
+import {createServer} from 'node:http';
+import {once} from 'node:events';
+import {randomBytes} from 'node:crypto';
+import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/src/private-delivery-denial-gate.ts';
+
 
 function localSupabaseCredentials() {
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION, '1',
@@ -642,5 +648,180 @@ test('B5: case-bound operator BLOCK cannot be forged over local REST',
         {key,bearer:key,headers});
       assert.ok(!response.ok,'Private moderation hold leaked through Data API');
     }
+  }
+});
+
+test('B6: local HTTP canonical HTML and direct immutable assets deny across operator block, Trash, tenant and provider failure',
+  {timeout:180_000},async()=>{
+  // Deliberately nondeployable fixture: no public allow path or artifact bytes.
+  const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+  const match=raw.match(/^DB_URL=(.*)$/m);
+  assert.ok(match,'Local Supabase DB URL required');
+  const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');
+  assert.equal(db.username,'postgres');
+  const admin=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false});
+  const role='kd_http_'+randomBytes(6).toString('hex');
+  const secret=randomBytes(24).toString('hex');
+  const release='a'.repeat(64),digest='b'.repeat(64);
+  let pool,server,roleCreated=false;
+  const request=(id,resource)=>resource==='CANONICAL_HTML'?
+    {portfolioId:id,resource}:
+    {portfolioId:id,resource,releaseSha256:release,
+      path:'assets/'+digest+'.png',sha256:digest};
+  try{
+    await admin.connect();
+    // The role and password are generated hex-only; no user-controlled SQL.
+    await admin.query('CREATE ROLE '+role+" LOGIN PASSWORD '"+secret+
+      "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT");
+    roleCreated=true;
+    await admin.query('GRANT USAGE ON SCHEMA kadmeion_private TO '+role);
+    await admin.query('GRANT EXECUTE ON FUNCTION kadmeion_private.private_delivery_denial_gate(uuid,text,text,text,text) TO '+role);
+    pool=new Pool({host:db.hostname,port:Number(db.port),database:'postgres',
+      user:role,password:secret,ssl:false,max:2,connectionTimeoutMillis:3000});
+    await assert.rejects(pool.query('SELECT count(*) FROM public.portfolios'),
+      'HTTP reader must not directly select private portfolio data');
+    let outage=false,malformed=false,reads=0;
+    const gate=new PrivateServerDeliveryDenialGate({readDenial:async r=>{
+      reads++;
+      if(outage)throw Error('Provider unavailable');
+      const result=await pool.query(
+        'SELECT kadmeion_private.private_delivery_denial_gate($1::uuid,$2::text,$3::text,$4::text,$5::text) AS receipt',[
+          r.portfolioId,r.resource,r.resource==='DIRECT_ASSET'?r.releaseSha256:null,
+          r.resource==='DIRECT_ASSET'?r.path:null,r.resource==='DIRECT_ASSET'?r.sha256:null]);
+      return malformed?{...result.rows[0].receipt,servingAllowed:true}:result.rows[0].receipt;
+    }});
+    server=createServer(async(req,res)=>{
+      res.setHeader('Cache-Control','private, no-store, max-age=0');
+      res.setHeader('Content-Type','text/plain; charset=utf-8');
+      res.setHeader('X-Content-Type-Options','nosniff');
+      const path=new URL(req.url??'/','http://localhost').pathname;
+      const html=/^\/p\/([0-9a-f-]{36})\/$/.exec(path);
+      const asset=/^\/p\/([0-9a-f-]{36})\/releases\/([0-9a-f]{64})\/assets\/([0-9a-f]{64})\.(png|css|jpg|jpeg|webp|woff2)$/.exec(path);
+      if((req.method==='GET'||req.method==='HEAD')&&(html||asset)){
+        const input=html?request(html[1],'CANONICAL_HTML'):
+          {portfolioId:asset[1],resource:'DIRECT_ASSET',releaseSha256:asset[2],
+            path:'assets/'+asset[3]+'.'+asset[4],sha256:asset[3]};
+        try{await gate.check(input);}catch{/* Fail closed on unexpected errors. */}
+      }
+      res.statusCode=404;
+      res.end(req.method==='HEAD'?'':'Not found');
+    });
+    server.listen(0,'127.0.0.1');
+    await once(server,'listening');
+    const origin='http://127.0.0.1:'+server.address().port;
+    const denied=async(id,headers={})=>{
+      for(const path of ['/p/'+id+'/',
+        '/p/'+id+'/releases/'+release+'/assets/'+digest+'.png']){
+        const response=await fetch(origin+path,{headers,redirect:'manual',cache:'no-store'});
+        assert.equal(response.status,404,'Private resource unexpectedly served');
+        assert.equal(response.headers.get('cache-control'),'private, no-store, max-age=0');
+        assert.equal(response.headers.get('etag'),null);
+        assert.equal(response.headers.get('location'),null);
+        assert.equal(await response.text(),'Not found');
+      }
+    };
+    const owner=await adminUser('http-deny-owner');
+    const outsider=await adminUser('http-deny-outsider');
+    const moderator=await adminUser('http-deny-moderator');
+    await admin.query('INSERT INTO kadmeion_private.operator_roles(user_id,role) VALUES ($1::uuid,$2)',
+      [moderator.id,'moderator']);
+    const prepared=async()=>{
+      const rows=successful(await send('/rest/v1/portfolios?select=id',{
+        ...json(owner),method:'POST',
+        headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+        body:{owner_user_id:owner.id,slug:'http-deny-'+randomUUID().slice(0,8),
+          title:'Private delivery fixture',template_id:'starter'}}),'Create private portfolio');
+      const id=rows[0].id;
+      const snapshot={formatVersion:1,files:{'kadmeion.json':JSON.stringify({
+        formatVersion:1,seo:{title:'Private',description:'Local-only test'}})},
+        slots:{hero:{state:'S0',componentId:'title-stacked@1',
+          content:{title:'Private'}}},stashes:{}};
+      const revision=successful(await send('/rest/v1/rpc/commit_portfolio_revision',{
+        ...json(owner),method:'POST',body:{p_portfolio_id:id,
+          p_operation_id:randomUUID(),p_base_revision:0,p_snapshot:snapshot}}),'Commit revision');
+      const frozen=successful(await send('/rest/v1/rpc/freeze_private_release_request',{
+        ...json(owner),method:'POST',body:{p_portfolio_id:id,
+          p_operation_id:randomUUID(),p_revision:revision.revision,
+          p_visibility_intent:'UNLISTED'}}),'Freeze revision');
+      const pointer=successful(await send('/rest/v1/rpc/owner_prepare_private_release_pointer',{
+        ...json(owner),method:'POST',body:{p_portfolio_id:id,p_request_id:frozen.requestId,
+          p_manifest_sha256:release,p_expected_generation:0,
+          p_operation_id:randomUUID()}}),'Prepare private pointer');
+      assert.equal(pointer.status,'PREPARED_PRIVATE');
+      return id;
+    };
+    const id=await prepared();
+    for(const resource of ['CANONICAL_HTML','DIRECT_ASSET'])
+      assert.equal((await gate.check(request(id,resource))).reason,'NO_VERIFIED_PUBLIC_RELEASE');
+    await denied(id);
+    await denied(id,{Authorization:'Bearer '+owner.token});
+    await denied(id,{Authorization:'Bearer '+outsider.token});
+    assert.ok(!(await send('/rest/v1/rpc/owner_read_private_release_pointer',{
+      ...json(outsider),method:'POST',body:{p_portfolio_id:id}})).ok,
+      'Cross-tenant pointer read succeeded');
+    const caseReceipt=successful(await send('/rest/v1/rpc/operator_open_moderation_case',{
+      ...json(moderator),method:'POST',body:{p_target_user_id:owner.id,
+        p_operation_id:randomUUID(),p_reason_code:'SECURITY',
+        p_summary:'Local HTTP denial fixture'}}),'Open operator case');
+    const blockBody={p_case_id:caseReceipt.caseId,p_portfolio_id:id,
+      p_operation_id:randomUUID()};
+    assert.ok(!(await send('/rest/v1/rpc/operator_block_private_portfolio',{
+      ...json(outsider),method:'POST',body:blockBody})).ok);
+    const blocked=successful(await send('/rest/v1/rpc/operator_block_private_portfolio',{
+      ...json(moderator),method:'POST',body:blockBody}),'Operator block');
+    assert.equal(blocked.status,'BLOCKED');
+    for(const resource of ['CANONICAL_HTML','DIRECT_ASSET']){
+      const verdict=await gate.check(request(id,resource));
+      assert.equal(verdict.reason,'PRIVATE_POINTER_BLOCKED');
+      assert.equal(verdict.generation,2);
+      assert.equal(verdict.revocationGeneration,2);
+    }
+    await denied(id);
+    const trashId=await prepared();
+    assert.ok(!(await send('/rest/v1/rpc/trash_private_item',{
+      ...json(outsider),method:'POST',
+      body:{p_item_type:'portfolio',p_item_id:trashId}})).ok);
+    successful(await send('/rest/v1/rpc/trash_private_item',{
+      ...json(owner),method:'POST',
+      body:{p_item_type:'portfolio',p_item_id:trashId}}),'Owner Trash');
+    for(const resource of ['CANONICAL_HTML','DIRECT_ASSET'])
+      assert.equal((await gate.check(request(trashId,resource))).reason,'PRIVATE_POINTER_BLOCKED');
+    await denied(trashId);
+    successful(await send('/rest/v1/rpc/restore_private_item',{
+      ...json(owner),method:'POST',
+      body:{p_item_type:'portfolio',p_item_id:trashId}}),'Owner restore');
+    await denied(trashId);
+    const restored=successful(await send('/rest/v1/rpc/owner_read_private_release_pointer',{
+      ...json(owner),method:'POST',body:{p_portfolio_id:trashId}}),'Read restored pointer');
+    assert.equal(restored.status,'BLOCKED','Restore cannot reactivate public delivery');
+    outage=true;
+    for(const resource of ['CANONICAL_HTML','DIRECT_ASSET'])
+      assert.equal((await gate.check(request(id,resource))).reason,'PROVIDER_UNAVAILABLE');
+    await denied(id);
+    outage=false;malformed=true;
+    for(const resource of ['CANONICAL_HTML','DIRECT_ASSET'])
+      assert.equal((await gate.check(request(id,resource))).reason,'STATE_UNVERIFIED');
+    await denied(id);
+    malformed=false;
+    const before=reads;
+    const invalid=await fetch(origin+'/p/'+id+'/releases/'+release+'/assets/not-a-hash.png');
+    assert.equal(invalid.status,404);
+    assert.equal(reads,before,'Invalid asset path reached private DB');
+    const head=await fetch(origin+'/p/'+id+'/',{method:'HEAD'});
+    assert.equal(head.status,404);
+    assert.equal(await head.text(),'');
+  }finally{
+    if(server)await new Promise(resolve=>server.close(resolve));
+    if(pool)await pool.end();
+    if(roleCreated){
+      await admin.query('REVOKE EXECUTE ON FUNCTION kadmeion_private.private_delivery_denial_gate(uuid,text,text,text,text) FROM '+role);
+      await admin.query('REVOKE USAGE ON SCHEMA kadmeion_private FROM '+role);
+      await admin.query('DROP ROLE '+role);
+    }
+    await admin.end().catch(()=>{});
   }
 });
