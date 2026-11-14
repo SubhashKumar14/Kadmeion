@@ -12,6 +12,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {randomBytes,randomUUID} from 'node:crypto';
+import {createServer} from 'node:http';
+import {once} from 'node:events';
 import {SupabasePrivateFrozenRevisionLoader}
   from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {SupabasePrivateReleasePointerService}
@@ -24,6 +26,8 @@ import {DirectSqlPrivateArtifactBindingWriter}
   from '../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts';
 import {openPrivateArtifactPgWorker}
   from '../../packages/storage-adapters/src/private-artifact-pg-worker.ts';
+import {verifyActivatedUnlistedRelease}
+  from '../../packages/storage-adapters/src/unlisted-release-verification.ts';
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
 import {handleUnlistedRequest} from '../../api/unlisted.mjs';
 
@@ -115,7 +119,7 @@ EXECUTE kd_private_bind(:'request',:'generation',:'manifest',:'html');`;
   };
 }
 test('B4: real local direct PostgreSQL binds verified owner artifact with scoped role',
-  {timeout:180000},async()=>{
+  {timeout:180000},async t=>{
   const role='kd_ci_bind_'+randomBytes(6).toString('hex');
   const password=randomBytes(26).toString('hex');
   let created=false;
@@ -290,30 +294,67 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(ok(await publicRead(),'Read guarded live-unlisted SQL output').htmlSha256,
       bound.htmlSha256);
 
-    async function publicHostRead(){
-      const response={statusCode:0,body:null,headers:new Map(),
-        setHeader(k,v){this.headers.set(k.toLowerCase(),v);},
-        end(body){this.body=body;}};
-      await handleUnlistedRequest({method:'GET',
-        url:'/api/unlisted?portfolioId='+portfolioId},response,{
-        env:{KADMEION_UNLISTED_DELIVERY_ENABLED:'true',
-          KADMEION_LOCAL_INTEGRATION:'1',
-          KADMEION_SUPABASE_URL:cfg.origin,
-          KADMEION_SUPABASE_SERVICE_ROLE_KEY:cfg.service},
-        http:fetch});
-      return response;
+    const deliveryEnv = {
+      KADMEION_UNLISTED_DELIVERY_ENABLED: 'true',
+      KADMEION_LOCAL_INTEGRATION: '1',
+      KADMEION_SUPABASE_URL: cfg.origin,
+      KADMEION_SUPABASE_SERVICE_ROLE_KEY: cfg.service
+    };
+    let deliveryFailure = 'unavailable';
+    const server = createServer((request, response) => {
+      if (deliveryFailure === 'unavailable') {
+        response.writeHead(503).end();
+        return;
+      }
+      if (deliveryFailure === 'wrong-bytes') {
+        response.writeHead(200, {
+          'Content-Type': 'text/html', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex'
+        }).end('<!doctype html><title>Unexpected HTML</title>');
+        return;
+      }
+      void handleUnlistedRequest(request, response, {env: deliveryEnv});
+    });
+    server.listen(0, '127.0.0.1');
+    t.after(() => new Promise((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    }));
+    await once(server, 'listening');
+    const deliveryOrigin = 'http://127.0.0.1:' + server.address().port;
+    const verificationPorts = {
+      origin: deliveryOrigin,
+      rpc: async (operation, body) => ok(await api('/rest/v1/rpc/' + operation, {
+        method: 'POST', key: cfg.service, jwt: cfg.service, body
+      }), operation)
+    };
+    const verifyDelivery = (probe) => verifyActivatedUnlistedRelease({
+      portfolioId, intentId: probe.intentId, htmlSha256: probe.htmlSha256
+    }, verificationPorts);
+
+    assert.deepEqual(await verifyDelivery(candidate), {status: 'DELIVERY_REVOKED'});
+    assert.equal(ok(await publicRead(), 'No release after failed first activation'), null);
+    deliveryFailure = null;
+
+    async function publicHostRead() {
+      const response = await fetch(deliveryOrigin + '/api/unlisted?portfolioId=' + portfolioId);
+      return {statusCode: response.status, headers: response.headers, body: await response.text()};
     }
-    const site=await publicHostRead();
-    assert.equal(site.statusCode,200,'Server-only unlisted HTTP gate did not serve');
-    assert.equal(site.body,new TextDecoder().decode(artifact.files[0].bytes));
-    assert.match(site.headers.get('cache-control'),/no-store/);
-    assert.match(site.headers.get('content-security-policy'),/script-src 'none'/);
+    const initialConsent = await consentAndProbe(prepared.generation);
+    ok(await api('/rest/v1/rpc/service_activate_unlisted_release', {
+      method: 'POST', key: cfg.service, jwt: cfg.service,
+      body: {p_portfolio_id: portfolioId, p_expected_generation: initialConsent.releaseGeneration,
+        p_intent_id: initialConsent.intentId, p_html_sha256: initialConsent.htmlSha256}
+    }), 'Activate initial release again with fresh consent');
+    const site = await publicHostRead();
+    assert.equal(site.statusCode, 200);
+    assert.equal(site.body, new TextDecoder().decode(artifact.files[0].bytes));
+    assert.match(site.headers.get('cache-control'), /no-store/);
+    assert.match(site.headers.get('content-security-policy'), /script-src 'none'/);
+
     const acknowledgeRelease = (probe) => api('/rest/v1/rpc/service_acknowledge_unlisted_release', {
       method: 'POST', key: cfg.service, jwt: cfg.service,
       body: {p_portfolio_id: portfolioId, p_intent_id: probe.intentId,
         p_html_sha256: probe.htmlSha256}
     });
-
 
     async function prepareReplacement(previousGeneration) {
       const next = await pointer.prepare(portfolioId, frozen.requestId,
@@ -359,7 +400,9 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     }
     const beforeAck = await activateReplacement(replacement);
     assert.equal(beforeAck.data?.message, 'UNLISTED_VERIFICATION_PENDING');
-    assert.equal(ok(await acknowledgeRelease(candidate), 'Acknowledge initial served bytes'), true);
+    assert.deepEqual(await verifyDelivery(initialConsent), {
+      status: 'DELIVERY_ACKNOWLEDGED', htmlSha256: initialConsent.htmlSha256
+    });
     const promoted = ok(await activateReplacement(replacement), 'Promote the current replacement');
     assert.equal(promoted.releaseGeneration, replacement.releaseGeneration);
     assert.equal((await publicHostRead()).body, site.body);
@@ -370,12 +413,11 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     });
     assert.equal((await recoverRelease(distinctGeneration)).data?.code, '40001',
       'A delayed failure must not roll back a newer activation');
-    const recovered = ok(await recoverRelease(replacement), 'Compensate the failed activation');
-    assert.deepEqual(recovered, {
-      status: 'RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION', portfolioId,
-      releaseGeneration: activated.releaseGeneration,
-      hostRevocationVerified: false, publicUrl: null
+    deliveryFailure = 'wrong-bytes';
+    assert.deepEqual(await verifyDelivery(replacement), {
+      status: 'PRIOR_RELEASE_RESTORED', releaseGeneration: initialConsent.releaseGeneration
     });
+    deliveryFailure = null;
     assert.equal((await publicHostRead()).body, site.body);
     assert.equal((await recoverRelease(replacement)).data?.code, '40001');
     assert.equal((await acknowledgeRelease(replacement)).data?.code, '40001');
