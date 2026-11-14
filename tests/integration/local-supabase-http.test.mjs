@@ -332,3 +332,72 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
     assert.equal(restoredRead.publicUrl,null);
   });
 });
+
+test('B5: real JWT account-erasure requests stay owner-private and never erase',{timeout:120_000},async t=>{
+  const owner=await adminUser('exit-owner');
+  const stranger=await adminUser('exit-outsider');
+  const rpc='/rest/v1/rpc/request_private_account_erasure';
+  const withdraw='/rest/v1/rpc/withdraw_private_account_erasure';
+  const operation=randomUUID();
+  const body={p_operation_id:operation,p_confirmation:'DELETE MY ACCOUNT'};
+  let requestId;
+  await t.test('typed confirmation and owner JWT required; request remains blocked',async()=>{
+    const anonymous=await send(rpc,{method:'POST',headers:{'Content-Type':'application/json'},body});
+    assert.ok(!anonymous.ok,'Anonymous account-erasure request accepted');
+    const bad=await send(rpc,{...json(owner),method:'POST',
+      body:{...body,p_confirmation:'delete my account'}});
+    assert.ok(!bad.ok,'Invalid typed confirmation accepted');
+    const first=successful(await send(rpc,{...json(owner),method:'POST',body}),
+      'Owner account-erasure request');
+    requestId=first.requestId;
+    assert.match(requestId,/^[0-9a-f-]{36}$/i);
+    assert.equal(first.status,'REQUESTED_BLOCKED');
+    assert.equal(first.alreadyRequested,false);
+    for(const field of ['publicRevocationVerified','reauthVerified','accessTerminated',
+      'erasureExecuted','retentionVerified'])assert.equal(first[field],false);
+    const replay=successful(await send(rpc,{...json(owner),method:'POST',body}),
+      'Idempotent account exit request');
+    assert.equal(replay.requestId,requestId);
+    assert.equal(replay.alreadyRequested,true);
+    const duplicate=await send(rpc,{...json(owner),method:'POST',
+      body:{...body,p_operation_id:randomUUID()}});
+    assert.ok(!duplicate.ok,'Second active account erasure request accepted');
+  });
+  await t.test('RLS hides history; direct client writes cannot forge erasure',async()=>{
+    const listPath='/rest/v1/private_account_erasure_requests?select=id,status,public_revocation_verified,reauth_verified,access_terminated,erasure_executed,retention_verified';
+    const ownerList=successful(await send(listPath,bearer(owner)),'Owner erasure history');
+    assert.equal(ownerList.length,1);
+    assert.equal(ownerList[0].id,requestId);
+    assert.equal(ownerList[0].erasure_executed,false);
+    const outsiderList=successful(await send(listPath,bearer(stranger)),
+      'Foreign erasure history');
+    assert.deepEqual(outsiderList,[]);
+    const spoof=await send('/rest/v1/private_account_erasure_requests?id=eq.'+requestId,{
+      ...json(owner),method:'PATCH',body:{erasure_executed:true,public_revocation_verified:true}
+    });
+    assert.ok(!spoof.ok,'Owner forged erasure or host revocation flags');
+    const hidden=await send('/rest/v1/private_account_erasure_requests?select=owner_user_id',
+      bearer(owner));
+    assert.ok(!hidden.ok,'Internal owner key exposed in public REST projection');
+  });
+  await t.test('foreign withdrawal denied; owner withdrawal is idempotent',async()=>{
+    const params={p_request_id:requestId,p_operation_id:randomUUID()};
+    const foreign=await send(withdraw,{...json(stranger),method:'POST',body:params});
+    assert.ok(!foreign.ok,'Other tenant withdrew owner account exit request');
+    const first=successful(await send(withdraw,{...json(owner),method:'POST',body:params}),
+      'Owner account exit withdrawal');
+    assert.equal(first.status,'WITHDRAWN');
+    assert.equal(first.alreadyWithdrawn,false);
+    assert.equal(first.erasureExecuted,false);
+    const replay=successful(await send(withdraw,{...json(owner),method:'POST',body:params}),
+      'Idempotent account exit withdrawal');
+    assert.equal(replay.alreadyWithdrawn,true);
+    const newRequest=successful(await send(rpc,{...json(owner),method:'POST',
+      body:{...body,p_operation_id:randomUUID()}}),'Request after withdrawal');
+    assert.equal(newRequest.status,'REQUESTED_BLOCKED');
+    assert.notEqual(newRequest.requestId,requestId);
+    const profile=successful(await send('/rest/v1/profiles?select=user_id',
+      bearer(owner)),'Owner profile after request');
+    assert.equal(profile[0].user_id,owner.id);
+  });
+});
