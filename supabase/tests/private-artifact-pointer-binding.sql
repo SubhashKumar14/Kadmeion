@@ -147,6 +147,94 @@ begin
 end $block$;
 select pass('foreign or missing release request never binds');
 
+-- B4 tested service-only staging material: exact bound hash, owner grant,
+-- token expiry/revoke/denial, no source bytes or public serving authority.
+reset role;
+select has_table('kadmeion_private','private_reviewer_stage_artifacts',
+  'bounded reviewer staging artifact registry exists');
+select ok((select relrowsecurity from pg_class
+  where oid='kadmeion_private.private_reviewer_stage_artifacts'::regclass),
+  'reviewer artifact rows are protected with RLS');
+select ok(not has_function_privilege('anon',
+  'public.read_private_reviewer_stage_artifact(uuid,text)','EXECUTE'),
+  'anonymous cannot invoke privileged HTML read');
+select ok(not has_function_privilege('authenticated',
+  'public.read_private_reviewer_stage_artifact(uuid,text)','EXECUTE'),
+  'signed-in owner cannot bypass reviewer token read');
+select ok(not has_function_privilege('authenticated',
+  'public.store_private_reviewer_stage_artifact(uuid,bigint,text)','EXECUTE'),
+  'signed-in owner cannot forge reviewer bytes');
+select ok(has_function_privilege('service_role',
+  'public.read_private_reviewer_stage_artifact(uuid,text)','EXECUTE'),
+  'service-only read is available to trusted resolver');
+set local role service_role;
+select is(public.store_private_reviewer_stage_artifact(
+  '30000000-0000-4000-8000-0000000000c1',1,current_setting('kd.bind.html')
+  )->>'status','STAGED_PRIVATE','bound immutable HTML can be staged privately');
+select is(public.store_private_reviewer_stage_artifact(
+  '30000000-0000-4000-8000-0000000000c1',1,current_setting('kd.bind.html')
+  )->>'alreadyStored','true','identical staging retry is idempotent');
+do $block$
+declare denied boolean:=false;
+begin
+  begin
+    perform public.store_private_reviewer_stage_artifact(
+      '30000000-0000-4000-8000-0000000000c1',1,'<!doctype html><script>alert(1)</script>noindex');
+  exception when invalid_parameter_value then denied:=true;end;
+  if not denied then raise exception 'Script-bearing reviewer bytes were accepted';end if;
+end $block$;
+select pass('service writer refuses script-bearing or tampered stage HTML');
+do $block$
+declare denied boolean:=false;
+begin
+  begin
+    perform public.store_private_reviewer_stage_artifact(
+      '30000000-0000-4000-8000-0000000000c1',1,'<!doctype html><html>noindex tampered</html>');
+  exception when invalid_parameter_value then denied:=true;end;
+  if not denied then raise exception 'Altered staged bytes were accepted';end if;
+end $block$;
+select pass('staging writer requires exact previously verified bound HTML digest');
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+do $block$
+declare receipt jsonb;
+begin
+  receipt:=public.issue_private_reviewer_grant(
+    '30000000-0000-4000-8000-0000000000c1',
+    '60000000-0000-4000-8000-0000000000c1',60);
+  if receipt->>'status'<>'REGISTERED_UNSERVABLE' then
+    raise exception 'Could not create scoped reviewer token';end if;
+  perform set_config('kd.bind.grant',receipt->>'grantId',true);
+  perform set_config('kd.bind.token',receipt->>'rawToken',true);
+end $block$;
+select pass('owner created an independent 256-bit reviewer credential');
+set local role service_role;
+select is((public.read_private_reviewer_stage_artifact(
+  current_setting('kd.bind.grant')::uuid,current_setting('kd.bind.token')
+)->>'htmlSha256'),
+  encode(sha256(convert_to(current_setting('kd.bind.html'),'UTF8')),'hex'),
+  'exact, scoped, unexpired token can read only trusted staged HTML');
+select is((public.read_private_reviewer_stage_artifact(
+  current_setting('kd.bind.grant')::uuid,current_setting('kd.bind.token')
+)->>'publicServingEnabled'),'false','staging response never grants a public release');
+select ok(public.read_private_reviewer_stage_artifact(
+  current_setting('kd.bind.grant')::uuid,repeat('f',64)) is null,
+  'forged raw token gets no staged HTML');
+select ok(public.read_private_reviewer_stage_artifact(
+  '90000000-0000-4000-8000-0000000000c1',current_setting('kd.bind.token')) is null,
+  'other grant ID cannot reuse token');
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+select is(public.revoke_private_reviewer_grant(
+  current_setting('kd.bind.grant')::uuid)->>'status','REVOKED',
+  'owner revoked reviewer credential');
+set local role service_role;
+select ok(public.read_private_reviewer_stage_artifact(
+  current_setting('kd.bind.grant')::uuid,current_setting('kd.bind.token')) is null,
+  'revoked token loses access without CDN-cache reliance');
+
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
