@@ -61,8 +61,9 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
     if(url.pathname.startsWith('/rest/v1/')){
       const table=url.pathname.split('/').at(-1)!;
       assert.equal(url.searchParams.get('limit'),'101');
-      assert.equal(url.searchParams.get(table==='profiles'?'user_id':'owner_user_id'),
-        'eq.'+owner);
+      assert.equal(url.searchParams.get(
+        ['profiles','profile_sharing_preferences','private_onboarding_steps'].includes(table)
+          ?'user_id':'owner_user_id'),'eq.'+owner);
       return json((options.rows??baseRows)[table]??[]);
     }
     if(url.pathname.startsWith('/storage/v1/object/authenticated/')){
@@ -161,5 +162,41 @@ test('untrusted endpoint is rejected before any fetch',()=>{
     'https://u:p@evil.example/','https://evil.example/?token=abc']){
     assert.throws(()=>new SupabasePrivateAccountDataExporter(url,'publishable',async()=>null),
       {code:'VALIDATION'});
+  }
+});
+
+test('bounded export includes owner-readable sharing, onboarding, exposure, release and Trash records',async()=>{
+  const rows={...baseRows,
+    profile_sharing_preferences:[{user_id:owner,share_display_name:false}],
+    private_onboarding_steps:[{user_id:owner,step:'profile',status:'done'}],
+    project_exposure_intents:[{owner_user_id:owner,project_id:'p1',expose_on_hub:false}],
+    private_release_requests:[{owner_user_id:owner,id:'r1',visibility_intent:'PRIVATE'}],
+    private_trash_items:[{owner_user_id:owner,item_id:'p2',item_type:'project'}]
+  };
+  const {service,paths}=fixture({rows});
+  const result=JSON.parse(new TextDecoder().decode((await service.export(snapshot)).bytes));
+  assert.equal(result.records.profile_sharing_preferences[0].share_display_name,false);
+  assert.equal(result.records.private_onboarding_steps[0].step,'profile');
+  assert.equal(result.records.project_exposure_intents[0].expose_on_hub,false);
+  assert.equal(result.records.private_release_requests[0].visibility_intent,'PRIVATE');
+  assert.equal(result.records.private_trash_items[0].item_type,'project');
+  for(const table of ['profile_sharing_preferences','private_onboarding_steps',
+    'project_exposure_intents','private_release_requests','private_trash_items'])
+    assert.equal(paths.some(p=>p.startsWith('/rest/v1/'+table+'?')),true);
+  assert.equal(result.limitations.completeAccountExport,false);
+  assert.equal(result.evidence.providerObjectVersionPinned,false);
+});
+test('new private categories reject cross-tenant injection before any Storage download',async()=>{
+  for(const [table,column] of [
+    ['profile_sharing_preferences','user_id'],
+    ['private_onboarding_steps','user_id'],
+    ['project_exposure_intents','owner_user_id'],
+    ['private_release_requests','owner_user_id'],
+    ['private_trash_items','owner_user_id']
+  ] as const){
+    const {service,paths}=fixture({rows:{...baseRows,
+      [table]:[{[column]:stranger,id:'foreign'}]}});
+    await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
+    assert.equal(paths.some(p=>p.includes('/storage/v1/object/')),false);
   }
 });
