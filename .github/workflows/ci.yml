@@ -43,6 +43,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
       - name: Test real GoTrue + PostgREST + private Storage over HTTP
         run: node --test tests/integration/local-supabase-http.test.mjs
         env:
