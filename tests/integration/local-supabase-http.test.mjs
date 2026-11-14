@@ -1469,3 +1469,103 @@ test('B4/B6: local real HTTP public release is revoked after owner project priva
     await pg.end().catch(()=>{});
   }
 });
+
+
+test('P2: real owner-JWT goals, manual correction history and milestones remain tenant-private',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('private-goal-owner');
+  const outsider=await adminUser('private-goal-outsider');
+  const operation=randomUUID();
+  const goalBody={operation_id:operation,title:'Practice database design',
+    description:'Manual progress only',target_value:30,unit:'sessions',
+    due_on:'2027-03-01'};
+  const create=successful(await send('/rest/v1/private_goals?select=*',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:goalBody
+  }),'Owner goal creation');
+  assert.equal(create.length,1);
+  const goal=create[0];
+  assert.equal(goal.owner_user_id,owner.id);
+  assert.equal(goal.status,'ACTIVE');
+  assert.equal(goal.operation_id,operation);
+  const duplicate=await send('/rest/v1/private_goals',{
+    ...json(owner),method:'POST',body:goalBody
+  });
+  assert.equal(duplicate.status,409,'Repeated operation must not silently insert another goal');
+  assert.deepEqual(successful(await send(
+    '/rest/v1/private_goals?select=id',bearer(outsider)),
+    'Foreign goal list'),[]);
+  const anonymous=await send('/rest/v1/private_goals?select=id');
+  assert.ok(!anonymous.ok,'Anonymous visitor enumerated private goals');
+  const forge=await send('/rest/v1/private_goals',{
+    ...json(outsider),method:'POST',body:{...goalBody,
+      operation_id:randomUUID(),owner_user_id:owner.id}
+  });
+  assert.ok(!forge.ok,'Foreign user supplied a forged goal owner ID');
+
+  for(const [value,note] of [[5,'Five sessions'],[4,'Corrected manual count']]){
+    const row=successful(await send('/rest/v1/private_goal_progress_events?select=*',{
+      ...json(owner),method:'POST',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{goal_id:goal.id,operation_id:randomUUID(),value,note}
+    }),'Append owner manual progress');
+    assert.equal(row.length,1);
+    assert.equal(row[0].source,'MANUAL');
+    assert.equal(row[0].value,value);
+  }
+  const spoof=await send('/rest/v1/private_goal_progress_events',{
+    ...json(owner),method:'POST',
+    body:{goal_id:goal.id,operation_id:randomUUID(),value:999,
+      source:'VERIFIED_EXTERNAL'}
+  });
+  assert.ok(!spoof.ok,'Owner forged verified-provider provenance');
+  const foreignEvent=await send('/rest/v1/private_goal_progress_events',{
+    ...json(outsider),method:'POST',
+    body:{goal_id:goal.id,operation_id:randomUUID(),value:1}
+  });
+  assert.ok(!foreignEvent.ok,'Foreign user appended progress to another goal');
+  const progress=successful(await send(
+    '/rest/v1/private_goal_progress_events?select=source,value&goal_id=eq.'+goal.id,
+    bearer(owner)),'Read correction history');
+  assert.equal(progress.length,2);
+  assert.ok(progress.every(row=>row.source==='MANUAL'));
+  assert.deepEqual(successful(await send(
+    '/rest/v1/private_goal_progress_events?select=id',bearer(outsider)),
+    'Foreign progress list'),[]);
+
+  const milestones=successful(await send('/rest/v1/private_goal_milestones?select=*',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{goal_id:goal.id,operation_id:randomUUID(),title:'Finish join exercises'}
+  }),'Add private goal milestone');
+  assert.equal(milestones.length,1);
+  const milestone=milestones[0];
+  assert.equal(milestone.owner_user_id,owner.id);
+  const updated=successful(await send(
+    '/rest/v1/private_goal_milestones?id=eq.'+milestone.id+'&select=id,completed_at',{
+      ...json(owner),method:'PATCH',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{completed_at:new Date().toISOString()}
+    }),'Mark milestone done manually');
+  assert.equal(updated.length,1);
+  assert.ok(typeof updated[0].completed_at==='string');
+  const foreignUpdate=await send('/rest/v1/private_goal_milestones?id=eq.'+milestone.id+
+      '&select=id',{
+    ...json(outsider),method:'PATCH',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{title:'Hijacked'}
+  });
+  assert.deepEqual(successful(foreignUpdate,'Foreign milestone update'),[]);
+  const deleted=successful(await send('/rest/v1/private_goals?id=eq.'+goal.id+
+      '&select=id',{
+    ...json(owner),method:'DELETE',
+    headers:{Prefer:'return=representation'}
+  }),'Owner remove goal');
+  assert.equal(deleted.length,1);
+  assert.equal(deleted[0].id,goal.id);
+  assert.deepEqual(successful(await send('/rest/v1/private_goal_progress_events?select=id',
+    bearer(owner)),'Deleted progress cascade'),[]);
+  assert.deepEqual(successful(await send('/rest/v1/private_goal_milestones?select=id',
+    bearer(owner)),'Deleted milestone cascade'),[]);
+});
