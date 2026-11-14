@@ -609,3 +609,59 @@ operation was authorized or performed.
 with a case-bound moderator block racing the private artifact bind, verify
 portfolio/pointer lock ordering, denial after moderation hold and
 idempotent audit evidence. Keep public serving disabled.
+
+
+## 14 November 2026 — B6 case-bound moderation vs real pg.Pool binding races
+
+**Verified source baseline:** Active repo SubhashKumar14/Kadmeion, feature
+branch feat/b0-backend-foundation, starting HEAD 5ebeb2b. Historical
+DevFolio-App is reference-only. Latest owner approval in Notion supersedes
+older pending statuses: all 52 exact original LIGHT-theme mockups approved,
+no DARK mockup set and no rejected Canva references. The original images are
+session-local artifacts; this iteration does not implement frontend screens.
+
+**Code:** [fadc75b](https://github.com/SubhashKumar14/Kadmeion/commit/fadc75b8d91cf0ad49ec51e1e1aadd7cacb37083)
+adds tests/integration/local-moderation-binding-race.test.mjs.
+[ff4f333](https://github.com/SubhashKumar14/Kadmeion/commit/ff4f3334e4ff2a76e5ecfe35a4857a2638dfb413)
+wires the test into ephemeral Supabase database CI. No migration, business
+endpoint, new package, provider secret or public-serving capability changed.
+
+The test provisions a disposable least-privileged kd_* LOGIN role and real
+pg.Pool, creates local GoTrue owner/operator/outsider identities, and
+grants the operator role only through the local database fixture. It opens
+owner- and outsider-scoped cases. A nonoperator and a cross-owner case are
+denied. In the first scenario, the operator commits a case-bound hold
+between the orchestrator's owner-pointer read and the actual restricted
+SQL bind; the bind fails closed, stale generation fails, exact replay is
+idempotent, a different operation cannot replace the hold, the owner
+cannot reprepare, and exactly one operator audit event exists. In the
+second scenario, a separate PostgreSQL transaction invokes the moderator
+block and keeps its portfolio row lock uncommitted while a real restricted
+pg.Pool bind is pending; after COMMIT, the bind rejects the now-stale
+candidate. The pointer remains BLOCKED with generation/revocation
+generation 2 and no public URL. The test tears down the worker and
+temporary DB role. This verifies local transaction ordering and fail-closed
+behavior, not distributed public-host revocation.
+
+**CI proof:** [GitHub Actions run 43567116761](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43567116761)
+on ff4f333 completed both contracts and database jobs **PASS**.
+Logs: **191/191 Node tests**, **289/289 pgTAP assertions across 19 files**,
+**28/28 real local GoTrue/PostgREST/Storage HTTP subtests**,
+**1/1 prior restricted PostgreSQL binding test** and
+**1/1 new moderation/pg.Pool race test**. TypeScript, auth build/smoke,
+isolated preview checks and authored file budget **141/200** passed.
+No dedicated lint, SAST, browser E2E, hosted Supabase/TLS, Brevo,
+accessibility or live-host CDN/direct-asset verification was run.
+
+**Security/authorization boundary:** No production data, manual Vercel
+deployment, public publishing, operator restoration, account erasure or
+main merge. Vercel's existing Git integration may automatically create
+nonproduction feature-branch previews. A private pointer/DB block is NOT
+proof that an immutable public URL or CDN cache has been revoked.
+
+**Next concrete action:** Build a local-only B6 HTTP-level denial regression
+covering BOTH canonical HTML and direct immutable asset requests through
+the existing private delivery-denial gate, before/after case-bound operator
+block and owner Trash, including cross-tenant and provider-failure cases.
+Keep the gate deny-only; do not enable serving or choose a host without
+the owner-approved hosting proof.
