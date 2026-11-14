@@ -103,11 +103,22 @@ export async function handleReviewerRequest(req,res,{
   let url;
   try{url=new URL(req.url??'/', 'https://kadmeion.internal');}
   catch{respond(res,404,'Not found','text/plain; charset=utf-8',method);return;}
-  if(url.pathname!=='/api/reviewer'||url.searchParams.size!==2){
+  if(url.pathname!=='/api/reviewer'){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
   }
-  const grantId=url.searchParams.get('g'),token=url.searchParams.get('t');
-  if(!grantId||!UUID.test(grantId)||!token||!TOKEN.test(token)){
+  const grantId=url.searchParams.get('g');
+  const queryToken=url.searchParams.get('t');
+  const authorization=req.headers?.authorization;
+  const bearerToken=typeof authorization==='string'?
+    /^Bearer ([0-9a-f]{64})$/.exec(authorization)?.[1]:undefined;
+  // Header transport avoids recording the reviewer token in a URL. Query
+  // transport is retained only for link-compatible private staging, with
+  // strict no-referrer/no-store and short-lived server validation.
+  const validTransport=queryToken===null
+    ? url.searchParams.size===1&&bearerToken!==undefined
+    : url.searchParams.size===2&&authorization===undefined;
+  const token=queryToken??bearerToken;
+  if(!validTransport||!grantId||!UUID.test(grantId)||!token||!TOKEN.test(token)){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
   }
   let upstream;

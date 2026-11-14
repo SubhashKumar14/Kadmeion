@@ -22,7 +22,8 @@ function response(){
 }
 function run(options={}){
   const req={method:options.method??'GET',
-    url:options.url??'/api/reviewer?g='+grant+'&t='+token};
+    url:options.url??'/api/reviewer?g='+grant+'&t='+token,
+    headers:options.headers??{}};
   const res=response();const sent=[];
   const http=(async(url,init)=>{
     sent.push({url:String(url),init});
@@ -104,4 +105,18 @@ test('forged digest, changed HTML, surplus fields, script and fake public acknow
     assert.equal(result.res.statusCode,503);
     assert.notEqual(result.res.body,html);
   }
+});
+
+
+test('header-only reviewer token validates without putting secrets into request URL',async()=>{
+  const {res,sent}=await run({
+    url:'/api/reviewer?g='+grant,
+    headers:{authorization:'Bearer '+token}
+  });
+  assert.equal(res.statusCode,200);
+  assert.equal(sent.length,1);
+  assert.ok(!sent[0].url.includes(token));
+  const both=await run({headers:{authorization:'Bearer '+token}});
+  assert.equal(both.res.statusCode,404);
+  assert.equal(both.sent.length,0);
 });
