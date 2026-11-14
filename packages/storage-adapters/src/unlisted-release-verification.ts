@@ -4,10 +4,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_HTML_BYTES = 750_000;
 
+type VerificationOperation = 'service_acknowledge_unlisted_release' |
+  'service_recover_failed_unlisted_release';
+type PublicationOperation = VerificationOperation | 'service_prepare_unlisted_release' |
+  'service_probe_unlisted_release' | 'service_activate_unlisted_release';
+
 type VerificationPorts = {
   origin: string;
-  rpc: (operation: 'service_acknowledge_unlisted_release' |
-    'service_recover_failed_unlisted_release', input: Record<string, string>) => Promise<unknown>;
+  rpc: (operation: VerificationOperation, input: Record<string, string>) => Promise<unknown>;
   http?: typeof fetch;
 };
 
@@ -57,11 +61,8 @@ export async function verifyActivatedUnlistedRelease(
   {origin, rpc, http = fetch}: VerificationPorts
 ): Promise<DeliveryVerification> {
   const {portfolioId, intentId, htmlSha256} = activation;
-  const host = new URL(origin);
-  if ((host.protocol !== 'https:' &&
-       !(host.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(host.hostname))) ||
-      host.username || host.password || host.pathname !== '/' || host.search || host.hash ||
-      !UUID.test(portfolioId) || !UUID.test(intentId) || !SHA256.test(htmlSha256)) {
+  const host = deliveryHost(origin);
+  if (!UUID.test(portfolioId) || !UUID.test(intentId) || !SHA256.test(htmlSha256)) {
     throw new Error('Invalid trusted release verification input.');
   }
 
@@ -102,4 +103,69 @@ export async function verifyActivatedUnlistedRelease(
     return {status: 'PRIOR_RELEASE_RESTORED', releaseGeneration: generation};
   }
   throw new Error('Release delivery recovery was not confirmed.');
+}
+
+function deliveryHost(origin: string): URL {
+  const host = new URL(origin);
+  if ((host.protocol !== 'https:' &&
+       !(host.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(host.hostname))) ||
+      host.username || host.password || host.pathname !== '/' || host.search || host.hash) {
+    throw new Error('Invalid trusted release delivery origin.');
+  }
+  return host;
+}
+
+/** Run for an owner consent ID already recorded by Supabase. Retry with the same ID. */
+export async function publishConsentedUnlistedRelease(
+  intentId: string,
+  ports: Omit<VerificationPorts, 'rpc'> & {
+    rpc: (operation: PublicationOperation, input: Record<string, string | number>) => Promise<unknown>;
+  }
+): Promise<DeliveryVerification> {
+  deliveryHost(ports.origin);
+  if (typeof intentId !== 'string' || !UUID.test(intentId)) throw new Error('Invalid publication consent.');
+
+  const {rpc} = ports;
+  const prepared = await rpc('service_prepare_unlisted_release', {p_intent_id: intentId});
+  if (!record(prepared) || typeof prepared.portfolioId !== 'string' || !UUID.test(prepared.portfolioId) ||
+      typeof prepared.htmlSha256 !== 'string' || !SHA256.test(prepared.htmlSha256) ||
+      typeof prepared.releaseGeneration !== 'number' || !Number.isSafeInteger(prepared.releaseGeneration) ||
+      prepared.releaseGeneration < 1 || prepared.publicServingEnabled !== false || prepared.publicUrl !== null) {
+    throw new Error('Unlisted release preparation was not confirmed.');
+  }
+  const {portfolioId, htmlSha256, releaseGeneration} = prepared;
+  switch (prepared.status) {
+    case 'ACKNOWLEDGED':
+      return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
+    case 'AWAITING_VERIFICATION':
+      break;
+    case 'PROBE_PENDING': {
+      const probe = await rpc('service_probe_unlisted_release', {p_portfolio_id: portfolioId});
+      if (!record(probe) || probe.status !== 'PROBE_PENDING' ||
+          probe.intentId !== intentId || probe.releaseGeneration !== releaseGeneration ||
+          probe.htmlSha256 !== htmlSha256 || probe.publicServingEnabled !== false ||
+          typeof probe.html !== 'string' || Buffer.byteLength(probe.html) > MAX_HTML_BYTES ||
+          createHash('sha256').update(probe.html).digest('hex') !== htmlSha256) {
+        throw new Error('The private release changed before activation.');
+      }
+      const active = await rpc('service_activate_unlisted_release', {
+        p_portfolio_id: portfolioId, p_expected_generation: releaseGeneration,
+        p_intent_id: intentId, p_html_sha256: htmlSha256
+      });
+      if (!record(active) || active.status !== 'ACTIVATED_NEEDS_EXTERNAL_HTTP_VERIFICATION' ||
+          active.portfolioId !== portfolioId || active.releaseGeneration !== releaseGeneration ||
+          active.htmlSha256 !== htmlSha256 || active.publicUrl !== null ||
+          active.hostRevocationVerified !== false) {
+        throw new Error('Unlisted activation was not confirmed. Retry with the same consent.');
+      }
+      break;
+    }
+    default:
+      throw new Error('Unexpected unlisted publication status.');
+  }
+  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256}, ports);
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

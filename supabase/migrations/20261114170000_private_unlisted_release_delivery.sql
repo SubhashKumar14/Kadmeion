@@ -181,7 +181,16 @@ begin
     where id=p_intent_id for update;
   select * into v_pointer from public.private_release_visibility_pointers
     where portfolio_id=v_intent.portfolio_id for update;
-  if v_intent.expires_at<=clock_timestamp() or v_intent.status<>'AWAITING_HOST'
+  if exists(select 1 from kadmeion_private.unlisted_release_routes
+    where portfolio_id=v_intent.portfolio_id and intent_id=p_intent_id and status='LIVE') then
+    return (select jsonb_build_object('portfolioId',route.portfolio_id,
+      'releaseGeneration',route.release_generation,
+      'status',case when route.verified_at is null then 'AWAITING_VERIFICATION' else 'ACKNOWLEDGED' end,
+      'htmlSha256',route.html_sha256,'publicServingEnabled',false,'publicUrl',null)
+      from kadmeion_private.unlisted_release_routes route
+      where route.portfolio_id=v_intent.portfolio_id and route.intent_id=p_intent_id);
+  end if;
+  if v_intent.expires_at<=clock_timestamp()
     or not found or v_pointer.status<>'PREPARED_PRIVATE'
     or v_pointer.generation<>v_intent.expected_pointer_generation
     or v_pointer.candidate_request_id<>v_intent.request_id then
@@ -196,21 +205,30 @@ begin
   -- The pointer generation advances for every candidate, including one that
   -- never goes live. A replacement with identical HTML must invalidate a
   -- delayed activation from the previous probe.
-  insert into kadmeion_private.unlisted_release_pending(
-    portfolio_id,owner_user_id,request_id,intent_id,stage_generation,
-    release_generation,html_sha256,expires_at
-  ) values(v_intent.portfolio_id,v_intent.owner_user_id,v_intent.request_id,
-    v_intent.id,v_intent.expected_pointer_generation,
-    v_intent.expected_pointer_generation,
-    v_stage.html_sha256,v_intent.expires_at)
-  on conflict(portfolio_id) do update set
-    owner_user_id=excluded.owner_user_id,request_id=excluded.request_id,
-    intent_id=excluded.intent_id,stage_generation=excluded.stage_generation,
-    release_generation=excluded.release_generation,
-    html_sha256=excluded.html_sha256,expires_at=excluded.expires_at,
-    created_at=transaction_timestamp();
-  update public.private_unlisted_publication_intents set status='USED'
-    where id=p_intent_id;
+  if v_intent.status='USED' then
+    perform 1 from kadmeion_private.unlisted_release_pending
+      where portfolio_id=v_intent.portfolio_id and intent_id=p_intent_id
+        and html_sha256=v_stage.html_sha256;
+    if not found then
+      raise exception using errcode='40001',message='UNLISTED_PREPARE_CONFLICT';
+    end if;
+  else
+    insert into kadmeion_private.unlisted_release_pending(
+      portfolio_id,owner_user_id,request_id,intent_id,stage_generation,
+      release_generation,html_sha256,expires_at
+    ) values(v_intent.portfolio_id,v_intent.owner_user_id,v_intent.request_id,
+      v_intent.id,v_intent.expected_pointer_generation,
+      v_intent.expected_pointer_generation,
+      v_stage.html_sha256,v_intent.expires_at)
+    on conflict(portfolio_id) do update set
+      owner_user_id=excluded.owner_user_id,request_id=excluded.request_id,
+      intent_id=excluded.intent_id,stage_generation=excluded.stage_generation,
+      release_generation=excluded.release_generation,
+      html_sha256=excluded.html_sha256,expires_at=excluded.expires_at,
+      created_at=transaction_timestamp();
+    update public.private_unlisted_publication_intents set status='USED'
+      where id=p_intent_id;
+  end if;
   return jsonb_build_object('portfolioId',v_intent.portfolio_id,
     'releaseGeneration',v_intent.expected_pointer_generation,'status','PROBE_PENDING',
     'htmlSha256',v_stage.html_sha256,'publicServingEnabled',false,

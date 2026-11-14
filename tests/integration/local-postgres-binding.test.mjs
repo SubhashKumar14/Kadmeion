@@ -26,7 +26,7 @@ import {DirectSqlPrivateArtifactBindingWriter}
   from '../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts';
 import {openPrivateArtifactPgWorker}
   from '../../packages/storage-adapters/src/private-artifact-pg-worker.ts';
-import {verifyActivatedUnlistedRelease}
+import {publishConsentedUnlistedRelease, verifyActivatedUnlistedRelease}
   from '../../packages/storage-adapters/src/unlisted-release-verification.ts';
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
 import {handleUnlistedRequest} from '../../api/unlisted.mjs';
@@ -327,7 +327,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       portfolioId, intentId: probe.intentId, htmlSha256: probe.htmlSha256
     }, verificationPorts);
 
-    assert.deepEqual(await verifyDelivery(candidate), {status: 'DELIVERY_REVOKED'});
+    assert.deepEqual(await publishConsentedUnlistedRelease(intent.intentId, verificationPorts),
+      {status: 'DELIVERY_REVOKED'});
     assert.equal(ok(await publicRead(), 'No release after failed first activation'), null);
     deliveryFailure = null;
 
@@ -415,10 +416,12 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal((await publicHostRead()).body, site.body);
     assert.equal((await recoverRelease(replacement)).data?.code, '40001');
     assert.equal((await acknowledgeRelease(replacement)).data?.code, '40001');
-    const activeAgain = await consentAndProbe(replacement.releaseGeneration);
-    ok(await activateReplacement(activeAgain), 'Activate with fresh owner consent');
+    const activeAgain = await pointer.requestUnlistedPublication(
+      frozen.requestId, replacement.releaseGeneration, randomUUID(), 'PUBLISH UNLISTED');
+    const expectedDelivery = {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256: bound.htmlSha256};
+    assert.deepEqual(await publishConsentedUnlistedRelease(activeAgain.intentId, verificationPorts), expectedDelivery);
+    assert.deepEqual(await publishConsentedUnlistedRelease(activeAgain.intentId, verificationPorts), expectedDelivery);
     assert.equal((await publicHostRead()).statusCode, 200);
-    assert.equal(ok(await acknowledgeRelease(activeAgain), 'Acknowledge the reactivated bytes'), true);
     assert.equal((await recoverRelease(activeAgain)).data?.code, '40001',
       'A failure report cannot undo an acknowledged release');
 
