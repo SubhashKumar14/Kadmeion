@@ -99,3 +99,59 @@ test('duplicate render-plan keys never produce bytes',()=>{
   const r=prepareSafeStaticPreview(edit({plan:[fixture.plan[0],fixture.plan[0]]}));
   assert.ok(has(r,'INVALID_RENDER_PLAN'));assert.equal(r.previewHtml,null);
 });
+
+
+test('safe text-only preview renders badge, list, project card and author-reported metrics',()=>{
+  const snapshot=structuredClone(fixture.snapshot);
+  snapshot.slots.badge={state:'S0',componentId:'technology-tag@1',content:{text:'TypeScript'}};
+  snapshot.slots.metric={state:'S0',componentId:'author-metric@1',content:{label:'Experience',value:'2 years'}};
+  snapshot.slots.skills={state:'S0',componentId:'skills-list@1',
+    content:{items:JSON.stringify(['PostgreSQL','TypeScript','<unsafe>'])}};
+  snapshot.slots.project={state:'S0',componentId:'project-card@1',content:{
+    title:'Private <work>',summary:'A & B',url:'https://example.com/work?a=1&b=2'}};
+  const plan=[...fixture.plan,
+    {slotKey:'badge',componentId:'technology-tag@1',kind:'badge' as const,required:true},
+    {slotKey:'metric',componentId:'author-metric@1',kind:'metric' as const,required:true},
+    {slotKey:'skills',componentId:'skills-list@1',kind:'list' as const,required:true},
+    {slotKey:'project',componentId:'project-card@1',kind:'project-card' as const,required:true}
+  ];
+  const result=prepareSafeStaticPreview(edit({snapshot,plan}));
+  assert.equal(result.status,'PREVIEW_ONLY');
+  const html=result.previewHtml??'';
+  assert.match(html,/<span class="k-badge">TypeScript<\/span>/);
+  assert.match(html,/data-provenance="author"/);
+  assert.doesNotMatch(html,/data-verified|verified-badge/);
+  assert.match(html,/<li>&lt;unsafe&gt;<\/li>/);
+  assert.match(html,/<article class="k-project-card">/);
+  assert.match(html,/&lt;work&gt;/);
+  assert.match(html,/https:\/\/example.com\/work\?a=1&amp;b=2/);
+  assert.doesNotMatch(html,/<script|<img|onerror=/i);
+  assert.equal(result.publicationReady,false);
+});
+test('list output rejects unbounded arrays and nonstring values',()=>{
+  for(const items of [
+    'not-json','[]',JSON.stringify(Array(25).fill('skill')),
+    JSON.stringify(['legit',null]),JSON.stringify([{}]),
+    JSON.stringify(['x'.repeat(201)])
+  ]){
+    const snapshot=structuredClone(fixture.snapshot);
+    snapshot.slots.skills={state:'S0',componentId:'skills-list@1',content:{items}};
+    const result=prepareSafeStaticPreview(edit({snapshot,plan:[...fixture.plan,
+      {slotKey:'skills',componentId:'skills-list@1',kind:'list',required:true}]}));
+    assert.ok(has(result,'INVALID_LIST'));assert.equal(result.previewHtml,null);
+  }
+});
+test('metric, badge and project fields fail closed without inventing claims',()=>{
+  for(const [kind,content,code] of [
+    ['badge',{text:'Hello',secret:'do-not-release'},'INVALID_BADGE'],
+    ['metric',{label:'Followers',value:'123',providerVerified:'true'},'INVALID_METRIC'],
+    ['project-card',{title:'Project',summary:'Real',url:'javascript:alert(1)'},'UNSAFE_LINK'],
+    ['project-card',{title:'Project',summary:'Real',privateNotes:'secret'},'INVALID_PROJECT_CARD']
+  ] as const){
+    const snapshot=structuredClone(fixture.snapshot);
+    snapshot.slots.extra={state:'S0',componentId:'safe-card@1',content};
+    const result=prepareSafeStaticPreview(edit({snapshot,plan:[...fixture.plan,
+      {slotKey:'extra',componentId:'safe-card@1',kind,required:true}]}));
+    assert.ok(has(result,code));assert.equal(result.previewHtml,null);
+  }
+});

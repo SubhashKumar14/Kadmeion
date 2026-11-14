@@ -2,7 +2,7 @@ import { normalizeExternalHttpsUrl } from '../../contracts/src/project.ts';
 import { validateSnapshot, type PortfolioSnapshot } from './portfolio-revision-transactions.ts';
 
 /** Trusted, TEXT-ONLY private preview; not a release renderer or public access proof. */
-export type SafeSlotKind = 'heading'|'paragraph'|'external-link';
+export type SafeSlotKind = 'heading'|'paragraph'|'external-link'|'badge'|'metric'|'list'|'project-card';
 export interface SafeSlotPlan {
   slotKey:string; componentId:string; kind:SafeSlotKind; required:boolean;
 }
@@ -71,7 +71,7 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
     for(const spec of input.plan){
       if(!record(spec)||typeof spec.slotKey!=='string'||!SLOT.test(spec.slotKey)||
          typeof spec.componentId!=='string'||!PIN.test(spec.componentId)||
-         !['heading','paragraph','external-link'].includes(String(spec.kind))||
+         !['heading','paragraph','external-link','badge','metric','list','project-card'].includes(String(spec.kind))||
          typeof spec.required!=='boolean'||seen.has(spec.slotKey)){
         block('INVALID_RENDER_PLAN','plan','Invalid or duplicate slot mapping.');continue;
       }
@@ -107,6 +107,47 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
           block('INVALID_PARAGRAPH',spec.slotKey,'Only plain-text paragraph content is supported.');continue;
         }
         body.push('<section><p>'+escapeHtml(p)+'</p></section>');
+      }else if(spec.kind==='badge'){
+        const text=stringField(c.text,80);
+        if(Object.keys(c).some(k=>k!=='text')||!text){
+          block('INVALID_BADGE',spec.slotKey,'Badge requires a short text label.');continue;
+        }
+        body.push('<span class="k-badge">'+escapeHtml(text)+'</span>');
+      }else if(spec.kind==='metric'){
+        const label=stringField(c.label,120),value=stringField(c.value,80);
+        if(Object.keys(c).some(k=>!['label','value'].includes(k))||!label||!value){
+          block('INVALID_METRIC',spec.slotKey,'Metric needs an author-provided label and value.');continue;
+        }
+        // A metric is author-supplied content. Do not add a verified badge,
+        // recalculate it or infer an external provider endorsement.
+        body.push('<dl data-provenance="author"><div><dt>'+escapeHtml(label)+
+          '</dt><dd>'+escapeHtml(value)+'</dd></div></dl>');
+      }else if(spec.kind==='list'){
+        if(Object.keys(c).some(k=>k!=='items')||typeof c.items!=='string'){
+          block('INVALID_LIST',spec.slotKey,'List must provide an array of plain-text items.');continue;
+        }
+        let values:unknown;
+        try{values=JSON.parse(c.items);}catch{values=null;}
+        if(!Array.isArray(values)||values.length<1||values.length>24||
+           values.some(v=>stringField(v,200)===null)){
+          block('INVALID_LIST',spec.slotKey,'Only 1–24 bounded plain-text list items are supported.');continue;
+        }
+        body.push('<ul>'+values.map(v=>'<li>'+escapeHtml((v as string).trim())+'</li>').join('')+'</ul>');
+      }else if(spec.kind==='project-card'){
+        const title=stringField(c.title,160),summary=stringField(c.summary,1000);
+        if(Object.keys(c).some(k=>!['title','summary','url'].includes(k))||
+           !title||!summary){
+          block('INVALID_PROJECT_CARD',spec.slotKey,'Project card requires a title and summary.');continue;
+        }
+        let link='';
+        if(c.url!==undefined){
+          let url:string;
+          try{url=normalizeExternalHttpsUrl(c.url);}
+          catch{block('UNSAFE_LINK',spec.slotKey,'Project URL must use validated HTTPS.');continue;}
+          link='<a rel="nofollow noopener noreferrer" href="'+escapeHtml(url)+'">View project</a>';
+        }
+        body.push('<article class="k-project-card"><h2>'+escapeHtml(title)+
+          '</h2><p>'+escapeHtml(summary)+'</p>'+link+'</article>');
       }else{
         const label=stringField(c.label,160);
         if(Object.keys(c).some(k=>!['label','url'].includes(k))||!label){
@@ -153,7 +194,7 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
     '<meta name="robots" content="noindex,nofollow,noarchive">'+
     '<meta http-equiv="Content-Security-Policy" content="'+escapeHtml(csp)+'">'+
     '<title>'+escapeHtml(seoTitle)+'</title><meta name="description" content="'+escapeHtml(seoDescription)+'">'+
-    '<style>html{font-family:system-ui,sans-serif;line-height:1.55;color:#222;background:#fff}body{max-width:70ch;margin:2rem auto;padding:0 1rem}section{margin:2rem 0}p{white-space:pre-line}a:focus-visible{outline:3px solid currentColor}</style>'+
+    '<style>html{font-family:system-ui,sans-serif;line-height:1.55;color:#222;background:#fff}body{max-width:70ch;margin:2rem auto;padding:0 1rem}section{margin:2rem 0}p{white-space:pre-line}a:focus-visible{outline:3px solid currentColor}.k-badge{display:inline-block;border:1px solid currentColor;border-radius:.3rem;padding:.15rem .55rem}.k-project-card{border:1px solid #767676;border-radius:.65rem;padding:1rem}dt{font-size:.85rem}dd{margin:0;font-size:1.5rem;font-weight:650}</style>'+
     '</head><body><main id="content">'+body.join('')+'</main></body></html>';
   if(encoder.encode(html).byteLength>750000){
     block('PREVIEW_SIZE_EXCEEDED','preview','Static preview is oversized.');
