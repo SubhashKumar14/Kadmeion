@@ -185,7 +185,16 @@ export class SupabasePrivateAccountDataExporter {
     for(const asset of assets){
       const path=asset.object_path,mime=asset.mime_type,size=asset.byte_size;
       requireCondition(typeof path==='string'&&
-        new RegExp('^'+owner.id+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+
+        new RegExp('^'+owner.id+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$').test(path)&&
+        typeof mime==='string'&&['image/png','image/jpeg','image/webp','image/avif'].includes(mime)&&
+        typeof size==='number'&&Number.isSafeInteger(size)&&size>0&&size<=MAX_ASSET_BYTES,
+        'INTEGRITY','Invalid verified asset metadata.');
+      requireCondition(!pins.has(path),'INTEGRITY','Duplicate registered asset path.');
+      pins.set(path,await this.objectInfo(path,owner.id,mime,size));
+    }
+    let total=0;
+    const verifiedAssets:JsonObject[]=[];
+    for(const asset of assets){
       const path=asset.object_path,mime=asset.mime_type,size=asset.byte_size;
       requireCondition(typeof path==='string'&&
         new RegExp('^'+owner.id+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$').test(path)&&
@@ -229,61 +238,6 @@ export class SupabasePrivateAccountDataExporter {
         downloadedByteCount:total,downloadedByteHashes:'SHA-256',
         providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
         storageObjectVersionCheckedBeforeAndAfter:true,
-        crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
-      limitations:{completeAccountExport:false,
-        omittedCategories:['case-study revision history','reviewer grants',
-          'moderation and appeals','account erasure history',
-          'inventory snapshots','provider integrations and backups'],
-        providerRetentionVerified:false,publicRouteRevocationVerified:false,
-        deletionAllowed:false}
-    };
-    const bytes=encoder.encode(JSON.stringify(envelope));
-    requireCondition(bytes.byteLength<=MAX_EXPORT_BYTES,'LIMIT_EXCEEDED',
-      'Export document exceeds maximum size.');
-    return {filename:'kadmeion-private-account-partial-export.json',
-      mime:'application/json',bytes,status:'BOUNDED_PARTIAL_EXPORT',
-      completeAccountExport:false,deletionAllowed:false};
-  }
-}
-).test(path)&&
-        typeof mime==='string'&&['image/png','image/jpeg','image/webp','image/avif'].includes(mime)&&
-        typeof size==='number'&&Number.isSafeInteger(size)&&size>0&&size<=MAX_ASSET_BYTES,
-        'INTEGRITY','Invalid verified asset metadata.');
-      requireCondition(!pins.has(path),'INTEGRITY','Duplicate registered asset path.');
-      pins.set(path,await this.objectInfo(path,owner.id,mime,size));
-    }
-    let total=0;
-    const verifiedAssets:JsonObject[]=[];
-    for(const asset of assets){
-      const path=asset.object_path,mime=asset.mime_type,size=asset.byte_size;
-      requireCondition(typeof path==='string'&&
-        new RegExp('^'+owner.id+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$').test(path)&&
-        typeof mime==='string'&&['image/png','image/jpeg','image/webp','image/avif'].includes(mime)&&
-        typeof size==='number'&&Number.isSafeInteger(size)&&size>0&&size<=MAX_ASSET_BYTES,
-        'INTEGRITY','Invalid verified asset metadata.');
-      requireCondition(total+size<=MAX_TOTAL_ASSET_BYTES,'LIMIT_EXCEEDED',
-        'Private asset bytes exceed export limit.');
-      const objectPath=path.split('/').map(encodeURIComponent).join('/');
-      const response=await this.request('/storage/v1/object/authenticated/kadmeion-private-assets/'+
-        objectPath,MAX_ASSET_BYTES);
-      const actualMime=(response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
-      requireCondition(response.bytes.length===size&&actualMime===mime,'INTEGRITY',
-        'Private asset bytes do not match registered size or MIME.');
-      total+=response.bytes.length;
-      verifiedAssets.push({path,mimeType:mime,byteSize:size,
-        downloadedSha256:await sha256(response.bytes),base64:base64(response.bytes)});
-    }
-    const after=await this.reconcile(snapshotId);
-    requireCondition(after===before,'UNVERIFIED','Storage inventory changed during export.');
-    const finalOwner=await this.owner();
-    requireCondition(finalOwner.id===owner.id,'AUTH_EXPIRED','Owner session changed during export.');
-    const envelope={
-      kind:'kadmeion-bounded-private-account-export',schemaVersion:1,
-      exportedAt:new Date().toISOString(),owner:{id:owner.id,email:owner.email},
-      inventorySnapshotId:snapshotId,records,assets:verifiedAssets,
-      evidence:{registeredAssets:before,downloadedAssets:verifiedAssets.length,
-        downloadedByteCount:total,downloadedByteHashes:'SHA-256',
-        providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
         crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
       limitations:{completeAccountExport:false,
         omittedCategories:['case-study revision history','reviewer grants',
