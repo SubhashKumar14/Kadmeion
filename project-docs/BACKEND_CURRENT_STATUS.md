@@ -104,3 +104,19 @@ Test/switch semantics are evidence-first: `ACKNOWLEDGED` means a verified
 HTTP response for that specific release, not proof of all caches; a read-only
 revocation probe can verify only explicitly enumerated host paths. No made-up
 published URL, sender proof or full account deletion guarantee.
+
+## Owner update — 15 November 2026 (frontend design, authoritative)
+
+- Implement **both LIGHT and DARK Kadmeion interface themes**. Reproduce the
+  owner's explicitly approved light-screen images precisely; derive the dark
+  variant from the approved brand palette and identical approved layout/interaction
+  structure, not unapproved Canva redesigns. Check contrast, focus visibility,
+  system preference, explicit override and reduced motion with automated and
+  eventual owner visual tests. Do not invent new dark-brand assets.
+- User-published portfolios follow their OWN selected theme tokens; Kadmeion
+  application chrome must not override published portfolio visual identity.
+- Neither set of the 52 frontend screens is yet implemented. Backend-first work
+  does not imply the dark theme or frontend is complete.
+- Strict **₹0 total spend**: no paid plan, trial with payment obligation, paid
+  API, automatic upgrade, or usage-billed fallback. Free quotas and pauses are
+  real operational constraints, not grounds to introduce charges.

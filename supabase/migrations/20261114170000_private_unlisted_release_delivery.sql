@@ -503,6 +503,7 @@ begin
     where r.portfolio_id=p_portfolio_id and r.status='LIVE'
       and fr.visibility_intent='UNLISTED' and fr.status='FROZEN'
       and p.trashed_at is null and v.status='PREPARED_PRIVATE'
+      and r.stage_generation>v.revocation_generation
       and not exists(select 1 from kadmeion_private.moderation_portfolio_holds h
         where h.portfolio_id=r.portfolio_id);
   if not found or octet_length(v_html.html)>750000 or
