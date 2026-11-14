@@ -375,3 +375,59 @@ frozen owner-RPC snapshot and writes only independently verified bytes
 to the restricted binding RPC, with concurrency/revocation and malicious
 renderer/manifest negatives. Do not activate public hosting until owner
 approval and live canonical/direct-asset negative tests.
+
+
+## 14 November 2026 — B4 server-only parameterized PostgreSQL binding adapter
+
+**Baseline:** Active implementation branch `feat/b0-backend-foundation` at
+`655d79d` before this iteration, not the historical DevFolio repository.
+[CI 43549982097](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43549982097)
+had passed on that baseline. Notion's final owner approval register explicitly
+confirms **52/52 original LIGHT screen images** and prohibits a DARK screen
+set. Exact image paths are session-local, not verified recoverable in this run.
+No frontend work was authorized before the remaining backend gates.
+
+**Code changes (feature branch only):**
+- [aae3cda](https://github.com/SubhashKumar14/Kadmeion/commit/aae3cda0643cd3ce46298c8d3ddf94c7fc50b573):
+  `private-artifact-direct-sql-writer.ts` provides a server-only, structurally
+  `pg.Pool`/`pg.Client`-compatible query adapter. It invokes ONLY the
+  parameterized `kadmeion_private.bind_private_artifact_candidate` SQL function,
+  validates UUID/generation/UTF-8 sizes and NUL rejection, never interpolates
+  HTML/manifest into SQL, and sanitizes provider errors. It is deliberately
+  NOT exported from the browser-facing storage-adapters index.
+- [8f1e6cf](https://github.com/SubhashKumar14/Kadmeion/commit/8f1e6cf883b3b5d78c4a8f3f96b3f3a43414e4f1):
+  adapter validation, parameterization, failure and malformed receipt tests.
+- [497e902](https://github.com/SubhashKumar14/Kadmeion/commit/497e902801910b935cb06d073c841ebf90f6ba3a):
+  end-to-end-in-process adapter/orchestrator test from an attested frozen
+  fixture to SQL query arguments and a simulated pointer-revocation error.
+  [0cfb108](https://github.com/SubhashKumar14/Kadmeion/commit/0cfb10899db4f5fd8e04a2a4df2d45be3b90efdf)
+  corrected an over-escaped regex assertion in that test; the intermediate
+  commit's contracts CI failed, final code CI passed.
+
+**Verified final-code CI:** [run 43552260096](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43552260096)
+completed **contracts and database PASS** on `0cfb108`: TypeScript,
+auth build/smoke (12 checks), isolated auth-preview verification (10 checks),
+**184/184 Node tests**, **268/268 pgTAP assertions in 18 files**,
+**27/27 local real GoTrue/PostgREST/Storage HTTP subtests**, and
+**135/200** authored application/config/test file budget. A separate local
+Node strip-types run passed the 3 adapter unit tests. Dedicated lint, SAST,
+browser E2E, accessibility, hosted Supabase and real direct-`pg` driver
+integration were **NOT RUN**.
+
+**Security boundary:** This is a concrete SQL query adapter, not a deployed
+worker or an independently tested database connection. The `pg` dependency,
+restricted worker DB credential provisioning, actual driver/connection lifecycle,
+local SQL executor integration and real concurrency test are NOT wired.
+The existing trusted orchestrator must rebuild verified bytes; SQL verifies
+the frozen source and pointer but cannot certify renderer provenance. The
+private binding receipt is NEVER a public-serving grant. No public host,
+direct-asset interception, cache revocation, live pointer, production write,
+manual Vercel deploy or irreversible account erasure was performed. Existing
+Git integration automatically created nonproduction auth previews on pushes.
+
+**Next concrete action:** In a nonproduction local Supabase stack, provision
+a narrowly scoped direct-PostgreSQL worker role/connection and test this
+adapter with an actual `pg` client against the existing private binding RPC,
+including concurrent owner block/Trash and tampered HTML/manifest. Do not
+enable public serving or production credentials. Then continue moderation
+operator block-only and remaining B4/B5/B6 gates.
