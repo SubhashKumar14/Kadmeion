@@ -17,3 +17,7 @@ verify_jwt = false
 # No secret-role token is accepted from browser as owner.
 [functions.complete-private-asset]
 verify_jwt = true
+
+# Guard publication with gateway JWT and independent owner-RLS intent verification.
+[functions.publish]
+verify_jwt = true
