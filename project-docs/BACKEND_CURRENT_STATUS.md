@@ -2,8 +2,8 @@
 
 **Repository:** SubhashKumar14/Kadmeion  
 **Feature branch:** `feat/b0-backend-foundation`  
-**Last verified code SHA:** `f904583718dafc0555e977b9b42b1723d44c3f2a`  
-**Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43632411670  
+**Last verified code SHA:** `0098544617f99199032f17f4eacc62fbe35efdde`  
+**Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43636655565  
 **Status:** Significant P1 backend code and local automated tests implemented. **NOT 100% production-ready.**
 
 This page supersedes the 12-Nov-2026 documentation-only "NOT IMPLEMENTED"
@@ -34,18 +34,26 @@ Latest owner selections remain authoritative over all historic drafts.
   with a read-only opt-in CLI. No external host has yet been verified.
 - Browser preview bundle scan denies server credential markers and symlinks.
 
-**Completed CI at code SHA `f9045837`:**
+**Completed CI at code SHA `00985446`:**
 
 | Verification | Outcome |
 |---|---|
-| Node app/contract/auth/editor tests | 319/319 PASS |
-| pgTAP isolated PostgreSQL | 408/408 assertions, 25 SQL files, PASS |
+| Node app/contract/auth/editor tests | 327/327 PASS |
+| pgTAP isolated PostgreSQL | 409/409 assertions, 25 SQL files, PASS |
 | Real local GoTrue/PostgREST/Storage HTTP | 43/43 PASS |
-| Local Deno Edge asset and publication smoke | Both PASS |
+| Local Deno Edge asset, publication and Trash sweeper smoke | All PASS |
 | Local Auth signup/recovery via Mailpit | PASS |
 | Restricted direct PostgreSQL & moderation race | PASS |
 | TypeScript, auth builds/smokes, bundle verification, PL/pgSQL lint | PASS |
 | Authored application/configuration/test files | 194 / originally planned 200; docs excluded |
+
+New backend hardening verified in this CI run: a strictly opt-in, bounded,
+secret-authenticated expired-Trash Edge scheduler; real local Deno gateway
+authentication tests; identity-encoded RPC response-length verification; bounded
+frozen owner revision response streaming; reserved Vercel SPA routes ahead of
+generic public portfolio rewrites; generation-checked UNLISTED privacy
+revocation; and Supabase CLI v3 email-provider syntax. No paid dependency added.
+The working branch still contains the P1 production-protected feature flags.
 
 Tests are on ephemeral local Supabase and GitHub Actions, not hosted-production
 verification. Public, reviewer and unlisted HTML HTTP adapters now reject executable
