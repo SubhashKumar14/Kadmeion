@@ -17,7 +17,8 @@ begin
 end $body$;
 alter table public.private_release_visibility_events
   add constraint kd_private_release_event_kind
-  check (event_type in ('PREPARE','OWNER_BLOCK','TRASH_BLOCK','PROJECT_PRIVACY_BLOCK'));
+  check (event_type in ('PREPARE','OWNER_BLOCK','TRASH_BLOCK','OPERATOR_BLOCK',
+    'OPERATOR_HOLD_LIFT','PROJECT_PRIVACY_BLOCK'));
 
 create function kadmeion_private.block_owner_portfolios_for_project_privacy()
 returns trigger language plpgsql security definer set search_path=''

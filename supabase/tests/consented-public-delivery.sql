@@ -110,10 +110,14 @@ insert into public.projects(id,owner_user_id,slug,title)
 values('70000000-0000-4000-8000-0000000000d1',
   '00000000-0000-4000-8000-0000000000d1',
   'project-privacy','Privacy Fixture');
+set local role authenticated;
+select set_config('request.jwt.claim.sub',
+  '00000000-0000-4000-8000-0000000000d1',true);
 insert into public.project_exposure_intents(
   project_id,owner_user_id,show_on_profile,show_case_study)
 values('70000000-0000-4000-8000-0000000000d1',
   '00000000-0000-4000-8000-0000000000d1',true,true);
+reset role;
 
 set local role service_role;
 select is(
@@ -135,8 +139,12 @@ select is(public.service_read_unlisted_release(
 -- Withdraw just one surface; all old immutable owner portfolio routes must
 -- be disabled rather than relying on an unproven content-reference index.
 reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub',
+  '00000000-0000-4000-8000-0000000000d1',true);
 update public.project_exposure_intents set show_case_study=false
   where project_id='70000000-0000-4000-8000-0000000000d1';
+reset role;
 select is((select status from public.private_release_visibility_pointers
   where portfolio_id='10000000-0000-4000-8000-0000000000d1'),
   'BLOCKED','project privacy withdrawal blocks owner portfolio pointer');
