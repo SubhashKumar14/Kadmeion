@@ -105,6 +105,16 @@ values('10000000-0000-4000-8000-0000000000d1',
   '50000000-0000-4000-8000-0000000000d1',
   1,1,'LIVE',transaction_timestamp(),current_setting('kd.public_fixture.sha'));
 
+-- Existing public release may contain any author-typed project reference.
+insert into public.projects(id,owner_user_id,slug,title)
+values('70000000-0000-4000-8000-0000000000d1',
+  '00000000-0000-4000-8000-0000000000d1',
+  'project-privacy','Privacy Fixture');
+insert into public.project_exposure_intents(
+  project_id,owner_user_id,show_on_profile,show_case_study)
+values('70000000-0000-4000-8000-0000000000d1',
+  '00000000-0000-4000-8000-0000000000d1',true,true);
+
 set local role service_role;
 select is(
   public.service_read_public_portfolio('release_owner','release-fixture')->>'htmlSha256',
@@ -121,6 +131,27 @@ select is(public.service_read_public_portfolio('release_owner','other-fixture'),
 select is(public.service_read_unlisted_release(
   '10000000-0000-4000-8000-0000000000d1'),null::jsonb,
   'UNLISTED resolver cannot expose an expressly PUBLIC release');
+
+-- Withdraw just one surface; all old immutable owner portfolio routes must
+-- be disabled rather than relying on an unproven content-reference index.
+reset role;
+update public.project_exposure_intents set show_case_study=false
+  where project_id='70000000-0000-4000-8000-0000000000d1';
+select is((select status from public.private_release_visibility_pointers
+  where portfolio_id='10000000-0000-4000-8000-0000000000d1'),
+  'BLOCKED','project privacy withdrawal blocks owner portfolio pointer');
+select is((select status from kadmeion_private.unlisted_release_routes
+  where portfolio_id='10000000-0000-4000-8000-0000000000d1'),
+  'REVOKED','project privacy withdrawal transactionally revokes active route');
+select is((select event_type from public.private_release_visibility_events
+  where portfolio_id='10000000-0000-4000-8000-0000000000d1' order by created_at desc limit 1),
+  'PROJECT_PRIVACY_BLOCK','privacy invalidation is audited');
+select is((select revocation_generation from public.private_release_visibility_pointers
+  where portfolio_id='10000000-0000-4000-8000-0000000000d1'),
+  2::bigint,'privacy invalidation advances revocation generation');
+set local role service_role;
+select is(public.service_read_public_portfolio('release_owner','release-fixture'),
+  null::jsonb,'old public HTML cannot survive changed project privacy');
 
 reset role;
 update public.profiles set handle='renamed_owner'
