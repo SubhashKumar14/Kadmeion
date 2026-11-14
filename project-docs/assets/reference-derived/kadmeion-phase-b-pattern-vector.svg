@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540">
+<title>Kadmeion Phase B pattern geometry</title><desc>Source-aligned technical-drawing composition; dark ink field, sparse drafting grid, diagonal mineral-blue sweep, fine arcs, restrained coral quadrant.</desc>
+<rect width="1200" height="540" fill="#101D2B"/>
+<g fill="none" stroke="#8EA7C1" stroke-width="1" opacity=".23">
+<path d="M0 60H1200 M0 155H1200 M0 250H1200 M0 345H1200 M0 440H1200"/>
+<path d="M70 0V540 M250 0V540 M430 0V540 M610 0V540 M790 0V540 M970 0V540 M1150 0V540"/>
+<path d="M85 47H1138V498H85Z M85 90H1138 M150 47V498 M1140 47L340 498"/>
+<circle cx="1021" cy="540" r="398"/><circle cx="1021" cy="540" r="210"/>
+<circle cx="0" cy="540" r="300"/><path d="M0 388C155 314 304 285 463 307"/>
+</g>
+<path d="M-68 371L570 -54H826L105 535Z" fill="#3D64AC" opacity=".87"/>
+<path d="M-12 340L557 -54H612L44 407Z" fill="#7CA8D5" opacity=".43"/>
+<path d="M944 540A208 208 0 0 1 1152 332H1200V540Z" fill="#DB7456" opacity=".96"/>
+<path d="M1051 540A112 112 0 0 1 1163 428H1200V540Z" fill="#101D2B"/>
+<g fill="none" stroke="#D6E2E8" stroke-width="1.2" opacity=".44"><path d="M810 0L560 250 M932 0L672 260 M1200 56L910 346"/><path d="M1037 81L1080 81L1080 124 M1090 245L1108 245L1108 263"/></g>
+<g fill="#DB7456" opacity=".88"><path d="M907 0H936L890 53H860Z"/></g>
+</svg>

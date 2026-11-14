@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.cache/
+.env
+.env.*
+!.env.example
+supabase/.branches/
+supabase/.profiles/
+supabase/.temp/
+*.log
+.DS_Store
+
+.auth-build/
+
+apps/auth-web/vercel-dist/
+.vercel/

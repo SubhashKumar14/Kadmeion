@@ -1,0 +1,334 @@
+path,class_name,area,phase,description,condition,status
+.editorconfig,source_config_test,ROOT_CONFIG,P1,Editor whitespace and newline policy,,PROPOSED_NOT_IMPLEMENTED
+.env.example,source_config_test,ROOT_CONFIG,P1,"Public variable names only, with no secrets or working credentials",,PROPOSED_NOT_IMPLEMENTED
+.github/workflows/ci.yml,source_config_test,ROOT_CONFIG,P1,"Repeatable build, lint, tests, docs-link and budget gates",,PROPOSED_NOT_IMPLEMENTED
+.github/workflows/release-check.yml,source_config_test,ROOT_CONFIG,P1,Verify generated static releases and artifacts before deployment; not production publish automation,,PROPOSED_NOT_IMPLEMENTED
+.github/workflows/security.yml,source_config_test,ROOT_CONFIG,P1,"Dependency, secret and license policy scan; no high-privilege CI secret exposure",,PROPOSED_NOT_IMPLEMENTED
+.gitignore,source_config_test,ROOT_CONFIG,P1,"Ignore secrets, installs, generated pages, build artifacts and private fixtures",,PROPOSED_NOT_IMPLEMENTED
+DOCUMENTATION_FILE_TREE.txt,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: DOCUMENTATION_FILE_TREE.txt,,DOCUMENTATION_FILE_CREATED
+FILE_COUNT_REPORT.md,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: FILE_COUNT_REPORT.md,,DOCUMENTATION_FILE_CREATED
+FULL_REPOSITORY_FILE_MANIFEST.csv,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: FULL_REPOSITORY_FILE_MANIFEST.csv,,DOCUMENTATION_FILE_CREATED
+FULL_REPOSITORY_FILE_TREE.txt,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: FULL_REPOSITORY_FILE_TREE.txt,,DOCUMENTATION_FILE_CREATED
+FULL_REPOSITORY_STRUCTURE.md,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: FULL_REPOSITORY_STRUCTURE.md,,DOCUMENTATION_FILE_CREATED
+LICENSE,planned_policy,POLICY,P1,License text only after explicit owner selection and third-party rights review; not created,OWNER_APPROVAL_PENDING,PROPOSED_NOT_CREATED
+PHASE_AND_MODULE_OWNERSHIP.md,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: PHASE_AND_MODULE_OWNERSHIP.md,,DOCUMENTATION_FILE_CREATED
+PROPOSED_FUTURE_REPOSITORY_TREE.txt,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: PROPOSED_FUTURE_REPOSITORY_TREE.txt,,DOCUMENTATION_FILE_CREATED
+README.md,documentation_or_asset,DOCUMENTATION,DOCS,Repository and capstone documentation entry,,DOCUMENTATION_FILE_CREATED
+SCREEN_TO_SOURCE_MAP.csv,documentation_or_asset,DOCUMENTATION,DOCS,Supporting documentation/data artifact: SCREEN_TO_SOURCE_MAP.csv,,DOCUMENTATION_FILE_CREATED
+apps/web/index.html,source_config_test,WEB_APP_SETUP,P1,Application document entry and accessible root,,PROPOSED_NOT_IMPLEMENTED
+apps/web/package.json,source_config_test,WEB_APP_SETUP,P1,React/Vite SPA and workspace dependency declarations,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/app/guards.tsx,source_config_test,WEB_APP_SETUP,P1,Client route UX gate; server-side RLS/roles remain authoritative,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/app/navigation.ts,source_config_test,WEB_APP_SETUP,P1,"Typed breadcrumbs, public/auth/app/editor/admin navigation maps",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/app/providers.tsx,source_config_test,WEB_APP_SETUP,P1,"Theme/auth state, shared status and nonprivileged context",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/app/router.tsx,source_config_test,WEB_APP_SETUP,P1,"Route definitions, lazy loading and reserved /u and auth/app paths",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/brand.tsx,source_config_test,WEB_DESIGN_SYSTEM,P1,Original K and approved sparse geometric motifs implemented with rights-clean assets,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/glyph-skeleton.tsx,source_config_test,WEB_DESIGN_SYSTEM,P1,Real text-shaped glyph skeletons and button progress only while data pending,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/motion.css,source_config_test,WEB_DESIGN_SYSTEM,P1,"120–180ms micro, 180–250ms panels, 280–320ms auth; reduced motion",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/themes.css,source_config_test,WEB_DESIGN_SYSTEM,P1,Aether Drift light/dark rules; portfolio-theme tokens remain independent,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/tokens.css,source_config_test,WEB_DESIGN_SYSTEM,P1,Approved semantic color/spacing/sizing custom properties after reference verification,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/typography.css,source_config_test,WEB_DESIGN_SYSTEM,P1,Editorial/productivity/code type roles; exact font family conditional on rights,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/design-system/ui-primitives.tsx,source_config_test,WEB_DESIGN_SYSTEM,P1,"Accessible forms, dialogues, controls, notices, toasts and keyboard focus utilities",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/admin/AdminAnalyticsScreen.tsx,source_config_test,WEB_SCREENS,P3,Deferred restricted advanced-admin aggregate analytics dashboard and audit overview,PHASE_3_AND_OWNER_APPROVAL,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/admin/AdminUsersScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: ops 01 admin users.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/admin/AppealsCaseHistoryScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: ops 03 appeals and case history.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/admin/PortfolioModerationScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: ops 02 portfolio moderation.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/admin/admin-actions.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,Read-only client projections and reasoned privileged action requests,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/ForgotPasswordScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: auth 04 password recovery request.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/OAuthCallbackScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: auth 03 oauth callback.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/RecoveryOutcomeScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: auth 06 recovery outcome.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/ResetPasswordScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: auth 05 password reset.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/SignInScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: auth 01 sign in.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/SignUpScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: auth 02 sign up.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/auth/auth-actions.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,Email/password/Google OAuth callback and reset UX orchestration,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/AdvancedSourcePanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 07 advanced source.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/AssetManagerPanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 06 asset manager.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/ComponentsAndSectionsPanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 03 components and sections.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/ContentInspectorPanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 02 content inspector.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/HistoryProblemsPanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 08 revision history and problems.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/MyComponentsPanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 04 my components.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/PortfolioWorkbenchScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 01 portfolio editor workbench.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/PreviewModesPanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 09 preview modes.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/ThemeResponsivePanel.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: edit 05 theme and responsive inspector.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/editor/editor-controller.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,Bind one editor-core transaction writer to canvas/inspector/source/history views,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/DeveloperActivityScreen.tsx,source_config_test,WEB_SCREENS,P2,UI for documented screen/panel: growth 02 developer activity.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/GoalsScreen.tsx,source_config_test,WEB_SCREENS,P2,UI for documented screen/panel: growth 04 goals.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/PersonalGrowthHubScreen.tsx,source_config_test,WEB_SCREENS,P2,UI for documented screen/panel: growth 01 personal growth hub.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/PlatformConnectionsScreen.tsx,source_config_test,WEB_SCREENS,P2,UI for documented screen/panel: growth 06 platform connections.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/PortfolioAnalyticsScreen.tsx,source_config_test,WEB_SCREENS,P2,UI for documented screen/panel: growth 05 portfolio analytics.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/PrivateDevScoreScreen.tsx,source_config_test,WEB_SCREENS,P2,UI for documented screen/panel: growth 03 private devscore.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/growth-selectors.ts,source_config_test,WEB_DOMAIN_ACTIONS,P2,"Private activity, DevScore, goal and aggregate analytics views with freshness",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/growth/provider-handles.ts,source_config_test,WEB_DOMAIN_ACTIONS,P2,"Non-OAuth public-handle input, provider card status, manual Sync invocation",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/marketing/ExplorePortfoliosScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: pub 02 explore portfolios.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/marketing/LandingScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: pub 01 landing.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/marketing/PublicTemplateExplorerScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: pub 03 public template explorer.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/public-profile/DeveloperIdentityScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: public 01 developer identity hub.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/public-profile/PublicShareControls.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: public 04 public share controls.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/public-profile/PublishedCaseStudyScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: public 02 published case study.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/public-profile/PublishedPortfolioFallbackScreen.tsx,source_config_test,WEB_SCREENS,P1,"UI for documented screen/panel: public 03 published portfolio. Static published bytes must instead be served by independent release delivery, not this app-only fallback.",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/publishing/PublishPreflightScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: publish 03 publish preflight.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/publishing/ReleasesAndRollbackScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: publish 04 releases and rollback.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/publishing/ReviewerOnlyPreviewScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: publish 02 reviewer only preview.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/publishing/ReviewerStagingScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: publish 01 reviewer staging.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/publishing/release-actions.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,"Preflight, staging, revocation and publish command client orchestration",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/AccountExitScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 07 account exit.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/AccountSecurityScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 04 account security.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/ExportCenterScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 06 export center.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/NotificationsScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 03 notifications.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/PrivacySharingScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 02 privacy sharing.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/SettingsHubScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 01 settings hub.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/TrashScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: set 05 trash.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/settings/account-actions.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,"Privacy, security, notifications, Trash and account-exit UI command layer",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/system/UnavailableResourceScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: sys 01 not found private expired offline.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/system/UnsupportedAuthoringDeviceScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: sys 02 unsupported authoring device.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/DeveloperProfileEditorScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 03 developer profile editor.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/OwnedPortfolioLibraryScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 07 owned portfolio library.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/ProjectDetailedEditorScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 06 project detailed editor.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/ProjectLibraryScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 04 project library.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/ProjectQuickAddDrawer.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 05 project quick add drawer.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/TemplateChoiceScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 08 template choice new portfolio.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/WelcomeOnboardingScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 01 welcome and onboarding.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/WorkspaceHomeScreen.tsx,source_config_test,WEB_SCREENS,P1,UI for documented screen/panel: work 02 workspace home.,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/identity-project-actions.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,"Handle validation, public identity fields, project/link metadata and quick-save actions",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/features/workspace/portfolio-actions.ts,source_config_test,WEB_DOMAIN_ACTIONS,P1,"Portfolio draft creation/ownership, templates and non-editor listing",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/lib/safe-links.ts,source_config_test,WEB_CLIENT,P1,Normalize external project/contact URLs and protect against unsafe schemes,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/lib/status-model.ts,source_config_test,WEB_CLIENT,P1,"Distinct local, cloud, stale, pending, failed, live-revision and offline states",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/lib/supabase-browser.ts,source_config_test,WEB_CLIENT,P1,Public anon-key browser client; never service-role credential,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/main.tsx,source_config_test,WEB_APP_SETUP,P1,React root mounting and global setup,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/shells/AuthShell.tsx,source_config_test,WEB_SHELLS,P1,"Reversible sliding auth panel on desktop, mobile crossfade and reduced motion",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/shells/EditorShell.tsx,source_config_test,WEB_SHELLS,P1,"Desktop/qualified tablet three-pane workbench, header and diagnostics drawer",,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/shells/OperationsShell.tsx,source_config_test,WEB_SHELLS,P1,Restricted Users and Moderation administration shell,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/shells/PublicShell.tsx,source_config_test,WEB_SHELLS,P1,Expressive Aether Drift public-site header/footer/navigation,,PROPOSED_NOT_IMPLEMENTED
+apps/web/src/shells/WorkspaceShell.tsx,source_config_test,WEB_SHELLS,P1,Collapsible icon-and-label sidebar and workspace top-level navigation,,PROPOSED_NOT_IMPLEMENTED
+apps/web/tsconfig.json,source_config_test,WEB_APP_SETUP,P1,Web-only TypeScript config,,PROPOSED_NOT_IMPLEMENTED
+apps/web/vite.config.ts,source_config_test,WEB_APP_SETUP,P1,"Web build aliases, safe output, and browser optimizations",,PROPOSED_NOT_IMPLEMENTED
+assets/reference/approved_brand_pattern_crop.png,documentation_or_asset,REFERENCE_ASSET,DOCS,Approved visual reference artwork; not production source asset,,DOCUMENTATION_FILE_CREATED
+assets/reference/kadmeion_aether_drift_ui_concept_board.png,documentation_or_asset,REFERENCE_ASSET,DOCS,Approved visual reference artwork; not production source asset,,DOCUMENTATION_FILE_CREATED
+assets/reference/kadmeion_glyph_loading_system.png,documentation_or_asset,REFERENCE_ASSET,DOCS,Approved visual reference artwork; not production source asset,,DOCUMENTATION_FILE_CREATED
+delivery/package.json,source_config_test,DELIVERY,P1,"Independent static release-serving adapter candidate, subject to free-host proof",PROOF_GATE: host + isolation not selected or proven,PROPOSED_NOT_IMPLEMENTED
+delivery/src/host-adapter.ts,source_config_test,DELIVERY,P1,Provider-independent static serving interface; selected hosting provider unverified,PROOF_GATE: host + isolation not selected or proven,PROPOSED_NOT_IMPLEMENTED
+delivery/src/release-manifest.ts,source_config_test,DELIVERY,P1,Immutable manifest and canonical active-pointer consistency,PROOF_GATE: host + isolation not selected or proven,PROPOSED_NOT_IMPLEMENTED
+delivery/src/route-resolver.ts,source_config_test,DELIVERY,P1,Resolve published paths and reserve /u for public identity; reject private objects,PROOF_GATE: host + isolation not selected or proven,PROPOSED_NOT_IMPLEMENTED
+delivery/src/tombstones.ts,source_config_test,DELIVERY,P1,Enforce unpublish/redirect/410 cache policies before serving bytes,PROOF_GATE: host + isolation not selected or proven,PROPOSED_NOT_IMPLEMENTED
+delivery/src/verify-publication.ts,source_config_test,DELIVERY,P1,"Verify actual URL, bytes, headers, rollback behavior and DB-off resilience",PROOF_GATE: host + isolation not selected or proven,PROPOSED_NOT_IMPLEMENTED
+design.md,documentation_or_asset,DOCUMENTATION,DOCS,Master design and interaction specification,,DOCUMENTATION_FILE_CREATED
+docs/00_governance/AUTHORITY_AND_SUPERSESSION.md,documentation_or_asset,DOCUMENTATION,DOCS,"Authority, Provenance and Safe Interpretation",,DOCUMENTATION_FILE_CREATED
+docs/00_governance/CONFLICT_REGISTER.md,documentation_or_asset,DOCUMENTATION,DOCS,Conflict Resolution and Supersession Register,,DOCUMENTATION_FILE_CREATED
+docs/00_governance/DECISION_TRACEABILITY_GUIDE.md,documentation_or_asset,DOCUMENTATION,DOCS,UI Decision Traceability and Status,,DOCUMENTATION_FILE_CREATED
+docs/00_governance/GLOSSARY.md,documentation_or_asset,DOCUMENTATION,DOCS,Kadmeion Glossary and Precise Terms,,DOCUMENTATION_FILE_CREATED
+docs/00_governance/PRODUCT_SCOPE_AND_PHASES.md,documentation_or_asset,DOCUMENTATION,DOCS,Product Scope and Phase Boundaries,,DOCUMENTATION_FILE_CREATED
+docs/01_product/INFORMATION_ARCHITECTURE.md,documentation_or_asset,DOCUMENTATION,DOCS,Information Architecture and Navigation,,DOCUMENTATION_FILE_CREATED
+docs/01_product/NONFUNCTIONAL_REQUIREMENTS.md,documentation_or_asset,DOCUMENTATION,DOCS,Nonfunctional Requirements and Testable Quality Targets,,DOCUMENTATION_FILE_CREATED
+docs/01_product/PRODUCT_REQUIREMENTS_PRD.md,documentation_or_asset,DOCUMENTATION,DOCS,Product Requirements Document (Full Capstone Scope),,DOCUMENTATION_FILE_CREATED
+docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md,documentation_or_asset,DOCUMENTATION,DOCS,Software Requirements Specification (SRS),,DOCUMENTATION_FILE_CREATED
+docs/01_product/USE_CASE_CATALOG.md,documentation_or_asset,DOCUMENTATION,DOCS,Use Cases and Actor Interactions,,DOCUMENTATION_FILE_CREATED
+docs/02_design/SCREEN_CATALOG.md,documentation_or_asset,DOCUMENTATION,DOCS,Kadmeion — Complete Screen and Route Inventory,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/auth_01_sign_in.md,documentation_or_asset,DOCUMENTATION,DOCS,AUTH-01 — Sign in,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/auth_02_sign_up.md,documentation_or_asset,DOCUMENTATION,DOCS,AUTH-02 — Sign up,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/auth_03_oauth_callback.md,documentation_or_asset,DOCUMENTATION,DOCS,AUTH-03 — OAuth callback,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/auth_04_password_recovery_request.md,documentation_or_asset,DOCUMENTATION,DOCS,AUTH-04 — Password recovery request,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/auth_05_password_reset.md,documentation_or_asset,DOCUMENTATION,DOCS,AUTH-05 — Password reset,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/auth_06_recovery_outcome.md,documentation_or_asset,DOCUMENTATION,DOCS,AUTH-06 — Recovery outcome,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_01_portfolio_editor_workbench.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-01 — Portfolio editor workbench,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_02_content_inspector.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-02 — Content inspector,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_03_components_and_sections.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-03 — Components and sections,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_04_my_components.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-04 — My Components,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_05_theme_and_responsive_inspector.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-05 — Theme and responsive inspector,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_06_asset_manager.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-06 — Asset manager,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_07_advanced_source.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-07 — Advanced source,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_08_revision_history_and_problems.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-08 — Revision history and Problems,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/edit_09_preview_modes.md,documentation_or_asset,DOCUMENTATION,DOCS,EDIT-09 — Preview modes,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/growth_01_personal_growth_hub.md,documentation_or_asset,DOCUMENTATION,DOCS,GROWTH-01 — Personal Growth hub,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/growth_02_developer_activity.md,documentation_or_asset,DOCUMENTATION,DOCS,GROWTH-02 — Developer Activity,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/growth_03_private_devscore.md,documentation_or_asset,DOCUMENTATION,DOCS,GROWTH-03 — Private DevScore,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/growth_04_goals.md,documentation_or_asset,DOCUMENTATION,DOCS,GROWTH-04 — Goals,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/growth_05_portfolio_analytics.md,documentation_or_asset,DOCUMENTATION,DOCS,GROWTH-05 — Portfolio analytics,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/growth_06_platform_connections.md,documentation_or_asset,DOCUMENTATION,DOCS,GROWTH-06 — Platform connections,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/ops_01_admin_users.md,documentation_or_asset,DOCUMENTATION,DOCS,OPS-01 — Admin users,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/ops_02_portfolio_moderation.md,documentation_or_asset,DOCUMENTATION,DOCS,OPS-02 — Portfolio moderation,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/ops_03_appeals_and_case_history.md,documentation_or_asset,DOCUMENTATION,DOCS,OPS-03 — Appeals and case history,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/pub_01_landing.md,documentation_or_asset,DOCUMENTATION,DOCS,PUB-01 — Landing,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/pub_02_explore_portfolios.md,documentation_or_asset,DOCUMENTATION,DOCS,PUB-02 — Explore portfolios,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/pub_03_public_template_explorer.md,documentation_or_asset,DOCUMENTATION,DOCS,PUB-03 — Public template explorer,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/public_01_developer_identity_hub.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLIC-01 — Developer identity hub,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/public_02_published_case_study.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLIC-02 — Published case study,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/public_03_published_portfolio.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLIC-03 — Published portfolio,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/public_04_public_share_controls.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLIC-04 — Public share controls,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/publish_01_reviewer_staging.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLISH-01 — Reviewer staging,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/publish_02_reviewer_only_preview.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLISH-02 — Reviewer-only preview,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/publish_03_publish_preflight.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLISH-03 — Publish preflight,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/publish_04_releases_and_rollback.md,documentation_or_asset,DOCUMENTATION,DOCS,PUBLISH-04 — Releases and rollback,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_01_settings_hub.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-01 — Settings hub,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_02_privacy_sharing.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-02 — Privacy & sharing,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_03_notifications.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-03 — Notifications,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_04_account_security.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-04 — Account security,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_05_trash.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-05 — Trash,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_06_export_center.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-06 — Export center,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/set_07_account_exit.md,documentation_or_asset,DOCUMENTATION,DOCS,SET-07 — Account exit,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/sys_01_not_found_private_expired_offline.md,documentation_or_asset,DOCUMENTATION,DOCS,SYS-01 — Not found/private/expired/offline,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/sys_02_unsupported_authoring_device.md,documentation_or_asset,DOCUMENTATION,DOCS,SYS-02 — Unsupported authoring device,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_01_welcome_and_onboarding.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-01 — Welcome and onboarding,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_02_workspace_home.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-02 — Workspace home,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_03_developer_profile_editor.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-03 — Developer profile editor,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_04_project_library.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-04 — Project library,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_05_project_quick_add_drawer.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-05 — Project quick add drawer,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_06_project_detailed_editor.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-06 — Project detailed editor,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_07_owned_portfolio_library.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-07 — Owned portfolio library,,DOCUMENTATION_FILE_CREATED
+docs/02_design/screens/work_08_template_choice_new_portfolio.md,documentation_or_asset,DOCUMENTATION,DOCS,WORK-08 — Template choice/new portfolio,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/01_AUTHENTICATION.md,documentation_or_asset,DOCUMENTATION,DOCS,01 Authentication — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md,documentation_or_asset,DOCUMENTATION,DOCS,02 Onboarding And Identity — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,documentation_or_asset,DOCUMENTATION,DOCS,03 Projects And Case Studies — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,documentation_or_asset,DOCUMENTATION,DOCS,04 Editor And Components — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,documentation_or_asset,DOCUMENTATION,DOCS,05 Staging Publish And Export — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,documentation_or_asset,DOCUMENTATION,DOCS,06 Integrations Analytics And Goals — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,documentation_or_asset,DOCUMENTATION,DOCS,07 Settings Recovery And Deletion — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,documentation_or_asset,DOCUMENTATION,DOCS,08 Administration And Moderation — Feature and Workflow Specifications,,DOCUMENTATION_FILE_CREATED
+docs/03_workflows/README.md,documentation_or_asset,DOCUMENTATION,DOCS,Kadmeion — All Feature Workflows (Sign-in → Restricted Admin),,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/API_COMMANDS_EVENTS_AND_ERRORS.md,documentation_or_asset,DOCUMENTATION,DOCS,Logical API/Command Catalog and Event Contracts,,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/COST_OPERATIONS_AND_DEPLOYMENT.md,documentation_or_asset,DOCUMENTATION,DOCS,"Strict ₹0 Operations, Free-Tier Quotas and Deployment Proof",,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md,documentation_or_asset,DOCUMENTATION,DOCS,"Proposed PostgreSQL Data Model, RLS and Storage Policy",,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/EDITOR_CORE_AND_FILE_CONTRACT.md,documentation_or_asset,DOCUMENTATION,DOCS,"Editor Engine, Project Files, Slots, Transactions and History",,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/OFFLINE_RECOVERY_AND_DATA_PORTABILITY.md,documentation_or_asset,DOCUMENTATION,DOCS,"Browser Storage, Offline Editing, Recovery and Import/Export",,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/PROPOSED_REPOSITORY_STRUCTURE.md,documentation_or_asset,DOCUMENTATION,DOCS,Proposed Kadmeion Source Repository Structure and Ownership,,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/PROVIDER_DATA_AND_SCREENSHOT_FEASIBILITY.md,documentation_or_asset,DOCUMENTATION,DOCS,Optional Public Developer Data and Website Thumbnail Feasibility,,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/SECURITY_AND_PRIVACY.md,documentation_or_asset,DOCUMENTATION,DOCS,Security and Privacy Threat Model,,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/STATIC_RELEASE_HOSTING_AND_EXPORT.md,documentation_or_asset,DOCUMENTATION,DOCS,"Static Rendering, Hosting, Release Delivery and Portability",,DOCUMENTATION_FILE_CREATED
+docs/04_engineering/SYSTEM_ARCHITECTURE.md,documentation_or_asset,DOCUMENTATION,DOCS,High-Level Architecture and Trust Boundaries,,DOCUMENTATION_FILE_CREATED
+docs/05_quality/ACCESSIBILITY_RESPONSIVE_TEST_PLAN.md,documentation_or_asset,DOCUMENTATION,DOCS,"Accessibility, Responsive and Assistive-Technology Acceptance",,DOCUMENTATION_FILE_CREATED
+docs/05_quality/DESIGN_REVIEW_CHECKLIST.md,documentation_or_asset,DOCUMENTATION,DOCS,Cross-Screen Design QA and Final Sign-off Checklist,,DOCUMENTATION_FILE_CREATED
+docs/05_quality/PLANNED_USER_ACCEPTANCE_TESTS.md,documentation_or_asset,DOCUMENTATION,DOCS,Planned User Acceptance Test Scenarios,,DOCUMENTATION_FILE_CREATED
+docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md,documentation_or_asset,DOCUMENTATION,DOCS,Release Readiness and Definition of Done,,DOCUMENTATION_FILE_CREATED
+docs/05_quality/TECHNICAL_VERIFICATION_GATES.md,documentation_or_asset,DOCUMENTATION,DOCS,Technical Proof Register and Engineering Kill Rules,,DOCUMENTATION_FILE_CREATED
+docs/05_quality/TEST_REPORT_TEMPLATE.md,documentation_or_asset,DOCUMENTATION,DOCS,Test Execution and Validation Report Template,,DOCUMENTATION_FILE_CREATED
+docs/05_quality/TEST_STRATEGY_AND_PLAN.md,documentation_or_asset,DOCUMENTATION,DOCS,"Quality Assurance, Test Strategy and Acceptance Plan",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/ABSTRACT_AND_PROBLEM_FORMULATION.md,documentation_or_asset,DOCUMENTATION,DOCS,"Capstone Abstract, Problem Formulation and Objectives",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/CAPSTONE_REPORT_DRAFT.md,documentation_or_asset,DOCUMENTATION,DOCS,Kadmeion — Capstone Project Report: Source-Grounded Planning Draft,,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/DELIVERY_PLAN.md,documentation_or_asset,DOCUMENTATION,DOCS,"Phased Development Plan, Work Breakdown and Gate Dependencies",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/DEMONSTRATION_RUNBOOK.md,documentation_or_asset,DOCUMENTATION,DOCS,Capstone Demonstration Runbook (Pre-Implementation),,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/DIAGRAMS_AND_MODELS.md,documentation_or_asset,DOCUMENTATION,DOCS,"Architecture, Use Case, Activity, Sequence and State Diagrams",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/FEASIBILITY_STUDY.md,documentation_or_asset,DOCUMENTATION,DOCS,"Technical, Economic, Operational and Ethical Feasibility Study",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/PRESENTATION_OUTLINE.md,documentation_or_asset,DOCUMENTATION,DOCS,Capstone Presentation Outline (Slide-by-Slide),,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/PROJECT_CHARTER_AND_PROPOSAL.md,documentation_or_asset,DOCUMENTATION,DOCS,Kadmeion — Capstone Project Charter and Proposal,,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/PROJECT_RISK_REGISTER.md,documentation_or_asset,DOCUMENTATION,DOCS,Capstone Project Risk Register and Premortem,,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/REQUIREMENTS_ANALYSIS_AND_USER_STORIES.md,documentation_or_asset,DOCUMENTATION,DOCS,"User Stories, Functional Analysis and Acceptance",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/RESEARCH_AND_REFERENCES.md,documentation_or_asset,DOCUMENTATION,DOCS,"Technical Literature, Standards and Project References",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/SUBMISSION_AND_RESEARCH_INTEGRITY_CHECKLIST.md,documentation_or_asset,DOCUMENTATION,DOCS,"Academic Submission, Research Ethics and Integrity Checklist",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/SYSTEM_REQUIREMENTS_AND_ENVIRONMENT.md,documentation_or_asset,DOCUMENTATION,DOCS,"Software, Hardware and Execution Environment Requirements",,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/VIVA_QUESTIONS_AND_RESPONSES.md,documentation_or_asset,DOCUMENTATION,DOCS,Capstone Viva / Technical Review Questions and Defensible Answers,,DOCUMENTATION_FILE_CREATED
+docs/06_capstone/WEEKLY_WORK_LOG_TEMPLATE.md,documentation_or_asset,DOCUMENTATION,DOCS,Student Capstone Work Log Template,,DOCUMENTATION_FILE_CREATED
+eslint.config.mjs,source_config_test,ROOT_CONFIG,P1,Static analysis including React/TypeScript security rules,,PROPOSED_NOT_IMPLEMENTED
+package.json,source_config_test,ROOT_CONFIG,P1,"Root workspace scripts, package manager, engines, and dependency policies",,PROPOSED_NOT_IMPLEMENTED
+packages/builder-ui/package.json,source_config_test,BUILDER_UI,P1,Editor React UI layer depends on editor-core and contracts,,PROPOSED_NOT_IMPLEMENTED
+packages/builder-ui/src/canvas.tsx,source_config_test,BUILDER_UI,P1,"Canvas selections, outlines and drop locations",,PROPOSED_NOT_IMPLEMENTED
+packages/builder-ui/src/index.ts,source_config_test,BUILDER_UI,P1,UI entry and workbench wiring,,PROPOSED_NOT_IMPLEMENTED
+packages/builder-ui/src/inspectors.tsx,source_config_test,BUILDER_UI,P1,Content-first properties inspector with scoped tokens and responsive controls,,PROPOSED_NOT_IMPLEMENTED
+packages/builder-ui/src/layers-and-keyboard.tsx,source_config_test,BUILDER_UI,P1,"Layer tree, accessible component move/add/replace without drag",,PROPOSED_NOT_IMPLEMENTED
+packages/builder-ui/src/source-history.tsx,source_config_test,BUILDER_UI,P1,"Bounded advanced source, history, comparison and diagnostics views",,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/package.json,source_config_test,CONTRACTS,P1,Versioned shared schema package,,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/src/components.ts,source_config_test,CONTRACTS,P1,Typed component registry/variants and compatibility manifests,,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/src/index.ts,source_config_test,CONTRACTS,P1,Public typed contract exports,,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/src/operations.ts,source_config_test,CONTRACTS,P1,"Transaction operations, stable IDs and source ownership tags",,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/src/project.ts,source_config_test,CONTRACTS,P1,"Readable file set, sections, slots and content schema",,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/src/provider-data.ts,source_config_test,CONTRACTS,P2,"Provider-specific typed evidence, staleness, goal and DevScore facts",,PROPOSED_NOT_IMPLEMENTED
+packages/contracts/src/releases.ts,source_config_test,CONTRACTS,P1,"Release, staging, visibility, export and privacy contracts",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/package.json,source_config_test,EDITOR_CORE,P1,Pure TypeScript editor engine dependencies; no DOM/network access,,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/conflicts.ts,source_config_test,EDITOR_CORE,P1,"Local/folder/cloud conflict safety, Compare/Keep Both/Retry",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/content-mapping.ts,source_config_test,EDITOR_CORE,P1,"Layout swaps, alias mapping and content preservation",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/diagnostics.ts,source_config_test,EDITOR_CORE,P1,Structural vs publish-readiness errors and last-good stale preview labels,,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/file-graph.ts,source_config_test,EDITOR_CORE,P1,Parse canonical project file set into validated immutable graph,,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/index.ts,source_config_test,EDITOR_CORE,P1,Public editor operations and selectors API,,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/managed-file-grammar.ts,source_config_test,EDITOR_CORE,P1,"Lossless JSONC edits when proven safe, strict JSON fallback",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/revisions.ts,source_config_test,EDITOR_CORE,P1,"Linear revision history, diff, checkpoint and restore-as-new-revision",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/slot-lifecycle.ts,source_config_test,EDITOR_CORE,P1,"EMPTY/S0/S1/S2 slot states, typed placement and protected custom overrides",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/source-guard.ts,source_config_test,EDITOR_CORE,P1,"Opaque custom source ownership, dependency allowlist and safe diagnostics",,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/theme-resolution.ts,source_config_test,EDITOR_CORE,P1,Global/section/layout/component/responsive token inheritance to CSS variables,,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/transactions.ts,source_config_test,EDITOR_CORE,P1,Single atomic operation writer and revision checkpointing,,PROPOSED_NOT_IMPLEMENTED
+packages/editor-core/src/unplaced-stash.ts,source_config_test,EDITOR_CORE,P1,Recover deleted/unmapped content and owned source without data loss,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/package.json,source_config_test,PORTFOLIO_KIT,P1,Trusted catalogue package; presets not hard-limited at five,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/component-registry.tsx,source_config_test,PORTFOLIO_KIT,P1,"Trusted reusable React components (~16 implementations with variants), typed manifests and compatibility",,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/index.ts,source_config_test,PORTFOLIO_KIT,P1,Catalogue exports and registry,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l1-arc-hero.tsx,source_config_test,PORTFOLIO_KIT,P1,L1 typed named-slot trusted section layout (arc-hero); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l2-collage-hero.tsx,source_config_test,PORTFOLIO_KIT,P1,L2 typed named-slot trusted section layout (collage-hero); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l3-project-showcase.tsx,source_config_test,PORTFOLIO_KIT,P1,L3 typed named-slot trusted section layout (project-showcase); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l4-editorial-bento.tsx,source_config_test,PORTFOLIO_KIT,P1,L4 typed named-slot trusted section layout (editorial-bento); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l5-stepped-hero.tsx,source_config_test,PORTFOLIO_KIT,P1,L5 typed named-slot trusted section layout (stepped-hero); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l6-skills.tsx,source_config_test,PORTFOLIO_KIT,P1,L6 typed named-slot trusted section layout (skills); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l7-experience.tsx,source_config_test,PORTFOLIO_KIT,P1,L7 typed named-slot trusted section layout (experience); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/layouts/l8-contact.tsx,source_config_test,PORTFOLIO_KIT,P1,L8 typed named-slot trusted section layout (contact); responsive semantic DOM and a11y,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/presets/arc.ts,source_config_test,PORTFOLIO_KIT,P1,Arc preset including default sections and labeled example content,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/presets/collage.ts,source_config_test,PORTFOLIO_KIT,P1,Collage preset including default sections and labeled example content,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/presets/editorial.ts,source_config_test,PORTFOLIO_KIT,P1,Editorial preset including default sections and labeled example content,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/presets/stairs.ts,source_config_test,PORTFOLIO_KIT,P1,Stairs preset including default sections and labeled example content,,PROPOSED_NOT_IMPLEMENTED
+packages/portfolio-kit/src/presets/studio.ts,source_config_test,PORTFOLIO_KIT,P1,Studio preset including default sections and labeled example content,,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/package.json,source_config_test,PUBLISHER,P1,Deterministic static build/export package,,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/src/assets.ts,source_config_test,PUBLISHER,P1,"Referenced asset allowlist, optimization and path integrity",,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/src/export.ts,source_config_test,PUBLISHER,P1,"Portable deterministic static output and editable project archive, no secrets",,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/src/index.ts,source_config_test,PUBLISHER,P1,Public build and export entry,,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/src/preflight.ts,source_config_test,PUBLISHER,P1,"Security/structural/a11y/readiness Blockers, Warnings, Passed",,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/src/seo-and-releases.ts,source_config_test,PUBLISHER,P1,"Metadata from real content, canonical URLs, revision hashes and file manifest",,PROPOSED_NOT_IMPLEMENTED
+packages/publisher/src/static-render.ts,source_config_test,PUBLISHER,P1,Generate visitor-facing static HTML/CSS from pinned trusted revision,,PROPOSED_NOT_IMPLEMENTED
+packages/shared-ui/package.json,source_config_test,SHARED_UI,P1,Accessible reusable shared UI component package,,PROPOSED_NOT_IMPLEMENTED
+packages/shared-ui/src/controls.tsx,source_config_test,SHARED_UI,P1,"Accessible buttons/forms/dialogs/toasts, themed by host tokens; direct package export",,PROPOSED_NOT_IMPLEMENTED
+packages/storage-adapters/package.json,source_config_test,STORAGE_ADAPTERS,P1,Persistence adapter package,,PROPOSED_NOT_IMPLEMENTED
+packages/storage-adapters/src/folder-journal.ts,source_config_test,STORAGE_ADAPTERS,P1,Capability-gated local folder adapter and write-ahead journal,,PROPOSED_NOT_IMPLEMENTED
+packages/storage-adapters/src/index.ts,source_config_test,STORAGE_ADAPTERS,P1,Explicit storage interface and statuses,,PROPOSED_NOT_IMPLEMENTED
+packages/storage-adapters/src/indexeddb.ts,source_config_test,STORAGE_ADAPTERS,P1,Best-effort local browser storage and corruption recovery,,PROPOSED_NOT_IMPLEMENTED
+packages/storage-adapters/src/supabase-sync.ts,source_config_test,STORAGE_ADAPTERS,P1,Owner-scoped cloud sync and revision conflict handling,,PROPOSED_NOT_IMPLEMENTED
+packages/storage-adapters/src/zip-portability.ts,source_config_test,STORAGE_ADAPTERS,P1,"ZIP import/export integrity, path traversal defense and schema migration",,PROPOSED_NOT_IMPLEMENTED
+pnpm-lock.yaml,source_config_test,ROOT_CONFIG,P1,Deterministic dependency resolutions; generated after installing approved versions,,PROPOSED_NOT_IMPLEMENTED
+pnpm-workspace.yaml,source_config_test,ROOT_CONFIG,P1,pnpm monorepo workspace boundaries,,PROPOSED_NOT_IMPLEMENTED
+registers/CONFLICTS.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/DECISIONS_UI_001_115.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/FEATURE_TRACEABILITY.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/MANIFEST_SHA256.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/SCREENS.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/SOURCE_INVENTORY.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/TECHNICAL_PROOFS.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/TEST_CASES.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+registers/WORKFLOWS.csv,documentation_or_asset,DOCUMENTATION,DOCS,"Traceability, source, acceptance or verification ledger",,DOCUMENTATION_FILE_CREATED
+scripts/check-file-budget.mjs,source_config_test,SCRIPTS,P1,Count all planned/real source/config/test files against 200 cap,,PROPOSED_NOT_IMPLEMENTED
+scripts/verify-doc-mappings.mjs,source_config_test,SCRIPTS,P1,"Check screen specs, workflow/decision references and repo manifest invariants",,PROPOSED_NOT_IMPLEMENTED
+scripts/verify-export-integrity.mjs,source_config_test,SCRIPTS,P1,"Verify ZIP output, release hashes and absence of private files",,PROPOSED_NOT_IMPLEMENTED
+sources/APPROVED_BRAND_DESIGN_SNAPSHOT_NEEDS_REFERENCE_CHECK.md,documentation_or_asset,DOCUMENTATION,DOCS,Earlier source material retained only for provenance,,DOCUMENTATION_FILE_CREATED
+sources/BRANDING_SNAPSHOT_APPROVED_DIRECTION.md,documentation_or_asset,DOCUMENTATION,DOCS,Earlier source material retained only for provenance,,DOCUMENTATION_FILE_CREATED
+sources/EDITOR_FINAL_BLUEPRINT_v1_ORIGINAL_UNMODIFIED.md,documentation_or_asset,DOCUMENTATION,DOCS,Earlier source material retained only for provenance,,DOCUMENTATION_FILE_CREATED
+sources/OLD_31_SCREEN_INVENTORY_SUPERSEDED.md,documentation_or_asset,DOCUMENTATION,DOCS,Earlier source material retained only for provenance,,DOCUMENTATION_FILE_CREATED
+sources/PHASE2_DESIGN_SNAPSHOT_SUPERSEDED.md,documentation_or_asset,DOCUMENTATION,DOCS,Earlier source material retained only for provenance,,DOCUMENTATION_FILE_CREATED
+sources/README.md,documentation_or_asset,DOCUMENTATION,DOCS,Earlier source material retained only for provenance,,DOCUMENTATION_FILE_CREATED
+supabase/config.toml,source_config_test,SUPABASE_CONFIG,P1,Local Supabase declarative configuration; no production secrets,,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/_shared/authorization.ts,source_config_test,SUPABASE_BACKEND,P1,"Server-side roles, quotas, input validation and audit helpers",,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/_shared/release-helpers.ts,source_config_test,SUPABASE_BACKEND,P1,"Immutable revision, content hash, storage and canonical route checks",,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/account-erasure/index.ts,source_config_test,SUPABASE_BACKEND,P1,Account deletion orchestration and accurate retention disclosure,,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/admin-analytics/index.ts,source_config_test,SUPABASE_BACKEND,P3,Optional advanced admin aggregate audit dashboards; private data never exposed without scoped review,PHASE_3_AND_OWNER_APPROVAL,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/admin-moderation/index.ts,source_config_test,SUPABASE_BACKEND,P1,"Abuse cases, temporary takedowns, notices and appeals; no editorial edits",,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/admin-users/index.ts,source_config_test,SUPABASE_BACKEND,P1,Scoped user restrictions/restores with reason and audit event,,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/aggregate-analytics/index.ts,source_config_test,SUPABASE_BACKEND,P2,Opt-in anonymous aggregate visitor counters; no persistent visitor identity,,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/ai-assistant/index.ts,source_config_test,SUPABASE_BACKEND,P3,Optional opt-in bounded AI helper with sanitized context and no paid API usage,PHASE_3_AND_ZERO_COST_PROOF,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/public-provider-sync/index.ts,source_config_test,SUPABASE_BACKEND,P2,Public handle lookup/SYNC using only permitted free provider APIs; no evasive scraping,,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/publish/index.ts,source_config_test,SUPABASE_BACKEND,P1,Atomic staging/publish protocol after preflight and idempotency validation,,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/release-visibility/index.ts,source_config_test,SUPABASE_BACKEND,P1,"Activate/unpublish, tombstone and release-pointer updates; host-specific proof",,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/staging-links/index.ts,source_config_test,SUPABASE_BACKEND,P1,"Signed short expiry, revocation and validated reviewer access",,PROPOSED_NOT_IMPLEMENTED
+supabase/functions/website-thumbnail/index.ts,source_config_test,SUPABASE_BACKEND,P1,"Only conditional backend thumbnail capture if SSRF, runtime, costs and site policy tests pass",PROOF_GATE: Not guaranteed; otherwise user-uploaded cover,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000001_identities.sql,source_config_test,SUPABASE_DB,P1,"Owner profiles, public handles, verification evidence, sessions and account lifecycle",,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000002_projects.sql,source_config_test,SUPABASE_DB,P1,"Projects, media references, private/public exposure and case studies",,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000003_portfolio_revisions.sql,source_config_test,SUPABASE_DB,P1,"Portfolios, typed commits, content files, owned source snapshots and stash",,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000004_publishing.sql,source_config_test,SUPABASE_DB,P1,"Staging tokens, immutable release manifests, visibility pointer, tombstones",,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000005_admin_audits.sql,source_config_test,SUPABASE_DB,P1,"Restricted operators, moderation cases, notices, appeals and essential audit events",,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000006_growth.sql,source_config_test,SUPABASE_DB,P2,"Optional developer platform handles, provider data, goals and scoring",,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000007_metrics.sql,source_config_test,SUPABASE_DB,P2,Opt-in owner-scoped aggregate portfolio analytics and retention,,PROPOSED_NOT_IMPLEMENTED
+supabase/migrations/20261112000008_rls_policies.sql,source_config_test,SUPABASE_DB,P1,"Cross-tenant RLS, security-definer RPC, admin policies and denial tests hooks",,PROPOSED_NOT_IMPLEMENTED
+supabase/seed/synthetic-fixtures.sql,source_config_test,SUPABASE_TESTS,P1,"Synthetic test-only users, projects, releases and cases; no real accounts",,PROPOSED_NOT_IMPLEMENTED
+supabase/tests/rls-and-roles.sql,source_config_test,SUPABASE_TESTS,P1,Negative owner/tenant/admin row-policy regression scenarios,,PROPOSED_NOT_IMPLEMENTED
+tests/contracts/project-schema.test.ts,source_config_test,TESTS,P1,"File format, slot and cross-version contract roundtrip",,PROPOSED_NOT_IMPLEMENTED
+tests/e2e/accessibility.spec.ts,source_config_test,TESTS,P1,"Critical WCAG 2.2 AA target checks, keyboard, reduced motion and device gates",,PROPOSED_NOT_IMPLEMENTED
+tests/e2e/auth-identity.spec.ts,source_config_test,TESTS,P1,"Sign-in/up, reset, Google callbacks, positive-only verified badge and private profiles",,PROPOSED_NOT_IMPLEMENTED
+tests/e2e/projects-editor.spec.ts,source_config_test,TESTS,P1,"Link-based projects, screenshots fallback, editor keyboard, responsive previews",,PROPOSED_NOT_IMPLEMENTED
+tests/e2e/release-admin.spec.ts,source_config_test,TESTS,P1,"Private staging, preflight, draft/live, unpublish, releases, restricted admin",,PROPOSED_NOT_IMPLEMENTED
+tests/editor/slot-states.test.ts,source_config_test,TESTS,P1,"EMPTY/S0/S1/S2 delete, insert and swap semantics",,PROPOSED_NOT_IMPLEMENTED
+tests/editor/source-ownership.test.ts,source_config_test,TESTS,P1,No overwrite of custom owned files; hostile project import,,PROPOSED_NOT_IMPLEMENTED
+tests/editor/transactions-history.test.ts,source_config_test,TESTS,P1,"Single writer atomic revisions, stash, Undo and recovery",,PROPOSED_NOT_IMPLEMENTED
+tests/integration/provider-capture.test.ts,source_config_test,TESTS,P2,Provider free-API and screenshot feasibility negative/permission tests,CONDITIONAL: no unsafe scanning or scraping,PROPOSED_NOT_IMPLEMENTED
+tests/publisher/static-export.test.ts,source_config_test,TESTS,P1,Static HTML content/SEO and deterministic ZIP golden outputs,,PROPOSED_NOT_IMPLEMENTED
+tests/security/tenant-admin.test.ts,source_config_test,TESTS,P1,Unauthorized private access and no admin impersonation,,PROPOSED_NOT_IMPLEMENTED
+tests/security/untrusted-code.test.ts,source_config_test,TESTS,P1,Hostile iframe/script isolation and blocked custom JS release,,PROPOSED_NOT_IMPLEMENTED
+tsconfig.base.json,source_config_test,ROOT_CONFIG,P1,Shared strict TypeScript compiler rules,,PROPOSED_NOT_IMPLEMENTED
+vitest.config.ts,source_config_test,ROOT_CONFIG,P1,"Unit, contract and security test workspace configuration",,PROPOSED_NOT_IMPLEMENTED
