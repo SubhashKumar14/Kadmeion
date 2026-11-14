@@ -483,3 +483,8 @@ and malformed/oversized bytes on real ephemeral Supabase; (4) retain
 Then proceed to canonical-route AND direct-asset host revocation and provider
 retention evidence. No manual Vercel deployment, production mutation,
 frontend code or merge to `main` is authorized.
+
+
+## 14 November 2026 — registration completion boundary (unverified CI)
+
+Commits `4aabfd5` and `b39b858` added a server-only `completePrivateAssetRegistration` boundary and four contract tests. It accepts a previously committed registration and calls the existing trusted byte attestor, rejects forged receipts, and never authorizes public publishing or deletion. **No actual HTTP handler or post-insert trigger has been wired.** A boolean `registrationCommitted` is an internal caller assertion, not independently verified transaction proof; only trusted server code may call this boundary. The attestor independently checks owner JWT and registered asset row. No CI result was available at writing; do not count these tests as passed. Next: run CI and fix any TS/test errors; inspect the actual project-assets registration path and connect a trusted server handler that verifies the committed row, then exercise real local Supabase race tests. No production or frontend changes.
