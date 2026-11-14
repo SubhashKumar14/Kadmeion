@@ -9,6 +9,17 @@ export interface ModerationCaseReceipt {
   restrictionEnforced: false;
   publicRevocationVerified: false;
 }
+export interface OperatorPrivatePortfolioBlockReceipt {
+  caseId: string;
+  portfolioId: string;
+  generation: number;
+  status: 'BLOCKED';
+  stillBlocked: true;
+  alreadyRecorded: boolean;
+  publicServingEnabled: false;
+  publicUrl: null;
+  hostRevocationVerified: false;
+}
 export interface ModerationAppealReceipt {
   caseId: string;
   status: 'APPEAL_RECORDED';
@@ -131,11 +142,13 @@ export class SupabasePrivateModerationService {
         throw new PrivateModerationError('QUOTA_EXCEEDED','Operator case quota reached.');
       if (typeof message === 'string' &&
           ['INVALID_MODERATION_CASE','INVALID_APPEAL','INVALID_MODERATION_DECISION',
-           'INVALID_MODERATION_LIMIT'].includes(message))
+           'INVALID_MODERATION_LIMIT','INVALID_OPERATOR_BLOCK'].includes(message))
         throw new PrivateModerationError('VALIDATION','Moderation request rejected.');
       if (response.status === 409 || (typeof message === 'string' &&
           ['MODERATION_OPERATION_ID_REUSED','APPEAL_OPERATION_ID_REUSED',
-           'DECISION_OPERATION_ID_REUSED','CASE_ALREADY_CLOSED'].includes(message)))
+           'DECISION_OPERATION_ID_REUSED','CASE_ALREADY_CLOSED',
+           'MODERATION_BLOCK_OPERATION_REUSED','MODERATION_HOLD_ALREADY_ACTIVE',
+           'MODERATION_CASE_NOT_OPEN','MODERATION_HOLD_STATE_CONFLICT'].includes(message)))
         throw new PrivateModerationError('CONFLICT','Operation ID or case state conflicts.');
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation operation was not acknowledged.');
     }
@@ -167,6 +180,25 @@ export class SupabasePrivateModerationService {
     if (receipt.caseId !== caseId)
       throw new PrivateModerationError('INVALID_ACK','Moderation case ID differs from request.');
     return receipt;
+  }
+  /** Operator-only, case-bound internal hold. Never a public-host revocation receipt. */
+  async blockPrivatePortfolio(caseId: string, portfolioId: string,
+      operationId: string): Promise<OperatorPrivatePortfolioBlockReceipt> {
+    requireUUID(caseId); requireUUID(portfolioId); requireUUID(operationId);
+    const raw = await this.request('rpc/operator_block_private_portfolio',{
+      p_case_id:caseId,p_portfolio_id:portfolioId,p_operation_id:operationId
+    });
+    if (!isRecord(raw) || raw.caseId !== caseId || raw.portfolioId !== portfolioId ||
+        !Number.isSafeInteger(raw.generation) || (raw.generation as number) < 1 ||
+        raw.status !== 'BLOCKED' || raw.stillBlocked !== true ||
+        typeof raw.alreadyRecorded !== 'boolean' ||
+        raw.publicServingEnabled !== false || raw.publicUrl !== null ||
+        raw.hostRevocationVerified !== false)
+      throw new PrivateModerationError('INVALID_ACK',
+        'Operator private block was not confirmed.');
+    return {caseId,portfolioId,generation:raw.generation as number,
+      status:'BLOCKED',stillBlocked:true,alreadyRecorded:raw.alreadyRecorded,
+      publicServingEnabled:false,publicUrl:null,hostRevocationVerified:false};
   }
   async listOperatorCases(max = 25): Promise<OperatorModerationCase[]> {
     if (!Number.isSafeInteger(max) || max < 1 || max > 50)

@@ -129,3 +129,51 @@ test('non-origin URLs, credentials and insecure remote endpoints reject',()=>{
       {code:'VALIDATION'});
   }
 });
+
+test('operator private block uses scoped case and refuses public authority',async()=>{
+  const portfolioId='40000000-0000-4000-8000-000000000004';
+  const service=client(async(url,init)=>{
+    assert.equal(String(url),origin+'/rest/v1/rpc/operator_block_private_portfolio');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.cache,'no-store');
+    assert.deepEqual(JSON.parse(init?.body as string),{
+      p_case_id:caseId,p_portfolio_id:portfolioId,p_operation_id:operationId});
+    return ok({caseId,portfolioId,generation:2,status:'BLOCKED',
+      stillBlocked:true,alreadyRecorded:false,publicServingEnabled:false,
+      publicUrl:null,hostRevocationVerified:false,privateNote:'not projected'});
+  });
+  assert.deepEqual(await service.blockPrivatePortfolio(caseId,portfolioId,operationId),{
+    caseId,portfolioId,generation:2,status:'BLOCKED',
+    stillBlocked:true,alreadyRecorded:false,publicServingEnabled:false,
+    publicUrl:null,hostRevocationVerified:false});
+});
+test('operator block rejects forged, stale, wrong-scope and public receipts',async()=>{
+  const portfolioId='40000000-0000-4000-8000-000000000004';
+  const valid={caseId,portfolioId,generation:2,status:'BLOCKED',
+    stillBlocked:true,alreadyRecorded:false,publicServingEnabled:false,
+    publicUrl:null,hostRevocationVerified:false};
+  for(const patch of [{caseId:ownerId},{portfolioId:ownerId},
+    {generation:0},{generation:1.5},{status:'PREPARED_PRIVATE'},
+    {stillBlocked:false},{alreadyRecorded:'false'},
+    {publicServingEnabled:true},{publicUrl:'https://example.com'},
+    {hostRevocationVerified:true}]){
+    await assert.rejects(client(async()=>ok({...valid,...patch})).blockPrivatePortfolio(
+      caseId,portfolioId,operationId),{code:'INVALID_ACK'});
+  }
+  let calls=0;
+  const invalid=client(async()=>{calls++;throw Error('must not call');});
+  await assert.rejects(invalid.blockPrivatePortfolio('bad',portfolioId,operationId),
+    {code:'VALIDATION'});
+  await assert.rejects(invalid.blockPrivatePortfolio(caseId,portfolioId,'bad'),
+    {code:'VALIDATION'});
+  assert.equal(calls,0);
+});
+test('operator block denies signed-out calls and maps case conflicts',async()=>{
+  const portfolioId='40000000-0000-4000-8000-000000000004';
+  await assert.rejects(client(async()=>{throw Error('no request');},null)
+    .blockPrivatePortfolio(caseId,portfolioId,operationId),{code:'AUTH_EXPIRED'});
+  await assert.rejects(client(async()=>Response.json(
+    {message:'MODERATION_HOLD_ALREADY_ACTIVE'},{status:400}))
+    .blockPrivatePortfolio(caseId,portfolioId,operationId),{code:'CONFLICT'});
+});
