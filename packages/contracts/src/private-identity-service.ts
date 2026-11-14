@@ -7,8 +7,62 @@ export interface CurrentIdentity {
   emailVerified: boolean;
 }
 
+export type PrivatePlatformProvider =
+  'GITHUB'|'LEETCODE'|'CODEFORCES'|'HACKERRANK'|'KAGGLE'|'HUGGING_FACE';
+export interface PrivatePlatformLink {
+  id:string;owner_user_id:string;provider:PrivatePlatformProvider;handle:string;
+  profile_url:string;provenance:'USER_SUPPLIED';
+  connection_mode:'LINK_ONLY';sync_status:'NOT_SYNCED';ownership_verified:false;
+  created_at:string;updated_at:string;
+}
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+const PROFILE_ORIGINS:Readonly<Record<PrivatePlatformProvider,string>>={
+  GITHUB:'https://github.com/',
+  LEETCODE:'https://leetcode.com/u/',
+  CODEFORCES:'https://codeforces.com/profile/',
+  HACKERRANK:'https://www.hackerrank.com/profile/',
+  KAGGLE:'https://www.kaggle.com/',
+  HUGGING_FACE:'https://huggingface.co/'
+};
+const record=(x:unknown):x is Record<string,unknown> =>
+  !!x&&typeof x==='object'&&!Array.isArray(x);
+function providerKey(value:unknown):value is PrivatePlatformProvider {
+  return typeof value==='string'&&Object.hasOwn(PROFILE_ORIGINS,value);
+}
+function platformHandle(provider:PrivatePlatformProvider,raw:unknown):string{
+  if(typeof raw!=='string')throw new PrivateIdentityError('VALIDATION','Profile handle must be text.');
+  const handle=raw.trim();
+  const generic=/^[A-Za-z0-9_][A-Za-z0-9_.-]*[A-Za-z0-9_]$/;
+  const compact=/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;
+  if(!handle||handle.length>64||
+     (provider==='GITHUB'
+       ?handle.length>39||!compact.test(handle)
+       :provider==='HUGGING_FACE'
+         ?!compact.test(handle)
+         :!generic.test(handle)))
+    throw new PrivateIdentityError('VALIDATION','Invalid platform profile handle.');
+  return handle;
+}
+function verifiedPlatformLink(value:unknown,owner:string):value is PrivatePlatformLink{
+  if(!record(value)||Object.keys(value).sort().join(',')!==
+      'connection_mode,created_at,handle,id,owner_user_id,profile_url,provenance,provider,sync_status,updated_at,ownership_verified'||
+     typeof value.id!=='string'||!UUID.test(value.id)||
+     value.owner_user_id!==owner||!providerKey(value.provider)||
+     typeof value.handle!=='string'||value.provenance!=='USER_SUPPLIED'||
+     value.connection_mode!=='LINK_ONLY'||value.sync_status!=='NOT_SYNCED'||
+     value.ownership_verified!==false||
+     typeof value.created_at!=='string'||Number.isNaN(Date.parse(value.created_at))||
+     typeof value.updated_at!=='string'||Number.isNaN(Date.parse(value.updated_at)))
+    return false;
+  try{
+    const expected=platformHandle(value.provider,value.handle);
+    return value.handle===expected&&value.profile_url===PROFILE_ORIGINS[value.provider]+expected;
+  }catch{return false;}
+}
+
+
 export class PrivateIdentityError extends Error {
-  readonly code: 'AUTH_EXPIRED'|'HANDLE_CONFLICT'|'VALIDATION'|'PROVIDER_UNAVAILABLE';
+  readonly code: 'AUTH_EXPIRED'|'HANDLE_CONFLICT'|'PLATFORM_CONFLICT'|'VALIDATION'|'PROVIDER_UNAVAILABLE';
   constructor(code: PrivateIdentityError['code'], message: string) {
     super(message);
     this.code=code;
@@ -24,10 +78,13 @@ export class SupabasePrivateIdentityService {
 
   constructor(baseUrl:string,publishableKey:string,tokenSupplier:TokenSupplier,fetcher:typeof fetch=fetch) {
     const u=new URL(baseUrl);
-    if (u.protocol!=='https:' && !(u.protocol==='http:' && ['localhost','127.0.0.1'].includes(u.hostname)))
+    if ((u.protocol!=='https:' && !(u.protocol==='http:' &&
+         ['localhost','127.0.0.1'].includes(u.hostname)))||
+        u.username||u.password||u.pathname!=='/'||u.search||u.hash)
       throw new PrivateIdentityError('VALIDATION','Invalid Supabase API origin.');
-    if (!publishableKey) throw new PrivateIdentityError('VALIDATION','Publishable key is missing.');
-    this.baseUrl=baseUrl.replace(/\/$/,'');
+    if (typeof publishableKey!=='string'||!publishableKey.trim())
+      throw new PrivateIdentityError('VALIDATION','Publishable key is missing.');
+    this.baseUrl=u.origin;
     this.publishableKey=publishableKey;
     this.tokenSupplier=tokenSupplier;
     this.fetcher=fetcher;
@@ -37,14 +94,19 @@ export class SupabasePrivateIdentityService {
     const token=await this.tokenSupplier();
     if (!token) throw new PrivateIdentityError('AUTH_EXPIRED','Sign in first.');
     const headers:Record<string,string>={apikey:this.publishableKey,Authorization:'Bearer '+token};
-    if (body!==undefined) {
-      headers['Content-Type']='application/json';
+    if (body!==undefined)headers['Content-Type']='application/json';
+    if (method!=='GET')
       headers.Prefer=upsert?'resolution=merge-duplicates,return=representation':'return=representation';
-    }
-    const result=await this.fetcher(this.baseUrl+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
+    const result=await this.fetcher(this.baseUrl+path,{
+      method,headers,body:body===undefined?undefined:JSON.stringify(body),
+      credentials:'omit',cache:'no-store',redirect:'error',
+      signal:AbortSignal.timeout(10000)
+    });
     if (!result.ok) {
       if ([401,403].includes(result.status)) throw new PrivateIdentityError('AUTH_EXPIRED','Identity access denied.');
-      if (result.status===409) throw new PrivateIdentityError('HANDLE_CONFLICT','Handle is unavailable.');
+      if (result.status===409)
+        throw new PrivateIdentityError(path.includes('/private_platform_links')?
+          'PLATFORM_CONFLICT':'HANDLE_CONFLICT','The requested identity is already in use.');
       throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Identity change could not be saved.');
     }
     return result.status===204?null:result.json();
@@ -141,5 +203,61 @@ export class SupabasePrivateIdentityService {
       throw error;
     }
   }
+
+  /**
+   * A connected public *link* is not account ownership verification or an
+   * API integration. This module never sends a request to platform websites.
+   */
+  async connectPlatform(provider:PrivatePlatformProvider,rawHandle:unknown):
+    Promise<PrivatePlatformLink>{
+    if(!providerKey(provider))throw new PrivateIdentityError('VALIDATION','Unknown public platform.');
+    const handle=platformHandle(provider,rawHandle);
+    const {userId}=await this.verifiedCurrentUser();
+    const rows=await this.request('/rest/v1/private_platform_links?select=*','POST',{
+      provider,handle
+    });
+    if(!Array.isArray(rows)||rows.length!==1||
+       !verifiedPlatformLink(rows[0],userId)||rows[0].provider!==provider||
+       rows[0].handle!==handle)
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Private platform link was not acknowledged.');
+    return rows[0];
+  }
+
+  async listPlatformConnections():Promise<PrivatePlatformLink[]>{
+    const {userId}=await this.verifiedCurrentUser();
+    const rows=await this.request(
+      '/rest/v1/private_platform_links?select=*&order=provider.asc&limit=7','GET');
+    if(!Array.isArray(rows)||rows.length>6||
+       rows.some(row=>!verifiedPlatformLink(row,userId))||
+       new Set(rows.map(row=>row.provider)).size!==rows.length)
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Private platform links could not be verified.');
+    return rows;
+  }
+
+  async changePlatformHandle(provider:PrivatePlatformProvider,rawHandle:unknown):
+    Promise<PrivatePlatformLink>{
+    if(!providerKey(provider))throw new PrivateIdentityError('VALIDATION','Unknown public platform.');
+    const handle=platformHandle(provider,rawHandle);
+    const {userId}=await this.verifiedCurrentUser();
+    const rows=await this.request('/rest/v1/private_platform_links?owner_user_id=eq.'+
+      userId+'&provider=eq.'+provider+'&select=*','PATCH',{handle});
+    if(!Array.isArray(rows)||rows.length!==1||
+       !verifiedPlatformLink(rows[0],userId)||rows[0].provider!==provider||
+       rows[0].handle!==handle)
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Platform link update not acknowledged.');
+    return rows[0];
+  }
+
+  async disconnectPlatform(provider:PrivatePlatformProvider):Promise<{provider:PrivatePlatformProvider;deleted:true}>{
+    if(!providerKey(provider))throw new PrivateIdentityError('VALIDATION','Unknown public platform.');
+    const {userId}=await this.verifiedCurrentUser();
+    const rows=await this.request('/rest/v1/private_platform_links?owner_user_id=eq.'+
+      userId+'&provider=eq.'+provider+'&select=*','DELETE');
+    if(!Array.isArray(rows)||rows.length!==1||
+       !verifiedPlatformLink(rows[0],userId)||rows[0].provider!==provider)
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Platform disconnect not acknowledged.');
+    return {provider,deleted:true};
+  }
+
 
 }

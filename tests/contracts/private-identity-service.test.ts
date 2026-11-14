@@ -94,3 +94,90 @@ test('authoritative duplicate handle conflict is surfaced rather than claiming a
     }) as typeof fetch);
   assert.deepEqual(await svc.completeInitialIdentity(),{status:'handle_conflict',requestedHandle:'taken',emailVerified:false});
 });
+
+
+const platformUrl='https://github.com/Owner-Name';
+const platformRow={
+  id:'20000000-0000-4000-8000-000000000002',owner_user_id:userId,
+  provider:'GITHUB',handle:'Owner-Name',profile_url:platformUrl,
+  provenance:'USER_SUPPLIED',connection_mode:'LINK_ONLY',sync_status:'NOT_SYNCED',
+  ownership_verified:false,created_at:'2026-11-15T00:00:00Z',updated_at:'2026-11-15T00:00:00Z'
+};
+function platformMock(handle:(url:URL,options:RequestInit|undefined)=>Response):SupabasePrivateIdentityService {
+  const fn=(async(url:RequestInfo|URL,options?:RequestInit)=>{
+    const u=new URL(String(url));
+    if(u.pathname==='/auth/v1/user')return Response.json({id:userId,email_confirmed_at:null});
+    return handle(u,options);
+  }) as typeof fetch;
+  return new SupabasePrivateIdentityService('https://test.supabase.co',
+    'sb_publishable_test',async()=> 'owner-jwt',fn);
+}
+test('six platform links are owner-JWT-only and create no external provider call',async()=>{
+  let posts=0;
+  const client=platformMock((url,init)=>{
+    posts++;
+    assert.equal(url.pathname,'/rest/v1/private_platform_links');
+    assert.equal(init?.method,'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)),{provider:'GITHUB',handle:'Owner-Name'});
+    const headers=init?.headers as Record<string,string>;
+    assert.equal(headers.Authorization,'Bearer owner-jwt');
+    assert.equal(headers.apikey,'sb_publishable_test');
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.redirect,'error');
+    return Response.json([platformRow]);
+  });
+  assert.deepEqual(await client.connectPlatform('GITHUB',' Owner-Name '),platformRow);
+  assert.equal(posts,1);
+});
+test('list, handle update and disconnect require owner-bound, verified provider receipts',async()=>{
+  const paths:string[]=[];
+  const client=platformMock((url,init)=>{
+    paths.push((init?.method??'GET')+' '+url.pathname+url.search);
+    if(init?.method==='GET')return Response.json([platformRow]);
+    if(init?.method==='PATCH'){
+      assert.deepEqual(JSON.parse(String(init.body)),{handle:'Owner-Name'});
+      return Response.json([platformRow]);
+    }
+    assert.equal(init?.method,'DELETE');
+    assert.equal((init.headers as Record<string,string>).Prefer,'return=representation');
+    return Response.json([platformRow]);
+  });
+  assert.deepEqual(await client.listPlatformConnections(),[platformRow]);
+  assert.equal((await client.changePlatformHandle('GITHUB','Owner-Name')).handle,'Owner-Name');
+  assert.deepEqual(await client.disconnectPlatform('GITHUB'),{provider:'GITHUB',deleted:true});
+  assert.ok(paths[1].includes('owner_user_id=eq.'+userId));
+  assert.ok(paths[2].includes('owner_user_id=eq.'+userId));
+});
+test('no false verification, no forged ownership, no URLs outside trusted profiles',async()=>{
+  for(const bad of [
+    {...platformRow,ownership_verified:true},
+    {...platformRow,sync_status:'SYNCED'},
+    {...platformRow,connection_mode:'OAUTH'},
+    {...platformRow,provenance:'PROVIDER_VERIFIED'},
+    {...platformRow,profile_url:'https://attacker.invalid/Owner-Name'},
+    {...platformRow,owner_user_id:'30000000-0000-4000-8000-000000000003'},
+    {...platformRow,private_access_token:'secret'}
+  ]){
+    const svc=platformMock(()=>Response.json([bad]));
+    await assert.rejects(svc.connectPlatform('GITHUB','Owner-Name'),
+      {code:'PROVIDER_UNAVAILABLE'});
+  }
+});
+test('unsafe and unsupported platform handles and origins fail before sending to providers',async()=>{
+  let calls=0;
+  const svc=platformMock(()=>{calls++;throw Error('should not reach');});
+  for(const handle of ['../profile','a/b','http://example.com/a','a#fragment','Owner Name','-bad']){
+    await assert.rejects(svc.connectPlatform('GITHUB',handle),{code:'VALIDATION'});
+  }
+  await assert.rejects(svc.connectPlatform('UNSUPPORTED' as never,'sample'),{code:'VALIDATION'});
+  assert.equal(calls,0);
+  for(const origin of ['https://user:pw@test.supabase.co','https://test.supabase.co/rpc',
+    'https://test.supabase.co/?key=1']){
+    assert.throws(()=>new SupabasePrivateIdentityService(origin,'key',async()=>null),
+      {code:'VALIDATION'});
+  }
+});
+test('an owner cannot be told a missing provider connection was deleted',async()=>{
+  const svc=platformMock(()=>Response.json([]));
+  await assert.rejects(svc.disconnectPlatform('KAGGLE'),{code:'PROVIDER_UNAVAILABLE'});
+});
