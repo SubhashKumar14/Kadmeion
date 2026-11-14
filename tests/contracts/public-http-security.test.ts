@@ -88,6 +88,9 @@ test('public release rejects tampered, executable or unexpected response fields'
     payload(html.replace('</body>','<img src=x onerror="run()"></body>')),
     payload(html.replace('</body>','<a href="javascript:alert(1)">bad</a></body>')),
     payload(html.replace('</head>','<meta http-equiv="refresh" content="0;url=https://example.org"></head>')),
+    payload(html.replace('</body>','<video controls></video></body>')),
+    payload(html.replace('</body>','<picture></picture></body>')),
+    payload(html.replace('</body>','<a href="&#106;avascript:alert(1)">No</a></body>')),
     {...payload(html),privateEmail:'do-not-leak'}
   ];
   for(const data of cases){

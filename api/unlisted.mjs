@@ -1,4 +1,4 @@
-import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, containsUnsafeStaticMarkup} from './_bounded-rpc-json.mjs';
 /**
  * Disabled-by-default UNLISTED scriptless text-only release HTTP candidate.
  * Business state remains in Supabase; this Vercel/Node adapter only serves
@@ -51,7 +51,7 @@ function verified(raw){
   if(Buffer.byteLength(html,'utf8')<70||Buffer.byteLength(html,'utf8')>750000||
      !html.toLowerCase().startsWith('<!doctype html>')||
      !html.toLowerCase().includes('noindex')||
-     /<\s*(script|iframe|object|embed|svg|form|input|link|base)([\s/>])/i.test(html))
+     containsUnsafeStaticMarkup(html))
     return false;
   return createHash('sha256').update(html,'utf8').digest('hex')===raw.htmlSha256;
 }

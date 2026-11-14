@@ -29,3 +29,29 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
   for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
   return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
 }
+
+/**
+ * Defense in depth for trusted, scriptless server-rendered previews.
+ * SHA-256 attests bytes, not whether markup is safe: reject executable
+ * attributes, navigation escapes, resource elements, and redirect meta tags.
+ * All public output must ALSO carry an enforced restrictive CSP.
+ */
+export function containsUnsafeStaticMarkup(html) {
+  if (typeof html !== 'string') return true;
+  if (/<\s*(?:script|iframe|object|embed|svg|form|input|link|base|img|video|audio|source|picture|track|math|frame|frameset|portal)\b/i.test(html) ||
+      /<[^>]*\s+on[a-z]{2,32}\s*=/i.test(html) ||
+      /<[^>]*\s+(?:src|srcset|action|formaction)\s*=/i.test(html))
+    return true;
+  for (const tag of html.match(/<\s*meta\b[^>]*>/gi) ?? []) {
+    const match = /\bhttp-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+    if (match && (match[1] ?? match[2] ?? match[3]).toLowerCase() !== 'content-security-policy')
+      return true;
+  }
+  for (const match of html.matchAll(/(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    try {
+      const url = new URL(match[1] ?? match[2] ?? match[3]);
+      if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) return true;
+    } catch { return true; }
+  }
+  return false;
+}

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, containsUnsafeStaticMarkup} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -67,11 +67,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     if (typeof html !== 'string' || Buffer.byteLength(html) > 750000 ||
         !html.startsWith('<!doctype html>') || html.split(stagedRobots).length !== 2 ||
         !/^[0-9a-f]{64}$/.test(release.htmlSha256) ||
-        /<[^>]+\bon[a-z]+\s*=/i.test(html) ||
-        /<[^>]+\b(?:src|srcset|action|formaction)\s*=/i.test(html) ||
-        /<\s*meta\b[^>]*http-equiv\s*=\s*(?:"(?!Content-Security-Policy")|'(?!Content-Security-Policy')|[^"'])/i.test(html) ||
-        /\bhref\s*=\s*(?:"(?!https:\/\/)|'(?!https:\/\/)|[^"'])/i.test(html) ||
-        /<\s*(script|iframe|object|embed|svg|form|input|link|base|img)([\s/>])/i.test(html) ||
+        containsUnsafeStaticMarkup(html) ||
         createHash('sha256').update(html).digest('hex') !== release.htmlSha256) {
       return reply(503, 'Temporarily unavailable');
     }
