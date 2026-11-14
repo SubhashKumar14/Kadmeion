@@ -296,6 +296,65 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
     assert.equal(revoke.status,'REVOKED');
     assert.equal(revoke.publicRevocationVerified,false);
   });
+  await t.test('private release pointer CAS and direct REST remain tenant-private',async()=>{
+    const read='/rest/v1/rpc/owner_read_private_release_pointer';
+    const prepare='/rest/v1/rpc/owner_prepare_private_release_pointer';
+    const block='/rest/v1/rpc/owner_block_private_release_pointer';
+    const readBody={p_portfolio_id:id};
+    const initial=successful(await send(read,{...json(owner),method:'POST',body:readBody}),
+      'Read absent private pointer');
+    assert.equal(initial.status,'BLOCKED');
+    assert.equal(initial.generation,0);
+    assert.equal(initial.publicServingEnabled,false);
+    assert.equal(initial.publicUrl,null);
+    assert.ok(!(await send(read,{...json(stranger),method:'POST',body:readBody})).ok,
+      'Foreign owner read private pointer');
+    assert.ok(!(await send(read,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:readBody})).ok,
+      'Anonymous read private pointer');
+    const candidate={p_portfolio_id:id,p_request_id:request,
+      p_manifest_sha256:'a'.repeat(64),p_expected_generation:0,
+      p_operation_id:randomUUID()};
+    assert.ok(!(await send(prepare,{...json(stranger),method:'POST',body:candidate})).ok,
+      'Other tenant prepared a release pointer');
+    const first=successful(await send(prepare,{...json(owner),method:'POST',body:candidate}),
+      'Prepare owner-only private pointer');
+    assert.equal(first.status,'PREPARED_PRIVATE');
+    assert.equal(first.generation,1);
+    assert.equal(first.publicServingEnabled,false);
+    assert.equal(first.hostRevocationVerified,false);
+    assert.equal(first.publicUrl,null);
+    const duplicate=successful(await send(prepare,{...json(owner),method:'POST',body:candidate}),
+      'Replay private pointer prepare');
+    assert.equal(duplicate.alreadyRecorded,true);
+    const stale=await send(prepare,{...json(owner),method:'POST',
+      body:{...candidate,p_operation_id:randomUUID()}});
+    assert.ok(!stale.ok,'Stale generation replaced private candidate');
+    const otherRows=successful(await send(
+      '/rest/v1/private_release_visibility_pointers?select=portfolio_id',
+      bearer(stranger)),'Other owner pointer listing');
+    assert.deepEqual(otherRows,[]);
+    const forged=await send('/rest/v1/private_release_visibility_pointers?portfolio_id=eq.'+id,{
+      ...json(owner),method:'PATCH',body:{status:'LIVE_VERIFIED'}});
+    assert.ok(!forged.ok,'Owner directly activated a public pointer');
+    const blockBody={p_portfolio_id:id,p_operation_id:randomUUID()};
+    const denied=await send(block,{...json(stranger),method:'POST',body:blockBody});
+    assert.ok(!denied.ok,'Other tenant blocked owner pointer');
+    const stopped=successful(await send(block,{...json(owner),method:'POST',body:blockBody}),
+      'Owner block candidate');
+    assert.equal(stopped.status,'BLOCKED');
+    assert.equal(stopped.generation,2);
+    assert.equal(stopped.stillBlocked,true);
+    assert.equal(stopped.hostRevocationVerified,false);
+    const again=successful(await send(prepare,{...json(owner),method:'POST',
+      body:{...candidate,p_expected_generation:2,p_operation_id:randomUUID()}}),
+      'Prepare after block requires latest generation');
+    assert.equal(again.generation,3);
+    const old=successful(await send(block,{...json(owner),method:'POST',body:blockBody}),
+      'Replay old block against newer private candidate');
+    assert.equal(old.stillBlocked,false);
+    assert.equal(old.status,'PREPARED_PRIVATE');
+  });
   await t.test('private Trash refuses foreign operations and blocks frozen revision reuse',async()=>{
     const move='/rest/v1/rpc/trash_private_item',restore='/rest/v1/rpc/restore_private_item';
     const p={p_item_type:'portfolio',p_item_id:id};
@@ -304,6 +363,15 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
     const trashed=successful(await send(move,{...json(owner),method:'POST',body:p}),
       'Owner Trash');
     assert.equal(trashed.status,'trashed');
+    const pointerAfterTrash=successful(await send(
+      '/rest/v1/rpc/owner_read_private_release_pointer',{
+        ...json(owner),method:'POST',body:{p_portfolio_id:id}
+      }),'Read pointer after Trash');
+    assert.equal(pointerAfterTrash.status,'BLOCKED');
+    assert.equal(pointerAfterTrash.generation,4);
+    assert.equal(pointerAfterTrash.revocationGeneration,4);
+    assert.equal(pointerAfterTrash.candidateRequestId,null);
+
     const blockedRead=await send('/rest/v1/rpc/load_private_frozen_revision',{
       ...json(owner),method:'POST',body:{p_request_id:request}});
     assert.ok(!blockedRead.ok,'Trashed portfolio still returned an old frozen snapshot');
@@ -325,6 +393,12 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
       'Owner restore before 15-day expiry');
     assert.equal(back.status,'restored');
     assert.equal(back.public_visibility,'private');
+    const pointerAfterRestore=successful(await send(
+      '/rest/v1/rpc/owner_read_private_release_pointer',{
+        ...json(owner),method:'POST',body:{p_portfolio_id:id}
+      }),'Read pointer after restore');
+    assert.equal(pointerAfterRestore.status,'BLOCKED');
+
     const restoredRead=successful(await send('/rest/v1/rpc/load_private_frozen_revision',{
       ...json(owner),method:'POST',body:{p_request_id:request}}),
       'Restored owner-private frozen snapshot');
