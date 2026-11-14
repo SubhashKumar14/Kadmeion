@@ -2,8 +2,8 @@
 
 **Repository:** SubhashKumar14/Kadmeion  
 **Feature branch:** `feat/b0-backend-foundation`  
-**Last verified code SHA:** `87919dc7b0e3ed6cd60b74ea83f0a8fcc24e34ae`  
-**Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43630945755  
+**Last verified code SHA:** `f904583718dafc0555e977b9b42b1723d44c3f2a`  
+**Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43632411670  
 **Status:** Significant P1 backend code and local automated tests implemented. **NOT 100% production-ready.**
 
 This page supersedes the 12-Nov-2026 documentation-only "NOT IMPLEMENTED"
@@ -13,7 +13,7 @@ Latest owner selections remain authoritative over all historic drafts.
 
 ## Verified on the feature branch
 
-- Node 22 workspaces, TypeScript, safe environment-variable conventions, GitHub
+- Node 26.13.1 LTS, TypeScript 7.0.2, npm 12.2.2, safe environment-variable conventions, GitHub
   Actions with database jobs serialized, and an authored-file budget tracker.
 - Owner/Auth identity, private profile/project/asset persistence, owner RLS,
   immutable editor revision transactions, conflict/idempotency rules,
@@ -34,11 +34,11 @@ Latest owner selections remain authoritative over all historic drafts.
   with a read-only opt-in CLI. No external host has yet been verified.
 - Browser preview bundle scan denies server credential markers and symlinks.
 
-**Completed CI at code SHA `87919dc7`:**
+**Completed CI at code SHA `f9045837`:**
 
 | Verification | Outcome |
 |---|---|
-| Node app/contract/auth/editor tests | 317/317 PASS |
+| Node app/contract/auth/editor tests | 319/319 PASS |
 | pgTAP isolated PostgreSQL | 408/408 assertions, 25 SQL files, PASS |
 | Real local GoTrue/PostgREST/Storage HTTP | 43/43 PASS |
 | Local Deno Edge asset and publication smoke | Both PASS |
@@ -48,7 +48,10 @@ Latest owner selections remain authoritative over all historic drafts.
 | Authored application/configuration/test files | 194 / originally planned 200; docs excluded |
 
 Tests are on ephemeral local Supabase and GitHub Actions, not hosted-production
-verification. No true universal security guarantee or 100% functionality claim.
+verification. Public, reviewer and unlisted HTML HTTP adapters now reject executable
+markup and unsafe URLs beyond SHA-256 integrity checks. The 26.13.1 pin incorporates
+the 11-Nov-2026 Node security release. No true universal security guarantee or
+100% functionality claim.
 
 ## External proof gates / unimplemented or unverified aspects
 
@@ -62,6 +65,9 @@ verification. No true universal security guarantee or 100% functionality claim.
    canary proof of canonical-route/direct-release-asset revocation, CDN/cache
    behavior, independent JS-off delivery, rollback races or hosting quotas.
    Do not enable publishing flags or claim verified public publication.
+   Latest inspected Vercel preview from early Node 26 commit failed auth-preview build
+   because `VITE_SUPABASE_URL` was absent. This is environment configuration,
+   not evidence of successful deployment; leave the guard fail-closed.
 4. **Account erasure:** separate 15-day item Trash exists; account-exit SQL
    and bounded partial export exist. Complete provider data export, backups,
    external copies, erasure receipts and legal retention are NOT proven.

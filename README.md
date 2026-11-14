@@ -20,7 +20,7 @@ operations remain owner-approval-gated.
 
 ## Backend technology
 
-Node 22/npm workspaces; TypeScript contracts, editor transaction engine, local
+Node 26 LTS/npm workspaces; TypeScript contracts, editor transaction engine, local
 browser/folder/cloud storage adapters; **Supabase Auth, PostgreSQL with RLS,
 private Storage and Edge Functions**; isolated, hash-pinned static release
 generation and restricted public HTTP adapters. No MongoDB/Mongoose/Express
@@ -28,7 +28,7 @@ business backend, browser-side service-role credentials, or required paid API.
 
 ## Local development and automated checks
 
-Prerequisites: Node version from `.nvmrc`, npm 10, Docker, Supabase CLI 3.1.x.
+Prerequisites: Node version from `.nvmrc` (26.13.1 or newer 26.x security patch), npm 12, Docker, Supabase CLI 3.1.x.
 Run from the repository root:
 
 ```sh
