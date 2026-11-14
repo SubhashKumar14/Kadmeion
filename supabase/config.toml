@@ -9,3 +9,6 @@ enable_anonymous_sign_ins = false
 enable_signup = true
 enable_confirmations = true
 double_confirm_changes = true
+
+[functions.purge-expired-trash]
+verify_jwt = false

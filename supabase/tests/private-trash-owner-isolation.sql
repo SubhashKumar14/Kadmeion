@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(10);
+select plan(18);
 insert into auth.users(id,instance_id,aud,role,email,created_at,updated_at) values
 ('00000000-0000-4000-8000-0000000000d1','00000000-0000-0000-0000-000000000000','authenticated','authenticated','trash-owner-a@invalid.example',now(),now()),
 ('00000000-0000-4000-8000-0000000000d2','00000000-0000-0000-0000-000000000000','authenticated','authenticated','trash-owner-b@invalid.example',now(),now());
@@ -59,5 +59,27 @@ select is(public.restore_private_item('project','10000000-0000-4000-8000-0000000
   'private','restore never republishes project');
 select ok((select trashed_at is null from public.projects where id='10000000-0000-4000-8000-0000000000d1'),
   'restored project is active');
+reset role;
+select ok(not has_function_privilege('authenticated','public.service_list_expired_trash(integer)','EXECUTE'),
+  'owner cannot invoke the retention sweep');
+select ok(not has_function_privilege('authenticated','public.service_purge_expired_trash(uuid)','EXECUTE'),
+  'owner cannot permanently purge item data');
+select is((select count(*) from public.service_list_expired_trash(10)),0::bigint,
+  'restorable and restored items are excluded');
+select is(public.service_purge_expired_trash(
+  (select id from public.private_trash_items where item_type='portfolio')),
+  'NOT_DUE','purge refuses an unexpired item');
+update public.portfolios set trashed_at=now()-interval '16 days'
+  where id='20000000-0000-4000-8000-0000000000d1';
+update public.private_trash_items set trashed_at=now()-interval '16 days',
+  restore_until=now()-interval '1 day' where item_type='portfolio';
+select is((select count(*) from public.service_list_expired_trash(10)),1::bigint,
+  'expired item is eligible');
+select is(public.service_purge_expired_trash(
+  (select id from public.private_trash_items where item_type='portfolio')),
+  'PURGED','worker purges an expired portfolio');
+select is((select count(*) from public.portfolios),0::bigint,'portfolio row removed');
+select is((select count(*) from public.service_list_expired_trash(10)),0::bigint,
+  'repeat sweep does not rediscover a deleted item');
 select * from finish();
 rollback;
