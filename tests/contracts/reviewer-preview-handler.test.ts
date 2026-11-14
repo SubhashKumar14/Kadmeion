@@ -33,6 +33,15 @@ function run(options={}){
   });
   return handleReviewerRequest(req,res,{env:options.env??env,http}).then(()=>({res,sent}));
 }
+test('reviewer delivery accepts valid HTML with escaped JSON transport expansion',async()=>{
+  const dense=html.replace('</body>','<p>'+String.fromCharCode(92).repeat(710000)+'</p></body>');
+  assert.ok(Buffer.byteLength(dense)<750000);
+  const data={...receipt,html:dense,htmlSha256:createHash('sha256').update(dense).digest('hex')};
+  assert.ok(Buffer.byteLength(JSON.stringify(data))>800000);
+  const {res}=await run({data});
+  assert.equal(res.statusCode,200);
+  assert.equal(res.body,dense);
+});
 test('reviewer service defaults to disabled, never contacts private DB',async()=>{
   const result=await run({env:{...env,KADMEION_STAGING_DELIVERY_ENABLED:'false'}});
   assert.equal(result.res.statusCode,404);

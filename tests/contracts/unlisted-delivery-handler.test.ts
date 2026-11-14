@@ -30,6 +30,15 @@ async function run(opts={}){
   });
   return {response,sent};
 }
+test('unlisted delivery accepts valid HTML despite JSON string escaping overhead',async()=>{
+  const dense=html.replace('</body>','<p>'+String.fromCharCode(92).repeat(710000)+'</p></body>');
+  assert.ok(Buffer.byteLength(dense)<750000);
+  const envelope={...receipt,html:dense,htmlSha256:createHash('sha256').update(dense).digest('hex')};
+  assert.ok(Buffer.byteLength(JSON.stringify(envelope))>800000);
+  const {response}=await run({body:envelope});
+  assert.equal(response.statusCode,200);
+  assert.equal(response.body,dense);
+});
 test('unlisted host handler defaults OFF without service/API request',async()=>{
   const x=await run({env:{...env,KADMEION_UNLISTED_DELIVERY_ENABLED:'false'}});
   assert.equal(x.response.statusCode,404);

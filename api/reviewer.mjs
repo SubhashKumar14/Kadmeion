@@ -1,3 +1,4 @@
+import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
 /**
  * Candidate Vercel Node function for PRIVATE reviewer staging, NOT publication.
  * Deliberately disabled unless the operator explicitly proves the host, sets
@@ -12,7 +13,6 @@ import {createHash} from 'node:crypto';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN=/^[0-9a-f]{64}$/;
 const SHA=/^[0-9a-f]{64}$/;
-const MAX_RPC_BYTES=800000;
 const MAX_HTML_BYTES=750000;
 const POLICY="default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 const HEADERS=Object.freeze({
@@ -53,26 +53,6 @@ function config(env){
   const secret=env.KADMEION_SUPABASE_SERVICE_ROLE_KEY;
   if(typeof secret!=='string'||!secret.startsWith('eyJ')||secret.length<70)return null;
   return {origin,secret};
-}
-async function boundedJson(response){
-  const length=response.headers.get('content-length');
-  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_RPC_BYTES))
-    throw new Error('Oversized reviewer response');
-  if(!response.body)throw new Error('Empty reviewer response');
-  const reader=response.body.getReader();
-  const chunks=[];let size=0;
-  try{
-    while(true){
-      const {done,value}=await reader.read();
-      if(done)break;
-      size+=value.byteLength;
-      if(size>MAX_RPC_BYTES)throw new Error('Oversized reviewer response');
-      chunks.push(value);
-    }
-  }finally{reader.releaseLock();}
-  const bytes=new Uint8Array(size);let offset=0;
-  for(const part of chunks){bytes.set(part,offset);offset+=part.byteLength;}
-  return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
 }
 function validHtml(receipt){
   if(!record(receipt)||Object.keys(receipt).length!==5||
@@ -141,7 +121,7 @@ export async function handleReviewerRequest(req,res,{
     return;
   }
   let receipt;
-  try{receipt=await boundedJson(upstream);}
+  try{receipt=await readBoundedRpcJson(upstream);}
   catch{respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
   if(receipt===null){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;

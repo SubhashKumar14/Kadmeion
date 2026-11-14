@@ -1,3 +1,4 @@
+import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
 /**
  * Disabled-by-default UNLISTED scriptless text-only release HTTP candidate.
  * Business state remains in Supabase; this Vercel/Node adapter only serves
@@ -39,25 +40,6 @@ function configuration(env){
   const key=env.KADMEION_SUPABASE_SERVICE_ROLE_KEY;
   if(typeof key!=='string'||!key.startsWith('eyJ')||key.length<70)return null;
   return {api,key};
-}
-async function readJSON(res){
-  const len=res.headers.get('content-length');
-  if(len!==null&&(!/^\d+$/.test(len)||Number(len)>800000))
-    throw new Error('Limit exceeded');
-  if(!res.body)throw new Error('Empty body');
-  const reader=res.body.getReader(),parts=[];let n=0;
-  try{
-    while(true){
-      const {done,value}=await reader.read();
-      if(done)break;
-      n+=value.length;
-      if(n>800000)throw new Error('Limit exceeded');
-      parts.push(value);
-    }
-  }finally{reader.releaseLock();}
-  const bytes=new Uint8Array(n);let at=0;
-  for(const part of parts){bytes.set(part,at);at+=part.length;}
-  return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
 }
 function verified(raw){
   if(!obj(raw)||Object.keys(raw).length!==5||
@@ -102,7 +84,7 @@ export async function handleUnlistedRequest(req,res,{env=process.env,http=global
     reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
   let raw;
-  try{raw=await readJSON(upstream);}
+  try{raw=await readBoundedRpcJson(upstream);}
   catch{reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
   if(raw===null){reply(res,404,'Not found','text/plain; charset=utf-8',method);return;}
   if(!verified(raw)){
