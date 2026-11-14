@@ -173,7 +173,7 @@ test('preflight requires auth and rejects stale, anonymous or denied provider re
     await assert.rejects(error.preflight(),{code:'AUTH_EXPIRED'});
   }
   await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
-    {status:400})).preflight(),{code:'PROVIDER_UNAVAILABLE'});
+    {status:400})).preflight(),{code:'AUTH_EXPIRED'});
 });
 
 const challengeId='40000000-0000-4000-8000-000000000004';
