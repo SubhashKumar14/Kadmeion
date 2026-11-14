@@ -13,7 +13,8 @@ class Disk implements FolderDirectory {
   readonly files=new Map<string,string>();
   readonly dirs=new Set<string>(['']);
   failOnWrite:string|null=null;
-  constructor(private readonly base=''){}
+  private readonly base:string;
+  constructor(base=''){this.base=base;}
   private path(name:string){return this.base?this.base+'/'+name:name;}
   async getDirectoryHandle(name:string,opts?:{create?:boolean}):Promise<FolderDirectory>{
     const path=this.path(name);
@@ -30,7 +31,9 @@ class Disk implements FolderDirectory {
   }
 }
 class Dir implements FolderDirectory {
-  constructor(readonly disk:Disk,readonly base:string){}
+  readonly disk:Disk;
+  readonly base:string;
+  constructor(disk:Disk,base:string){this.disk=disk;this.base=base;}
   private path(name:string){return this.base?this.base+'/'+name:name;}
   async getDirectoryHandle(name:string,options?:{create?:boolean}):Promise<FolderDirectory>{
     const path=this.path(name);
