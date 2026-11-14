@@ -44,21 +44,33 @@ test('B5 locally bundled Edge handler checks real gateway, origin and input',
     ['functions','serve','complete-private-asset','--env-file',config],{
     stdio:['ignore','pipe','pipe'],env:{...process.env,KADMEION_LOCAL_INTEGRATION:'1'}
   });
-  // Drain without logging potential local keys or user content.
-  worker.stdout?.on('data',()=>{});
-  worker.stderr?.on('data',()=>{});
+  // Record only a bounded, scrubbed startup diagnostic (never secrets or headers).
+  const statuses=new Set();
+  const diagnostics=[];
+  const capture=chunk=>{
+    const message=String(chunk).slice(0,10000);
+    for(const line of message.split(/\r?\n/)) {
+      const kind=/\b(FAIL|ERR|error|denied|resolution|unable|cannot|unexpected)\b/i.exec(line);
+      if(kind && diagnostics.length<8)
+        diagnostics.push(kind[1].toLowerCase()+':'+line.replace(/(?:eyJ|sb_secret_)[A-Za-z0-9_.-]+/g,'[redacted]').slice(0,180));
+    }
+  };
+  worker.stdout?.on('data',capture);
+  worker.stderr?.on('data',capture);
   try {
     let ready=false;
     for(let i=0;i<50;i++){
       if(worker.exitCode!==null)break;
       try{
         const response=await request({assetId:'invalid'});
+        statuses.add(response.status);
         if(response.status===400){await response.body?.cancel();ready=true;break;}
         await response.body?.cancel();
       }catch{/* gateway or Deno isolate not running yet */}
       await delay(300);
     }
-    assert.equal(ready,true,'Edge bundle must run and reject invalid UUID at handler level');
+    assert.equal(ready,true,'Edge bundle must reject invalid UUID; observed HTTP: '+
+      [...statuses].join(',')+'; exit='+worker.exitCode+'; startup='+diagnostics.join(' | '));
     const denied=await request({assetId:'invalid'},{Origin:'https://foreign.invalid'});
     assert.equal(denied.status,403,'Origin policy must reject foreign browsers');
     await denied.body?.cancel();
