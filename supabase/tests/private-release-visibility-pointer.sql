@@ -181,7 +181,7 @@ select is(public.owner_block_private_release_pointer(
   '50000000-0000-4000-8000-0000000000a1')->>'stillBlocked',
   'true','idempotent block confirms current state');
 
-do $
+do $body$
 declare v_rejected boolean:=false;
 begin
   begin
@@ -191,7 +191,7 @@ begin
   exception when serialization_failure then v_rejected:=true;
   end;
   if not v_rejected then raise exception 'Stale prepare replay claimed an active candidate'; end if;
-end $;
+end $body$;
 select pass('old prepare receipt cannot claim success after a block');
 
 select is((public.owner_prepare_private_release_pointer(
