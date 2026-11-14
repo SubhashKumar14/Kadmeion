@@ -172,6 +172,16 @@ export class SupabasePrivateReleasePointerService {
     });
     return this.consentReceipt(raw);
   }
+  async requestPublicPublication(requestId:string,expectedGeneration:number,
+    operationId:string,confirmation:'PUBLISH PUBLIC'):Promise<UnlistedPublicationConsent>{
+    if(!uuid(requestId)||!uuid(operationId)||!generation(expectedGeneration)||
+       expectedGeneration<1||confirmation!=='PUBLISH PUBLIC')
+      throw new PrivatePointerError('VALIDATION','Explicit public publishing confirmation is required.');
+    return this.consentReceipt(await this.call('owner_request_unlisted_publication',{
+      p_request_id:requestId,p_expected_generation:expectedGeneration,
+      p_operation_id:operationId,p_confirmation:confirmation
+    }));
+  }
   async requestUnlistedRollback(targetIntentId:string,currentIntentId:string,
     expectedGeneration:number,operationId:string,
     confirmation:'ROLL BACK UNLISTED'):Promise<UnlistedPublicationConsent>{

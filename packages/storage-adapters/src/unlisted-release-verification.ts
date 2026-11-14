@@ -19,6 +19,7 @@ type Activation = {
   portfolioId: string;
   intentId: string;
   htmlSha256: string;
+  publicPath?: string;
 };
 
 export type DeliveryVerification =
@@ -26,17 +27,19 @@ export type DeliveryVerification =
   | {status: 'DELIVERY_REVOKED'}
   | {status: 'PRIOR_RELEASE_RESTORED'; releaseGeneration: number};
 
-async function digestHtml(response: Response): Promise<string | null> {
+async function digestHtml(response: Response, indexable: boolean): Promise<string | null> {
   if (response.status !== 200 || !response.body ||
       !/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '') ||
       !/(?:^|,)\s*no-store\s*(?:,|$)/i.test(response.headers.get('cache-control') ?? '') ||
-      !/(?:^|,)\s*noindex\s*(?:,|$)/i.test(response.headers.get('x-robots-tag') ?? '')) {
+      !(indexable ? /(?:^|,)\s*index\s*(?:,|$)/i : /(?:^|,)\s*noindex\s*(?:,|$)/i).test(
+        response.headers.get('x-robots-tag') ?? '')) {
     await response.body?.cancel();
     return null;
   }
 
   const hash = createHash('sha256');
   const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     for (;;) {
@@ -47,9 +50,17 @@ async function digestHtml(response: Response): Promise<string | null> {
         await reader.cancel();
         return null;
       }
-      hash.update(chunk.value);
+      if (indexable) chunks.push(chunk.value);
+      else hash.update(chunk.value);
     }
-    return size > 0 ? hash.digest('hex') : null;
+    if (!size) return null;
+    if (indexable) {
+      const html = new TextDecoder('utf-8', {fatal: true}).decode(Buffer.concat(chunks));
+      const marker = '<meta name="robots" content="index,follow">';
+      if (html.split(marker).length !== 2) return null;
+      hash.update(html.replace(marker, '<meta name="robots" content="noindex,nofollow,noarchive">'));
+    }
+    return hash.digest('hex');
   } finally {
     reader.releaseLock();
   }
@@ -60,20 +71,23 @@ export async function verifyActivatedUnlistedRelease(
   activation: Activation,
   {origin, rpc, http = fetch}: VerificationPorts
 ): Promise<DeliveryVerification> {
-  const {portfolioId, intentId, htmlSha256} = activation;
+  const {portfolioId, intentId, htmlSha256, publicPath} = activation;
   const host = deliveryHost(origin);
   if (!UUID.test(portfolioId) || !UUID.test(intentId) || !SHA256.test(htmlSha256)) {
     throw new Error('Invalid trusted release verification input.');
   }
 
-  const route = new URL('/api/unlisted', host);
-  route.searchParams.set('portfolioId', portfolioId);
+  if (publicPath !== undefined && !/^\/[a-z][a-z0-9_]{2,29}\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(publicPath)) {
+    throw new Error('Invalid public portfolio path.');
+  }
+  const route = new URL(publicPath ?? '/api/unlisted', host);
+  if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
   let actualDigest: string | null;
   try {
     actualDigest = await digestHtml(await http(route, {
       method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error',
       signal: AbortSignal.timeout(5_000)
-    }));
+    }), publicPath !== undefined);
   } catch {
     actualDigest = null;
   }
@@ -133,7 +147,15 @@ export async function publishConsentedUnlistedRelease(
       prepared.releaseGeneration < 1 || prepared.publicServingEnabled !== false || prepared.publicUrl !== null) {
     throw new Error('Unlisted release preparation was not confirmed.');
   }
-  const {portfolioId, htmlSha256, releaseGeneration} = prepared;
+  const {portfolioId, htmlSha256, releaseGeneration, publicHandle, publicSlug} = prepared;
+  let publicPath: string | undefined;
+  if (publicHandle != null || publicSlug != null) {
+    if (typeof publicHandle !== 'string' || !/^[a-z][a-z0-9_]{2,29}$/.test(publicHandle) ||
+        typeof publicSlug !== 'string' || !/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(publicSlug)) {
+      throw new Error('Invalid public portfolio route.');
+    }
+    publicPath = '/' + publicHandle + '/' + publicSlug;
+  }
   switch (prepared.status) {
     case 'ACKNOWLEDGED':
       return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
@@ -163,7 +185,7 @@ export async function publishConsentedUnlistedRelease(
     default:
       throw new Error('Unexpected unlisted publication status.');
   }
-  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256}, ports);
+  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256, publicPath}, ports);
 }
 
 function record(value: unknown): value is Record<string, unknown> {

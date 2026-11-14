@@ -2,8 +2,9 @@ import {publishConsentedUnlistedRelease} from '../packages/storage-adapters/src/
 
 async function run() {
   const [intentId, ...extraArgs] = process.argv.slice(2);
-  if (!intentId || extraArgs.length || process.env.KADMEION_UNLISTED_DELIVERY_ENABLED !== 'true') {
-    throw new Error('Enable unlisted delivery and supply exactly one owner consent ID.');
+  if (!intentId || extraArgs.length || (process.env.KADMEION_UNLISTED_DELIVERY_ENABLED !== 'true' &&
+      process.env.KADMEION_PUBLIC_PORTFOLIO_ENABLED !== 'true')) {
+    throw new Error('Enable portfolio delivery and supply exactly one owner consent ID.');
   }
   const {
     KADMEION_SUPABASE_URL: endpoint,

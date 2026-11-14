@@ -46,6 +46,10 @@
     {
       "source": "/workspace",
       "destination": "/index.html"
+    },
+    {
+      "source": "/:handle([a-z][a-z0-9_]{2,29})/:slug([a-z0-9-]{3,64})",
+      "destination": "/api/public-portfolio?handle=:handle&slug=:slug"
     }
   ],
   "headers": [

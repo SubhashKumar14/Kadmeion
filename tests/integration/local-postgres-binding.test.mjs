@@ -29,6 +29,7 @@ import {openPrivateArtifactPgWorker}
 import {publishConsentedUnlistedRelease, verifyActivatedUnlistedRelease}
   from '../../packages/storage-adapters/src/unlisted-release-verification.ts';
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
+import {handlePublicPortfolio} from '../../api/public-portfolio.mjs';
 import {handleUnlistedRequest} from '../../api/unlisted.mjs';
 
 function localSettings(){
@@ -293,6 +294,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
 
     const deliveryEnv = {
       KADMEION_UNLISTED_DELIVERY_ENABLED: 'true',
+      KADMEION_PUBLIC_PORTFOLIO_ENABLED: 'true',
       KADMEION_LOCAL_INTEGRATION: '1',
       KADMEION_SUPABASE_URL: cfg.origin,
       KADMEION_SUPABASE_SERVICE_ROLE_KEY: cfg.service
@@ -309,7 +311,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
         }).end('<!doctype html><title>Unexpected HTML</title>');
         return;
       }
-      void handleUnlistedRequest(request, response, {env: deliveryEnv});
+      const handler = request.url.startsWith('/api/unlisted') ? handleUnlistedRequest : handlePublicPortfolio;
+      void handler(request, response, {env: deliveryEnv});
     });
     server.listen(0, '127.0.0.1');
     t.after(() => new Promise((resolve, reject) => {
@@ -486,9 +489,52 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(after.status,'BLOCKED');
     assert.equal(after.publicServingEnabled,false);
 
+    const handle = 'portfolio_' + randomUUID().slice(0, 8);
+    ok(await api('/rest/v1/profiles?user_id=eq.' + owner.id, {
+      method: 'PATCH', jwt: owner.jwt, body: {handle}
+    }), 'Claim canonical public handle');
+    const [{slug}] = ok(await api('/rest/v1/portfolios?select=slug&id=eq.' + portfolioId,
+      {jwt: owner.jwt}), 'Read portfolio slug');
+    const publicFrozen = ok(await api('/rest/v1/rpc/freeze_private_release_request', {
+      method: 'POST', jwt: owner.jwt, body: {p_portfolio_id: portfolioId,
+        p_operation_id: randomUUID(), p_revision: committed.revision, p_visibility_intent: 'PUBLIC'}
+    }), 'Freeze explicit public visibility');
+    const publicArtifact = await createPrivateImmutableArtifact({
+      ...await loader.load(publicFrozen.requestId), plan: renderPlan
+    });
+    const publicPointer = await pointer.prepare(portfolioId, publicFrozen.requestId,
+      publicArtifact.manifestSha256, after.generation, randomUUID());
+    await bindPrivateArtifactToPointer({...ctx, requestId: publicFrozen.requestId});
+    const publicHtml = new TextDecoder().decode(publicArtifact.files[0].bytes);
+    ok(await api('/rest/v1/rpc/store_private_reviewer_stage_artifact', {
+      method: 'POST', key: cfg.service, jwt: cfg.service, body: {p_request_id: publicFrozen.requestId,
+        p_expected_generation: publicPointer.generation, p_html: publicHtml}
+    }), 'Stage public artifact without indexing');
+    const canonical = deliveryOrigin + '/' + handle + '/' + slug;
+    assert.equal((await fetch(canonical)).status, 404);
+    await assert.rejects(pointer.requestUnlistedPublication(publicFrozen.requestId,
+      publicPointer.generation, randomUUID(), 'PUBLISH UNLISTED'), {code: 'FORBIDDEN'});
+    const publicConsent = await pointer.requestPublicPublication(publicFrozen.requestId,
+      publicPointer.generation, randomUUID(), 'PUBLISH PUBLIC');
+    assert.equal((await publishConsentedUnlistedRelease(publicConsent.intentId, verificationPorts)).status,
+      'DELIVERY_ACKNOWLEDGED');
+    const canonicalResponse = await fetch(canonical);
+    assert.equal(canonicalResponse.status, 200);
+    assert.equal(canonicalResponse.headers.get('x-robots-tag'), 'index, follow');
+    assert.match(await canonicalResponse.text(), /content="index,follow"/);
+    assert.equal((await publicHostRead()).statusCode, 404);
+    assert.equal((await fetch(canonical + '/assets/secret.png')).status, 404);
+    for (const nextHandle of ['changed_' + handle, handle]) {
+      ok(await api('/rest/v1/profiles?user_id=eq.' + owner.id, {
+        method: 'PATCH', jwt: owner.jwt, body: {handle: nextHandle}
+      }), 'Change canonical address');
+      assert.equal((await fetch(canonical)).status, 404);
+      assert.equal((await fetch(deliveryOrigin + '/' + nextHandle + '/' + slug)).status, 404);
+    }
+
     // New generation is never silently revived after Trash.
     const preparedAgain=await pointer.prepare(portfolioId,frozen.requestId,
-      artifact.manifestSha256,after.generation,randomUUID());
+      artifact.manifestSha256,publicPointer.generation,randomUUID());
     assert.equal(preparedAgain.status,'PREPARED_PRIVATE');
     const moved=ok(await api('/rest/v1/rpc/trash_private_item',{
       method:'POST',jwt:owner.jwt,body:{p_item_type:'portfolio',p_item_id:portfolioId}}),
