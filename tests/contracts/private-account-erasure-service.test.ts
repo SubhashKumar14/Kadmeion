@@ -238,3 +238,74 @@ test('reauth errors distinguish stale sessions, missing second login and expired
     await assert.rejects(service.completeReauth(challengeId),{code});
   }
 });
+
+
+const inventorySample={
+  snapshotId:requestId,schemaVersion:1,capturedAt:'2026-11-14T08:00:00Z',
+  alreadyCaptured:false,
+  inventory:{
+    status:'METADATA_SNAPSHOT_ONLY',maxCountPerCategory:1000,
+    countsCapped:false,counts:{...validPreflight.counts},
+    consistency:'SINGLE_STATEMENT_MVCC',publicRoutes:'UNVERIFIED',
+    objectStorage:'METADATA_ONLY',exports:'NOT_READY',
+    integrations:'NOT_TRACKED',backupRetention:'UNVERIFIED',
+    recentReauthVerified:false,publicRevocationVerified:false,deletionAllowed:false
+  },
+  deletionAllowed:false
+} as const;
+
+test('inventory capture is owner JWT-scoped, bounded, no-cache and not an export',async()=>{
+  const service=client(async(url,init)=>{
+    assert.equal(url,origin+'/rest/v1/rpc/create_private_account_exit_inventory');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.cache,'no-store');
+    assert.equal(init?.redirect,'error');
+    assert.equal(init?.credentials,'omit');
+    assert.deepEqual(JSON.parse(init?.body as string),{
+      p_operation_id:operationId,p_request_id:null
+    });
+    return ok({...inventorySample,owner_user_id:'never forwarded'});
+  });
+  assert.deepEqual(await service.captureInventory(operationId),inventorySample);
+  await assert.rejects(service.captureInventory('invalid'),{code:'VALIDATION'});
+  await assert.rejects(service.captureInventory(operationId,'invalid'),{code:'VALIDATION'});
+});
+
+test('inventory retrieval binds the requested ID and rejects forged completeness',async()=>{
+  const service=client(async(url,init)=>{
+    assert.equal(url,origin+'/rest/v1/rpc/get_private_account_exit_inventory');
+    assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:requestId});
+    return ok({...inventorySample,alreadyCaptured:true});
+  });
+  assert.equal((await service.getInventory(requestId)).alreadyCaptured,true);
+  await assert.rejects(service.getInventory('invalid'),{code:'VALIDATION'});
+  for(const invalid of [
+    {...inventorySample,deletionAllowed:true},
+    {...inventorySample,schemaVersion:2},
+    {...inventorySample,snapshotId:operationId},
+    {...inventorySample,inventory:{...inventorySample.inventory,exports:'READY'}},
+    {...inventorySample,inventory:{...inventorySample.inventory,publicRoutes:'VERIFIED'}},
+    {...inventorySample,inventory:{...inventorySample.inventory,
+      publicRevocationVerified:true}},
+    {...inventorySample,inventory:{...inventorySample.inventory,
+      counts:{...inventorySample.inventory.counts,projects:1001}}},
+    {...inventorySample,inventory:{...inventorySample.inventory,
+      counts:{...inventorySample.inventory.counts,projects:'1'}}}
+  ]){
+    await assert.rejects(client(async()=>ok(invalid)).getInventory(requestId),
+      {code:'INVALID_ACK'});
+  }
+});
+
+test('inventory provider outage, conflict, quota and absent session fail closed',async()=>{
+  await assert.rejects(client(async()=>{throw Error('offline');}).captureInventory(operationId),
+    {code:'PROVIDER_UNAVAILABLE'});
+  await assert.rejects(client(async()=>ok(inventorySample),null).captureInventory(operationId),
+    {code:'AUTH_EXPIRED'});
+  await assert.rejects(client(async()=>Response.json({
+    message:'INVENTORY_OPERATION_REUSED'},{status:409})).captureInventory(operationId),
+    {code:'CONFLICT'});
+  await assert.rejects(client(async()=>Response.json({
+    message:'INVENTORY_SNAPSHOT_QUOTA_REACHED'},{status:400})).captureInventory(operationId),
+    {code:'QUOTA_EXCEEDED'});
+});
