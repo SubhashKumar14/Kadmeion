@@ -170,7 +170,7 @@ select ok(not has_function_privilege('anon',
   'anonymous cannot invoke admin hold release');
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
-do $
+do $admin$
 declare denied boolean:=false;
 begin
   begin
@@ -181,7 +181,7 @@ begin
       'Case was resolved; restore the owner ability to prepare privately');
   exception when insufficient_privilege then denied:=true;end;
   if not denied then raise exception 'Moderator escalated into administrator-only hold lift';end if;
-end $;
+end $admin$;
 select pass('moderator role cannot lift a resolved case hold');
 reset role;
 update kadmeion_private.operator_roles set role='administrator'
