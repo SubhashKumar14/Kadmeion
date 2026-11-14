@@ -185,3 +185,31 @@ proof exists. Hosted deployments and irreversible account cleanup
 remain unauthorized. The 52 owner-approved original LIGHT screen
 references in Notion are authoritative; do not use rejected Canva
 screens, generate DARK mockups or begin frontend until backend gates pass.
+
+
+## Latest B4 direct SQL adapter handoff — 14 November 2026
+
+Active branch `feat/b0-backend-foundation` in `SubhashKumar14/Kadmeion`.
+The private artifact binding SQL function and trusted frozen-snapshot
+orchestrator already existed. This iteration added the server-only
+`DirectSqlPrivateArtifactBindingWriter` (parameterized `pg`-compatible
+query port; not browser-exported), its negative tests and an in-process
+orchestrator-to-SQL contract test. The final **code** commit is
+[0cfb108](https://github.com/SubhashKumar14/Kadmeion/commit/0cfb10899db4f5fd8e04a2a4df2d45be3b90efdf);
+[CI 43552260096](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43552260096)
+passed 184 Node tests, 268 pgTAP assertions, 27 local HTTP subtests,
+TypeScript, auth builds and 135/200 file budget. Check latest branch HEAD
+and CI before new changes; a subsequent documentation-only commit may
+trigger Git integration. The exact owner-approved 52 LIGHT screen references
+are in Notion, but image files are session-local. No DARK set or Canva
+substitution is authorized.
+
+**Start next run here:** implement a real local direct PostgreSQL `pg`
+integration harness with a least-privileged, nonproduction worker role and
+exercise the restricted SQL binding RPC from the trusted orchestrator under
+concurrent block/Trash, stale generation, tampered manifest and HTML.
+Current adapter is tested against an injected query port, **not yet an
+actual direct PostgreSQL driver**. Do not use a browser Supabase client,
+PostgREST, hosted service credentials, public-serving endpoints or production
+writes. No selected/approved public host or direct-asset/cache revocation
+proof exists. Operator moderation BLOCK-only and backend B6 remain pending.
