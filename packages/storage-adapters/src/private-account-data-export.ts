@@ -85,14 +85,16 @@ export class SupabasePrivateAccountDataExporter {
       'VALIDATION','Publishable key required.');
     this.origin=url.origin;
   }
-  private async request(path:string,max:number):Promise<{bytes:Uint8Array;headers:Headers}> {
+  private async request(path:string,max:number,body?:Record<string,unknown>):Promise<{bytes:Uint8Array;headers:Headers}> {
     const jwt=await this.accessToken();
     requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
     let response:Response;
     try {
       response=await this.http(this.origin+path,{
-        method:'GET',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,
-          Accept:'application/json'},credentials:'omit',cache:'no-store',redirect:'error'
+        method:body===undefined?'GET':'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,
+          Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
+        body:body===undefined?undefined:JSON.stringify(body),
+        credentials:'omit',cache:'no-store',redirect:'error'
       });
     }catch{throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export source unavailable.');}
     if(!response.ok)throw new PrivateAccountExportError(
@@ -100,8 +102,8 @@ export class SupabasePrivateAccountDataExporter {
       'Private export read was denied or unavailable.');
     return {bytes:await boundedBytes(response,max),headers:response.headers};
   }
-  private async json(path:string,max:number):Promise<unknown> {
-    const {bytes}=await this.request(path,max);
+  private async json(path:string,max:number,body?:Record<string,unknown>):Promise<unknown> {
+    const {bytes}=await this.request(path,max,body);
     try{return JSON.parse(decoder.decode(bytes)) as unknown;}
     catch{throw new PrivateAccountExportError('INTEGRITY','Invalid private export response.');}
   }
@@ -111,8 +113,8 @@ export class SupabasePrivateAccountDataExporter {
     return {id:raw.id,email:typeof raw.email==='string'?raw.email:null};
   }
   private async reconcile(snapshotId:string):Promise<number> {
-    const raw=await this.json('/rest/v1/rpc/reconcile_private_account_exit_storage?p_snapshot_id='+
-      encodeURIComponent(snapshotId),65536);
+    const raw=await this.json('/rest/v1/rpc/reconcile_private_account_exit_storage',
+      65536,{p_snapshot_id:snapshotId});
     requireCondition(object(raw)&&raw.snapshotId===snapshotId&&
       raw.status==='METADATA_MATCH_ONLY'&&raw.limitExceeded===false&&
       raw.inventoryDrift===false&&raw.missingObjects===0&&raw.orphanObjects===0&&
