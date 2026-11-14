@@ -63,6 +63,10 @@ jobs:
         run: node --test tests/integration/local-private-asset-edge.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
+      - name: Smoke test real owner-JWT publication Edge gateway
+        run: node --test tests/integration/local-publish-edge.test.mjs
+        env:
+          KADMEION_LOCAL_INTEGRATION: '1'
       - name: Test local signup confirmation and recovery through Mailpit
         run: node --test tests/integration/local-auth-email.test.mjs
         env:
