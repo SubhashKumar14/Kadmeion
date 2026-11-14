@@ -84,6 +84,7 @@ test('unlisted direct assets require exact content hash, allowlist, and canonica
     {...asset,path:'assets/../index.html'},
     {...asset,path:'assets/'+digest+'.css?download=1'},
     {...asset,path:'assets/'+digest+'.CSS'},
+    {...asset,path:'assets/'+digest+'.svg'},
     {...asset,path:'assets/'+digest+'.css/../index.html'},
     {...asset,path:'index.html'},
     {...asset,releaseSha256:'not-a-sha'},
@@ -112,4 +113,16 @@ test('an unavailable release or an unlisted file never yields a candidate',async
     const r=await gate(async()=>s).check(asset);
     assert.equal(r.status,'DENY');
   }
+});
+
+test('a later unpublish is observed by the next lookup, including for direct assets',async()=>{
+  let current:'LIVE_VERIFIED'|'UNPUBLISHED'='LIVE_VERIFIED';
+  let reads=0;
+  const policy=gate(async()=>{reads++;return {...state(),status:current};});
+  assert.equal((await policy.check(canonical)).status,'HOST_PROOF_REQUIRED');
+  current='UNPUBLISHED';
+  assert.deepEqual(await policy.check(asset),{
+    status:'DENY',reason:'NOT_LIVE',deployable:false,publicUrl:null
+  });
+  assert.equal(reads,2);
 });

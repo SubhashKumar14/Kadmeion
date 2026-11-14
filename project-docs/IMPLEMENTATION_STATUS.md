@@ -146,3 +146,48 @@ The latest Notion approval record supersedes older pending lists and confirms
 visibility/revocation pointer plus direct immutable-asset denial contract, with
 fail-closed privacy semantics and no deployment. Do not start destructive account
 cleanup or claim public revocation before real host and cache tests are approved.
+
+
+## 14 November 2026 — B4 host-neutral public route AND direct-asset denial policy
+
+**Source reconciliation:** Active code repository is SubhashKumar14/Kadmeion,
+branch feat/b0-backend-foundation; main remains documentation-only and the old
+DevFolio-App is reference-only. Latest Notion 52-screen LIGHT register ends
+with **52/52 exact original images approved** and **no DARK screen set**.
+Older Canva/pending approval documents are superseded for those images only.
+No frontend code or production deployment was authorized or added.
+
+**Backend-only code:** Added typed PrivatePublicDeliveryPolicy in
+packages/storage-adapters/src/public-delivery-policy.ts, exported from the
+package index, with focused synthetic negative tests. It requires a fresh
+trusted host-side visibility read separately for canonical HTML and every
+direct immutable asset. It fails closed on unavailable/malformed/stale state,
+private/unpublished/restricted pointers, incomplete revocation generation,
+wrong release digest, non-allowlisted asset, path traversal and mismatched
+content hash. A positive match returns HOST_PROOF_REQUIRED, always
+deployable:false and publicUrl:null, **never content or HTTP permission**.
+SVG is excluded due to active-content risks; future CSS hosting requires
+trusted generation/sanitization. No actual public pointer database table,
+authoritative host adapter, route interception, cache invalidation, CDN
+revocation, rollback or public publication is implemented.
+
+**Evidence:** Isolated local Node 22.16 --experimental-strip-types policy
+tests and isolated TypeScript 5.8.3 strict module check passed before commit.
+The GitHub Actions contracts and database jobs for the final branch commit
+must be checked independently; do not claim them passed before they finish.
+Earlier baseline commit 8d7b37a passed both jobs in runs 43539692728 and
+43539687607. No hosted Supabase, real HTTP public-route tests, browser E2E,
+lint, SAST, accessibility or provider/hosting proof was performed.
+
+**Security caveat:** The policy trusts the injected reader's authority and
+read freshness; a timestamp or generation field is not cryptographic proof
+of strong consistency. A CDN/direct release URL that bypasses this gate
+would invalidate the privacy guarantee. Do not wire a public HTTP handler
+to HOST_PROOF_REQUIRED or report successful revocation without a selected
+approved host and live canonical + direct-asset negative tests.
+
+**Next critical action:** implement an owner/administrator-scoped,
+transactional *private* release visibility/revocation pointer and a trusted
+read contract with tenant/role tests. Keep all serving disabled until an
+explicitly approved free host proves interception, cache controls,
+unpublish, direct asset denial and rollback under races.

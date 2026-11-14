@@ -2,13 +2,15 @@
  * B4 host-neutral policy for a FUTURE public route/asset resolver.
  *
  * This is not a server, deployment adapter, permission grant, signed attestation,
- * or proof of cache invalidation. Only a trusted, strongly consistent host-side
+ * or proof of cache invalidation. SVG is excluded until active-content safety
+ * is proven; CSS must be trusted/sanitized before any future hosting.
+ * Only a trusted, strongly consistent host-side
  * lookup may supply state; callers and public requests must never supply it.
  * A positive decision is deliberately a NON-DEPLOYABLE candidate, not HTTP 200.
  */
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256=/^[0-9a-f]{64}$/;
-const ASSET_PATH=/^assets\/[0-9a-f]{64}\.(?:css|png|jpe?g|webp|svg|woff2)$/;
+const ASSET_PATH=/^assets\/[0-9a-f]{64}\.(?:css|png|jpe?g|webp|woff2)$/;
 const MAX_FILES=64;
 const MAX_AGE_MS=2000;
 
