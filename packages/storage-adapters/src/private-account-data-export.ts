@@ -3,10 +3,15 @@
  * account export, atomic snapshot, erasure manifest, or public release.
  */
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Only owner-readable tables with SELECT privileges on their ownership column.
+// Reviewer grants, moderation events, erasure requests and inventory snapshots
+// have deliberately restricted column grants; never use SELECT * on them here.
 const TABLES=[
-  ['profiles','user_id'],['projects','owner_user_id'],
-  ['portfolios','owner_user_id'],['portfolio_revisions','owner_user_id'],
-  ['project_assets','owner_user_id']
+  ['profiles','user_id'],['profile_sharing_preferences','user_id'],
+  ['private_onboarding_steps','user_id'],['projects','owner_user_id'],
+  ['project_exposure_intents','owner_user_id'],['portfolios','owner_user_id'],
+  ['portfolio_revisions','owner_user_id'],['project_assets','owner_user_id'],
+  ['private_release_requests','owner_user_id'],['private_trash_items','owner_user_id']
 ] as const;
 const MAX_ROWS=100,MAX_TABLE_BYTES=1024*1024,MAX_ASSETS=8;
 const MAX_ASSET_BYTES=5*1024*1024,MAX_TOTAL_ASSET_BYTES=8*1024*1024;
@@ -185,9 +190,9 @@ export class SupabasePrivateAccountDataExporter {
         providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
         crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
       limitations:{completeAccountExport:false,
-        omittedCategories:['sharing preferences','case studies','reviewer grants',
-          'release requests','moderation and appeals','trash and erasure history',
-          'provider integrations and backups'],
+        omittedCategories:['case-study revision history','reviewer grants',
+          'moderation and appeals','account erasure history',
+          'inventory snapshots','provider integrations and backups'],
         providerRetentionVerified:false,publicRouteRevocationVerified:false,
         deletionAllowed:false}
     };
