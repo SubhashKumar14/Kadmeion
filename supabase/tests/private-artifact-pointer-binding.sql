@@ -290,5 +290,8 @@ select ok(not has_function_privilege('authenticated',
 select ok(has_function_privilege('service_role',
   'public.service_recover_failed_unlisted_release(uuid,uuid)','EXECUTE'),
   'trusted service may compensate a failed activation');
+select ok(not has_function_privilege('authenticated',
+  'public.service_acknowledge_unlisted_release(uuid,uuid,text)','EXECUTE'),
+  'owners cannot acknowledge external verification');
 select * from finish();
 rollback;

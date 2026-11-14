@@ -308,6 +308,11 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(site.body,new TextDecoder().decode(artifact.files[0].bytes));
     assert.match(site.headers.get('cache-control'),/no-store/);
     assert.match(site.headers.get('content-security-policy'),/script-src 'none'/);
+    const acknowledgeRelease = (probe) => api('/rest/v1/rpc/service_acknowledge_unlisted_release', {
+      method: 'POST', key: cfg.service, jwt: cfg.service,
+      body: {p_portfolio_id: portfolioId, p_intent_id: probe.intentId,
+        p_html_sha256: probe.htmlSha256}
+    });
 
 
     async function prepareReplacement(previousGeneration) {
@@ -352,6 +357,9 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       assert.equal(staleProbe.data?.code, '40001',
         'A superseded consent cannot activate a replacement with identical bytes');
     }
+    const beforeAck = await activateReplacement(replacement);
+    assert.equal(beforeAck.data?.message, 'UNLISTED_VERIFICATION_PENDING');
+    assert.equal(ok(await acknowledgeRelease(candidate), 'Acknowledge initial served bytes'), true);
     const promoted = ok(await activateReplacement(replacement), 'Promote the current replacement');
     assert.equal(promoted.releaseGeneration, replacement.releaseGeneration);
     assert.equal((await publicHostRead()).body, site.body);
@@ -370,12 +378,13 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     });
     assert.equal((await publicHostRead()).body, site.body);
     assert.equal((await recoverRelease(replacement)).data?.code, '40001');
-    const revoked = ok(await recoverRelease(candidate), 'Revoke when no fallback exists');
-    assert.equal(revoked.status, 'REVOKED');
-    assert.equal((await publicHostRead()).statusCode, 404);
+    assert.equal((await acknowledgeRelease(replacement)).data?.code, '40001');
     const activeAgain = await consentAndProbe(replacement.releaseGeneration);
-    ok(await activateReplacement(activeAgain), 'Reactivate with fresh owner consent');
+    ok(await activateReplacement(activeAgain), 'Activate with fresh owner consent');
     assert.equal((await publicHostRead()).statusCode, 200);
+    assert.equal(ok(await acknowledgeRelease(activeAgain), 'Acknowledge the reactivated bytes'), true);
+    assert.equal((await recoverRelease(activeAgain)).data?.code, '40001',
+      'A failure report cannot undo an acknowledged release');
 
     const direct={requestId:frozen.requestId,expectedGeneration:replacement.releaseGeneration,
       manifestJson:JSON.stringify(artifact.manifest),

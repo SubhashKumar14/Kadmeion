@@ -32,7 +32,8 @@ create table kadmeion_private.unlisted_release_routes (
   intent_id uuid not null,
   stage_generation bigint not null,
   release_generation bigint not null check(release_generation>=1),
-  status text not null check(status in ('PROBE_PENDING','LIVE','REVOKED')),
+  status text not null check(status in ('LIVE','REVOKED')),
+  verified_at timestamptz,
   html_sha256 text not null check(html_sha256 ~ '^[0-9a-f]{64}$'),
   updated_at timestamptz not null default transaction_timestamp(),
   foreign key (portfolio_id,owner_user_id)
@@ -58,6 +59,7 @@ create table kadmeion_private.unlisted_release_fallbacks (
     on delete cascade,
   previous_generation bigint not null check(previous_generation>=1),
   previous_stage_generation bigint not null,
+  previous_verified_at timestamptz not null,
   previous_html_sha256 text not null check(previous_html_sha256 ~ '^[0-9a-f]{64}$'),
   foreign key(portfolio_id,previous_stage_generation)
     references kadmeion_private.private_reviewer_stage_artifacts(portfolio_id,pointer_generation)
@@ -293,12 +295,16 @@ begin
   if not found or v_stage.html_sha256<>p_html_sha256 or
      encode(sha256(convert_to(v_stage.html,'UTF8')),'hex')<>p_html_sha256 then
     raise exception using errcode='22023',message='UNLISTED_ACTIVATION_DIGEST_MISMATCH';end if;
+  if exists(select 1 from kadmeion_private.unlisted_release_routes
+    where portfolio_id=p_portfolio_id and status='LIVE' and verified_at is null) then
+    raise exception using errcode='40001',message='UNLISTED_VERIFICATION_PENDING';
+  end if;
   delete from kadmeion_private.unlisted_release_fallbacks where portfolio_id=p_portfolio_id;
   insert into kadmeion_private.unlisted_release_fallbacks(
     portfolio_id,replacement_intent_id,previous_intent_id,previous_generation,
-    previous_stage_generation,previous_html_sha256
+    previous_stage_generation,previous_verified_at,previous_html_sha256
   )
-  select portfolio_id,v_pending.intent_id,intent_id,release_generation,stage_generation,html_sha256
+  select portfolio_id,v_pending.intent_id,intent_id,release_generation,stage_generation,verified_at,html_sha256
     from kadmeion_private.unlisted_release_routes
     where portfolio_id=p_portfolio_id and status='LIVE';
 
@@ -311,7 +317,7 @@ begin
   on conflict(portfolio_id) do update set
     owner_user_id=excluded.owner_user_id,request_id=excluded.request_id,
     intent_id=excluded.intent_id,stage_generation=excluded.stage_generation,
-    release_generation=excluded.release_generation,status='LIVE',
+    release_generation=excluded.release_generation,status='LIVE',verified_at=null,
     html_sha256=excluded.html_sha256,updated_at=transaction_timestamp();
   delete from kadmeion_private.unlisted_release_pending
     where portfolio_id=p_portfolio_id;
@@ -359,6 +365,39 @@ revoke all on function public.service_read_unlisted_release(uuid)
   from public,anon,authenticated;
 grant execute on function public.service_read_unlisted_release(uuid) to service_role;
 
+-- Called only after the host has fetched the active route and checked the
+-- delivered bytes. This records the worker's acknowledgment, not CDN proof.
+create function public.service_acknowledge_unlisted_release(
+  p_portfolio_id uuid,p_intent_id uuid,p_html_sha256 text
+) returns boolean language plpgsql security definer set search_path=''
+as $function$
+begin
+  if p_portfolio_id is null or p_intent_id is null or p_html_sha256 is null
+    or p_html_sha256 !~ '^[0-9a-f]{64}$' then
+    raise exception using errcode='22023',message='INVALID_UNLISTED_ACKNOWLEDGMENT';
+  end if;
+  perform 1 from public.portfolios where id=p_portfolio_id and trashed_at is null for update;
+  if not found or exists(select 1 from kadmeion_private.moderation_portfolio_holds
+    where portfolio_id=p_portfolio_id) then
+    raise exception using errcode='42501',message='UNLISTED_PORTFOLIO_BLOCKED';
+  end if;
+  update kadmeion_private.unlisted_release_routes
+    set verified_at=coalesce(verified_at,clock_timestamp())
+    where portfolio_id=p_portfolio_id and intent_id=p_intent_id
+      and html_sha256=p_html_sha256 and status='LIVE'
+      and public.service_read_unlisted_release(p_portfolio_id) is not null;
+  if not found then
+    raise exception using errcode='40001',message='UNLISTED_ACKNOWLEDGMENT_CONFLICT';
+  end if;
+  delete from kadmeion_private.unlisted_release_fallbacks where portfolio_id=p_portfolio_id;
+  return true;
+end;
+$function$;
+revoke all on function public.service_acknowledge_unlisted_release(uuid,uuid,text)
+  from public,anon,authenticated;
+grant execute on function public.service_acknowledge_unlisted_release(uuid,uuid,text)
+  to service_role;
+
 -- A trusted host can report failure only for the activation it attempted.
 -- Restore the immediate prior route if its scope and pinned bytes still match.
 create function public.service_recover_failed_unlisted_release(
@@ -382,7 +421,8 @@ begin
     raise exception using errcode='40001',message='UNLISTED_RECOVERY_CONFLICT';
   end if;
   perform 1 from kadmeion_private.unlisted_release_routes
-    where portfolio_id=p_portfolio_id and intent_id=p_failed_intent_id and status='LIVE' for update;
+    where portfolio_id=p_portfolio_id and intent_id=p_failed_intent_id and status='LIVE'
+      and verified_at is null for update;
   if not found then
     raise exception using errcode='40001',message='UNLISTED_RECOVERY_CONFLICT';
   end if;
@@ -390,7 +430,7 @@ begin
   update kadmeion_private.unlisted_release_routes live
   set intent_id=previous.id,request_id=previous.request_id,
     release_generation=fallback.previous_generation,
-    stage_generation=fallback.previous_stage_generation,
+    stage_generation=fallback.previous_stage_generation,verified_at=fallback.previous_verified_at,
     html_sha256=fallback.previous_html_sha256,updated_at=transaction_timestamp()
   from kadmeion_private.unlisted_release_fallbacks fallback
   join public.private_unlisted_publication_intents previous
