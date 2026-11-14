@@ -281,5 +281,14 @@ select ok(not has_function_privilege('anon',
 select ok(has_function_privilege('service_role',
   'public.service_read_unlisted_release(uuid)','EXECUTE'),
   'restricted backend resolver may query release bytes');
+select ok(not has_table_privilege('service_role',
+  'kadmeion_private.unlisted_release_fallbacks','UPDATE'),
+  'service role cannot directly change a recovery target');
+select ok(not has_function_privilege('authenticated',
+  'public.service_recover_failed_unlisted_release(uuid,uuid)','EXECUTE'),
+  'owners cannot report trusted host verification failure');
+select ok(has_function_privilege('service_role',
+  'public.service_recover_failed_unlisted_release(uuid,uuid)','EXECUTE'),
+  'trusted service may compensate a failed activation');
 select * from finish();
 rollback;

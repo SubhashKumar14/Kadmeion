@@ -48,6 +48,25 @@ revoke all on kadmeion_private.unlisted_release_routes from public,anon,authenti
 comment on table kadmeion_private.unlisted_release_routes is
   'Service-only noindex UNLISTED text-only releases. Public URLs are not currently hosted or proved. Direct immutable asset serving is forbidden.';
 
+-- One prior live target for compensating a failed host check. Keep the
+-- release bytes in their original immutable staging row.
+create table kadmeion_private.unlisted_release_fallbacks (
+  portfolio_id uuid primary key references public.portfolios(id) on delete cascade,
+  replacement_intent_id uuid not null references public.private_unlisted_publication_intents(id)
+    on delete cascade,
+  previous_intent_id uuid not null references public.private_unlisted_publication_intents(id)
+    on delete cascade,
+  previous_generation bigint not null check(previous_generation>=1),
+  previous_stage_generation bigint not null,
+  previous_html_sha256 text not null check(previous_html_sha256 ~ '^[0-9a-f]{64}$'),
+  foreign key(portfolio_id,previous_stage_generation)
+    references kadmeion_private.private_reviewer_stage_artifacts(portfolio_id,pointer_generation)
+    on delete cascade
+);
+alter table kadmeion_private.unlisted_release_fallbacks enable row level security;
+revoke all on kadmeion_private.unlisted_release_fallbacks
+  from public,anon,authenticated,service_role;
+
 -- Preparing a replacement must NOT interrupt the previous working LIVE
 -- release. A separate pending slot is atomically promoted after host proof.
 create table kadmeion_private.unlisted_release_pending (
@@ -274,6 +293,15 @@ begin
   if not found or v_stage.html_sha256<>p_html_sha256 or
      encode(sha256(convert_to(v_stage.html,'UTF8')),'hex')<>p_html_sha256 then
     raise exception using errcode='22023',message='UNLISTED_ACTIVATION_DIGEST_MISMATCH';end if;
+  delete from kadmeion_private.unlisted_release_fallbacks where portfolio_id=p_portfolio_id;
+  insert into kadmeion_private.unlisted_release_fallbacks(
+    portfolio_id,replacement_intent_id,previous_intent_id,previous_generation,
+    previous_stage_generation,previous_html_sha256
+  )
+  select portfolio_id,v_pending.intent_id,intent_id,release_generation,stage_generation,html_sha256
+    from kadmeion_private.unlisted_release_routes
+    where portfolio_id=p_portfolio_id and status='LIVE';
+
   insert into kadmeion_private.unlisted_release_routes(
     portfolio_id,owner_user_id,request_id,intent_id,stage_generation,
     release_generation,status,html_sha256
@@ -331,6 +359,75 @@ revoke all on function public.service_read_unlisted_release(uuid)
   from public,anon,authenticated;
 grant execute on function public.service_read_unlisted_release(uuid) to service_role;
 
+-- A trusted host can report failure only for the activation it attempted.
+-- Restore the immediate prior route if its scope and pinned bytes still match.
+create function public.service_recover_failed_unlisted_release(
+  p_portfolio_id uuid,p_failed_intent_id uuid
+) returns jsonb language plpgsql security definer set search_path=''
+as $function$
+declare
+  v_restored_generation bigint;
+begin
+  if p_portfolio_id is null or p_failed_intent_id is null then
+    raise exception using errcode='22023',message='INVALID_UNLISTED_RECOVERY';
+  end if;
+  perform 1 from public.portfolios where id=p_portfolio_id and trashed_at is null for update;
+  if not found or exists(select 1 from kadmeion_private.moderation_portfolio_holds
+      where portfolio_id=p_portfolio_id) then
+    raise exception using errcode='42501',message='UNLISTED_PORTFOLIO_BLOCKED';
+  end if;
+  perform 1 from public.private_release_visibility_pointers
+    where portfolio_id=p_portfolio_id and status='PREPARED_PRIVATE' for update;
+  if not found then
+    raise exception using errcode='40001',message='UNLISTED_RECOVERY_CONFLICT';
+  end if;
+  perform 1 from kadmeion_private.unlisted_release_routes
+    where portfolio_id=p_portfolio_id and intent_id=p_failed_intent_id and status='LIVE' for update;
+  if not found then
+    raise exception using errcode='40001',message='UNLISTED_RECOVERY_CONFLICT';
+  end if;
+
+  update kadmeion_private.unlisted_release_routes live
+  set intent_id=previous.id,request_id=previous.request_id,
+    release_generation=fallback.previous_generation,
+    stage_generation=fallback.previous_stage_generation,
+    html_sha256=fallback.previous_html_sha256,updated_at=transaction_timestamp()
+  from kadmeion_private.unlisted_release_fallbacks fallback
+  join public.private_unlisted_publication_intents previous
+    on previous.id=fallback.previous_intent_id and previous.portfolio_id=fallback.portfolio_id
+  join public.private_release_requests request
+    on request.id=previous.request_id and request.portfolio_id=previous.portfolio_id
+    and request.owner_user_id=previous.owner_user_id
+  join kadmeion_private.private_reviewer_stage_artifacts staged
+    on staged.portfolio_id=fallback.portfolio_id and staged.owner_user_id=previous.owner_user_id
+    and staged.request_id=request.id and staged.pointer_generation=fallback.previous_stage_generation
+  where live.portfolio_id=p_portfolio_id and fallback.portfolio_id=live.portfolio_id
+    and fallback.replacement_intent_id=p_failed_intent_id
+    and previous.owner_user_id=live.owner_user_id
+    and request.visibility_intent='UNLISTED' and request.status='FROZEN'
+    and staged.html_sha256=fallback.previous_html_sha256
+    and encode(sha256(convert_to(staged.html,'UTF8')),'hex')=staged.html_sha256
+  returning live.release_generation into v_restored_generation;
+
+  if not found then
+    update kadmeion_private.unlisted_release_routes
+      set status='REVOKED',updated_at=transaction_timestamp()
+      where portfolio_id=p_portfolio_id;
+  end if;
+  delete from kadmeion_private.unlisted_release_fallbacks where portfolio_id=p_portfolio_id;
+  return jsonb_build_object(
+    'status',case when v_restored_generation is null then 'REVOKED'
+                  else 'RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION' end,
+    'portfolioId',p_portfolio_id,'releaseGeneration',v_restored_generation,
+    'hostRevocationVerified',false,'publicUrl',null
+  );
+end;
+$function$;
+revoke all on function public.service_recover_failed_unlisted_release(uuid,uuid)
+  from public,anon,authenticated;
+grant execute on function public.service_recover_failed_unlisted_release(uuid,uuid)
+  to service_role;
+
 -- Every owner unpublish, Trash and operator block calls the existing private
 -- pointer BLOCKED transition. The same transaction revokes this route.
 create function kadmeion_private.revoke_unlisted_when_pointer_blocked()
@@ -342,6 +439,8 @@ begin
       set status='REVOKED',updated_at=transaction_timestamp()
       where portfolio_id=new.portfolio_id and status<>'REVOKED';
     delete from kadmeion_private.unlisted_release_pending
+      where portfolio_id=new.portfolio_id;
+    delete from kadmeion_private.unlisted_release_fallbacks
       where portfolio_id=new.portfolio_id;
   end if;
   return new;

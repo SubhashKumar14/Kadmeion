@@ -356,6 +356,27 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(promoted.releaseGeneration, replacement.releaseGeneration);
     assert.equal((await publicHostRead()).body, site.body);
 
+    const recoverRelease = (probe) => api('/rest/v1/rpc/service_recover_failed_unlisted_release', {
+      method: 'POST', key: cfg.service, jwt: cfg.service,
+      body: {p_portfolio_id: portfolioId, p_failed_intent_id: probe.intentId}
+    });
+    assert.equal((await recoverRelease(distinctGeneration)).data?.code, '40001',
+      'A delayed failure must not roll back a newer activation');
+    const recovered = ok(await recoverRelease(replacement), 'Compensate the failed activation');
+    assert.deepEqual(recovered, {
+      status: 'RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION', portfolioId,
+      releaseGeneration: activated.releaseGeneration,
+      hostRevocationVerified: false, publicUrl: null
+    });
+    assert.equal((await publicHostRead()).body, site.body);
+    assert.equal((await recoverRelease(replacement)).data?.code, '40001');
+    const revoked = ok(await recoverRelease(candidate), 'Revoke when no fallback exists');
+    assert.equal(revoked.status, 'REVOKED');
+    assert.equal((await publicHostRead()).statusCode, 404);
+    const activeAgain = await consentAndProbe(replacement.releaseGeneration);
+    ok(await activateReplacement(activeAgain), 'Reactivate with fresh owner consent');
+    assert.equal((await publicHostRead()).statusCode, 200);
+
     const direct={requestId:frozen.requestId,expectedGeneration:replacement.releaseGeneration,
       manifestJson:JSON.stringify(artifact.manifest),
       html:new TextDecoder().decode(artifact.files[0].bytes)};
@@ -384,6 +405,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(ok(await publicRead(),'Blocked unlisted route'),null);
     assert.equal((await publicHostRead()).statusCode,404,
       'Owner unpublish must deny the previously live unlisted HTTP URL');
+    assert.equal((await recoverRelease(activeAgain)).data?.code, '40001',
+      'A host failure report must not revive an unpublished release');
     const after=await pointer.read(portfolioId);
     assert.equal(after.status,'BLOCKED');
     assert.equal(after.publicServingEnabled,false);
