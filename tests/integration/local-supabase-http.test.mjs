@@ -14,6 +14,7 @@ import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {randomBytes} from 'node:crypto';
 import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/src/private-delivery-denial-gate.ts';
+import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapters/src/private-account-data-export.ts';
 
 
 function localSupabaseCredentials() {
@@ -995,4 +996,53 @@ test('B5: Storage reconciliation is owner-only and never proves export or erasur
       'Reconciliation owner logout');
     assert.ok(!(await post(owner,rpc,input)).ok);
   });
+});
+
+
+test('B5: real local owner export reads RLS records and verifies private Storage bytes',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('byte-export-owner');
+  const outsider=await adminUser('byte-export-outsider');
+  const project=successful(await send('/rest/v1/projects?select=id',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug:'export-'+randomUUID().slice(0,8),
+      title:'Private byte export fixture'}
+  }),'Owner export project')[0];
+  const path=owner.id+'/export-'+randomUUID().slice(0,8)+'/cover.png';
+  successful(await send('/storage/v1/object/'+bucket+'/'+path,{
+    ...bearer(owner),method:'POST',headers:{'Content-Type':'image/png'},body:png
+  }),'Owner export image upload');
+  successful(await send('/rest/v1/rpc/register_private_project_image',{
+    ...json(owner),method:'POST',body:{
+      p_project_id:project.id,p_object_path:path,p_mime_type:'image/png',
+      p_byte_size:png.length,p_alt_text:'Export test pixel'
+    }
+  }),'Owner export image registration');
+  const snapshot=successful(await send(
+    '/rest/v1/rpc/create_private_account_exit_inventory',{
+      ...json(owner),method:'POST',
+      body:{p_operation_id:randomUUID(),p_request_id:null}
+    }),'Inventory after asset registration');
+  const exporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,
+    async()=>owner.token);
+  const artifact=await exporter.export(snapshot.snapshotId);
+  assert.equal(artifact.status,'BOUNDED_PARTIAL_EXPORT');
+  assert.equal(artifact.deletionAllowed,false);
+  const body=JSON.parse(new TextDecoder().decode(artifact.bytes));
+  assert.equal(body.owner.id,owner.id);
+  assert.ok(body.records.projects.some(p=>p.id===project.id));
+  assert.equal(body.assets.length,1);
+  assert.equal(body.assets[0].path,path);
+  assert.equal(body.assets[0].byteSize,png.length);
+  assert.equal(body.assets[0].downloadedSha256,createHash('sha256').update(png).digest('hex'));
+  assert.deepEqual(Buffer.from(body.assets[0].base64,'base64'),Buffer.from(png));
+  assert.equal(body.evidence.providerExpectedHashesVerified,false);
+  assert.equal(body.limitations.completeAccountExport,false);
+  const foreignExporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,
+    async()=>outsider.token);
+  await assert.rejects(foreignExporter.export(snapshot.snapshotId),{code:'AUTH_EXPIRED'});
+  successful(await send('/auth/v1/logout',{...bearer(owner),method:'POST'}),
+    'Export owner logout');
+  await assert.rejects(exporter.export(snapshot.snapshotId),{code:'AUTH_EXPIRED'});
 });
