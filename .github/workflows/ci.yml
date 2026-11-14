@@ -1,9 +1,12 @@
 name: Application and Database CI
 
 on:
-  push:
-    branches: ["feat/**"]
+  # One CI run per feature change via PR synchronization (no duplicate push job).
   pull_request:
+  # Validate the merged result, too, after an explicitly approved merge.
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
