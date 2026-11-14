@@ -1024,6 +1024,22 @@ test('B5: real local owner export reads RLS records and verifies private Storage
       ...json(owner),method:'POST',
       body:{p_operation_id:randomUUID(),p_request_id:null}
     }),'Inventory after asset registration');
+  const info=successful(await send(
+    '/storage/v1/object/info/authenticated/'+bucket+'/'+path,bearer(owner)),
+    'Owner private Storage info');
+  const infoChecks={
+    id:typeof info.id==='string'&&/^[0-9a-f-]{36}$/i.test(info.id),
+    name:info.name===path,bucket:info.bucket_id===bucket,
+    owner:info.owner_id===owner.id,
+    version:typeof info.version==='string'&&info.version.length>0,
+    updatedAt:typeof info.updated_at==='string',
+    metadata:info.metadata&&Number(info.metadata.size)===png.length&&
+      String(info.metadata.mimetype).toLowerCase()==='image/png'
+  };
+  assert.ok(Object.values(infoChecks).every(Boolean),
+    'Storage info contract mismatch fields: '+
+      Object.entries(infoChecks).filter(([,valid])=>!valid).map(([key])=>key).join(',')+
+      '; keys: '+Object.keys(info).sort().join(','));
   const exporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,
     async()=>owner.token);
   const artifact=await exporter.export(snapshot.snapshotId);
