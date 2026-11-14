@@ -353,3 +353,35 @@ Active repository: SubhashKumar14/Kadmeion, branch feat/b0-backend-foundation; s
 Notion's latest explicit owner decision approves exactly 52 original LIGHT screen images; no DARK screen set or rejected Canva substitutions. The image addresses are session-local, so recover exact originals before frontend work. No frontend started, manual Vercel deployment, production modification, public publish or main merge. Git integration automatically produced nonproduction feature-branch previews.
 
 **Next run concrete starting point:** Implement a strictly non-destructive, owner-only account-exit export/erasure inventory manifest with versioned/idempotent snapshot and cross-tenant/negative tests. The existing advisory account-exit counts are not an atomic purge manifest. Keep actual deletion and public serving disabled until independently verified recent reauthentication, canonical AND direct immutable-asset revocation, and provider retention proof. Verify fresh HEAD and CI first.
+
+
+## Latest B5 handoff — account-exit metadata snapshots (14 November 2026)
+
+Active repo `SubhashKumar14/Kadmeion`, feature branch
+`feat/b0-backend-foundation`; baseline `9e1eb602`. New code commits
+`919a8e3`, `ac1ab65`, `249f9b6`, `9939964`, `88b8f84`;
+CI serialization fix `5c28d79`. Inspect current branch HEAD and the
+latest `Application and Database CI` push/PR runs before proceeding.
+Earlier database CI failures occurred during `supabase start` from
+host-port 54322 collisions between overlapping runs. These are
+infrastructure failures, not passing tests; concurrency was added to
+the database job to prevent future overlap.
+
+New migration `20261114110000_private_account_exit_inventory_snapshots.sql`
+and typed client capture/retrieve owner-only versioned immutable
+**metadata-only** inventory snapshots. Nine owner-scoped bounded counts
+share one SQL statement snapshot. Replay uses the same operation ID;
+optional erasure-request association must be active and same-owner.
+New pgTAP and real local HTTP tests check denial of anonymous,
+cross-owner, forged, stale-session and withdrawn-request access,
+immutability and idempotency. This is NOT a full export, public URL or
+asset inventory, retention proof, erasure authorization or deletion
+worker. Keep account requests blocked, public serving disabled,
+frontend postponed, and no DARK/rejected Canva assets.
+
+**Start next run:** confirm final CI on the latest code SHA and repair
+any genuine SQL/HTTP failures. Then implement a safe, bounded owner
+data-export artifact contract with Storage reconciliation and
+retention disclosures, without destructive operations or production
+deployment. Independently prove host canonical-route AND direct-asset
+revocation before ever enabling public publishing/erasure.
