@@ -53,7 +53,8 @@ test('wrong or partial direct asset coverage is rejected before any HTTP fetch',
 });
 test('an allowed isolated local HTTP host never implies hosted proof',async()=>{
   const local={...input,origin:'http://127.0.0.1:8765',allowLocal:true};
-  const result=await probeHostRevocation(local,async()=>response());
+  const result=await probeHostRevocation(local,async(_url,options)=>
+    response(404,{},options?.method==='HEAD'?'':'Not found'));
   assert.equal(result.universalCacheErasureVerified,false);
 });
 test('still reachable HTML or assets cause fail-closed observation',async()=>{

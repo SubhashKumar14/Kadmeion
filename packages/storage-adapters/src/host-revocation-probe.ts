@@ -73,6 +73,7 @@ async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void>
   const reader=response.body?.getReader();
   if(!reader)throw new HostRevocationProbeError('UNSAFE_BODY');
   let size=0;
+  const chunks:Uint8Array[]=[];
   try{
     for(;;){
       const next=await reader.read();
@@ -80,11 +81,16 @@ async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void>
       if(!(next.value instanceof Uint8Array))throw new HostRevocationProbeError('UNSAFE_BODY');
       size+=next.value.byteLength;
       if(size>4096)throw new HostRevocationProbeError('UNSAFE_BODY');
-      // A denial page is not expected to include private HTML or source.
-      const text=new TextDecoder().decode(next.value);
-      if(/<!doctype html>|<html\b|<script\b|<meta\s+name="robots"\s+content="index/i.test(text))
-        throw new HostRevocationProbeError('UNSAFE_BODY');
+      chunks.push(next.value);
     }
+    // Decode the entire bounded body so tags split across network chunks
+    // cannot evade the deny-page markup validation.
+    const content=new Uint8Array(size);
+    let offset=0;
+    for(const chunk of chunks){content.set(chunk,offset);offset+=chunk.byteLength;}
+    const text=new TextDecoder('utf-8',{fatal:true}).decode(content);
+    if(/<!doctype html>|<html\b|<script\b|<meta\s+name="robots"\s+content="index/i.test(text))
+      throw new HostRevocationProbeError('UNSAFE_BODY');
   }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 export async function probeHostRevocation(
