@@ -346,6 +346,10 @@ test('B3/B4/B5: real local JWT owner editor, frozen release, reviewer grants and
     assert.equal(stopped.generation,2);
     assert.equal(stopped.stillBlocked,true);
     assert.equal(stopped.hostRevocationVerified,false);
+
+    const oldPrepare=await send(prepare,{...json(owner),method:'POST',body:candidate});
+    assert.ok(!oldPrepare.ok,'Old prepare receipt claimed active candidate after block');
+
     const again=successful(await send(prepare,{...json(owner),method:'POST',
       body:{...candidate,p_expected_generation:2,p_operation_id:randomUUID()}}),
       'Prepare after block requires latest generation');
