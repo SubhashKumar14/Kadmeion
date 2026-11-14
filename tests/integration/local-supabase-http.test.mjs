@@ -841,6 +841,22 @@ test('B5: real owner inventory snapshots are immutable, bounded and tenant-priva
   const post=(who,path,body)=>send(path,{...json(who),method:'POST',body});
   const initial=successful(await post(owner,create,{
     p_operation_id:operation,p_request_id:null}),'Owner inventory snapshot');
+  const auditRpc='/rest/v1/rpc/read_private_account_audit_export';
+  const audit=successful(await post(owner,auditRpc,{p_snapshot_id:initial.snapshotId}),
+    'Owner restricted audit export');
+  assert.equal(audit.status,'BOUNDED_OWNER_AUDIT');
+  assert.equal(audit.ownerUserId,owner.id);
+  assert.equal(audit.snapshotId,initial.snapshotId);
+  assert.equal(audit.maxRowsPerCategory,100);
+  assert.equal(audit.tokenDigestsIncluded,false);
+  assert.equal(audit.sessionsIncluded,false);
+  assert.equal(audit.completeAccountExport,false);
+  assert.equal(audit.deletionAllowed,false);
+  assert.equal(Object.keys(audit.categories).length,8);
+  assert.ok(!(await post(outsider,auditRpc,{p_snapshot_id:initial.snapshotId})).ok);
+  assert.ok(!(await send(auditRpc,{method:'POST',
+    body:{p_snapshot_id:initial.snapshotId},
+    headers:{'Content-Type':'application/json'}})).ok);
   assert.equal(initial.schemaVersion,1);
   assert.equal(initial.alreadyCaptured,false);
   assert.equal(initial.deletionAllowed,false);
