@@ -33,7 +33,24 @@ export function validateManagedJson(path: string, bytes: string): void {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('Expected JSON object');
     }
+    // Managed JSON is consumed by several editor lenses. Reject prototype
+    // keys and pathological structures BEFORE they enter an application graph.
+    // Do not rewrite, normalize or discard otherwise-valid unknown fields.
+    const stack: Array<{value: unknown; depth: number}> = [{value: parsed, depth: 0}];
+    let nodes = 0;
+    while (stack.length) {
+      const {value, depth} = stack.pop()!;
+      if (++nodes > 8192 || depth > 32) throw new Error('Managed JSON complexity exceeded');
+      if (value === null || typeof value !== 'object') continue;
+      const entries = Object.entries(value);
+      if (entries.length > 512) throw new Error('Managed JSON collection exceeded');
+      for (const [key, child] of entries) {
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor' ||
+            key.length > 256) throw new Error('Unsafe managed JSON property');
+        stack.push({value: child, depth: depth + 1});
+      }
+    }
   } catch {
-    throw new ContractError('VALIDATION', 'Managed file must contain a JSON object; invalid bytes remain untouched.');
+    throw new ContractError('VALIDATION', 'Managed file contains invalid or unsafe JSON; original bytes remain untouched.');
   }
 }

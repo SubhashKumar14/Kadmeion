@@ -117,6 +117,8 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
       typeof snapshot.stashes!=='object' || Array.isArray(snapshot.stashes)) {
     throw new ContractError('VALIDATION', 'Invalid portfolio snapshot format.');
   }
+  if (Object.keys(snapshot).some(key=>!['formatVersion','files','slots','stashes'].includes(key)))
+    throw new ContractError('VALIDATION','Unexpected snapshot metadata is not a supported project field.');
   if (Object.keys(snapshot.files).length>100) throw new ContractError('VALIDATION', 'Project file quota exceeded.');
   for (const [path,source] of Object.entries(snapshot.files)) {
     if (typeof source!=='string' || new TextEncoder().encode(source).byteLength>MAX_FILE_BYTES)
@@ -129,8 +131,12 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
   }
   if (Object.keys(snapshot.slots).length>100 || Object.keys(snapshot.stashes).length>100)
     throw new ContractError('VALIDATION','Snapshot has too many slot or stash keys.');
+  let totalStashedAssignments=0;
   for (const [key,items] of Object.entries(snapshot.stashes)) {
     assertSlotKey(key);
+    totalStashedAssignments+=Array.isArray(items)?items.length:0;
+    if(totalStashedAssignments>1024)
+      throw new ContractError('VALIDATION','Snapshot stash history exceeds safe resource bounds.');
     if (!Array.isArray(items) || items.length>100)
       throw new ContractError('VALIDATION', 'Invalid stash history.');
     for (const item of items) validateSlotAssignment(key,item,snapshot);

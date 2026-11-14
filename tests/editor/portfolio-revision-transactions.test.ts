@@ -94,3 +94,31 @@ test('portable snapshots reject path traversal and arbitrary import files',()=>{
   const json=JSON.stringify(valid),reloaded=JSON.parse(json) as PortfolioSnapshot;
   assert.deepEqual(createEditorHead(reloaded).snapshot,valid);
 });
+
+
+test('managed JSON denies prototype keys, deep nesting and oversized graphs without altering saved bytes',()=>{
+  const original=make(),baseline=original.snapshot.files['pages/home.page.json'];
+  const malicious=[
+    '{"__proto__":{"isAdmin":true}}',
+    '{"nested":{"constructor":{"prototype":{"danger":true}}}}',
+    '{"a":'+('[ '.repeat(40))+'0'+(' ]'.repeat(40))+'}',
+    JSON.stringify({rows:Array.from({length:513},(_,i)=>i)}),
+    JSON.stringify(Object.fromEntries(Array.from({length:513},(_,i)=>['field'+i,i])))
+  ];
+  for(const source of malicious){
+    const cmd=op(original,{kind:'WRITE_MANAGED_FILE',path:'pages/home.page.json',source});
+    assert.throws(()=>applyEditorTransaction(original,cmd),{code:'VALIDATION'});
+    assert.equal(original.snapshot.files['pages/home.page.json'],baseline);
+    assert.equal(original.revision,0);
+  }
+});
+
+test('schema envelope rejects hidden snapshot fields while preserving benign unknown JSON keys',()=>{
+  const head=make();
+  assert.throws(()=>createEditorHead({...head.snapshot,ownerIsAdmin:true} as PortfolioSnapshot),{
+    code:'VALIDATION'});
+  const valid='{\n  "vendorExtension": {"customLabel": "preserved"},\n  "sections": []\n}';
+  const next=applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',
+    path:'pages/home.page.json',source:valid}));
+  assert.equal(next.snapshot.files['pages/home.page.json'],valid);
+});
