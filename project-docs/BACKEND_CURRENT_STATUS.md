@@ -55,19 +55,21 @@ the 11-Nov-2026 Node security release. No true universal security guarantee or
 
 ## External proof gates / unimplemented or unverified aspects
 
-1. **Hosted Supabase:** latest feature migrations remain **unapplied** in the
-   existing hosted project, which previously reported only the initial 14
-   migrations. Verify a fresh read before any eventual authorized deployment.
+1. **Hosted Supabase:** the source currently contains **40** ordered migrations; the
+   existing hosted project still reports only the initial **14** applied
+   (**26 unapplied**). Verify a fresh read before any eventual authorized deployment.
 2. **Brevo:** free SMTP relay is enabled; configured `kadmeion.com` and
-   `mail.kadmeion.com` domains were not authenticated/verified at the last
-   account read. Hosted sender/recovery and multi-domain delivery are unproven.
+   `mail.kadmeion.com` domains remain unauthenticated/unverified at the
+   15-Nov-2026 read-only account check (free relay enabled, 300 credits). Hosted sender/recovery and multi-domain delivery are unproven.
 3. **Actual free public host:** no separately approved production host and no
    canary proof of canonical-route/direct-release-asset revocation, CDN/cache
    behavior, independent JS-off delivery, rollback races or hosting quotas.
    Do not enable publishing flags or claim verified public publication.
-   Latest inspected Vercel preview from early Node 26 commit failed auth-preview build
-   because `VITE_SUPABASE_URL` was absent. This is environment configuration,
-   not evidence of successful deployment; leave the guard fail-closed.
+   A preview build on the temporary backend-hardening branch failed
+   because `VITE_SUPABASE_URL` was absent **for that branch**. Read-only Vercel
+   inspection shows the public `VITE_SUPABASE_URL` and publishable-key variables
+   are scoped to `feat/b0-backend-foundation`, not the temporary branch. This
+   does not establish a successful new deployment; keep guard fail-closed.
 4. **Account erasure:** separate 15-day item Trash exists; account-exit SQL
    and bounded partial export exist. Complete provider data export, backups,
    external copies, erasure receipts and legal retention are NOT proven.
@@ -82,6 +84,12 @@ the 11-Nov-2026 Node security release. No true universal security guarantee or
    all 52 frontend surfaces cleanly will require owner review of this
    originally planned file budget; never combine security-sensitive modules
    merely to meet an arbitrary number.
+
+8. **Free-tier Auth security advisory:** hosted Supabase reports that leaked-password
+   checks are disabled; this is Pro-only, not a feature available under the
+   approved ₹0 limit. Five authenticated owner-intent `SECURITY DEFINER`
+   functions are also advisory warnings: retain scoped ownership and negative
+   RLS tests; do not revoke intended RPC access merely to silence an advisor.
 
 ## Next authorized engineering path
 
