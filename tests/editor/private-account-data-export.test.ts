@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {
   SupabasePrivateAccountDataExporter
 } from '../../packages/storage-adapters/src/private-account-data-export.ts';
@@ -10,12 +11,15 @@ const snapshot='30000000-0000-4000-8000-000000000003';
 const origin='https://example.supabase.co';
 const png=new Uint8Array([137,80,78,71,13,10,26,10]);
 const assetPath=owner+'/cover-one/image.png';
+const assetId='50000000-0000-4000-8000-000000000005';
+const objectId='40000000-0000-4000-8000-000000000004';
+const digest=createHash('sha256').update(png).digest('hex');
 const baseRows:Record<string,Record<string,unknown>[]> = {
   profiles:[{user_id:owner,handle:'owner'}],
   projects:[{id:'p1',owner_user_id:owner,title:'Private project'}],
   portfolios:[{id:'f1',owner_user_id:owner,title:'Draft portfolio'}],
   portfolio_revisions:[{portfolio_id:'f1',owner_user_id:owner,revision:1,snapshot:{files:{}}}],
-  project_assets:[{id:'a1',owner_user_id:owner,object_path:assetPath,
+  project_assets:[{id:assetId,owner_user_id:owner,object_path:assetPath,
     mime_type:'image/png',byte_size:png.length}]
 };
 const reconciliation={
@@ -35,6 +39,7 @@ type Options={
   failPath?:string;
   infoBefore?:Record<string,unknown>;
   infoAfter?:Record<string,unknown>;
+  attestation?:Record<string,unknown>;
 };
 function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'owner-jwt'){
   const paths:string[]=[];
@@ -59,6 +64,15 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
       reconcileCount++;
       return json(reconcileCount===2&&options.after?options.after:
         (options.reconcile??reconciliation));
+    }
+    if(url.pathname==='/rest/v1/rpc/read_private_asset_content_attestations'){
+      assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
+      return json(options.attestation??{
+        snapshotId:snapshot,status:'SERVER_HASH_PINNED',providerSigned:false,
+        deletionAllowed:false,registeredAssets:1,attestedAssets:1,
+        attestations:[{assetId,path:assetPath,objectId,version:'storage-v1',
+          expectedSha256:digest}]
+      });
     }
     if(url.pathname.startsWith('/rest/v1/')){
       const table=url.pathname.split('/').at(-1)!;
@@ -107,6 +121,8 @@ test('owner-only bounded export contains private records, real bytes and digest 
   assert.deepEqual(Uint8Array.from(atob(body.assets[0].base64),c=>c.charCodeAt(0)),png);
   assert.match(body.assets[0].downloadedSha256,/^[a-f0-9]{64}$/);
   assert.equal(body.evidence.providerExpectedHashesVerified,false);
+  assert.equal(body.evidence.trustedServerWorkerHashesVerified,true);
+  assert.equal(body.assets[0].expectedSha256,digest);
   assert.equal(body.evidence.providerObjectVersionPinned,false);
   assert.equal(body.evidence.storageObjectVersionCheckedBeforeAndAfter,true);
   assert.equal(body.assets[0].storageVersionAtRead,'storage-v1');
@@ -243,4 +259,35 @@ test('post-download Storage object id and updated_at changes fail closed',async(
     {updated_at:'2026-11-14T00:01:00.000Z'}
   ])await assert.rejects(fixture({infoAfter}).service.export(snapshot),
     {code:'INTEGRITY'});
+});
+
+test('missing, forged and foreign server hash attestations fail closed before bytes',async()=>{
+  for(const attestation of [
+    {snapshotId:snapshot,status:'UNVERIFIED',providerSigned:false,
+      deletionAllowed:false,registeredAssets:1,attestedAssets:0,attestations:[]},
+    {snapshotId:snapshot,status:'SERVER_HASH_PINNED',providerSigned:true,
+      deletionAllowed:false,registeredAssets:1,attestedAssets:1,attestations:[]},
+    {snapshotId:snapshot,status:'SERVER_HASH_PINNED',providerSigned:false,
+      deletionAllowed:false,registeredAssets:1,attestedAssets:1,
+      attestations:[{assetId,path:assetPath,objectId,version:'storage-v1',
+        expectedSha256:'0'.repeat(64)}]},
+    {snapshotId:snapshot,status:'SERVER_HASH_PINNED',providerSigned:false,
+      deletionAllowed:false,registeredAssets:1,attestedAssets:1,
+      attestations:[{assetId,path:stranger+'/foreign.png',objectId,version:'storage-v1',
+        expectedSha256:digest}]}
+  ]){
+    const {service,paths}=fixture({attestation});
+    if(attestation.attestations.length===1&&
+      attestation.attestations[0].expectedSha256==='0'.repeat(64)){
+      await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
+    }else{
+      await assert.rejects(service.export(snapshot));
+      assert.equal(paths.some(p=>p.includes('/object/authenticated/')),false);
+    }
+  }
+});
+test('same-size bytes with unchanged provider identity but different digest fail',async()=>{
+  const modified=new Uint8Array(png);modified[modified.length-1]^=1;
+  const {service}=fixture({assetBytes:modified});
+  await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
 });
