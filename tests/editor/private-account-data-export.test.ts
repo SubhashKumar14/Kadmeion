@@ -40,7 +40,7 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
   const fetcher:typeof fetch=async(input,init)=>{
     const url=new URL(String(input));paths.push(url.pathname+url.search);
     assert.equal(url.origin,origin);
-    assert.equal(init?.method,'GET');
+    assert.equal(init?.method,url.pathname.includes('/rpc/')?'POST':'GET');
     assert.equal(init?.cache,'no-store');
     assert.equal(init?.redirect,'error');
     assert.equal(init?.credentials,'omit');
@@ -53,7 +53,7 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
         email:'owner@example.test',app_metadata:{secret:'not exported'}});
     }
     if(url.pathname==='/rest/v1/rpc/reconcile_private_account_exit_storage'){
-      assert.equal(url.searchParams.get('p_snapshot_id'),snapshot);
+      assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
       reconcileCount++;
       return json(reconcileCount===2&&options.after?options.after:
         (options.reconcile??reconciliation));
