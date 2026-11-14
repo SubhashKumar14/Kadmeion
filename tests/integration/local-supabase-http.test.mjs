@@ -714,6 +714,7 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
     await once(server,'listening');
     const origin='http://127.0.0.1:'+server.address().port;
     const denied=async(id,headers={})=>{
+      const beforeReads=reads;
       for(const path of ['/p/'+id+'/',
         '/p/'+id+'/releases/'+release+'/assets/'+digest+'.png']){
         const response=await fetch(origin+path,{headers,redirect:'manual',cache:'no-store'});
@@ -723,6 +724,7 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
         assert.equal(response.headers.get('location'),null);
         assert.equal(await response.text(),'Not found');
       }
+      assert.equal(reads,beforeReads+2,'Each HTTP route must recheck the private SQL gate');
     };
     const owner=await adminUser('http-deny-owner');
     const outsider=await adminUser('http-deny-outsider');
