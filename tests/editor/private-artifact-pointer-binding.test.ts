@@ -162,3 +162,75 @@ test('trusted artifact orchestration reaches the private SQL RPC with rebuilt by
   });
   await assert.rejects(bindPrivateArtifactToPointer(f.ctx),{code:'BINDING_UNCONFIRMED'});
 });
+
+
+test('trusted B4 staging composes binding, exact re-render and server stage receipt',async()=>{
+  const {stagePrivateReviewerArtifact}=
+    await import('../../packages/storage-adapters/src/private-reviewer-staging.ts');
+  const f=await fixture();
+  let stages=0;
+  const result=await stagePrivateReviewerArtifact(f.ctx,{store:async input=>{
+    stages++;
+    assert.equal(input.requestId,requestId);
+    assert.equal(input.generation,4);
+    assert.equal(createHash('sha256').update(input.html).digest('hex'),
+      f.receipt.htmlSha256);
+    return {status:'STAGED_PRIVATE',requestId,generation:4,
+      htmlSha256:f.receipt.htmlSha256,alreadyStored:false,
+      publicServingEnabled:false,publicUrl:null};
+  }});
+  assert.equal(stages,1);
+  assert.equal(f.calls(),1);
+  assert.equal(result.publicUrl,null);
+  assert.equal(result.htmlSha256,f.receipt.htmlSha256);
+});
+
+test('staging never calls writer for mismatched digest or malformed acknowledgement',async()=>{
+  const {stagePrivateReviewerArtifact}=await import(
+    '../../packages/storage-adapters/src/private-reviewer-staging.ts');
+  for(const bad of [{htmlSha256:'a'.repeat(64)},{unexpected:1},
+    {publicServingEnabled:true},{publicUrl:'https://fake.example'},
+    {status:'PUBLISHED'},{alreadyStored:'true'}]){
+    const f=await fixture();
+    let called=0;
+    await assert.rejects(stagePrivateReviewerArtifact(f.ctx,{store:async()=>{called++;
+      return {status:'STAGED_PRIVATE',requestId,generation:4,
+        htmlSha256:f.receipt.htmlSha256,alreadyStored:false,
+        publicServingEnabled:false,publicUrl:null,...bad};
+    }}),{code:bad.htmlSha256?'INVALID_ACK':'INVALID_ACK'});
+    assert.equal(called,1);
+  }
+  const f=await fixture();
+  f.ctx.pointer.read=async()=>({...f.pointer,status:'BLOCKED'} as never);
+  let writes=0;
+  await assert.rejects(stagePrivateReviewerArtifact(f.ctx,{store:async()=>{writes++;return null;}}));
+  assert.equal(writes,0);
+});
+
+test('service stage writer rejects untrusted URLs and forwards only privileged bytes',async()=>{
+  const {SupabaseTrustedReviewerStageWriter}=
+    await import('../../packages/storage-adapters/src/private-reviewer-staging.ts');
+  assert.throws(()=>new SupabaseTrustedReviewerStageWriter(
+    'http://attacker.invalid','eyJ'+'x'.repeat(90)),{code:'INVALID_INPUT'});
+  const f=await fixture();
+  const html=new TextDecoder().decode(f.artifact.files[0].bytes);
+  let count=0;
+  const writer=new SupabaseTrustedReviewerStageWriter(
+    'http://127.0.0.1:54321','eyJ'+'x'.repeat(90),
+    (async(url:string|URL|Request,options?:RequestInit)=>{
+      count++;
+      assert.equal(String(url),'http://127.0.0.1:54321/rest/v1/rpc/store_private_reviewer_stage_artifact');
+      assert.equal(options?.credentials,'omit');
+      assert.equal(options?.redirect,'error');
+      assert.equal(options?.cache,'no-store');
+      assert.equal(JSON.parse(options?.body as string).p_html,html);
+      const h=options?.headers as Record<string,string>;
+      assert.equal(h.Authorization,'Bearer '+'eyJ'+'x'.repeat(90));
+      return Response.json({status:'STAGED_PRIVATE',requestId,generation:4,
+        htmlSha256:f.receipt.htmlSha256,alreadyStored:false,
+        publicServingEnabled:false,publicUrl:null});
+    }) as typeof fetch);
+  const output=await stagePrivateReviewerArtifact(f.ctx,writer);
+  assert.equal(output.status,'STAGED_PRIVATE');
+  assert.equal(count,1);
+});
