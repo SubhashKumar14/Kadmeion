@@ -313,3 +313,32 @@ account deletion, browser E2E, lint/SAST/accessibility remain unproven.
 The original 52 LIGHT mockup images are approved in Notion but stored at
 session-local artifact addresses; recover originals before frontend work.
 No DARK set, rejected Canva designs or unapproved static preview.
+
+
+## Latest verified handoff — B6 operator/private binding concurrency (14 November 2026)
+
+Active repo SubhashKumar14/Kadmeion; branch feat/b0-backend-foundation.
+Starting HEAD 5ebeb2b. Code commits
+[fadc75b](https://github.com/SubhashKumar14/Kadmeion/commit/fadc75b8d91cf0ad49ec51e1e1aadd7cacb37083)
+and [ff4f333](https://github.com/SubhashKumar14/Kadmeion/commit/ff4f3334e4ff2a76e5ecfe35a4857a2638dfb413)
+add a real ephemeral local Supabase/pg.Pool test for a moderator case-bound
+block racing artifact binding. It verifies cross-tenant/operator denial,
+stale generation rejection, idempotent audit, no reprepare under hold, and
+a live PostgreSQL row-lock race. No business SQL or frontend changes.
+
+[CI 43567116761](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43567116761)
+passed both jobs on ff4f333: 191 Node, 289 pgTAP, 28 local HTTP,
+one prior restricted pg binding test, one new moderator pg race test,
+TypeScript/auth build/smoke/preview and 141/200 source budget.
+Check the current HEAD and CI again before further changes.
+
+**Start next iteration:** add a local-only HTTP-level deny-only regression
+for canonical portfolio HTML and direct immutable asset requests, using
+the existing private delivery-denial gate under operator hold, owner
+Trash, cross-tenant and unavailable-provider conditions. Do not infer
+a live-host/CDN revocation proof from this test. No selected host or
+production authorization; public publishing and account erasure stay
+disabled. No frontend work until the backend critical path is verified.
+Notion confirms 52/52 original LIGHT mockups approved; the original PNG
+addresses are session-local, and DARK/previously rejected Canva designs
+are not authorized.
