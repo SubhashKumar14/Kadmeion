@@ -1,4 +1,4 @@
-import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, containsUnsafeStaticMarkup} from './_bounded-rpc-json.mjs';
 /**
  * Candidate Vercel Node function for PRIVATE reviewer staging, NOT publication.
  * Deliberately disabled unless the operator explicitly proves the host, sets
@@ -64,7 +64,7 @@ function validHtml(receipt){
   if(bytes<70||bytes>MAX_HTML_BYTES||
      !html.toLowerCase().startsWith('<!doctype html>')||
      !html.toLowerCase().includes('noindex')||
-     /<\s*(script|iframe|object|embed|svg|form|input|link|base)([\s/>])/i.test(html))
+     containsUnsafeStaticMarkup(html))
     return false;
   return createHash('sha256').update(html,'utf8').digest('hex')===receipt.htmlSha256;
 }

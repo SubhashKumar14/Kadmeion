@@ -129,3 +129,20 @@ test('header-only reviewer token validates without putting secrets into request 
   assert.equal(both.res.statusCode,404);
   assert.equal(both.sent.length,0);
 });
+
+test('reviewer refuses executable markup even when attacker supplies a matching digest',async()=>{
+  for(const unsafe of [
+    '<div onmouseover="alert(1)">Unsafe</div>',
+    '<a href="javascript:alert(1)">Click</a>',
+    '<img src="https://example.org/tracker.png">',
+    '<video></video>',
+    '<meta http-equiv="refresh" content="0;url=https://example.org">',
+    '<a href="&#106;avascript:alert(1)">Encoded</a>'
+  ]){
+    const candidate=html.replace('</body>',unsafe+'</body>');
+    const data={...receipt,html:candidate,htmlSha256:createHash('sha256').update(candidate).digest('hex')};
+    const {res}=await run({data});
+    assert.equal(res.statusCode,503,unsafe);
+    assert.equal(res.body,'Temporarily unavailable');
+  }
+});

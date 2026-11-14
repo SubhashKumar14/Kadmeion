@@ -96,3 +96,20 @@ test('fake indexable flag, script, hash, extra fields or public proof refused',a
     assert.equal(x.response.statusCode,503);
   }
 });
+
+test('unlisted refuses executable markup even when attacker supplies a matching digest',async()=>{
+  for(const unsafe of [
+    '<div onclick="alert(1)">Unsafe</div>',
+    '<a href="javascript:alert(1)">Click</a>',
+    '<img src="https://example.org/tracker.png">',
+    '<picture></picture>',
+    '<meta http-equiv="refresh" content="0;url=https://example.org">',
+    '<a href="&#106;avascript:alert(1)">Encoded</a>'
+  ]){
+    const candidate=html.replace('</body>',unsafe+'</body>');
+    const body={...receipt,html:candidate,htmlSha256:createHash('sha256').update(candidate).digest('hex')};
+    const {response}=await run({body});
+    assert.equal(response.statusCode,503,unsafe);
+    assert.equal(response.body,'Temporarily unavailable');
+  }
+});
