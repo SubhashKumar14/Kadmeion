@@ -155,3 +155,31 @@ test('metric, badge and project fields fail closed without inventing claims',()=
     assert.ok(has(result,code));assert.equal(result.previewHtml,null);
   }
 });
+
+
+test('trusted layout grouping preserves section order and independent portfolio colors',()=>{
+  const input=edit({renderSections:[{id:'hero',layout:'L1',slotKeys:['hero','about','link']}],
+    portfolioTheme:{mode:'dark',surface:'#15171a',text:'#f2f3f4',accent:'#9a8967'}});
+  const result=prepareSafeStaticPreview(input);
+  assert.equal(result.status,'PREVIEW_ONLY');
+  assert.match(result.previewHtml??'',/data-layout="L1" data-section="hero"/);
+  assert.match(result.previewHtml??'',/color:#f2f3f4;background:#15171a;color-scheme:dark/);
+  assert.match(result.previewHtml??'',/@media\(max-width:48rem\)/);
+  assert.equal(result.publicationReady,false);
+});
+test('untrusted layout grouping and malformed color tokens never produce HTML',()=>{
+  for(const renderSections of [
+    [{id:'hero" onclick="bad',layout:'L1',slotKeys:['hero','about','link']}],
+    [{id:'hero',layout:'L9',slotKeys:['hero','about','link']}],
+    [{id:'hero',layout:'L1',slotKeys:['hero','link','about']}],
+    [{id:'hero',layout:'L1',slotKeys:['hero','about','link','private']}]
+  ]){
+    const result=prepareSafeStaticPreview(edit({renderSections}));
+    assert.ok(has(result,'INVALID_TEMPLATE_GROUPING'));
+    assert.equal(result.previewHtml,null);
+  }
+  const invalid=prepareSafeStaticPreview(edit({portfolioTheme:{
+    mode:'dark',surface:'url(https://evil.invalid)',text:'#ffffff',accent:'#999999'
+  }}));
+  assert.ok(has(invalid,'INVALID_PORTFOLIO_THEME'));assert.equal(invalid.previewHtml,null);
+});
