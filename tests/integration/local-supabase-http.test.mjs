@@ -594,3 +594,25 @@ test('B4: future private host denial RPC is not exposed on the Data API',
     }
   }
 });
+
+test('B4: artifact binding RPC and private binding registry cannot be read over PostgREST',
+  {timeout:30_000},async()=>{
+  const body={p_request_id:randomUUID(),p_expected_generation:1,
+    p_manifest_json:'{}',p_html:'not a real artifact'};
+  const routes=[
+    ['/rest/v1/rpc/bind_private_artifact_candidate',body],
+    ['/rest/v1/private_artifact_bindings?select=portfolio_id',undefined]
+  ];
+  for(const [key,label] of [[cfg.anon,'anonymous'],[cfg.service,'service role']]){
+    for(const [route,payload] of routes){
+      for(const profile of [undefined,'kadmeion_private']){
+        const headers={'Content-Type':'application/json'};
+        if(profile)headers['Content-Profile']=profile;
+        if(profile)headers['Accept-Profile']=profile;
+        const response=await send(route,{method:payload?'POST':'GET',key,bearer:key,
+          headers,body:payload});
+        assert.ok(!response.ok,label+' accessed internal binding through Data API');
+      }
+    }
+  }
+});
