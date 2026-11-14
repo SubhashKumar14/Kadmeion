@@ -165,6 +165,36 @@ export class SupabasePrivateAccountDataExporter {
     return {id:raw.id as string,version:raw.version as string,
       updatedAt:modified as string};
   }
+  /**
+   * Server-worker SHA-256 pins are immutable and readable only through an
+   * owner/live-session RPC. They are NOT provider-signed content digests.
+   */
+  private async trustedPins(snapshotId:string,assets:JsonObject[]):
+    Promise<Map<string,{objectId:string;version:string;expectedSha256:string}>> {
+    const raw=await this.json('/rest/v1/rpc/read_private_asset_content_attestations',
+      65536,{p_snapshot_id:snapshotId});
+    requireCondition(object(raw)&&raw.snapshotId===snapshotId&&
+      raw.status==='SERVER_HASH_PINNED'&&raw.providerSigned===false&&
+      raw.deletionAllowed===false&&raw.registeredAssets===assets.length&&
+      raw.attestedAssets===assets.length&&Array.isArray(raw.attestations)&&
+      raw.attestations.length===assets.length,
+      'UNVERIFIED','Trusted private asset content hashes are not complete.');
+    const pins=new Map<string,{objectId:string;version:string;expectedSha256:string}>();
+    for(const entry of raw.attestations){
+      requireCondition(object(entry)&&isUuid(entry.assetId)&&
+        typeof entry.path==='string'&&isUuid(entry.objectId)&&
+        typeof entry.version==='string'&&entry.version.length>0&&
+        entry.version.length<=128&&typeof entry.expectedSha256==='string'&&
+        /^[0-9a-f]{64}$/.test(entry.expectedSha256)&&
+        !pins.has(entry.path),'INTEGRITY','Malformed or duplicate trusted hash pin.');
+      const asset=assets.find(a=>a.id===entry.assetId&&a.object_path===entry.path);
+      requireCondition(asset!==undefined,'INTEGRITY','Trusted hash does not belong to an exported asset.');
+      pins.set(entry.path,{objectId:entry.objectId,version:entry.version,
+        expectedSha256:entry.expectedSha256});
+    }
+    requireCondition(pins.size===assets.length,'UNVERIFIED','Asset hash pin coverage incomplete.');
+    return pins;
+  }
   private async rows(table:typeof TABLES[number][0],column:string,ownerId:string):
     Promise<JsonObject[]> {
     const raw=await this.json('/rest/v1/'+table+'?select=*&'+column+'=eq.'+
@@ -186,6 +216,7 @@ export class SupabasePrivateAccountDataExporter {
     const assets=records.project_assets;
     requireCondition(assets.length===before,'UNVERIFIED','Asset inventory changed during export.');
     requireCondition(assets.length<=MAX_ASSETS,'LIMIT_EXCEEDED','Too many assets for bounded byte export.');
+    const expected=await this.trustedPins(snapshotId,assets);
     // Pin every registered object BEFORE any byte download. This prevents
     // an ordinary same-path replacement from silently crossing the export.
     const pins=new Map<string,{id:string;version:string;updatedAt:string}>();
@@ -197,7 +228,12 @@ export class SupabasePrivateAccountDataExporter {
         typeof size==='number'&&Number.isSafeInteger(size)&&size>0&&size<=MAX_ASSET_BYTES,
         'INTEGRITY','Invalid verified asset metadata.');
       requireCondition(!pins.has(path),'INTEGRITY','Duplicate registered asset path.');
-      pins.set(path,await this.objectInfo(path,owner.id,mime,size));
+      const current=await this.objectInfo(path,owner.id,mime,size);
+      const attested=expected.get(path);
+      requireCondition(attested!==undefined&&current.id===attested.objectId&&
+        current.version===attested.version,'INTEGRITY',
+        'Private Storage object no longer matches its trusted hash pin.');
+      pins.set(path,current);
     }
     let total=0;
     const verifiedAssets:JsonObject[]=[];
@@ -218,9 +254,12 @@ export class SupabasePrivateAccountDataExporter {
         'Private asset bytes do not match registered size or MIME.');
       total+=response.bytes.length;
       const pin=pins.get(path)!;
+      const digest=await sha256(response.bytes);
+      requireCondition(digest===expected.get(path)?.expectedSha256,'INTEGRITY',
+        'Private asset bytes differ from server-attested SHA-256.');
       verifiedAssets.push({path,mimeType:mime,byteSize:size,
         storageObjectId:pin.id,storageVersionAtRead:pin.version,
-        downloadedSha256:await sha256(response.bytes),base64:base64(response.bytes)});
+        expectedSha256:digest,downloadedSha256:digest,base64:base64(response.bytes)});
     }
     // Re-read ALL object versions after ALL downloads, not merely immediately
     // after each one; a late overwrite of an earlier asset must also fail.
@@ -244,6 +283,7 @@ export class SupabasePrivateAccountDataExporter {
       evidence:{registeredAssets:before,downloadedAssets:verifiedAssets.length,
         downloadedByteCount:total,downloadedByteHashes:'SHA-256',
         providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
+        trustedServerWorkerHashesVerified:true,
         storageObjectVersionCheckedBeforeAndAfter:true,
         crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
       limitations:{completeAccountExport:false,
