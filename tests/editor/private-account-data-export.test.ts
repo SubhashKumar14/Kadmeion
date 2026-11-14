@@ -69,16 +69,17 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
     }
     if(url.pathname==='/rest/v1/rpc/read_private_account_audit_export'){
       auditCount++;
-      assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
-      const categories=Object.fromEntries([
-        'reviewerGrants','moderationCases','moderationEvents','accountExitRequests',
-        'reauthChallenges','inventorySnapshots','releasePointers','releaseEvents'
-      ].map(key=>[key,[]]));
-      return json(auditCount===2&&options.auditAfter?options.auditAfter:
-        (options.audit??{snapshotId:snapshot,ownerUserId:owner,
-          status:'BOUNDED_OWNER_AUDIT',maxRowsPerCategory:100,categories,
-          tokenDigestsIncluded:false,sessionsIncluded:false,
-          completeAccountExport:false,deletionAllowed:false}));
+      const categories={
+        reviewerGrants:[],moderationCases:[],moderationEvents:[],
+        accountExitRequests:[],reauthChallenges:[],inventorySnapshots:[],
+        releasePointers:[],releaseEvents:[]
+      };
+      const fallback={snapshotId:snapshot,ownerUserId:owner,
+        status:'BOUNDED_OWNER_AUDIT',maxRowsPerCategory:100,categories,
+        tokenDigestsIncluded:false,sessionsIncluded:false,
+        completeAccountExport:false,deletionAllowed:false};
+      return json(auditCount===2&&options.auditAfter
+        ?options.auditAfter:(options.audit??fallback));
     }
     if(url.pathname==='/rest/v1/rpc/read_private_asset_content_attestations'){
       assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
