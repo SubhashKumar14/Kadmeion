@@ -180,6 +180,20 @@ select is(public.owner_block_private_release_pointer(
   '10000000-0000-4000-8000-0000000000a1',
   '50000000-0000-4000-8000-0000000000a1')->>'stillBlocked',
   'true','idempotent block confirms current state');
+
+do $
+declare v_rejected boolean:=false;
+begin
+  begin
+    perform public.owner_prepare_private_release_pointer(
+      '10000000-0000-4000-8000-0000000000a1',current_setting('kd.pointer.request')::uuid,
+      repeat('a',64),0,'40000000-0000-4000-8000-0000000000a1');
+  exception when serialization_failure then v_rejected:=true;
+  end;
+  if not v_rejected then raise exception 'Stale prepare replay claimed an active candidate'; end if;
+end $;
+select pass('old prepare receipt cannot claim success after a block');
+
 select is((public.owner_prepare_private_release_pointer(
   '10000000-0000-4000-8000-0000000000a1',current_setting('kd.pointer.request')::uuid,
   repeat('a',64),2,'40000000-0000-4000-8000-0000000000a5')->>'generation')::bigint,
