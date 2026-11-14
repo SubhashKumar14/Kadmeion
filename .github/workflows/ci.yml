@@ -46,7 +46,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Test real GoTrue + PostgREST + private Storage over HTTP
-        run: node --test tests/integration/local-supabase-http.test.mjs
+        run: node --experimental-strip-types --test tests/integration/local-supabase-http.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
       - name: Test restricted direct PostgreSQL artifact binding (local only)
