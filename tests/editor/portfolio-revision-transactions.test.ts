@@ -1,0 +1,189 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { applyEditorTransaction, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
+
+const make = (): EditorHead => createEditorHead({
+  formatVersion:1,
+  files:{'kadmeion.json':'{"formatVersion":1}', 'pages/home.page.json':'{}'},
+  slots:{hero:{state:'S0',componentId:'title-stacked@1',content:{title:'First'}}},
+  stashes:{}
+});
+let step = 0;
+const op = (head:EditorHead,intent: Parameters<typeof applyEditorTransaction>[1]['intent']) => ({
+  operationId:'00000000-0000-4000-8000-'+String(++step).padStart(12,'0'),baseRevision:head.revision,intent
+});
+
+test('clearing a slot preserves content in stash and restore is reversible',()=>{
+  const original=make();
+  const cleared=applyEditorTransaction(original,op(original,{kind:'CLEAR_SLOT',slotKey:'hero'}));
+  assert.equal(original.snapshot.slots.hero.state,'S0');
+  assert.equal(cleared.snapshot.slots.hero.state,'EMPTY');
+  assert.deepEqual(cleared.snapshot.stashes.hero[0].content,{title:'First'});
+  const restored=applyEditorTransaction(cleared,op(cleared,{kind:'RESTORE_STASH',slotKey:'hero'}));
+  assert.equal(restored.snapshot.slots.hero.state,'S0');
+  assert.equal(restored.snapshot.slots.hero.content.title,'First');
+  assert.equal(restored.revision,2);
+});
+
+test('customize protected source S0 => S1; user edit => S2, without rewriting library code',()=>{
+  const head=make();
+  assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'forged'})));
+  const copy=applyEditorTransaction(head,op(head,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'export const x=1;'}),{'title-stacked@1':'export const x=1;'});
+  assert.equal(copy.snapshot.slots.hero.state,'S1');
+  const firstPath=copy.snapshot.slots.hero.sourcePath!;
+  assert.match(firstPath,/^slots\/hero\/owned\/[0-9a-f-]+\/component-source\.tsx$/);
+  assert.equal(copy.snapshot.files[firstPath],'export const x=1;');
+  const edit=applyEditorTransaction(copy,op(copy,{kind:'EDIT_OWNED_SOURCE',slotKey:'hero',source:'export const x=2;'}));
+  assert.equal(edit.snapshot.slots.hero.state,'S2');
+  assert.equal(copy.snapshot.files[firstPath],'export const x=1;');
+  assert.throws(()=>applyEditorTransaction(edit,op(edit,{kind:'ASSIGN_COMPONENT',slotKey:'hero',componentId:'new-hero@1'})));
+  const replaced=applyEditorTransaction(edit,op(edit,{kind:'ASSIGN_COMPONENT',slotKey:'hero',componentId:'new-hero@1',confirmOwnedReplacement:true}));
+  assert.equal(replaced.snapshot.stashes.hero.at(-1)?.state,'S2');
+  assert.equal(replaced.snapshot.files[firstPath],'export const x=2;');
+  const nextCustomization=applyEditorTransaction(
+    replaced,
+    op(replaced,{kind:'CUSTOMIZE_COMPONENT',slotKey:'hero',copiedSource:'export const next = 3;'}),
+    {'new-hero@1':'export const next = 3;'}
+  );
+  const secondPath=nextCustomization.snapshot.slots.hero.sourcePath!;
+  assert.notEqual(secondPath,firstPath);
+  assert.equal(nextCustomization.snapshot.files[firstPath],'export const x=2;');
+  assert.equal(nextCustomization.snapshot.files[secondPath],'export const next = 3;');
+  assert.equal(nextCustomization.snapshot.slots.hero.state,'S1');
+});
+
+test('stale base revisions and invalid writes never mutate the previously saved head',()=>{
+  const head=make();
+  assert.throws(()=>applyEditorTransaction(head,{...op(head,{kind:'CLEAR_SLOT',slotKey:'hero'}),baseRevision:1}),{code:'REVISION_CONFLICT'});
+  assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',path:'../private.json',source:'{}'})));
+  assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',path:'pages/home.page.json',source:'{bad json'})));
+  assert.equal(head.snapshot.files['pages/home.page.json'],'{}');
+  assert.equal(head.revision,0);
+});
+
+test('managed writer preserves exact valid source bytes',()=>{
+  const head=make(), bytes='{\n  "text": "preserve spacing"\n}\n';
+  const next=applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',path:'pages/home.page.json',source:bytes}));
+  assert.equal(next.snapshot.files['pages/home.page.json'],bytes);
+});
+
+test('undo and redo commit new monotonic revisions, not history rewrites',()=>{
+  const first=make();
+  const second=applyEditorTransaction(first,op(first,{kind:'UPDATE_CONTENT',slotKey:'hero',content:{title:'Second'}}));
+  const undone=applyEditorTransaction(second,op(second,{kind:'UNDO'}));
+  assert.equal(undone.snapshot.slots.hero.content.title,'First');
+  const redone=applyEditorTransaction(undone,op(undone,{kind:'REDO'}));
+  assert.equal(redone.snapshot.slots.hero.content.title,'Second');
+  assert.equal(redone.revision,3);
+  const restored=restoreHistoricalSnapshot(redone,first.snapshot,'a0000000-0000-4000-8000-000000000000');
+  assert.equal(restored.snapshot.slots.hero.content.title,'First');
+  assert.equal(restored.revision,4);
+});
+
+test('an identical retried operation never creates another revision',()=>{
+  const first=make(), command=op(first,{kind:'CLEAR_SLOT',slotKey:'hero'});
+  const second=applyEditorTransaction(first,command);
+  assert.strictEqual(applyEditorTransaction(second,command),second);
+  assert.throws(()=>applyEditorTransaction(second,{...command,intent:{kind:'UPDATE_CONTENT',slotKey:'hero',content:{title:'x'}}}));
+});
+
+test('portable snapshots reject path traversal and arbitrary import files',()=>{
+  const valid=make().snapshot;
+  assert.throws(()=>createEditorHead({...valid,files:{...valid.files,'slots/../../attack.tsx':'bad'}}));
+  assert.throws(()=>createEditorHead({...valid,files:{...valid.files,'components/library/locked.tsx':'bad'}}));
+  const json=JSON.stringify(valid),reloaded=JSON.parse(json) as PortfolioSnapshot;
+  assert.deepEqual(createEditorHead(reloaded).snapshot,valid);
+});
+
+
+test('managed JSON denies prototype keys, deep nesting and oversized graphs without altering saved bytes',()=>{
+  const original=make(),baseline=original.snapshot.files['pages/home.page.json'];
+  const malicious=[
+    '{"__proto__":{"isAdmin":true}}',
+    '{"nested":{"constructor":{"prototype":{"danger":true}}}}',
+    '{"a":'+('[ '.repeat(40))+'0'+(' ]'.repeat(40))+'}',
+    JSON.stringify({rows:Array.from({length:513},(_,i)=>i)}),
+    JSON.stringify(Object.fromEntries(Array.from({length:513},(_,i)=>['field'+i,i])))
+  ];
+  for(const source of malicious){
+    const cmd=op(original,{kind:'WRITE_MANAGED_FILE',path:'pages/home.page.json',source});
+    assert.throws(()=>applyEditorTransaction(original,cmd),{code:'VALIDATION'});
+    assert.equal(original.snapshot.files['pages/home.page.json'],baseline);
+    assert.equal(original.revision,0);
+  }
+});
+
+test('schema envelope rejects hidden snapshot fields while preserving benign unknown JSON keys',()=>{
+  const head=make();
+  assert.throws(()=>createEditorHead({...head.snapshot,ownerIsAdmin:true} as PortfolioSnapshot),{
+    code:'VALIDATION'});
+  const valid='{\n  "vendorExtension": {"customLabel": "preserved"},\n  "sections": []\n}';
+  const next=applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',
+    path:'pages/home.page.json',source:valid}));
+  assert.equal(next.snapshot.files['pages/home.page.json'],valid);
+});
+
+
+test('reordered equivalent editor commands replay idempotently by canonical UUID',()=>{
+  const original=make();
+  const first={
+    operationId:'A0000000-0000-4000-8000-000000000005',baseRevision:0,
+    intent:{kind:'UPDATE_CONTENT' as const,slotKey:'hero',content:{title:'Third',subtitle:'Owner'}}
+  };
+  const saved=applyEditorTransaction(original,first);
+  const replay={
+    baseRevision:0,intent:{content:{subtitle:'Owner',title:'Third'},slotKey:'hero',
+      kind:'UPDATE_CONTENT' as const},
+    operationId:'a0000000-0000-4000-8000-000000000005'
+  };
+  assert.strictEqual(applyEditorTransaction(saved,replay),saved);
+  assert.equal(Object.keys(saved.operations).length,1);
+  assert.equal(saved.snapshot.slots.hero.content.title,'Third');
+  assert.throws(()=>applyEditorTransaction(saved,{...replay,
+    intent:{...replay.intent,content:{title:'CHANGED'}}}),{code:'VALIDATION'});
+});
+
+test('runtime rejects unknown no-op intents and hidden transaction properties',()=>{
+  const head=make(),operationId='b0000000-0000-4000-8000-000000000005';
+  for(const command of [
+    {operationId,baseRevision:0,intent:{kind:'DELETE_EVERYTHING',slotKey:'hero'}},
+    {operationId,baseRevision:0,intent:{kind:'CLEAR_SLOT',slotKey:'hero',extra:'hidden'}},
+    {operationId,baseRevision:0,intent:{kind:'CLEAR_SLOT',slotKey:'hero'},privateToken:'do-not-log'},
+    {operationId,baseRevision:-1,intent:{kind:'UNDO'}}
+  ]){
+    assert.throws(()=>applyEditorTransaction(head,command as never),{code:'VALIDATION'});
+    assert.equal(head.revision,0);
+    assert.equal(Object.keys(head.operations).length,0);
+  }
+});
+
+
+test('a legacy insertion-order operation record remains safely replayable after upgrade',()=>{
+  const original=make();
+  const command={
+    operationId:'c0000000-0000-4000-8000-000000000009',
+    baseRevision:0,
+    intent:{kind:'UPDATE_CONTENT' as const,slotKey:'hero',content:{title:'Legacy'}}
+  };
+  const saved=applyEditorTransaction(original,command);
+  const legacy={...saved,operations:{[command.operationId]:JSON.stringify(command)}};
+  const replay={intent:{content:{title:'Legacy'},slotKey:'hero',
+    kind:'UPDATE_CONTENT' as const},baseRevision:0,operationId:command.operationId};
+  assert.strictEqual(applyEditorTransaction(legacy,replay),legacy);
+  assert.throws(()=>applyEditorTransaction(legacy,{
+    ...replay,intent:{...replay.intent,content:{title:'Altered'}}}),{code:'VALIDATION'});
+});
+
+test('malformed runtime slot identifiers cannot coerce to an existing slot',()=>{
+  const snapshot=make().snapshot;
+  snapshot.slots.undefined={state:'S0',componentId:'title-stacked@1',content:{title:'Untouched'}};
+  const head=createEditorHead(snapshot);
+  for(const slotKey of [undefined,null,123,{},[]]){
+    assert.throws(()=>applyEditorTransaction(head,{
+      operationId:'d0000000-0000-4000-8000-000000000001',baseRevision:0,
+      intent:{kind:'CLEAR_SLOT',slotKey}
+    } as never),{code:'VALIDATION'});
+  }
+  assert.equal(head.snapshot.slots.undefined.content.title,'Untouched');
+  assert.equal(head.revision,0);
+});

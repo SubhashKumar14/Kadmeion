@@ -1,0 +1,31 @@
+{
+  "name": "kadmeion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@12.2.2",
+  "engines": {
+    "node": ">=26.13.1 <27"
+  },
+  "workspaces": [
+    "packages/contracts",
+    "packages/editor-core",
+    "packages/storage-adapters"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-strip-types --test tests/contracts/*.test.ts tests/editor/*.test.ts tests/auth-web/*.test.ts",
+    "check:file-budget": "node scripts/check-file-budget.mjs",
+    "probe:host:revocation": "node --experimental-strip-types scripts/verify-host-revocation.mjs",
+    "build:auth": "tsc -p apps/auth-web/tsconfig.json",
+    "dev:auth": "npm run build:auth && node apps/auth-web/dev-server.mjs",
+    "smoke:auth": "node scripts/smoke-auth-server.mjs",
+    "build:auth:preview": "npm run build:auth && node scripts/prepare-auth-preview.mjs",
+    "verify:auth:preview": "node scripts/verify-auth-preview.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/pg": "8.23.1",
+    "typescript": "7.0.2"
+  }
+}

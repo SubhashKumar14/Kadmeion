@@ -1,0 +1,868 @@
+# Implementation Status (historical)
+
+# Kadmeion · Build · Showcase · Evolve
+
+**Implementation status (12 November 2026):** B0 foundation, B1 private identity and authorization groundwork, B2 private project and asset persistence groundwork. No frontend, publish host, email provider, production-ready Auth flows or full app deployment yet.
+
+## Backend implemented
+
+- Node 22/npm monorepo, TypeScript contracts and GitHub Actions CI.
+- Supabase Auth profile bootstrap, owner-private profiles and sharing preferences, isolated operator role grants.
+- Private link-based projects, private project exposure requests, asset metadata and a private image Storage bucket.
+- RLS policies for profiles, sharing, projects, exposure intents, assets and Storage objects.
+- Synthetic A/B tenant-negative checks performed against dedicated Kadmeion PostgreSQL and rolled back.
+- Database migration filenames match the hosted Supabase migration history.
+
+## Verification commands
+
+- npm ci
+- npm run typecheck
+- npm test
+- npm run check:file-budget
+
+Local pgTAP SQL tests in supabase/tests require Docker and Supabase CLI; they are not claimed as executed. Hosted signup, email recovery, SMTP, OAuth, object upload/download and browser E2E remain unverified.
+
+Never expose privileged/service-role keys in client bundles. Project exposure settings represent intent only and do not make projects publicly accessible until independent B4 delivery proof.
+
+## Documentation (not counted as code)
+
+- [Handoff](project-docs/NEXT_SESSION_HANDOFF.md)
+- [Approved design](project-docs/design.md)
+- [Database/RLS model](project-docs/docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md)
+- [File-count policy](project-docs/FILE_COUNT_REPORT.md)
+
+All project-docs files remain unchanged.
+
+
+> B0–B2 snapshot before further backend milestones. Superseded by later code/CI evidence.
+
+## 14 November 2026 — Verified B4 atomic private frozen-revision loader
+
+**Branch:** `feat/b0-backend-foundation` in `SubhashKumar14/Kadmeion`. The older `DevFolio-App` repository is reference-only. The handoff's “implementation not started” statement is a historical 12 November snapshot, superseded by actual commits and CI; it is not current implementation status.
+
+**Code:** [`a5d53a4`](https://github.com/SubhashKumar14/Kadmeion/commit/a5d53a4693bdbfce70dc64f4534ba119cf2dc692) added `load_private_frozen_revision(uuid)` as an owner-only Supabase RPC and changed the private frozen-revision client to use it instead of three separate REST reads. It joins owner, portfolio, immutable revision and frozen request in one database transaction, locks the portfolio against concurrent Trash writes, recomputes the canonical `jsonb::text` SHA-256 and rejects mismatched pins or trashed records. The new RPC returns private snapshot bytes **only to the authenticated owner**, not a public URL or release authority. SQL pgTAP, contract and local Auth/PostgREST integration tests cover tenant denial, Trash, restore, tampering and malformed receipts. [`79b98b8`](https://github.com/SubhashKumar14/Kadmeion/commit/79b98b8808a44397e4d011c9e9f39c88608cc01f) corrected a regression test that wrongly expected a valid-but-different portfolio UUID to be rejected without a known expected portfolio ID; no runtime logic was changed in that follow-up.
+
+**Verified checks:** [GitHub Actions push run 43512296939](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43512296939) passed both `contracts` and `database` jobs. Contract job: `npm ci`, `npm run typecheck`, auth build/smoke, isolated auth-preview build verification, **127/127 Node tests**, and file-budget check **108 authored application/config/test files / planned 200**. Database job: `supabase start`, `supabase test db` **PASS**, and **12/12 local GoTrue/PostgREST/Storage HTTP subtests**. These are ephemeral local CI results, **not** hosted Supabase, browser E2E, production security, accessibility, or deployment proof. No dedicated lint or SAST command is configured; do not claim either passed.
+
+**Source resolution:** The [Notion LIGHT 52-screen register](https://app.notion.com/p/417b082297c781c49168c54b656d9cca) ends with the owner's explicit **52/52 LIGHT screens approved** and **do not generate a DARK set**; older per-batch pending statuses are superseded for those exact images only. These images are chat-session artifact addresses rather than durable hosted assets. Do not implement from rejected Canva designs or infer that image approval proves a functional screen. Backend-first gate remains in force.
+
+**Deployment boundary:** GitHub's existing Vercel integration automatically produced a **nonproduction preview** on branch pushes. No manual deployment, production promotion, host-selection approval, public portfolio publishing or verified public revocation occurred in this run. The `vercel.json` auth preview is not the 52-screen frontend or a public static portfolio host.
+
+**Remaining B4/B5/B6 gaps:** host-neutral immutable release artifact generation/verification; approved public host and independent route/asset revocation; real staging token serving, atomic live pointer and rollback; account erasure/retention; hosted email/provider verification; full security, browser and accessibility testing. A frozen private revision is **not** a published release. The host-selection proof gate in `docs/04_engineering/STATIC_RELEASE_HOSTING_AND_EXPORT.md` is still unresolved.
+
+**Next run:** start with latest CI/branch verification, then implement and test a host-neutral immutable static release artifact manifest and checksum verifier against a pinned frozen revision. Keep the public publishing switch and reviewer route disabled until an approved host can prove route and direct-asset revocation; preserve the last verified live release on failure.
+
+
+## 14 November 2026 — B4 host-neutral immutable PRIVATE artifact candidate
+
+**Baseline:** verified branch head 08b2b81 and its successful push CI (run 43512600549). Active repo is SubhashKumar14/Kadmeion, not historical DevFolio-App. The Notion LIGHT 52-Screen Image Approval & Asset Address Register ends with explicit owner approval of all 52 original LIGHT screen images and a prohibition on producing a DARK mockup set. This approval does not authorize unapproved Canva variants or prove application behavior. Current work remains backend-first.
+
+**Implementation:** commit [7ae3c1f](https://github.com/SubhashKumar14/Kadmeion/commit/7ae3c1fe456c07edb9356c654fddd83ba9f0aff7) introduces packages/storage-adapters/src/private-immutable-artifact.ts, exports it from the storage-adapters index, and adds tests/editor/private-immutable-artifact.test.ts. The candidate is derived solely from a validated frozen owner revision and trusted scriptless safe-preview render plan. Its private manifest pins portfolio ID, revision, snapshot SHA-256, intended visibility, exact index.html byte length and SHA-256; the manifest itself has a SHA-256 digest. Verification re-renders against the expected pinned input, rejects changed bytes, additional files, changed source pins and fabricated public authority. Private source, user-owned TSX and credentials are not included in rendered HTML. Both API and manifest explicitly return deployable:false and publicUrl:null; **this is not a deployable release, public host, staging route or publishing proof**.
+
+**Checks:** [GitHub Actions push run 43519648208](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43519648208) passed both contracts and database jobs on commit 7ae3c1f. Contracts job passed npm ci, TypeScript typecheck, auth build/smoke, isolated auth preview verification, Node test suite including the new negative tests, and file-budget check. Database job passed local Supabase startup, pgTAP and local Auth/PostgREST/Storage HTTP integration. No hosted-provider, browser E2E, lint, dedicated SAST, full WCAG, Vercel runtime alignment or public host proof is claimed. No production change or manual Vercel deployment was performed; Git integration may still create its existing nonproduction auth previews on branch pushes.
+
+**Security boundary and next action:** the database RPC checks the canonical snapshot digest atomically at load time, but a mutable client-side snapshot can theoretically be altered after loading. The artifact verifier detects tampering *relative to the supplied input*; it does not independently attest that a subsequently modified in-memory snapshot still matches the database's canonical PostgreSQL jsonb-text SHA-256. Before enabling any real public delivery, implement an immutable/canonical snapshot attestation across the loader-to-renderer boundary (with negative tests for post-load mutation), then require an explicitly approved host with proven canonical-route and direct-asset revocation/rollback. The current public delivery blocker remains mandatory. Account erasure, hosted Brevo/email, full auth integration, accessibility and browser E2E are still open.
+
+
+## 14 November 2026 — B4 canonical frozen snapshot attestation at the loader-to-artifact boundary
+
+**Verified baseline:** active implementation repository is `SubhashKumar14/Kadmeion`, branch `feat/b0-backend-foundation`, from previous head `7f762db`; `DevFolio-App` is historical/reference-only. The latest Notion LIGHT 52-screen approval register ends with explicit 52/52 LIGHT image approval and no DARK mockup set. These are static image approvals, not frontend implementation or public-host approval. Older Notion pending labels and the original handoff's “implementation not started” statement are superseded.
+
+**Implementation commits:** [`cf8dd6e`](https://github.com/SubhashKumar14/Kadmeion/commit/cf8dd6e4641373ff15801ac16c45dd9455f72818) adds a new owner-only `load_private_frozen_revision` SQL migration preserving its atomic authorization/Trash/digest check and returning `snapshotCanonicalJson` from PostgreSQL `jsonb::text`. The browser-side loader hashes these **exact** canonical UTF-8 bytes against the pinned database SHA-256, parses and validates them, checks that the parallel JSON snapshot agrees, recursively freezes the parsed object, and registers its identity in a process-local WeakMap. Added SQL, contract, and real local-HTTP assertions. [`5969745`](https://github.com/SubhashKumar14/Kadmeion/commit/59697457f19280e3dbb97cbc97ad17c3cb1621d6) requires this attested object before generating/verifying the private immutable artifact; new tests reject post-load mutation, clones, fabricated SHA fields, modified pins, and tampered artifact bytes. Unattested callers can still run the **preview-only** preflight, but cannot generate a private immutable artifact.
+
+**Verification status at documentation time:** [GitHub Actions push run 43527392458](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43527392458) `contracts` job **PASS**: `npm ci`, `npm run typecheck`, auth build/smoke, isolated auth preview verification, `npm test`, and `npm run check:file-budget`. `database` job was still **RUNNING** during `supabase start`; pgTAP and local GoTrue/PostgREST/Storage HTTP integration tests are **NOT YET VERIFIED** for this commit. Do not upgrade that to PASS without checking the completed run. No dedicated lint, SAST, browser E2E, hosted email, live provider, or public-route proof was executed here.
+
+**Security scope:** This is a *private client-process integrity gate*, not a signed server release, host-level authorization, proof of post-read revocation, or protection from compromised same-origin JavaScript. Public publishing, reviewer serving, rollback and route/direct-asset revocation remain disabled/unproven. Vercel Git integration may automatically build existing nonproduction auth previews on feature-branch pushes; no manual Vercel deployment, production promotion, or production database modification was performed.
+
+**Next run:** first inspect the completed database job for commit `5969745` and repair any pgTAP or HTTP regression. Then implement and test a narrow B5 owner-only account-erasure *request/status* and retention workflow with explicit fail-closed public-route revocation dependency; do not perform irreversible deletion or claim external backups/CDN caches are erased. Preserve the existing B4 host-selection and public revocation proof gate, and do not start the 52-screen frontend until backend gates are met.
+
+**Post-run verification addendum (same code commit):** [CI push run 43527392458](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43527392458) subsequently completed both `contracts` and `database` jobs successfully. Database steps `supabase start`, `supabase test db` (pgTAP), and the local real GoTrue/PostgREST/Storage HTTP integration test all report **PASS**. This updates the earlier running status for that code commit; it does not prove a hosted public deployment, browser E2E, external email, lint or SAST.
+
+## 14 November 2026 — B5 owner-only account-exit REQUEST / withdrawal (no erasure)
+
+**Verified baseline:** `SubhashKumar14/Kadmeion` on `feat/b0-backend-foundation`, previous head `12b7d91`. Historical `DevFolio-App` is reference-only. The latest Notion LIGHT image register confirms owner approval of exactly 52 original LIGHT screen images and expressly prohibits generating a DARK mockup set; image approval does not authorize frontend substitutions or public deployment. Governing account-exit decisions are UI-92/112, WF-047, and `set_07_account_exit.md`.
+
+**Code:** [`4649cc0`](https://github.com/SubhashKumar14/Kadmeion/commit/4649cc09b2d755529112241753345bf244146650) adds a private, RLS owner-only `private_account_erasure_requests` journal, signed-in owner request and withdrawal RPCs, typed-confirmation validation, idempotent operation IDs, one-active-request constraint, bounded request quota, read-only owner history projection, browser-side Supabase client with no redirects/cookies/cache, and SQL/Node/real local HTTP tests. Owner requests are explicitly `REQUESTED_BLOCKED`, withdrawals `WITHDRAWN`. All server-enforced proof flags remain FALSE: `public_revocation_verified`, `reauth_verified`, `access_terminated`, `erasure_executed`, `retention_verified`. No irreversible deletion RPC, worker, session revocation, public route, or hosted cleanup was created. Typed confirmation is **not** provider-verified recent reauthentication. Item Trash retains its separate 15-day recovery contract.
+
+**Verification:** [GitHub Actions push run 43534756934](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43534756934) completed both jobs **PASS** for `4649cc0`: application `npm ci`, TypeScript typecheck, auth build/smoke, isolated preview verification, `npm test`, file-budget; database ephemeral Supabase startup, pgTAP migrations/tests, and real local GoTrue/PostgREST/Storage HTTP integration. This is not hosted Supabase or browser E2E proof. The checked Git tree contains **115 authored application/config/test files of the proposed 200**; project documentation is excluded. No dedicated lint, SAST, hosted email, account reauthentication proof, or public-route/direct-asset revocation proof was run.
+
+**Retention disclosure and nonclaims:** The request **does not** end access, delete primary data, schedule a purge date, revoke live URLs or prove deletion from external backups/CDN caches/web archives. No verified provider backup retention window or account-erasure SLA exists. Future destructive execution requires separately verified recent reauthentication, export and affected-data inventory, trusted host route **and direct-asset** revocation, retention disclosure, and a privileged auditable worker; failure must remain blocked, not be reported as success. Do not assume the per-item 15-day Trash timer applies to account erasure.
+
+**Deployment:** Git integration automatically created a nonproduction Vercel auth preview from the feature-branch push; no manual Vercel deploy, production promotion, host selection, production DB mutation or public publishing was authorized or performed.
+
+**Next action:** implement a bounded owner-only account-exit preflight/footprint (projects, portfolios, current release intents and export readiness) with tenant-negative SQL/HTTP tests, and define/test an actual recent reauthentication proof contract without treating a mere JWT or typed phrase as reauthentication. Keep erasure execution and public delivery disabled until independent host revocation and retention evidence are verified.
+
+
+## B5 account-exit preflight — local implementation checkpoint (14 November 2026)
+
+- Added an owner-only, count-capped (1,000 per category) advisory RPC and typed client.
+- Counts are scoped to the requesting owner and include projects, portfolios, portfolio revisions,
+  exposure intents, project asset *metadata*, frozen release intents, reviewer grants, Trash
+  records and account-exit requests. Counts include historic/trashed rows where applicable.
+- Requires a server-side `auth.sessions` row matching the authenticated JWT `session_id`;
+  a signed-out JWT or a subject claim alone is not sufficient for access.
+- A session created within five minutes is reported only as `freshSignInCandidate`.
+  **This is not verified reauthentication**: `recentReauthVerified=false` and
+  `deletionAllowed=false` are hardcoded, with no destructive worker.
+- There is no export queue or integration inventory, public-route resolver, Storage object
+  reconciliation or backup retention proof. Those are explicitly `NOT_TRACKED` /
+  `UNVERIFIED` / `METADATA_ONLY`. Advisory counts are not an atomic purge manifest.
+- Tests cover malformed receipts, unauthenticated/forged requests, tenant-scoped live
+  GoTrue JWT preflight and signed-out session rejection. Check actual latest CI run
+  before marking database tests as passed; no hosted Supabase changes authorized.
+
+
+## B5: explicit recent reauthentication evidence (14 November 2026)
+
+**Verified code (not account deletion):** Commits `62bca5a`, `09fc5c9` and
+`046c126` add a server-only 5-minute reauthentication challenge table,
+begin/complete RPCs, a typed client and response-specific errors. The owner
+starts the challenge under one *live* GoTrue session, then performs a second real
+sign-in to create a *different* session for the same owner. Completion proves
+that the second session was created after the challenge, remains in
+`auth.sessions`, belongs to the same owner, and is within the 5-minute window.
+Old-session replay, cross-user completion, missing session, private-table access,
+and false deletion receipts are rejected by tests. This is a deliberate recent
+sign-in proof, **not proof of MFA, host revocation, or erasure readiness**.
+The erasure-request journal retains its DB-enforced false proof flags; there
+is no deleting worker, access termination, published content or hosted setup.
+
+**CI evidence:** [GitHub Actions 43539180463](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43539180463)
+passed 150 Node tests, 24 local Supabase HTTP integration tests, database pgTAP,
+TypeScript, auth builds and file budget on commit `09fc5c9`. Subsequent
+client error-mapping and documentation commits require separate CI confirmation.
+The earlier B5 preflight commit `e823fe3` passed 147 Node and 20 HTTP tests
+in [CI 43538636801](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43538636801).
+
+**Evidence/scope limitations:** Counts are bounded informational snapshots,
+not a transactionally frozen deletion inventory. Public routes and direct assets
+are NOT verified, object Storage is only counted by registered metadata, and
+exports/integrations are NOT TRACKED. Challenge retention cleanup is unimplemented.
+No hosted data was queried or modified. No frontend screens were produced.
+The latest Notion approval record supersedes older pending lists and confirms
+52/52 original LIGHT screens approved; no DARK mockup set is authorized.
+
+**Next backend critical path:** Design and test a host-neutral public route
+visibility/revocation pointer plus direct immutable-asset denial contract, with
+fail-closed privacy semantics and no deployment. Do not start destructive account
+cleanup or claim public revocation before real host and cache tests are approved.
+
+
+## 14 November 2026 — B4 host-neutral public route AND direct-asset denial policy
+
+**Source reconciliation:** Active code repository is SubhashKumar14/Kadmeion,
+branch feat/b0-backend-foundation; main remains documentation-only and the old
+DevFolio-App is reference-only. Latest Notion 52-screen LIGHT register ends
+with **52/52 exact original images approved** and **no DARK screen set**.
+Older Canva/pending approval documents are superseded for those images only.
+No frontend code or production deployment was authorized or added.
+
+**Backend-only code:** Added typed PrivatePublicDeliveryPolicy in
+packages/storage-adapters/src/public-delivery-policy.ts, exported from the
+package index, with focused synthetic negative tests. It requires a fresh
+trusted host-side visibility read separately for canonical HTML and every
+direct immutable asset. It fails closed on unavailable/malformed/stale state,
+private/unpublished/restricted pointers, incomplete revocation generation,
+wrong release digest, non-allowlisted asset, path traversal and mismatched
+content hash. A positive match returns HOST_PROOF_REQUIRED, always
+deployable:false and publicUrl:null, **never content or HTTP permission**.
+SVG is excluded due to active-content risks; future CSS hosting requires
+trusted generation/sanitization. No actual public pointer database table,
+authoritative host adapter, route interception, cache invalidation, CDN
+revocation, rollback or public publication is implemented.
+
+**Evidence:** Isolated local Node 22.16 --experimental-strip-types policy
+tests and isolated TypeScript 5.8.3 strict module check passed before commit.
+The GitHub Actions contracts and database jobs for the final branch commit
+must be checked independently; do not claim them passed before they finish.
+Earlier baseline commit 8d7b37a passed both jobs in runs 43539692728 and
+43539687607. No hosted Supabase, real HTTP public-route tests, browser E2E,
+lint, SAST, accessibility or provider/hosting proof was performed.
+
+**Security caveat:** The policy trusts the injected reader's authority and
+read freshness; a timestamp or generation field is not cryptographic proof
+of strong consistency. A CDN/direct release URL that bypasses this gate
+would invalidate the privacy guarantee. Do not wire a public HTTP handler
+to HOST_PROOF_REQUIRED or report successful revocation without a selected
+approved host and live canonical + direct-asset negative tests.
+
+**Next critical action:** implement an owner/administrator-scoped,
+transactional *private* release visibility/revocation pointer and a trusted
+read contract with tenant/role tests. Keep all serving disabled until an
+explicitly approved free host proves interception, cache controls,
+unpublish, direct asset denial and rollback under races.
+
+
+## 14 November 2026 — B4 private transactional release candidate/denial pointer
+
+**Baseline and source precedence:** Verified active repository SubhashKumar14/Kadmeion,
+branch feat/b0-backend-foundation, previous head 8de3775 (not the old DevFolio-App).
+[CI 43541363249](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43541363249)
+has now completed both contracts and database jobs PASS; the prior handoff left
+the database result pending. The [Notion image approval register](https://app.notion.com/p/417b082297c781c49168c54b656d9cca)
+ends with 52/52 original LIGHT images explicitly approved and no DARK mockup
+set. Earlier per-batch pending labels and older dark-screen plans are superseded;
+rejected Canva variants remain excluded. Original screenshot addresses are
+session-local, not verified downloadable here. No frontend was started.
+
+**Feature-branch commits:**
+- [d322c0e](https://github.com/SubhashKumar14/Kadmeion/commit/d322c0eea986d02f160b653d020d882e1f3284d7):
+  private owner-scoped visibility pointer and immutable operation journal with
+  RLS, expected-generation CAS, idempotent operations, frozen-revision DB digest
+  checks, and atomic candidate blocking on portfolio Trash. Only BLOCKED and
+  PREPARED_PRIVATE exist; no LIVE state, public reader, host or URL.
+- [22f164a](https://github.com/SubhashKumar14/Kadmeion/commit/22f164a25b7ecd947fe8ffc64369a0afc5f392f1):
+  pgTAP owner isolation, direct-privilege, CAS, replay and Trash tests.
+- [f6f4efb](https://github.com/SubhashKumar14/Kadmeion/commit/f6f4efb1bed75c60e56c5298cd24155e53ef8ee5),
+  [9062bc5](https://github.com/SubhashKumar14/Kadmeion/commit/9062bc56c0d9fce40c3cd098e457fa87256479bc),
+  [caf12bd](https://github.com/SubhashKumar14/Kadmeion/commit/caf12bdeefeb0eaf06e4c1790246b644da290c28):
+  typed Supabase owner API client, fail-closed receipt validation, negative
+  tests and package export.
+- [72eab88](https://github.com/SubhashKumar14/Kadmeion/commit/72eab884bfe9469066e8a540ebfd2b14c368fa86):
+  local real JWT/PostgREST owner/outsider, direct-write, CAS and Trash tests.
+- [675d040](https://github.com/SubhashKumar14/Kadmeion/commit/675d0408df35e7fdc622396103e474c75e4f0c98),
+  [06c8183](https://github.com/SubhashKumar14/Kadmeion/commit/06c8183dc7ce7721ec4f516b3050df698844547b),
+  [7f04364](https://github.com/SubhashKumar14/Kadmeion/commit/7f043642ba5d2bd56b89450cbcb898be879b56f3):
+  reject stale prepare-operation replay after a later block, with SQL and
+  HTTP regression coverage. Historical idempotency must not imply current
+  visibility.
+
+**Verification at documentation time:** [CI 43546831045](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43546831045)
+passed both contracts and database jobs for the initial migration and pgTAP
+tests. Contracts on [CI 43546893135](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43546893135)
+and [CI 43546936393](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43546936393)
+passed TypeScript, Node tests, auth build/smoke, preview bundle checks and
+file budget. Check final-head CI before claiming the latest stale-replay and
+real HTTP integration tests passed. Dedicated lint, SAST, browser E2E,
+hosted Supabase, production security and accessibility remain untested.
+
+**Security boundary:** The candidate manifest SHA is owner-submitted,
+not independently attested. Database generation is not proof of host/CDN
+revocation. All receipts explicitly say publicServingEnabled=false,
+hostRevocationVerified=false and publicUrl=null. PREPARED_PRIVATE and
+HOST_PROOF_REQUIRED cannot authorize HTTP 200. A future explicitly approved
+host must prove authoritative reads, canonical-route and direct-asset
+interception, cache behavior, unpublish/rollback races and provider-failure
+denial before public serving. No production DB mutation, manual Vercel
+deployment or account deletion was performed. Git integration may still
+produce existing nonproduction auth previews.
+
+**Next action:** Verify final-head CI and repair failures; then implement
+a moderation-case-bound operator BLOCK-only path with role/tenant-negative
+tests, never operator prepare/publish authority. Keep public serving disabled.
+
+
+**Post-run CI verification and correction:** The first stale-replay regression
+test insertion contained a malformed SQL dollar-quote, causing database
+CI failures (e.g. [43547031920](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43547031920)).
+No runtime migration failure was reported; the pgTAP file stopped parsing.
+[6ec95f6](https://github.com/SubhashKumar14/Kadmeion/commit/6ec95f69c0ae50f0742d1b4062963d5cfb49a4d8)
+replaced the malformed delimiter with a named SQL dollar quote.
+[Final code CI 43547240987](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43547240987)
+completed **both jobs PASS** on that fix: 169/169 Node tests; 229 pgTAP
+assertions across 16 files; 25/25 real local Supabase HTTP subtests;
+TypeScript, auth build/smoke, isolated auth-preview verification and
+125/200 authored application/config/test file budget. This proves the
+ephemeral local CI paths, not a hosted provider, browser E2E, CDN revocation,
+production security, lint, SAST or accessibility. No public route enabled.
+
+
+## B4 trusted private canonical/direct-asset read — 14 November 2026
+
+**Verified baseline:** Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, prior head `b684449`. The original DevFolio
+repo is historical only. Latest Notion owner register supersedes older pending
+records and confirms **52/52 original LIGHT screens approved**, no DARK mockup
+set and no permission to substitute rejected Canva mockups.
+
+**Implementation:** `kadmeion_private.private_delivery_denial_gate` is a
+service-role-only, non-exposed SQL RPC that performs one fresh private-pointer
+read for either canonical HTML or a content-addressed direct immutable asset.
+It validates input shape/digest and returns only an explicit **DENY**, a minimal
+generation/revocation fence and `hostRevocationVerified=false`. Prepared
+candidate, blocked state, missing portfolio, malicious paths, mismatched
+hashes and unavailable providers never grant serving permission. The paired
+`PrivateServerDeliveryDenialGate` TypeScript contract consumes this response
+and rejects forged ALLOW receipts, public URLs, contradictory counters and
+extra private data. There is **no public-serving implementation** here.
+
+**Checks/evidence:** Initial code commit
+[`1b29acb`](https://github.com/SubhashKumar14/Kadmeion/commit/1b29acbce127642d85feac282b1f373c9e26788e)
+passed local database/pgTAP and HTTP CI but application CI detected
+unsupported Node 22 parameter-property syntax. Fix commit
+[`750c0bd`](https://github.com/SubhashKumar14/Kadmeion/commit/750c0bd26c202988be40d44378b7518bd4f8b34b)
+passed application CI; check final SQL/HTTP and post-documentation CI separately.
+Added an extra HTTP check that the internal RPC cannot be reached through
+PostgREST even using a service role. Do not infer a host-level negative test
+from an internal SQL test.
+
+**Unresolved critical blocker:** No chosen/authorized external public host,
+route adapter, cache proof, direct immutable object interception, rollback,
+public-view verification, hosted email or production data lifecycle. SQL
+pointer revocation does **not** prove previously cached hosted bytes are
+inaccessible. No new frontend designs, manual Vercel deployment, production
+change, account purge, or public release occurred.
+
+**Next action:** Validate the final CI and then implement a verified
+server-side artifact/manifest-to-private-candidate binding contract, without
+activating a live pointer. Before any public serving, obtain approval for
+the host and prove canonical/direct-asset 404/410, cache behavior, rollback
+and privacy revocation in a nonproduction environment.
+
+
+## 14 November 2026 — B4 trusted private artifact-to-pointer binding
+
+**Verified baseline:** Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, previous head `bbc3175`. Older DevFolio
+repo is historical. Owner's latest Notion register confirms all 52 exact
+LIGHT screen images approved and prohibits generating DARK-theme mockup
+sets; static approval is not application implementation proof.
+
+**Committed private-only functionality:** New
+`kadmeion_private.private_artifact_bindings` registry (RLS, no anon or
+authenticated privileges), and non-exposed
+`kadmeion_private.bind_private_artifact_candidate()` executable only by
+`service_role`. It acquires the owned portfolio row lock BEFORE the
+candidate pointer lock, rehashes the frozen DB snapshot, verifies its
+revision/visibility/source pins, checks expected pointer generation and
+status, recomputes SHA-256 over supplied exact UTF-8 HTML and manifest
+text, requires a single precisely matching `index.html` manifest,
+and inserts an immutable, idempotent **private** binding for that
+generation. Block/Trash or pointer replacement causes conflict;
+historical bindings are never serving grants.
+
+The `private-artifact-pointer-binding.ts` server-only orchestration
+requires an *attested* frozen revision from the authenticated owner
+loader, builds/independently verifies the safe scriptless HTML artifact,
+compares the currently prepared private pointer and its manifest hash,
+then invokes an injected **restricted SQL writer**. It validates
+the returned receipt and never exposes public serving permission.
+This module is intentionally NOT exported from the browser-facing
+storage-adapters index. The runtime SQL writer is an interface,
+**not yet wired to a real hosted server connection**. In particular,
+SQL verifies byte/hash/source consistency but cannot prove that a
+privileged caller used the trusted renderer; the deployed worker must
+satisfy that prerequisite. No public release is served.
+
+**Code references:** `6597b99` (restricted binding schema and pgTAP),
+`ba13181` (trusted orchestration and Node negative tests),
+`6e100c4` (fixed test harness without widening DB rights),
+`2baf79c` (added real local HTTP tests that private binding
+RPC/table remain unreachable through PostgREST even with service role).
+
+**Verified CI:** [GitHub Actions 43549661331](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43549661331)
+passed both jobs at `6e100c4`: 180/180 Node tests,
+268 pgTAP tests in 18 SQL test files, 26/26 local GoTrue/PostgREST/Storage
+HTTP tests, TypeScript, auth build/smoke/preview, file budget 133/200.
+The HTTP-denial commit `2baf79c` has its own CI; confirm completion
+before calling that extra test passed. No hosted Supabase, production
+database, public HTTP route, CDN invalidation, browser E2E, lint or
+dedicated SAST was verified.
+
+**Security and release caveat:** Owner-provided manifest digest alone
+remains untrusted. A trusted worker must rebuild rendered bytes and
+obtain a matching restricted binding; neither binding nor hash equality
+authorizes public visibility. Public host, immutable asset URL
+interception, cache behavior, rollback races, selected free-tier
+deployment and real host revocation remain unverified. There was no
+manual Vercel deploy, production promotion, hosted data mutation,
+account erasure or frontend implementation in this run.
+
+**Next backend critical action:** Implement and locally integration-test
+the **server-only direct-SQL binding executor** (without exposing
+service credentials to client/Edge previews); prove it consumes a
+frozen owner-RPC snapshot and writes only independently verified bytes
+to the restricted binding RPC, with concurrency/revocation and malicious
+renderer/manifest negatives. Do not activate public hosting until owner
+approval and live canonical/direct-asset negative tests.
+
+
+## 14 November 2026 — B4 server-only parameterized PostgreSQL binding adapter
+
+**Baseline:** Active implementation branch `feat/b0-backend-foundation` at
+`655d79d` before this iteration, not the historical DevFolio repository.
+[CI 43549982097](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43549982097)
+had passed on that baseline. Notion's final owner approval register explicitly
+confirms **52/52 original LIGHT screen images** and prohibits a DARK screen
+set. Exact image paths are session-local, not verified recoverable in this run.
+No frontend work was authorized before the remaining backend gates.
+
+**Code changes (feature branch only):**
+- [aae3cda](https://github.com/SubhashKumar14/Kadmeion/commit/aae3cda0643cd3ce46298c8d3ddf94c7fc50b573):
+  `private-artifact-direct-sql-writer.ts` provides a server-only, structurally
+  `pg.Pool`/`pg.Client`-compatible query adapter. It invokes ONLY the
+  parameterized `kadmeion_private.bind_private_artifact_candidate` SQL function,
+  validates UUID/generation/UTF-8 sizes and NUL rejection, never interpolates
+  HTML/manifest into SQL, and sanitizes provider errors. It is deliberately
+  NOT exported from the browser-facing storage-adapters index.
+- [8f1e6cf](https://github.com/SubhashKumar14/Kadmeion/commit/8f1e6cf883b3b5d78c4a8f3f96b3f3a43414e4f1):
+  adapter validation, parameterization, failure and malformed receipt tests.
+- [497e902](https://github.com/SubhashKumar14/Kadmeion/commit/497e902801910b935cb06d073c841ebf90f6ba3a):
+  end-to-end-in-process adapter/orchestrator test from an attested frozen
+  fixture to SQL query arguments and a simulated pointer-revocation error.
+  [0cfb108](https://github.com/SubhashKumar14/Kadmeion/commit/0cfb10899db4f5fd8e04a2a4df2d45be3b90efdf)
+  corrected an over-escaped regex assertion in that test; the intermediate
+  commit's contracts CI failed, final code CI passed.
+
+**Verified final-code CI:** [run 43552260096](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43552260096)
+completed **contracts and database PASS** on `0cfb108`: TypeScript,
+auth build/smoke (12 checks), isolated auth-preview verification (10 checks),
+**184/184 Node tests**, **268/268 pgTAP assertions in 18 files**,
+**27/27 local real GoTrue/PostgREST/Storage HTTP subtests**, and
+**135/200** authored application/config/test file budget. A separate local
+Node strip-types run passed the 3 adapter unit tests. Dedicated lint, SAST,
+browser E2E, accessibility, hosted Supabase and real direct-`pg` driver
+integration were **NOT RUN**.
+
+**Security boundary:** This is a concrete SQL query adapter, not a deployed
+worker or an independently tested database connection. The `pg` dependency,
+restricted worker DB credential provisioning, actual driver/connection lifecycle,
+local SQL executor integration and real concurrency test are NOT wired.
+The existing trusted orchestrator must rebuild verified bytes; SQL verifies
+the frozen source and pointer but cannot certify renderer provenance. The
+private binding receipt is NEVER a public-serving grant. No public host,
+direct-asset interception, cache revocation, live pointer, production write,
+manual Vercel deploy or irreversible account erasure was performed. Existing
+Git integration automatically created nonproduction auth previews on pushes.
+
+**Next concrete action:** In a nonproduction local Supabase stack, provision
+a narrowly scoped direct-PostgreSQL worker role/connection and test this
+adapter with an actual `pg` client against the existing private binding RPC,
+including concurrent owner block/Trash and tampered HTML/manifest. Do not
+enable public serving or production credentials. Then continue moderation
+operator block-only and remaining B4/B5/B6 gates.
+
+## 14 November 2026 — B4 local direct PostgreSQL binding integration
+
+**Verified baseline:** Active `SubhashKumar14/Kadmeion` branch
+`feat/b0-backend-foundation`, starting from `dc1aa32`; Notion latest
+approval register confirms **52/52 original LIGHT mockups approved** with
+no DARK mockup set authorized. Prior direct SQL adapter and private
+artifact binding contracts were already implemented and not recreated.
+
+**Added (local-only, no provider secrets):**
+`tests/integration/local-postgres-binding.test.mjs`, run in the
+database CI job with explicit `KADMEION_LOCAL_INTEGRATION=1`.
+It requires local Supabase URLs `127.0.0.1:54321` (API) and
+`127.0.0.1:54322` (PostgreSQL), generates a random local temporary
+PostgreSQL LOGIN role, grants only private schema USAGE and EXECUTE of
+`kadmeion_private.bind_private_artifact_candidate`, and revokes/drops it
+after the test. It checks that role cannot directly SELECT the
+binding journal or UPDATE the private pointer.
+
+The test uses **real PostgreSQL's psql wire client** with a prepared SQL
+statement and quoted variables as an injected `pg`-compatible query port,
+rather than installing a runtime `pg` package. It authenticates a real
+local GoTrue owner, creates a private portfolio, commits and freezes an
+immutable revision, loads the owner-attested revision, builds a scriptless
+artifact, prepares the private pointer, binds bytes through the restricted
+SQL executor and confirms idempotency, current generation, no public URL,
+and no host serving. Negative cases include outsider owner-loader reads,
+tampered HTML/manifest, wrong request/generation, a block between pointer
+read and SQL bind (database must reject), and a Trash-triggered denial.
+No additional production runtime packages or hosted credentials were added.
+
+**Verified CI evidence:** [Run 43555748754](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43555748754)
+passed both application and database jobs at commit `709f824`:
+**184/184 Node tests**, **268 pgTAP assertions**, **27/27 real local
+GoTrue/PostgREST/Storage HTTP tests**, **1/1 restricted PostgreSQL
+wire integration test**, TypeScript, auth build/smoke/preview and source
+file budget **136/200**. Initial failed runs were corrected: Node 22
+test type-stripping flag and PostgreSQL boolean display test assumption.
+The additional byte tampering and TOCTOU revocation coverage are in
+the final passing run. These results do not demonstrate real host
+revocation, uptime, public publishing or browser accessibility.
+
+**Remaining:** The production Node `pg` Pool/client, connection lifecycle,
+password/TLS provisioning, external host trust boundary, cache/direct
+immutable asset interception and a deployed restricted worker are
+not implemented or tested. The CI-only `psql` bridge MUST NOT be used as
+a production server adapter. The internal DB binding is never a public
+serving authorization. Account erasure stays disabled. No manual Vercel
+deploy, production DB mutation, or frontend work occurred.
+
+**Next:** Introduce a pinned, lockfile-managed `pg` driver for a
+server-only restricted worker, test its real connection lifecycle and
+hard fail-closed behavior locally without exposing credentials to a static
+bundle; then continue operator moderation BLOCK-only and B6 gates.
+Any public host, production deployment, irreversible deletion or
+new design requires separate authorization.
+
+
+## 14 November 2026 — B5 case-bound operator PRIVATE candidate block
+
+**Baseline/source reconciliation:** Active repository is `SubhashKumar14/Kadmeion`,
+branch `feat/b0-backend-foundation`, starting at `6225fb2` (both CI jobs
+passed in [run 43556012831](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43556012831)).
+The original `DevFolio-App` is reference-only. Latest explicit Notion owner
+decision approves **all 52 original LIGHT screen images** and prohibits a DARK
+mockup set; older pending statuses are superseded. Session-local image paths
+are not durable hosted assets. This iteration did not touch frontend designs.
+
+**Implementation:** `0678eeb` is the restored, complete source-tree commit
+adding `supabase/migrations/20261114095000_case_bound_operator_private_block.sql`
+and `supabase/tests/case-bound-operator-private-block.sql`. It creates a
+private, RLS-protected, portfolio-specific moderation hold tied by foreign keys
+to an existing operator case and its owner. A moderator/administrator can
+invoke `operator_block_private_portfolio(case,portfolio,operation)` only
+against an existing case for that portfolio owner. The function locks the
+portfolio before the pointer, atomically clears a prepared candidate,
+increments revocation generation and writes an immutable `OPERATOR_BLOCK`
+audit event. An additional trigger rejects future `PREPARED_PRIVATE`
+pointer writes while the hold persists. Exact replay is idempotent;
+wrong-tenant case, nonoperator and conflicting operation are denied.
+Case closure does **not** automatically restore the candidate.
+
+`2ee15ab` and `093fbcb` add the typed client and fail-closed receipt
+tests/fix. `eda8be5` adds real local PostgREST negatives for anonymous
+and nonoperator calls, forged audit writes and private hold table exposure.
+The first tree-write attempt (`6d13f16`) accidentally omitted baseline files;
+the subsequent corrective commits culminated in `0678eeb`, whose
+[base-to-restored comparison](https://github.com/SubhashKumar14/Kadmeion/compare/6225fb2108800851cb5a9f2a14de5dae30f2f367...0678eeb69fa877864d32566e3dde920a26a775cf)
+confirms **only two added SQL files and no baseline deletions**.
+The transient incomplete-tree CI failures must not be treated as final
+implementation failures or silently omitted.
+
+**Verification:** [CI 43557174030](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43557174030)
+completed both jobs PASS on `093fbcb`: 187/187 Node tests, 289/289
+pgTAP assertions across 19 SQL files, 27/27 local GoTrue/PostgREST/Storage
+HTTP tests, one restricted direct-PostgreSQL integration, TypeScript,
+auth build/smoke/preview and 138/200 authored source/config/test files.
+The additional HTTP-negative commit `eda8be5` requires its own final
+CI confirmation; do not claim its added test passed until checked.
+No dedicated lint, SAST, browser E2E, hosted-provider verification,
+accessibility or real public-host revocation was performed.
+
+**Security boundary:** This is an enforced *private database hold* and
+owner-visible audit, NOT a verified live-site takedown, email notice,
+CDN purge, direct-asset invalidation or permission to serve a portfolio.
+There is deliberately no automatic operator restore or public allow path.
+No production mutation, account purge or manual Vercel deployment occurred.
+Existing Git integration automatically produced nonproduction auth previews
+on feature-branch pushes.
+
+**Next action:** Check the completed CI for `eda8be5`; then implement a
+server-only, pinned and lockfile-managed `pg` client with least-privileged
+connection lifecycle against ephemeral local Supabase, without exposing DB
+credentials in any browser bundle. Continue B6 moderation/revocation negative
+tests; public serving remains disabled pending approved host and canonical
+route/direct-asset/CDN revocation proof.
+
+
+**Post-run CI confirmation:** [GitHub Actions 43557275632](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43557275632)
+completed both contracts and database jobs **PASS** on the final code
+commit `eda8be5`. The new local PostgREST nonoperator/anonymous and
+private-hold-denial test passed. Totals: **187/187 Node tests**,
+**289/289 pgTAP assertions**, **28/28 local HTTP tests** and
+**1/1 local direct PostgreSQL binding integration**, plus TypeScript,
+auth build/smoke/preview and 138/200 file budget. The later
+`696185c` handoff commit changed documentation only. This confirmation
+supersedes the pending-CI wording above; it does not prove hosted
+provider or public-host revocation.
+
+## 14 November 2026 — B4 pinned node-postgres worker connection lifecycle
+
+**Source baseline:** Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, prior HEAD `03b35ce`; original
+`DevFolio-App` remains reference-only. The latest Notion LIGHT approval
+register explicitly approves 52/52 original LIGHT screen images and forbids
+a DARK mockup set. The original PNG addresses are session-local, not
+durable public image URLs. No frontend implementation was started.
+
+**Implementation:** [d033597](https://github.com/SubhashKumar14/Kadmeion/commit/d033597e767589651991c0c478d4d952a9afdb46)
+adds pinned `pg@8.23.1` plus Node 22-compatible pinned TypeScript
+declarations and npm lockfile; adds the **server-only**
+`private-artifact-pg-worker.ts` and negative tests; integrates an actual
+`pg.Pool` with the existing restricted local PostgreSQL binding test.
+The pool validates a dedicated `kd_*` role, refuses privileged/table
+access, checks EXECUTE permission, bounds pool/timeouts, sanitizes errors,
+rejects plaintext remote connections and TLS verification bypass, requires
+explicit local integration opt-in for loopback, and supports idempotent
+shutdown. No browser index export, runtime credentials, deployed worker,
+public URL or public serving grant was added. The temporary nonsecret
+lockfile-generation workflow was removed from the final tree.
+
+**CI correction:** The initial code commit's database job failed because
+it did not install npm packages before importing `pg` (the contracts job
+passed). [3a73b80](https://github.com/SubhashKumar14/Kadmeion/commit/3a73b80946070167b7692e689fed70d36e37df62)
+added `npm ci` to the database job. The corrected
+[CI run 43562124246](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43562124246)
+completed **both contracts and database jobs PASS**: 191/191 Node tests,
+289/289 pgTAP assertions across 19 SQL files, 28/28 local real
+GoTrue/PostgREST/Storage HTTP subtests, 1/1 real restricted
+`pg.Pool` PostgreSQL binding integration; TypeScript typecheck,
+auth build/smoke, isolated auth-preview checks and source budget
+**140/200** passed. Real local negative cases include wrong credentials,
+restricted-role table access, tampered bytes, stale generations, owner
+block and Trash denial. Earlier CI failure is recorded, not concealed.
+
+**Unproven:** Hosted Supabase/remote TLS handshake and credential provisioning,
+a deployed restricted worker, moderation-operator concurrency against the
+actual driver, public-host canonical-route/direct-asset/CDN revocation,
+account erasure/retention, hosted Brevo, browser E2E, dedicated lint/SAST,
+accessibility and production readiness. The existing Git integration
+automatically generated nonproduction Vercel auth previews on pushes;
+no manual preview, production deployment, public publish or destructive
+operation was authorized or performed.
+
+**Next concrete step:** Extend the ephemeral local `pg.Pool` integration
+with a case-bound moderator block racing the private artifact bind, verify
+portfolio/pointer lock ordering, denial after moderation hold and
+idempotent audit evidence. Keep public serving disabled.
+
+
+## 14 November 2026 — B6 case-bound moderation vs real pg.Pool binding races
+
+**Verified source baseline:** Active repo SubhashKumar14/Kadmeion, feature
+branch feat/b0-backend-foundation, starting HEAD 5ebeb2b. Historical
+DevFolio-App is reference-only. Latest owner approval in Notion supersedes
+older pending statuses: all 52 exact original LIGHT-theme mockups approved,
+no DARK mockup set and no rejected Canva references. The original images are
+session-local artifacts; this iteration does not implement frontend screens.
+
+**Code:** [fadc75b](https://github.com/SubhashKumar14/Kadmeion/commit/fadc75b8d91cf0ad49ec51e1e1aadd7cacb37083)
+adds tests/integration/local-moderation-binding-race.test.mjs.
+[ff4f333](https://github.com/SubhashKumar14/Kadmeion/commit/ff4f3334e4ff2a76e5ecfe35a4857a2638dfb413)
+wires the test into ephemeral Supabase database CI. No migration, business
+endpoint, new package, provider secret or public-serving capability changed.
+
+The test provisions a disposable least-privileged kd_* LOGIN role and real
+pg.Pool, creates local GoTrue owner/operator/outsider identities, and
+grants the operator role only through the local database fixture. It opens
+owner- and outsider-scoped cases. A nonoperator and a cross-owner case are
+denied. In the first scenario, the operator commits a case-bound hold
+between the orchestrator's owner-pointer read and the actual restricted
+SQL bind; the bind fails closed, stale generation fails, exact replay is
+idempotent, a different operation cannot replace the hold, the owner
+cannot reprepare, and exactly one operator audit event exists. In the
+second scenario, a separate PostgreSQL transaction invokes the moderator
+block and keeps its portfolio row lock uncommitted while a real restricted
+pg.Pool bind is pending; after COMMIT, the bind rejects the now-stale
+candidate. The pointer remains BLOCKED with generation/revocation
+generation 2 and no public URL. The test tears down the worker and
+temporary DB role. This verifies local transaction ordering and fail-closed
+behavior, not distributed public-host revocation.
+
+**CI proof:** [GitHub Actions run 43567116761](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43567116761)
+on ff4f333 completed both contracts and database jobs **PASS**.
+Logs: **191/191 Node tests**, **289/289 pgTAP assertions across 19 files**,
+**28/28 real local GoTrue/PostgREST/Storage HTTP subtests**,
+**1/1 prior restricted PostgreSQL binding test** and
+**1/1 new moderation/pg.Pool race test**. TypeScript, auth build/smoke,
+isolated preview checks and authored file budget **141/200** passed.
+No dedicated lint, SAST, browser E2E, hosted Supabase/TLS, Brevo,
+accessibility or live-host CDN/direct-asset verification was run.
+
+**Security/authorization boundary:** No production data, manual Vercel
+deployment, public publishing, operator restoration, account erasure or
+main merge. Vercel's existing Git integration may automatically create
+nonproduction feature-branch previews. A private pointer/DB block is NOT
+proof that an immutable public URL or CDN cache has been revoked.
+
+**Next concrete action:** Build a local-only B6 HTTP-level denial regression
+covering BOTH canonical HTML and direct immutable asset requests through
+the existing private delivery-denial gate, before/after case-bound operator
+block and owner Trash, including cross-tenant and provider-failure cases.
+Keep the gate deny-only; do not enable serving or choose a host without
+the owner-approved hosting proof.
+
+
+## 14 November 2026 — B6 local HTTP canonical/direct-asset denial regression
+
+**Baseline:** Active repository `SubhashKumar14/Kadmeion`, branch `feat/b0-backend-foundation`, starting SHA `963a7ccd4330b9dd6ba75c83393d51af38c3921a`. Latest Notion approval register explicitly approves the 52 original LIGHT-theme static screen images and forbids DARK screen production; original image paths remain conversation-local and were not used in this backend iteration. Historical `DevFolio-App` and rejected Canva designs remain excluded.
+
+**Code/CI:** [75924ff](https://github.com/SubhashKumar14/Kadmeion/commit/75924ff21672d3e79d27466a2ff23c46b8c90a47) adds a local HTTP deny-only regression to the existing real GoTrue/PostgREST/Storage integration suite. [c2a4d8](https://github.com/SubhashKumar14/Kadmeion/commit/c2a4d873318afa16445ed7347f74c0cb35b82336) enables Node TypeScript stripping for importing the internal gate in database CI. [0488c71](https://github.com/SubhashKumar14/Kadmeion/commit/0488c714eb58d738b9373aa6bb963a89488cd50e) verifies one fresh restricted SQL read per canonical and direct-asset HTTP request; [a77c574](https://github.com/SubhashKumar14/Kadmeion/commit/a77c57433def3a57529b1a5a212a473b65baa5b4) accepts both Supabase CLI env formats. No migration, public-serving route, production credentials, frontend screen or dependency was introduced.
+
+**Verified:** [GitHub Actions run 43572035732](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43572035732), code SHA `a77c574`, both `contracts` and `database` jobs **PASS**. Node 191/191; pgTAP 289/289 across 19 files; real local HTTP 29/29 (including new B6 case); restricted PostgreSQL binding 1/1; operator/pg.Pool race 1/1. TypeScript, auth build/smoke, isolated preview checks and application file budget 141/200 PASS. The test provisions a disposable least-privileged SQL reader, exercises canonical HTML and immutable direct-asset GETs through a loopback HTTP fixture, confirms uniform 404/no-store/no-body-disclosure under prepared private pointers, case-bound operator hold, owner Trash and restore, cross-tenant attempts, provider outage, forged provider response, malformed asset path and HEAD. It asserts a fresh database gate read for each valid GET and tears down the local role/server.
+
+**Limitations:** This fixture intentionally contains no bytes or ALLOW path. It **does not** prove real public-host interception, direct CDN asset invalidation, cache revocation, hosted Supabase TLS, production worker credentials, erasure, email, browser E2E, dedicated lint/SAST or accessibility. No production writes, manual Vercel deployment, public publish or merge to `main`. Existing Vercel Git integration automatically generated nonproduction previews on feature-branch pushes.
+
+**Next independent backend critical path:** Implement a strictly non-destructive, owner-scoped account-exit export/erasure inventory manifest with idempotent snapshot and negative tenant tests; keep execution blocked until recent reauthentication, hosted canonical/direct-asset revocation and provider retention are independently verified.
+
+
+## 14 November 2026 — B5 versioned owner-only account-exit inventory snapshot
+
+**Verified baseline:** active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, starting HEAD `9e1eb602`. The historical
+DevFolio repository is reference-only. Notion's latest explicit owner
+approval confirms 52/52 original LIGHT images, no DARK set and no rejected
+Canva substitutes. Original image addresses are session-local, so no
+frontend screen was attempted.
+
+**Implementation (non-destructive):** commits `919a8e3`, `ac1ab65`,
+`249f9b6`, `9939964`, `88b8f84` add:
+- `private_account_exit_inventory_snapshots` with schema version 1,
+  owner-scoped operation idempotency, immutable JSONB count snapshots,
+  a 10-snapshot quota, no direct authenticated table grants, and RLS.
+- `create_private_account_exit_inventory` and
+  `get_private_account_exit_inventory` requiring the exact live GoTrue
+  session; optional association to an active same-owner erasure request.
+- Nine capped owner-scoped counts computed in one MVCC SQL statement,
+  a typed fail-closed client, pgTAP role/permission negatives and real
+  local HTTP tenant, replay, stale-session and immutable-snapshot tests.
+- Explicit `METADATA_SNAPSHOT_ONLY`, `exports=NOT_READY`,
+  `publicRoutes=UNVERIFIED`, `objectStorage=METADATA_ONLY`,
+  `backupRetention=UNVERIFIED`, and `deletionAllowed=false`.
+  This is **not** a full data export, exhaustive purge manifest, object
+  inventory, live public-host revocation, or authorization to delete.
+
+**CI collision and mitigation:** several overlapping push/PR database
+jobs failed to start ephemeral Supabase due to fixed host port 54322 already
+in use, not because an application assertion failed. Commit `5c28d79`
+adds a database-job concurrency group to serialize subsequent CI runs.
+The new code's final CI outcome must be read from the current workflow
+run; do not claim SQL migration, pgTAP or real HTTP integration passed
+until both jobs complete. Contracts/typecheck and tests were observed
+passing in the latest run, but full B5 verification is still pending
+database completion at the time of this entry.
+
+**Authorization:** no production/hosted Supabase mutation, public route,
+account deletion, manual Vercel deployment, main merge or frontend
+implementation. The active request remains `REQUESTED_BLOCKED`.
+
+**Next action:** verify final CI for the inventory migration and fix any
+real pgTAP/HTTP regression. Then extend account-exit export readiness
+with an independently verified, bounded owner-data export and provider
+Storage object reconciliation; do not confuse count snapshots with
+complete export or deletion authority.
+
+
+**Post-run verified code CI:** [GitHub Actions 43576521919](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43576521919)
+completed both `contracts` and `database` jobs **PASS** on
+`88b8f843`. Logs: **194/194 Node contract/editor/auth tests**,
+**300/300 pgTAP assertions across 20 SQL files**, **34/34 real local
+GoTrue/PostgREST/Storage HTTP subtests**, **1/1 restricted PostgreSQL
+binding** and **1/1 operator/pg.Pool race**. TypeScript, auth build/smoke,
+isolated auth preview verification and file budget **143/200** passed.
+The database run executed the new snapshot migration and negative
+tenant/idempotency/stale-session tests successfully. The later
+`5c28d79` concurrency-workflow fix and documentation-only commits
+require their own CI completion; this evidence is for code SHA
+`88b8f843` only. Earlier port-collision failures remain recorded.
+
+
+**CI workflow fix verified:** [GitHub Actions 43576583998](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43576583998)
+completed both jobs **PASS** on `5c28d791` after adding database-job
+concurrency. The run successfully started ephemeral Supabase and
+executed pgTAP, local HTTP, restricted PostgreSQL and moderation-race
+tests. Older overlapping runs were canceled or had infrastructure
+port-binding failures; no application regression was observed in
+the passing final code run. Later documentation-only commits do not
+change the verified code/CI claims.
+
+
+## B5 live private Storage metadata reconciliation (14 November 2026)
+
+**Verified starting point:** feature branch `feat/b0-backend-foundation` at `613d292`, prior B5 metadata-only inventory snapshot; Notion owner-approved original LIGHT 52/52 screen images. Historical DevFolio and rejected Canva mockups remain excluded. This is backend-only, local/test work.
+
+**Implementation:** [947be5e](https://github.com/SubhashKumar14/Kadmeion/commit/947be5eb6e6bbda85c39feb4df27c7fc08eab4e2) adds the bounded, read-only, owner-only `reconcile_private_account_exit_storage(snapshotId)` RPC. It requires a real live GoTrue session and an owner-owned existing inventory snapshot; compares at most 101 registered asset records and 101 private Storage metadata rows in one current SQL statement; returns capped registered/object/missing/orphan/mismatch counts, truncation and inventory-drift flags. A zero-discrepancy response means **metadata match only**, not that bytes were downloaded or verified. [ff6c218](https://github.com/SubhashKumar14/Kadmeion/commit/ff6c218d25ebf7a3c1086100c11aa8e6bf7006b2) fixes a discovered post-registration metadata-tampering path by revoking client UPDATE on verified object path/MIME/size while preserving `alt_text` updates. Typed client and negative receipt tests: [b2dbf8f](https://github.com/SubhashKumar14/Kadmeion/commit/b2dbf8f6718151a4c6c782f33f6ffbcf7e2b04f0), [3c403f2](https://github.com/SubhashKumar14/Kadmeion/commit/3c403f206462e24f4c87cb96a20417603c00bcbc). pgTAP and real local GoTrue/Storage HTTP tests cover privilege isolation, orphan upload, verified registration, rejected metadata tampering, cross-tenant reads and stale sign-out: [7100ba8](https://github.com/SubhashKumar14/Kadmeion/commit/7100ba8c0cd7a254e47524b1343bd7fc06525d19), [187de67](https://github.com/SubhashKumar14/Kadmeion/commit/187de67ac95a4be17799dafe3d80db3f45bb264c).
+
+**Actual CI evidence:** [GitHub Actions PR run 43580753110](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43580753110) completed both jobs PASS on code SHA `187de67`: Node **197/197**, pgTAP **308/308 across 21 SQL files**, real local HTTP **37/37**, restricted PostgreSQL **1/1**, moderation/pg.Pool race **1/1**, TypeScript/auth builds/smoke/preview and application source budget **145/200**. Intermediate pushes triggered superseded/cancelled workflow runs; they are not evidence of failures or successes on the final code SHA.
+
+**Hard nonclaims:** The RPC returns only bounded *current database metadata*, not file bytes, an export ZIP, an atomic continuation of the older inventory snapshot, proof of provider backups/retention, or public host/CDN revocation. It exposes no object paths. `storageBytesVerified=false`, `downloadableExportReady=false`, `publicRevocationVerified=false`, `deletionAllowed=false` always. If over 100 per side, the status is `LIMIT_EXCEEDED`, not complete. Account erasure, public serving and frontend implementation remain disabled; no manual Vercel deploy, production mutation or `main` merge.
+
+**Next critical path:** implement a genuinely downloadable bounded owner data export including project/profile/portfolio data and verified private Storage bytes with explicit completeness, hash, size, quota and partial-failure semantics; independently verify hosting route AND direct-asset revocation before public publishing or erasure.
+
+## 14 November 2026 — B5 bounded owner JSON export with verified private Storage downloads
+
+**Verified baseline:** Active repository SubhashKumar14/Kadmeion, branch feat/b0-backend-foundation, starting SHA 82f17b1. The original DevFolio-App is reference-only. Latest explicit Notion owner approval covers exactly 52 original LIGHT images; no DARK set or rejected Canva substitutions. Old pending labels and the historical "implementation not started" handoff are superseded. Original image paths are session-local, not durable hosted assets. Backend-first remains in force.
+
+**Code commits:** [7fe920e](https://github.com/SubhashKumar14/Kadmeion/commit/7fe920eb7d3cc39e04cfc732134679fef62ca49d) adds an owner-only read-only exporter; [cb8fea9](https://github.com/SubhashKumar14/Kadmeion/commit/cb8fea980ecca3964276d1ad4fd801f10dccd645) adds eight Node tests; [478865d](https://github.com/SubhashKumar14/Kadmeion/commit/478865dc2c31b78bc50c154daff122b3e26f308c) exports its API; [3ee05de](https://github.com/SubhashKumar14/Kadmeion/commit/3ee05de1906aa32408531d826587c934ea36b3be) fixes volatile reconciliation RPC to POST; [4c6df83](https://github.com/SubhashKumar14/Kadmeion/commit/4c6df83ed1fc1f9101a14118faa8056842b61395) updates tests; [b31ec46](https://github.com/SubhashKumar14/Kadmeion/commit/b31ec463e19deb466ed55bd49b16616dca250485) fixes Node 22 type stripping; [85a79ca](https://github.com/SubhashKumar14/Kadmeion/commit/85a79ca638971d28452a3bf3a4cd6d7f3061983b) adds real ephemeral local Supabase/JWT/RLS/Storage integration.
+
+**Functionality:** The exporter verifies the current user with Supabase Auth, reads owner-filtered RLS tables (profiles, projects, portfolios, portfolio_revisions, project_assets), validates owner identity on every row, and downloads registered private Storage objects with the owner JWT. Each object must match registered MIME and byte size; downloaded bytes are included as base64 with a computed SHA-256. Existing inventory reconciliation must show no missing/orphan/mismatched metadata or drift before and after download. Network requests omit cookies, deny redirects and caching; no privileged key is used. Bounds: 100 rows per table, 1 MiB per table response, 8 assets, 5 MiB per asset, 8 MiB total asset bytes, 16 MiB final JSON. Oversize, foreign rows, stale sessions, changed owner, provider errors and byte mismatches fail closed. The adapter returns JSON bytes and filename/MIME for a future user-triggered local download; no UI is wired.
+
+**CI proof:** [GitHub Actions run 43585866065](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43585866065) completed BOTH jobs PASS on code SHA 85a79ca: Node 205/205, pgTAP 308/308 across 21 files, real local GoTrue/PostgREST/Storage HTTP 38/38 including owner byte export, cross-tenant denial and sign-out; restricted PostgreSQL integration 1/1; operator/pg.Pool race 1/1. TypeScript, auth build/smoke, isolated preview verification and authored file budget 147/200 PASS. An intermediate Node 22 parameter-property runtime failure was corrected; superseded/cancelled runs are not success evidence. No dedicated lint, SAST, browser E2E, hosted TLS, email or accessibility proof.
+
+**Limitations:** This is a BOUNDED_PARTIAL_EXPORT, NOT a complete account export, atomic cross-table snapshot, browser download UI, or erasure manifest. Sharing preferences, case studies, reviewer grants, release requests, moderation/appeals, Trash/erasure history, integrations and backups are not yet exported. Downloaded SHA-256 is not compared to a provider-pinned expected content hash or immutable object version; same-size replacement races remain possible. The exporter reports completeAccountExport=false and deletionAllowed=false. Public canonical-route and direct-asset/CDN revocation, retention and hosted provider verification remain open. No deletion, public publishing, production changes, manual Vercel deployment, frontend work or main merge.
+
+**Next concrete step:** Expand owner export coverage and add trusted object-version/content-hash pinning; wire a safe owner-triggered local download only after the backend contract is complete. Keep erasure/public serving disabled until route AND direct-asset revocation and provider retention are independently proven.
+
+## 14 November 2026 — B5 expanded bounded owner export and B6 race-test correction
+
+**Fresh baseline:** Active repository `SubhashKumar14/Kadmeion`, branch `feat/b0-backend-foundation`, starting SHA `19c49d0`. Latest Notion owner approval covers exactly 52 original LIGHT-theme static images, not rejected Canva drafts or a DARK screen set. Original image addresses are session-local; no frontend implementation was attempted.
+
+**Code changes:** [ef3f960](https://github.com/SubhashKumar14/Kadmeion/commit/ef3f960f2bda7b541d369df56002243f13836cd9) expands the existing bounded owner JSON export from five to ten RLS/column-grant-readable table categories. Newly included: profile sharing preferences, private onboarding steps, project exposure intents, private frozen release requests and individual Trash records. The existing per-table 100-row/1-MiB limits, eight-object and byte quotas, owner-row validation, private Storage download verification, pre/post metadata reconciliation, and `completeAccountExport=false` / `deletionAllowed=false` remain. Deliberately restricted reviewer grants, moderation events, erasure requests and inventory snapshots are **not** queried with `SELECT *`; case-study revision history, provider integrations and backups also remain omitted.
+
+**Tests and correction:** [c4c13aa](https://github.com/SubhashKumar14/Kadmeion/commit/c4c13aa7b3b6f974227ad22f26f0837ef18c29d7) adds two Node tests covering all five new categories and cross-tenant injected-row denial before Storage access. Intermediate CI [43590266850](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43590266850) passed contracts, SQL and local HTTP but failed the pre-existing B6 race test with an asynchronously handled expected SQL rejection (`unhandledRejection`). [b45a698](https://github.com/SubhashKumar14/Kadmeion/commit/b45a69816eff70368b9714089ee74554c2c362d9) attaches a rejection handler immediately and asserts the expected error after COMMIT.
+
+**Verified final code CI:** [GitHub Actions run 43590606510](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43590606510), SHA `b45a698`, both contracts and database jobs **PASS**. Node **207/207**, pgTAP **308/308 across 21 SQL files**, real local GoTrue/PostgREST/Storage HTTP **38/38**, restricted PostgreSQL binding **1/1**, operator/pg.Pool race **1/1**. TypeScript typecheck, auth build/smoke, isolated preview verification and application file budget **147/200** passed. These checks use ephemeral local Supabase; no hosted provider, browser E2E, dedicated lint/SAST or accessibility proof was run.
+
+**Hard limitations:** This remains a **bounded partial export** and is not atomic across tables. Provider-pinned immutable Storage object version/expected SHA-256 is not yet implemented, so same-size/same-MIME object replacement races remain possible. Full account export, trusted host canonical-route and direct-asset revocation, provider backup retention and irreversible account erasure remain unproven/disabled. No production change, manual Vercel deployment, public publishing, frontend screen implementation or merge to main. Existing Git integration may automatically create nonproduction previews.
+
+**Next action:** Design and implement a trusted read-only Storage object identity/version pin (and content hash only where provider-verified), compare it before and after bounded downloads, and add real local Supabase overwrite/race negatives. Do not infer content integrity from MIME, length, or a self-computed post-download digest alone. Preserve fail-closed partial-export and deletion-disabled semantics.
+
+## 14 November 2026 — B5 write-once private Storage and export version-race checks
+
+**Verified baseline:** Active repository `SubhashKumar14/Kadmeion`, branch `feat/b0-backend-foundation`, starting head `8afe768` (prior code `b45a698`), not the historical `DevFolio-App`. Notion's latest explicit owner decision approves all **52 original LIGHT-theme screen PNGs**, but not rejected Canva alternatives or any DARK-theme screen set. Original image addresses are session-local; no frontend work was attempted. The prior 207 Node / 308 pgTAP / 38 HTTP baseline was verified by [CI 43590606510](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43590606510).
+
+**Code changes (final tested code SHA `2fe68dea`):**
+- `packages/storage-adapters/src/private-account-data-export.ts`: owner-authorized Storage object-info reads before every asset download and again for all assets after downloads; checks object ID, version, last-modified time, name, bucket, MIME and byte size, with the existing owner JWT, size caps and pre/post inventory reconciliation. Export records the observed Storage version and downloaded SHA-256. The normalized Storage info endpoint exposes `size`, `content_type` and `last_modified`, **not** a mandatory `owner_id` or `updated_at`; its private route uses Storage RLS. A changed version/identity fails closed. No server-signed expected content hash or immutable historical version fetch is claimed.
+- `supabase/migrations/20261114140000_private_storage_immutable_uploads.sql`: removes the app-owned owner UPDATE policy on private Storage objects. Owner uploads remain permitted at **new paths**, but same-path owner overwrites are denied. No DELETE policy or destructive migration was added. This is a deliberate B2/B5 security constraint: asset replacement must use a fresh path.
+- Unit, pgTAP and real ephemeral local GoTrue/PostgREST/Storage tests verify forged metadata/version denial, same-length object replacement, owner overwrite denial and privileged fixture overwrite racing a download. The privileged overwrite uses **local test credentials only**, never application credentials.
+
+**Actual CI:** [GitHub Actions run 43595827191](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43595827191) passed BOTH `contracts` and `database` jobs on code SHA `2fe68dea`: **210/210 Node**, **309/309 pgTAP assertions in 21 SQL files**, **39/39 local HTTP subtests**, restricted PostgreSQL integration **1/1**, operator/pg.Pool race **1/1**; TypeScript, auth builds/smoke, isolated auth preview verification and file budget **148/200** passed. Intermediate CI failures were real and repaired: one stale pgTAP policy-count expectation and one incorrect assumption that Storage info returned raw DB columns. Superseded/cancelled runs are not counted as passes.
+
+**Security/limitations:** This is an owner write-once policy plus **before/after version-change detection**, not a provider-pinned immutable byte stream, a trusted expected SHA-256 at registration, a complete account export or an atomic cross-table snapshot. A privileged/provider overwrite is detected in the tested race, but no guarantee is made against arbitrary provider/cache races or backup retention. Public route/direct-asset revocation, hosted TLS/provider, erasure, browser E2E, dedicated lint/SAST and WCAG tests remain unverified. Account deletion, public serving and frontend work remain disabled; no manual Vercel deploy, production mutation or merge to `main`.
+
+**Next critical action:** Design and test **trusted expected content-hash attestation at private asset registration** (server-verified bytes, immutable owner-scoped digest, bounded quotas), then require that digest in the owner export. Test same-size/same-MIME privileged overwrite and missing/hash-mismatched content against ephemeral local Supabase. Keep the export marked partial and account erasure/public publishing blocked until their independent proof gates are met.
+
+
+## 14 November 2026 — B5 trusted private-asset SHA-256 attestation
+
+**Fresh baseline:** Active repository `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, starting HEAD `e311f8b`. Latest explicit
+owner/Notion approval is 52/52 **original LIGHT** PNGs only. Rejected Canva
+mockups and DARK screen set are excluded. No frontend work or production
+deployment was authorized.
+
+**Implementation:** Migration
+`20261114150000_private_asset_content_attestations.sql` creates a private,
+RLS-enabled, write-once owner-associated digest table. A service-role-only
+`record_private_asset_content_attestation` RPC verifies the registered
+asset's owner, Storage object identity/version, MIME and size, and rejects
+conflicting pins. A live-session owner-only
+`read_private_asset_content_attestations` RPC exposes the digest solely for
+the requesting owner's inventory. Neither anonymous nor authenticated clients
+can write the digest. This is a **server-worker-computed SHA-256**, not a
+provider-signed expected hash or retained historical Storage version.
+
+The new server-only Node adapter
+`private-server-asset-byte-attestor.ts` downloads private bytes using an
+owner JWT, checks Storage object info before/after, computes SHA-256 itself,
+and invokes the privileged write RPC only after verification. The service
+credential must never be bundled into the browser or exposed through a
+user-callable endpoint. It is **not yet automatically wired** into the
+asset-registration lifecycle or deployed as a hosted worker.
+
+The bounded owner export now requires complete immutable digest coverage,
+checks the attested object ID/version and compares every downloaded SHA-256
+against its trusted expected digest. Missing/foreign/forged pins and byte
+mismatches fail closed; existing un-attested assets cannot export until
+server attestation succeeds. Export remains `BOUNDED_PARTIAL_EXPORT` with
+`completeAccountExport=false`, `deletionAllowed=false`, and
+`providerExpectedHashesVerified=false`. It does not prove atomic table
+snapshots, CDN revocation, retention, or full-account completeness.
+
+**Verification:** [GitHub Actions 43600553448](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43600553448)
+passed BOTH jobs on code SHA `23d8fbe`: 217/217 Node tests,
+318/318 pgTAP assertions across 22 files, 39/39 real local HTTP subtests,
+restricted PostgreSQL binding 1/1 and moderator race 1/1. TypeScript,
+authentication build/smoke, preview verification and file budget 152/200
+passed. Additional local HTTP idempotency/conflicting service-role pin
+assertions were added in `460690d`; their CI result must be checked
+separately before claiming they passed.
+
+**Open gates:** The server worker is not yet integrated into a secure
+post-registration execution path; hosted Supabase/TLS, complete export,
+provider backup retention, public canonical-route and direct-asset
+revocation, account erasure, browser E2E, dedicated lint/SAST and WCAG
+verification remain unfinished. No manual Vercel deployment, production
+modification, public serving, account deletion, frontend work or merge to
+`main` occurred.
+
+**Next concrete action:** Verify CI on `460690d`, then wire the trusted
+attestor into an authenticated server-side asset registration completion
+workflow without exposing the service key; prove missing/unattested assets
+fail closed and cross-tenant/duplicate/privileged-overwrite races in real
+local Supabase. Continue independent host revocation proof before enabling
+public publishing or erasure.

@@ -1,0 +1,23 @@
+project_id = "kadmeion"
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/auth/callback", "http://localhost:3000/reset-password"]
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enabled = true
+enable_confirmations = true
+double_confirm_changes = true
+
+[functions.purge-expired-trash]
+verify_jwt = false
+
+# Owner JWT is validated by gateway AND rechecked against live Auth + RLS.
+# No secret-role token is accepted from browser as owner.
+[functions.complete-private-asset]
+verify_jwt = true
+
+# Guard publication with gateway JWT and independent owner-RLS intent verification.
+[functions.publish]
+verify_jwt = true
