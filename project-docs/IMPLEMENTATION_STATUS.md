@@ -191,3 +191,62 @@ transactional *private* release visibility/revocation pointer and a trusted
 read contract with tenant/role tests. Keep all serving disabled until an
 explicitly approved free host proves interception, cache controls,
 unpublish, direct asset denial and rollback under races.
+
+
+## 14 November 2026 — B4 private transactional release candidate/denial pointer
+
+**Baseline and source precedence:** Verified active repository SubhashKumar14/Kadmeion,
+branch feat/b0-backend-foundation, previous head 8de3775 (not the old DevFolio-App).
+[CI 43541363249](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43541363249)
+has now completed both contracts and database jobs PASS; the prior handoff left
+the database result pending. The [Notion image approval register](https://app.notion.com/p/417b082297c781c49168c54b656d9cca)
+ends with 52/52 original LIGHT images explicitly approved and no DARK mockup
+set. Earlier per-batch pending labels and older dark-screen plans are superseded;
+rejected Canva variants remain excluded. Original screenshot addresses are
+session-local, not verified downloadable here. No frontend was started.
+
+**Feature-branch commits:**
+- [d322c0e](https://github.com/SubhashKumar14/Kadmeion/commit/d322c0eea986d02f160b653d020d882e1f3284d7):
+  private owner-scoped visibility pointer and immutable operation journal with
+  RLS, expected-generation CAS, idempotent operations, frozen-revision DB digest
+  checks, and atomic candidate blocking on portfolio Trash. Only BLOCKED and
+  PREPARED_PRIVATE exist; no LIVE state, public reader, host or URL.
+- [22f164a](https://github.com/SubhashKumar14/Kadmeion/commit/22f164a25b7ecd947fe8ffc64369a0afc5f392f1):
+  pgTAP owner isolation, direct-privilege, CAS, replay and Trash tests.
+- [f6f4efb](https://github.com/SubhashKumar14/Kadmeion/commit/f6f4efb1bed75c60e56c5298cd24155e53ef8ee5),
+  [9062bc5](https://github.com/SubhashKumar14/Kadmeion/commit/9062bc56c0d9fce40c3cd098e457fa87256479bc),
+  [caf12bd](https://github.com/SubhashKumar14/Kadmeion/commit/caf12bdeefeb0eaf06e4c1790246b644da290c28):
+  typed Supabase owner API client, fail-closed receipt validation, negative
+  tests and package export.
+- [72eab88](https://github.com/SubhashKumar14/Kadmeion/commit/72eab884bfe9469066e8a540ebfd2b14c368fa86):
+  local real JWT/PostgREST owner/outsider, direct-write, CAS and Trash tests.
+- [675d040](https://github.com/SubhashKumar14/Kadmeion/commit/675d0408df35e7fdc622396103e474c75e4f0c98),
+  [06c8183](https://github.com/SubhashKumar14/Kadmeion/commit/06c8183dc7ce7721ec4f516b3050df698844547b),
+  [7f04364](https://github.com/SubhashKumar14/Kadmeion/commit/7f043642ba5d2bd56b89450cbcb898be879b56f3):
+  reject stale prepare-operation replay after a later block, with SQL and
+  HTTP regression coverage. Historical idempotency must not imply current
+  visibility.
+
+**Verification at documentation time:** [CI 43546831045](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43546831045)
+passed both contracts and database jobs for the initial migration and pgTAP
+tests. Contracts on [CI 43546893135](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43546893135)
+and [CI 43546936393](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43546936393)
+passed TypeScript, Node tests, auth build/smoke, preview bundle checks and
+file budget. Check final-head CI before claiming the latest stale-replay and
+real HTTP integration tests passed. Dedicated lint, SAST, browser E2E,
+hosted Supabase, production security and accessibility remain untested.
+
+**Security boundary:** The candidate manifest SHA is owner-submitted,
+not independently attested. Database generation is not proof of host/CDN
+revocation. All receipts explicitly say publicServingEnabled=false,
+hostRevocationVerified=false and publicUrl=null. PREPARED_PRIVATE and
+HOST_PROOF_REQUIRED cannot authorize HTTP 200. A future explicitly approved
+host must prove authoritative reads, canonical-route and direct-asset
+interception, cache behavior, unpublish/rollback races and provider-failure
+denial before public serving. No production DB mutation, manual Vercel
+deployment or account deletion was performed. Git integration may still
+produce existing nonproduction auth previews.
+
+**Next action:** Verify final-head CI and repair failures; then implement
+a moderation-case-bound operator BLOCK-only path with role/tenant-negative
+tests, never operator prepare/publish authority. Keep public serving disabled.
