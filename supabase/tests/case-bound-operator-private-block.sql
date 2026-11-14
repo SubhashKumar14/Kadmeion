@@ -164,5 +164,70 @@ select is((select count(*) from public.private_release_visibility_events
   where portfolio_id='10000000-0000-4000-8000-0000000000c2'
     and event_type='OPERATOR_BLOCK'),1::bigint,
   'exactly one operator block event recorded');
+
+select ok(not has_function_privilege('anon',
+  'public.operator_lift_private_moderation_hold(uuid,uuid,uuid,text)','EXECUTE'),
+  'anonymous cannot invoke admin hold release');
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+do $
+declare denied boolean:=false;
+begin
+  begin
+    perform public.operator_lift_private_moderation_hold(
+      current_setting('kd.hold.case')::uuid,
+      '10000000-0000-4000-8000-0000000000c2',
+      '90000000-0000-4000-8000-0000000000c2',
+      'Case was resolved; restore the owner ability to prepare privately');
+  exception when insufficient_privilege then denied:=true;end;
+  if not denied then raise exception 'Moderator escalated into administrator-only hold lift';end if;
+end $;
+select pass('moderator role cannot lift a resolved case hold');
+reset role;
+update kadmeion_private.operator_roles set role='administrator'
+  where user_id='00000000-0000-4000-8000-0000000000c1';
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+select is(public.operator_lift_private_moderation_hold(
+  current_setting('kd.hold.case')::uuid,
+  '10000000-0000-4000-8000-0000000000c2',
+  '90000000-0000-4000-8000-0000000000c2',
+  'Case was resolved; restore the owner ability to prepare privately')->>'status',
+  'RELEASED_PRIVATE','administrator lifts hold without public activation');
+select is(public.operator_lift_private_moderation_hold(
+  current_setting('kd.hold.case')::uuid,
+  '10000000-0000-4000-8000-0000000000c2',
+  '90000000-0000-4000-8000-0000000000c2',
+  'Case was resolved; restore the owner ability to prepare privately')->>'alreadyRecorded',
+  'true','duplicate hold lift is idempotent');
+reset role;
+select is((select count(*) from kadmeion_private.moderation_portfolio_holds
+  where portfolio_id='10000000-0000-4000-8000-0000000000c2'),0::bigint,
+  'lift clears only the exact case-bound hold');
+select is((select status from public.private_release_visibility_pointers
+  where portfolio_id='10000000-0000-4000-8000-0000000000c2'),'BLOCKED',
+  'lift leaves release pointer blocked');
+select is((select revocation_generation from public.private_release_visibility_pointers
+  where portfolio_id='10000000-0000-4000-8000-0000000000c2'),3::bigint,
+  'lift advances revocation generation instead of reviving old bytes');
+select is((select count(*) from public.private_moderation_events
+  where case_id=current_setting('kd.hold.case')::uuid and
+  event_type='OPERATOR_HOLD_LIFT'),1::bigint,
+  'reasoned internal release has exactly one immutable case audit event');
+select is((select count(*) from public.private_release_visibility_events
+  where portfolio_id='10000000-0000-4000-8000-0000000000c2' and
+  event_type='OPERATOR_HOLD_LIFT'),1::bigint,
+  'internal lift is recorded in private pointer history');
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c2',true);
+select is(public.owner_prepare_private_release_pointer(
+  '10000000-0000-4000-8000-0000000000c2',
+  current_setting('kd.hold.request')::uuid,repeat('a',64),3,
+  '40000000-0000-4000-8000-0000000000c5')->>'status',
+  'PREPARED_PRIVATE','owner can explicitly prepare a new private generation after lift');
+select is(public.owner_read_private_release_pointer(
+  '10000000-0000-4000-8000-0000000000c2')->>'publicServingEnabled',
+  'false','hold release and owner reprepare never enable public serving');
+
 select * from finish();
 rollback;
