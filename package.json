@@ -23,6 +23,8 @@
     "verify:auth:preview": "node scripts/verify-auth-preview.mjs"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
     "typescript": "5.8.3"
   }
 }

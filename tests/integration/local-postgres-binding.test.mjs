@@ -22,6 +22,8 @@ import {bindPrivateArtifactToPointer}
   from '../../packages/storage-adapters/src/private-artifact-pointer-binding.ts';
 import {DirectSqlPrivateArtifactBindingWriter}
   from '../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts';
+import {openPrivateArtifactPgWorker}
+  from '../../packages/storage-adapters/src/private-artifact-pg-worker.ts';
 
 function localSettings(){
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION,'1',
@@ -115,6 +117,7 @@ test('B4: real local direct PostgreSQL binds verified owner artifact with scoped
   const role='kd_ci_bind_'+randomBytes(6).toString('hex');
   const password=randomBytes(26).toString('hex');
   let created=false;
+  let worker;
   try{
     dbQuery(String.raw`\getenv kd_bind_password KADMEION_LOCAL_BIND_PASSWORD
 CREATE ROLE :"worker" LOGIN PASSWORD :'kd_bind_password'
@@ -124,6 +127,13 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
   uuid,bigint,text,text) TO :"worker";`,
       {vars:{worker:role},extraEnv:{KADMEION_LOCAL_BIND_PASSWORD:password}});
     created=true;
+    // Real node-postgres connection: restricted role, bounded pool and probe.
+    const workerOptions={host:cfg.db.hostname,port:Number(cfg.db.port),
+      database:'postgres',user:role,password,localOnly:true};
+    await assert.rejects(openPrivateArtifactPgWorker({
+      ...workerOptions,password:'invalid-credential-xxxxxxxxxxxx'
+    }),{code:'CONNECTION_UNAVAILABLE'});
+    worker=await openPrivateArtifactPgWorker(workerOptions);
     // Prove that a compromised SQL writer cannot browse underlying data.
     const flags=dbQuery(String.raw`select has_function_privilege(
   current_user,'kadmeion_private.bind_private_artifact_candidate(uuid,bigint,text,text)','EXECUTE')
@@ -182,7 +192,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       cfg.anon,async()=>outsider.jwt);
     await assert.rejects(outsiderPointer.read(portfolioId));
 
-    const writer=new DirectSqlPrivateArtifactBindingWriter(rolePort(role,password));
+    const writer=worker.writer;
+    const legacyPsqlWriter=new DirectSqlPrivateArtifactBindingWriter(rolePort(role,password));
     const ctx={portfolioId,requestId:frozen.requestId,plan:renderPlan,
       loader,pointer,writer};
     const bound=await bindPrivateArtifactToPointer(ctx);
@@ -192,6 +203,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(bound.publicServingEnabled,false);
     assert.equal(bound.publicUrl,null);
     assert.equal((await bindPrivateArtifactToPointer(ctx)).alreadyBound,true);
+    assert.equal((await bindPrivateArtifactToPointer({...ctx,writer:legacyPsqlWriter})).alreadyBound,true);
 
     const direct={requestId:frozen.requestId,expectedGeneration:1,
       manifestJson:JSON.stringify(artifact.manifest),
@@ -237,6 +249,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(pointerAfterTrash.status,'BLOCKED');
     assert.equal(pointerAfterTrash.publicServingEnabled,false);
   }finally{
+    if(worker)await worker.close();
     if(created)dbQuery(String.raw`REVOKE EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
   uuid,bigint,text,text) FROM :"worker";
 REVOKE USAGE ON SCHEMA kadmeion_private FROM :"worker";
