@@ -68,6 +68,27 @@ export interface AccountExitInventoryReceipt {
   };
   deletionAllowed:false;
 }
+/** Live, bounded Storage metadata comparison. This never proves object bytes or export readiness. */
+export interface AccountExitStorageReconciliation {
+  snapshotId:string;
+  inventoryCapturedAt:string;
+  status:'METADATA_MATCH_ONLY'|'DISCREPANCY'|'LIMIT_EXCEEDED';
+  maxObjectsPerSide:100;
+  limitExceeded:boolean;
+  registeredAssets:number;
+  storageObjects:number;
+  missingObjects:number;
+  orphanObjects:number;
+  metadataMismatches:number;
+  inventoryDrift:boolean;
+  consistency:'LIVE_METADATA_NOT_ATOMIC_WITH_INVENTORY';
+  storageBytesVerified:false;
+  downloadableExportReady:false;
+  externalProviders:'UNVERIFIED';
+  backupRetention:'UNVERIFIED';
+  publicRevocationVerified:false;
+  deletionAllowed:false;
+}
 export interface PrivateAccountErasureEntry {
   id:string;
   status:AccountErasureRequestStatus;
@@ -260,6 +281,47 @@ export class SupabasePrivateAccountErasureService {
       p_snapshot_id:snapshotId
     });
     return inventoryReceipt(raw,snapshotId);
+  }
+  /** Read-only comparison of registered assets with live private Storage metadata. */
+  async reconcileStorage(snapshotId:string):Promise<AccountExitStorageReconciliation>{
+    if(!uuid(snapshotId))
+      throw new ContractError('VALIDATION','Invalid inventory snapshot ID.');
+    const raw=await this.send('rpc/reconcile_private_account_exit_storage',{
+      p_snapshot_id:snapshotId
+    });
+    if(!record(raw)||raw.snapshotId!==snapshotId||!date(raw.inventoryCapturedAt)||
+      !['METADATA_MATCH_ONLY','DISCREPANCY','LIMIT_EXCEEDED'].includes(String(raw.status))||
+      raw.maxObjectsPerSide!==100||typeof raw.limitExceeded!=='boolean'||
+      typeof raw.inventoryDrift!=='boolean'||
+      !['registeredAssets','storageObjects','missingObjects','orphanObjects',
+        'metadataMismatches'].every(k=>typeof raw[k]==='number'&&
+          Number.isSafeInteger(raw[k])&&(raw[k] as number)>=0&&(raw[k] as number)<=100)||
+      raw.consistency!=='LIVE_METADATA_NOT_ATOMIC_WITH_INVENTORY'||
+      raw.storageBytesVerified!==false||raw.downloadableExportReady!==false||
+      raw.externalProviders!=='UNVERIFIED'||raw.backupRetention!=='UNVERIFIED'||
+      raw.publicRevocationVerified!==false||raw.deletionAllowed!==false||
+      (raw.limitExceeded!== (raw.status==='LIMIT_EXCEEDED'))||
+      (raw.status==='METADATA_MATCH_ONLY'&&
+        (raw.missingObjects!==0||raw.orphanObjects!==0||raw.metadataMismatches!==0))||
+      (raw.status==='DISCREPANCY'&&
+        raw.missingObjects===0&&raw.orphanObjects===0&&raw.metadataMismatches===0))
+      throw new PrivateAccountErasureError('INVALID_ACK',
+        'Unverified private Storage reconciliation receipt.');
+    return {
+      snapshotId,inventoryCapturedAt:raw.inventoryCapturedAt as string,
+      status:raw.status as AccountExitStorageReconciliation['status'],
+      maxObjectsPerSide:100,limitExceeded:raw.limitExceeded as boolean,
+      registeredAssets:raw.registeredAssets as number,
+      storageObjects:raw.storageObjects as number,
+      missingObjects:raw.missingObjects as number,
+      orphanObjects:raw.orphanObjects as number,
+      metadataMismatches:raw.metadataMismatches as number,
+      inventoryDrift:raw.inventoryDrift as boolean,
+      consistency:'LIVE_METADATA_NOT_ATOMIC_WITH_INVENTORY',
+      storageBytesVerified:false,downloadableExportReady:false,
+      externalProviders:'UNVERIFIED',backupRetention:'UNVERIFIED',
+      publicRevocationVerified:false,deletionAllowed:false
+    };
   }
   /** Advisory only: session presence/fresh login is NOT an erasure authorisation. */
   async preflight():Promise<AccountExitPreflight>{
