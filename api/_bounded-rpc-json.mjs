@@ -24,6 +24,12 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
       chunks.push(value);
     }
   } finally {reader.releaseLock();}
+  // Fetch may transparently decompress gzip/brotli responses while retaining
+  // the wire Content-Length. Compare byte counts only for identity encoding;
+  // a fabricated or truncated uncompressed response must fail closed.
+  const encoding=response.headers.get('content-encoding');
+  if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==size)
+    throw Error('RPC response length mismatch');
   const bytes=new Uint8Array(size);
   let offset=0;
   for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}

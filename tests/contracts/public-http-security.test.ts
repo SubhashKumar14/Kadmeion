@@ -30,6 +30,7 @@ test('RPC reader enforces JSON media type, declared and streamed byte limits',as
   for(const input of [
     new Response('{}',{headers:{'content-type':'text/html'}}),
     new Response('{}',{headers:{'content-type':'application/json','content-length':'2097153'}}),
+    new Response('{}',{headers:{'content-type':'application/json','content-length':'3'}}),
     new Response('a'.repeat(2097153),{headers:{'content-type':'application/json'}})
   ])await assert.rejects(readBoundedRpcJson(input));
 });
