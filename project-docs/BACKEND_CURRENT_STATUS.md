@@ -1,14 +1,14 @@
 # Kadmeion — Current Backend Implementation State
 
 **Repository:** SubhashKumar14/Kadmeion  
-**Feature branch:** \`feat/b0-backend-foundation\`  
-**Last verified code SHA:** \`87919dc7b0e3ed6cd60b74ea83f0a8fcc24e34ae\`  
+**Feature branch:** `feat/b0-backend-foundation`  
+**Last verified code SHA:** `87919dc7b0e3ed6cd60b74ea83f0a8fcc24e34ae`  
 **Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43630945755  
 **Status:** Significant P1 backend code and local automated tests implemented. **NOT 100% production-ready.**
 
 This page supersedes the 12-Nov-2026 documentation-only "NOT IMPLEMENTED"
 labels for verification of **existing code**, not for still-unproven features.
-See \`IMPLEMENTATION_STATUS.md\` for chronological commit-by-commit history.
+See `IMPLEMENTATION_STATUS.md` for chronological commit-by-commit history.
 Latest owner selections remain authoritative over all historic drafts.
 
 ## Verified on the feature branch
@@ -34,7 +34,7 @@ Latest owner selections remain authoritative over all historic drafts.
   with a read-only opt-in CLI. No external host has yet been verified.
 - Browser preview bundle scan denies server credential markers and symlinks.
 
-**Completed CI at code SHA \`87919dc7\`:**
+**Completed CI at code SHA `87919dc7`:**
 
 | Verification | Outcome |
 |---|---|
@@ -55,8 +55,8 @@ verification. No true universal security guarantee or 100% functionality claim.
 1. **Hosted Supabase:** latest feature migrations remain **unapplied** in the
    existing hosted project, which previously reported only the initial 14
    migrations. Verify a fresh read before any eventual authorized deployment.
-2. **Brevo:** free SMTP relay is enabled; configured \`kadmeion.com\` and
-   \`mail.kadmeion.com\` domains were not authenticated/verified at the last
+2. **Brevo:** free SMTP relay is enabled; configured `kadmeion.com` and
+   `mail.kadmeion.com` domains were not authenticated/verified at the last
    account read. Hosted sender/recovery and multi-domain delivery are unproven.
 3. **Actual free public host:** no separately approved production host and no
    canary proof of canonical-route/direct-release-asset revocation, CDN/cache
@@ -79,14 +79,14 @@ verification. No true universal security guarantee or 100% functionality claim.
 
 ## Next authorized engineering path
 
-Keep implementation on \`feat/b0-backend-foundation\`, check live branch/CI,
+Keep implementation on `feat/b0-backend-foundation`, check live branch/CI,
 reconcile future code against current project-docs and latest approvals, and
 continue locally provable B4/B5/B6 work. A disposable hosted canary (with
 no real user data) and a selected free host are needed for TP-01/02/03/04/07/
 08/18/19, but **request separate owner approval before applying any live
 migration, changing credentials, performing a public deploy or merging main**.
 
-Test/switch semantics are evidence-first: \`ACKNOWLEDGED\` means a verified
+Test/switch semantics are evidence-first: `ACKNOWLEDGED` means a verified
 HTTP response for that specific release, not proof of all caches; a read-only
 revocation probe can verify only explicitly enumerated host paths. No made-up
 published URL, sender proof or full account deletion guarantee.
