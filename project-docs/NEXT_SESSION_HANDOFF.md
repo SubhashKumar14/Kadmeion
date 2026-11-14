@@ -250,3 +250,30 @@ mutation, Vercel manual deployment, or account purge is authorized.
 Use only the 52 latest owner-approved original LIGHT screens when the
 backend gate is complete; do not use rejected Canva mockups or create
 DARK screen sets.
+
+
+## Latest B5 operator BLOCK-only handoff — 14 November 2026
+
+Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`. Verified code at `093fbcb`:
+[CI 43557174030](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43557174030)
+passed 187 Node, 289 pgTAP, 27 local HTTP and 1 local direct PostgreSQL
+test, plus TypeScript/auth builds and 138/200 source budget.
+`eda8be5` added a further real HTTP nonoperator/private-table denial
+test; **check its CI completion** before reporting it as passed.
+
+New case-bound operator RPC `operator_block_private_portfolio` creates
+an owner-matched private hold, blocks the private pointer with an audit
+event and prevents owner reprepare while held. No public serving,
+host/CDN revocation, content editing, case-close auto-restore or
+account deletion is enabled. An intermediate incomplete-tree commit was
+corrected; the current branch contains the full baseline plus only
+the intended new SQL and moderation-client/test changes.
+
+**Next:** Verify latest CI, then integrate a pinned server-only `pg`
+Pool/Client against the existing restricted SQL binding adapter in
+local ephemeral Supabase, including connection teardown, bad credentials,
+TLS policy and revocation races. Do not wire secrets into the Vercel
+auth preview or start frontend until backend B6 gates are complete.
+The exact original 52 approved LIGHT image references are in Notion;
+no DARK set and no rejected Canva designs.

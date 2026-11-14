@@ -487,3 +487,63 @@ hard fail-closed behavior locally without exposing credentials to a static
 bundle; then continue operator moderation BLOCK-only and B6 gates.
 Any public host, production deployment, irreversible deletion or
 new design requires separate authorization.
+
+
+## 14 November 2026 — B5 case-bound operator PRIVATE candidate block
+
+**Baseline/source reconciliation:** Active repository is `SubhashKumar14/Kadmeion`,
+branch `feat/b0-backend-foundation`, starting at `6225fb2` (both CI jobs
+passed in [run 43556012831](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43556012831)).
+The original `DevFolio-App` is reference-only. Latest explicit Notion owner
+decision approves **all 52 original LIGHT screen images** and prohibits a DARK
+mockup set; older pending statuses are superseded. Session-local image paths
+are not durable hosted assets. This iteration did not touch frontend designs.
+
+**Implementation:** `0678eeb` is the restored, complete source-tree commit
+adding `supabase/migrations/20261114095000_case_bound_operator_private_block.sql`
+and `supabase/tests/case-bound-operator-private-block.sql`. It creates a
+private, RLS-protected, portfolio-specific moderation hold tied by foreign keys
+to an existing operator case and its owner. A moderator/administrator can
+invoke `operator_block_private_portfolio(case,portfolio,operation)` only
+against an existing case for that portfolio owner. The function locks the
+portfolio before the pointer, atomically clears a prepared candidate,
+increments revocation generation and writes an immutable `OPERATOR_BLOCK`
+audit event. An additional trigger rejects future `PREPARED_PRIVATE`
+pointer writes while the hold persists. Exact replay is idempotent;
+wrong-tenant case, nonoperator and conflicting operation are denied.
+Case closure does **not** automatically restore the candidate.
+
+`2ee15ab` and `093fbcb` add the typed client and fail-closed receipt
+tests/fix. `eda8be5` adds real local PostgREST negatives for anonymous
+and nonoperator calls, forged audit writes and private hold table exposure.
+The first tree-write attempt (`6d13f16`) accidentally omitted baseline files;
+the subsequent corrective commits culminated in `0678eeb`, whose
+[base-to-restored comparison](https://github.com/SubhashKumar14/Kadmeion/compare/6225fb2108800851cb5a9f2a14de5dae30f2f367...0678eeb69fa877864d32566e3dde920a26a775cf)
+confirms **only two added SQL files and no baseline deletions**.
+The transient incomplete-tree CI failures must not be treated as final
+implementation failures or silently omitted.
+
+**Verification:** [CI 43557174030](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43557174030)
+completed both jobs PASS on `093fbcb`: 187/187 Node tests, 289/289
+pgTAP assertions across 19 SQL files, 27/27 local GoTrue/PostgREST/Storage
+HTTP tests, one restricted direct-PostgreSQL integration, TypeScript,
+auth build/smoke/preview and 138/200 authored source/config/test files.
+The additional HTTP-negative commit `eda8be5` requires its own final
+CI confirmation; do not claim its added test passed until checked.
+No dedicated lint, SAST, browser E2E, hosted-provider verification,
+accessibility or real public-host revocation was performed.
+
+**Security boundary:** This is an enforced *private database hold* and
+owner-visible audit, NOT a verified live-site takedown, email notice,
+CDN purge, direct-asset invalidation or permission to serve a portfolio.
+There is deliberately no automatic operator restore or public allow path.
+No production mutation, account purge or manual Vercel deployment occurred.
+Existing Git integration automatically produced nonproduction auth previews
+on feature-branch pushes.
+
+**Next action:** Check the completed CI for `eda8be5`; then implement a
+server-only, pinned and lockfile-managed `pg` client with least-privileged
+connection lifecycle against ephemeral local Supabase, without exposing DB
+credentials in any browser bundle. Continue B6 moderation/revocation negative
+tests; public serving remains disabled pending approved host and canonical
+route/direct-asset/CDN revocation proof.
