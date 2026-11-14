@@ -1,3 +1,4 @@
+import {auditPublicBundle} from './audit-public-bundle.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -23,3 +24,7 @@ for (const route of ['/signin', '/signup', '/login', '/register', '/auth/callbac
   assert.ok(vercel.rewrites.some(row => row.source === route && row.destination === '/index.html'));
 assert.ok(vercel.headers[0].headers.some(row => row.key === 'Content-Security-Policy'));
 console.log('Vercel auth preview bundle: 10 assertions passed.');
+
+const audit=await auditPublicBundle(target);
+assert.equal(audit.status,'PUBLIC_ARTIFACT_SCANNED');
+console.log('Public browser bundle secret-boundary scan: '+audit.filesChecked+' files passed.');
