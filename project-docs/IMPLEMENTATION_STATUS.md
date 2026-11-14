@@ -805,3 +805,64 @@ change the verified code/CI claims.
 **Security/limitations:** This is an owner write-once policy plus **before/after version-change detection**, not a provider-pinned immutable byte stream, a trusted expected SHA-256 at registration, a complete account export or an atomic cross-table snapshot. A privileged/provider overwrite is detected in the tested race, but no guarantee is made against arbitrary provider/cache races or backup retention. Public route/direct-asset revocation, hosted TLS/provider, erasure, browser E2E, dedicated lint/SAST and WCAG tests remain unverified. Account deletion, public serving and frontend work remain disabled; no manual Vercel deploy, production mutation or merge to `main`.
 
 **Next critical action:** Design and test **trusted expected content-hash attestation at private asset registration** (server-verified bytes, immutable owner-scoped digest, bounded quotas), then require that digest in the owner export. Test same-size/same-MIME privileged overwrite and missing/hash-mismatched content against ephemeral local Supabase. Keep the export marked partial and account erasure/public publishing blocked until their independent proof gates are met.
+
+
+## 14 November 2026 — B5 trusted private-asset SHA-256 attestation
+
+**Fresh baseline:** Active repository `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, starting HEAD `e311f8b`. Latest explicit
+owner/Notion approval is 52/52 **original LIGHT** PNGs only. Rejected Canva
+mockups and DARK screen set are excluded. No frontend work or production
+deployment was authorized.
+
+**Implementation:** Migration
+`20261114150000_private_asset_content_attestations.sql` creates a private,
+RLS-enabled, write-once owner-associated digest table. A service-role-only
+`record_private_asset_content_attestation` RPC verifies the registered
+asset's owner, Storage object identity/version, MIME and size, and rejects
+conflicting pins. A live-session owner-only
+`read_private_asset_content_attestations` RPC exposes the digest solely for
+the requesting owner's inventory. Neither anonymous nor authenticated clients
+can write the digest. This is a **server-worker-computed SHA-256**, not a
+provider-signed expected hash or retained historical Storage version.
+
+The new server-only Node adapter
+`private-server-asset-byte-attestor.ts` downloads private bytes using an
+owner JWT, checks Storage object info before/after, computes SHA-256 itself,
+and invokes the privileged write RPC only after verification. The service
+credential must never be bundled into the browser or exposed through a
+user-callable endpoint. It is **not yet automatically wired** into the
+asset-registration lifecycle or deployed as a hosted worker.
+
+The bounded owner export now requires complete immutable digest coverage,
+checks the attested object ID/version and compares every downloaded SHA-256
+against its trusted expected digest. Missing/foreign/forged pins and byte
+mismatches fail closed; existing un-attested assets cannot export until
+server attestation succeeds. Export remains `BOUNDED_PARTIAL_EXPORT` with
+`completeAccountExport=false`, `deletionAllowed=false`, and
+`providerExpectedHashesVerified=false`. It does not prove atomic table
+snapshots, CDN revocation, retention, or full-account completeness.
+
+**Verification:** [GitHub Actions 43600553448](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43600553448)
+passed BOTH jobs on code SHA `23d8fbe`: 217/217 Node tests,
+318/318 pgTAP assertions across 22 files, 39/39 real local HTTP subtests,
+restricted PostgreSQL binding 1/1 and moderator race 1/1. TypeScript,
+authentication build/smoke, preview verification and file budget 152/200
+passed. Additional local HTTP idempotency/conflicting service-role pin
+assertions were added in `460690d`; their CI result must be checked
+separately before claiming they passed.
+
+**Open gates:** The server worker is not yet integrated into a secure
+post-registration execution path; hosted Supabase/TLS, complete export,
+provider backup retention, public canonical-route and direct-asset
+revocation, account erasure, browser E2E, dedicated lint/SAST and WCAG
+verification remain unfinished. No manual Vercel deployment, production
+modification, public serving, account deletion, frontend work or merge to
+`main` occurred.
+
+**Next concrete action:** Verify CI on `460690d`, then wire the trusted
+attestor into an authenticated server-side asset registration completion
+workflow without exposing the service key; prove missing/unattested assets
+fail closed and cross-tenant/duplicate/privileged-overwrite races in real
+local Supabase. Continue independent host revocation proof before enabling
+public publishing or erasure.
