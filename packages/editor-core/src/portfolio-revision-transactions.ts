@@ -143,10 +143,65 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
   }
 }
 
+
+/**
+ * Runtime-facing commands must match their discriminated contracts exactly.
+ * Unknown actions previously produced a successful no-op revision, while
+ * JSON property order could make an identical retry look like an ID conflict.
+ */
+function commandDigest(command:EditorCommand):{id:string;hash:string} {
+  if(!command||typeof command!=='object'||Array.isArray(command)||
+     Object.keys(command).some(k=>!['operationId','baseRevision','intent'].includes(k))||
+     typeof command.operationId!=='string'||!OP_ID.test(command.operationId)||
+     !Number.isSafeInteger(command.baseRevision)||command.baseRevision<0)
+    throw new ContractError('VALIDATION','Invalid editor transaction envelope.');
+  const intent=command.intent;
+  if(!intent||typeof intent!=='object'||Array.isArray(intent)||
+     typeof intent.kind!=='string')
+    throw new ContractError('VALIDATION','Invalid editor transaction intent.');
+  const fields:Record<string,readonly string[]>={
+    WRITE_MANAGED_FILE:['kind','path','source'],
+    CLEAR_SLOT:['kind','slotKey'],
+    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
+    UPDATE_CONTENT:['kind','slotKey','content'],
+    CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
+    EDIT_OWNED_SOURCE:['kind','slotKey','source'],
+    RESTORE_STASH:['kind','slotKey'],
+    UNDO:['kind'],
+    REDO:['kind']
+  };
+  if(!Object.hasOwn(fields,intent.kind)||
+     Object.keys(intent).some(k=>!fields[intent.kind].includes(k))||
+     ('confirmOwnedReplacement' in intent &&
+       typeof intent.confirmOwnedReplacement!=='boolean'))
+    throw new ContractError('VALIDATION','Unknown editor command kind or properties.');
+  // Canonicalize only JSON commands, never source strings or managed file
+  // bytes. Normalized UUID case is part of the idempotency key.
+  const sort=(value:unknown):unknown=>{
+    if(Array.isArray(value))return value.map(sort);
+    if(value!==null&&typeof value==='object'){
+      const obj=Object.create(null) as Record<string,unknown>;
+      for(const key of Object.keys(value).sort()){
+        if(['__proto__','constructor','prototype'].includes(key))
+          throw new ContractError('VALIDATION','Unsafe command property.');
+        obj[key]=sort((value as Record<string,unknown>)[key]);
+      }
+      return obj;
+    }
+    return value;
+  };
+  let hash:string;
+  try{hash=JSON.stringify(sort({...command,operationId:command.operationId.toLowerCase()}));}
+  catch{throw new ContractError('VALIDATION','Invalid or cyclic editor operation.');}
+  if(hash.length>300000)
+    throw new ContractError('VALIDATION','Editor operation exceeds safe limits.');
+  return {id:command.operationId.toLowerCase(),hash};
+}
+
 export function applyEditorTransaction(head: EditorHead, command: EditorCommand, trustedLibrarySources: Readonly<Record<string,string>> = {}): EditorHead {
-  if (!OP_ID.test(command.operationId)) throw new ContractError('VALIDATION', 'Operation ID must be a UUID.');
-  const intentHash = JSON.stringify(command);
-  const seen = head.operations[command.operationId];
+  const {id:operationId,hash:intentHash}=commandDigest(command);
+  const seen = Object.hasOwn(head.operations,operationId) ?
+    head.operations[operationId] : head.operations[command.operationId];
   if (seen !== undefined) {
     if (seen !== intentHash) throw new ContractError('VALIDATION', 'Operation ID reused with different content.');
     return head; // idempotent duplicate; no new version
@@ -163,7 +218,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
       revision:head.revision+1, snapshot:selected,
       undo:intent.kind==='UNDO'?source.slice(0,-1):[...head.undo,structuredClone(head.snapshot)],
       redo:intent.kind==='REDO'?source.slice(0,-1):[...head.redo,structuredClone(head.snapshot)],
-      operations:{...head.operations,[command.operationId]:intentHash}
+      operations:{...head.operations,[operationId]:intentHash}
     };
   }
 
@@ -226,24 +281,27 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         next.slots[intent.slotKey]=stash[stash.length-1];
         next.stashes[intent.slotKey]=stash.slice(0,-1);
         break;
+      default:
+        throw new ContractError('VALIDATION','Unsupported editor command.');
     }
   }
   validateSnapshot(next); // all-or-nothing; head is never mutated on failure
   return {
     revision:head.revision+1,snapshot:next,
     undo:[...head.undo.slice(-29),structuredClone(head.snapshot)],redo:[],
-    operations:{...head.operations,[command.operationId]:intentHash}
+    operations:{...head.operations,[operationId]:intentHash}
   };
 }
 
 /** Undo/redo are new committed heads; old snapshot revisions remain immutable. */
 export function restoreHistoricalSnapshot(head: EditorHead, source: PortfolioSnapshot, operationId: string): EditorHead {
   validateSnapshot(source);
-  if (!OP_ID.test(operationId) || Object.hasOwn(head.operations,operationId))
+  if (typeof operationId!=='string'||!OP_ID.test(operationId) ||
+      Object.hasOwn(head.operations,operationId.toLowerCase()) || Object.hasOwn(head.operations,operationId))
     throw new ContractError('VALIDATION','Invalid restore operation ID.');
   return {
     revision:head.revision+1,snapshot:structuredClone(source),
     undo:[...head.undo.slice(-29),structuredClone(head.snapshot)],redo:[],
-    operations:{...head.operations,[operationId]:'historical-restore'}
+    operations:{...head.operations,[operationId.toLowerCase()]:'historical-restore'}
   };
 }

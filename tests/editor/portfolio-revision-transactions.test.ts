@@ -122,3 +122,37 @@ test('schema envelope rejects hidden snapshot fields while preserving benign unk
     path:'pages/home.page.json',source:valid}));
   assert.equal(next.snapshot.files['pages/home.page.json'],valid);
 });
+
+
+test('reordered equivalent editor commands replay idempotently by canonical UUID',()=>{
+  const original=make();
+  const first={
+    operationId:'A0000000-0000-4000-8000-000000000005',baseRevision:0,
+    intent:{kind:'UPDATE_CONTENT' as const,slotKey:'hero',content:{title:'Third',subtitle:'Owner'}}
+  };
+  const saved=applyEditorTransaction(original,first);
+  const replay={
+    baseRevision:0,intent:{content:{subtitle:'Owner',title:'Third'},slotKey:'hero',
+      kind:'UPDATE_CONTENT' as const},
+    operationId:'a0000000-0000-4000-8000-000000000005'
+  };
+  assert.strictEqual(applyEditorTransaction(saved,replay),saved);
+  assert.equal(Object.keys(saved.operations).length,1);
+  assert.equal(saved.snapshot.slots.hero.content.title,'Third');
+  assert.throws(()=>applyEditorTransaction(saved,{...replay,
+    intent:{...replay.intent,content:{title:'CHANGED'}}}),{code:'VALIDATION'});
+});
+
+test('runtime rejects unknown no-op intents and hidden transaction properties',()=>{
+  const head=make(),operationId='b0000000-0000-4000-8000-000000000005';
+  for(const command of [
+    {operationId,baseRevision:0,intent:{kind:'DELETE_EVERYTHING',slotKey:'hero'}},
+    {operationId,baseRevision:0,intent:{kind:'CLEAR_SLOT',slotKey:'hero',extra:'hidden'}},
+    {operationId,baseRevision:0,intent:{kind:'CLEAR_SLOT',slotKey:'hero'},privateToken:'do-not-log'},
+    {operationId,baseRevision:-1,intent:{kind:'UNDO'}}
+  ]){
+    assert.throws(()=>applyEditorTransaction(head,command as never),{code:'VALIDATION'});
+    assert.equal(head.revision,0);
+    assert.equal(Object.keys(head.operations).length,0);
+  }
+});
