@@ -910,3 +910,84 @@ test('B5: real owner inventory snapshots are immutable, bounded and tenant-priva
     assert.ok(!(await post(owner,read,{p_snapshot_id:initial.snapshotId})).ok);
   });
 });
+
+
+test('B5: Storage reconciliation is owner-only and never proves export or erasure',
+  {timeout:120_000},async t=>{
+  const owner=await adminUser('storage-reconcile-owner');
+  const outsider=await adminUser('storage-reconcile-outsider');
+  const rpc='/rest/v1/rpc/reconcile_private_account_exit_storage';
+  const post=(who,path,body)=>send(path,{...json(who),method:'POST',body});
+  const snapshot=successful(await post(owner,
+    '/rest/v1/rpc/create_private_account_exit_inventory',{
+      p_operation_id:randomUUID(),p_request_id:null
+    }),'Owner inventory for Storage reconciliation');
+  const input={p_snapshot_id:snapshot.snapshotId};
+  const initial=successful(await post(owner,rpc,input),'Empty Storage reconciliation');
+  assert.equal(initial.snapshotId,snapshot.snapshotId);
+  assert.equal(initial.status,'METADATA_MATCH_ONLY');
+  assert.equal(initial.registeredAssets,0);
+  assert.equal(initial.storageObjects,0);
+  assert.equal(initial.inventoryDrift,false);
+  for(const key of ['storageBytesVerified','downloadableExportReady',
+    'publicRevocationVerified','deletionAllowed'])assert.equal(initial[key],false);
+  assert.equal(initial.externalProviders,'UNVERIFIED');
+  assert.equal(initial.backupRetention,'UNVERIFIED');
+
+  await t.test('anonymous, foreign snapshot and invalid ID are denied',async()=>{
+    assert.ok(!(await send(rpc,{method:'POST',headers:{
+      'Content-Type':'application/json'},body:input})).ok);
+    assert.ok(!(await post(outsider,rpc,input)).ok);
+    assert.ok(!(await post(owner,rpc,{p_snapshot_id:randomUUID()})).ok);
+    assert.ok(!(await post(owner,rpc,{p_snapshot_id:null})).ok);
+  });
+
+  const path=owner.id+'/reconcile-'+randomUUID().slice(0,8)+'/cover.png';
+  successful(await send('/storage/v1/object/'+bucket+'/'+path,{
+    ...bearer(owner),method:'POST',headers:{'Content-Type':'image/png'},body:png
+  }),'Owner orphan private Storage upload');
+  const orphan=successful(await post(owner,rpc,input),'Orphan Storage detection');
+  assert.equal(orphan.status,'DISCREPANCY');
+  assert.equal(orphan.registeredAssets,0);
+  assert.equal(orphan.storageObjects,1);
+  assert.equal(orphan.orphanObjects,1);
+  assert.equal(orphan.downloadableExportReady,false);
+
+  const project=successful(await send('/rest/v1/projects?select=id',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug:'reconcile-'+randomUUID().slice(0,8),
+      title:'Private Storage reconciliation fixture'}
+  }),'Owner project for asset reconciliation')[0];
+  successful(await post(owner,'/rest/v1/rpc/register_private_project_image',{
+    p_project_id:project.id,p_object_path:path,p_mime_type:'image/png',
+    p_byte_size:png.length,p_alt_text:'Private test pixel'
+  }),'Register real private Storage object');
+  const matched=successful(await post(owner,rpc,input),'Registered Storage metadata match');
+  assert.equal(matched.status,'METADATA_MATCH_ONLY');
+  assert.equal(matched.registeredAssets,1);
+  assert.equal(matched.storageObjects,1);
+  assert.equal(matched.missingObjects,0);
+  assert.equal(matched.orphanObjects,0);
+  assert.equal(matched.metadataMismatches,0);
+  assert.equal(matched.inventoryDrift,true,
+    'A prior inventory snapshot must not be represented as atomic with new assets');
+  assert.equal(matched.storageBytesVerified,false);
+  assert.equal(matched.downloadableExportReady,false);
+  assert.equal(matched.deletionAllowed,false);
+  const otherSnapshot=successful(await post(outsider,
+    '/rest/v1/rpc/create_private_account_exit_inventory',{
+      p_operation_id:randomUUID(),p_request_id:null
+    }),'Other owner snapshot');
+  const other=successful(await post(outsider,rpc,{
+    p_snapshot_id:otherSnapshot.snapshotId
+  }),'Other owner reconciliation');
+  assert.equal(other.registeredAssets,0);
+  assert.equal(other.storageObjects,0);
+  assert.equal(other.status,'METADATA_MATCH_ONLY');
+  await t.test('signed-out JWT cannot reconcile even a previously owned snapshot',async()=>{
+    successful(await send('/auth/v1/logout',{...bearer(owner),method:'POST'}),
+      'Reconciliation owner logout');
+    assert.ok(!(await post(owner,rpc,input)).ok);
+  });
+});
