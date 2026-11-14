@@ -170,7 +170,7 @@ test('preflight requires auth and rejects stale, anonymous or denied provider re
   assert.equal(count,0);
   for(const status of [401,403]){
     const error=client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},{status}));
-    await assert.rejects(error.preflight(),{code:status===401?'AUTH_EXPIRED':'FORBIDDEN'});
+    await assert.rejects(error.preflight(),{code:'AUTH_EXPIRED'});
   }
   await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
     {status:400})).preflight(),{code:'PROVIDER_UNAVAILABLE'});
@@ -220,7 +220,7 @@ test('complete reauth verifies exact challenge, but never grants deletion',async
 test('reauth network failure, expired session and malformed proof fail closed',async()=>{
   for(const status of [401,403]){
     await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
-      {status})).beginReauth(operationId),{code:status===401?'AUTH_EXPIRED':'FORBIDDEN'});
+      {status})).beginReauth(operationId),{code:'AUTH_EXPIRED'});
   }
   await assert.rejects(client(async()=>{throw Error('offline');}).completeReauth(challengeId),
     {code:'PROVIDER_UNAVAILABLE'});
