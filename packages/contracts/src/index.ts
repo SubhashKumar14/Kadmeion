@@ -16,3 +16,4 @@ export * from './private-release-service.ts';
 export * from './private-reviewer-service.ts';
 export * from './private-moderation-service.ts';
 export * from './private-account-erasure-service.ts';
+export * from './private-release-visibility-service.ts';
