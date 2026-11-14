@@ -559,3 +559,53 @@ auth build/smoke/preview and 138/200 file budget. The later
 `696185c` handoff commit changed documentation only. This confirmation
 supersedes the pending-CI wording above; it does not prove hosted
 provider or public-host revocation.
+
+## 14 November 2026 — B4 pinned node-postgres worker connection lifecycle
+
+**Source baseline:** Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, prior HEAD `03b35ce`; original
+`DevFolio-App` remains reference-only. The latest Notion LIGHT approval
+register explicitly approves 52/52 original LIGHT screen images and forbids
+a DARK mockup set. The original PNG addresses are session-local, not
+durable public image URLs. No frontend implementation was started.
+
+**Implementation:** [d033597](https://github.com/SubhashKumar14/Kadmeion/commit/d033597e767589651991c0c478d4d952a9afdb46)
+adds pinned `pg@8.23.1` plus Node 22-compatible pinned TypeScript
+declarations and npm lockfile; adds the **server-only**
+`private-artifact-pg-worker.ts` and negative tests; integrates an actual
+`pg.Pool` with the existing restricted local PostgreSQL binding test.
+The pool validates a dedicated `kd_*` role, refuses privileged/table
+access, checks EXECUTE permission, bounds pool/timeouts, sanitizes errors,
+rejects plaintext remote connections and TLS verification bypass, requires
+explicit local integration opt-in for loopback, and supports idempotent
+shutdown. No browser index export, runtime credentials, deployed worker,
+public URL or public serving grant was added. The temporary nonsecret
+lockfile-generation workflow was removed from the final tree.
+
+**CI correction:** The initial code commit's database job failed because
+it did not install npm packages before importing `pg` (the contracts job
+passed). [3a73b80](https://github.com/SubhashKumar14/Kadmeion/commit/3a73b80946070167b7692e689fed70d36e37df62)
+added `npm ci` to the database job. The corrected
+[CI run 43562124246](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43562124246)
+completed **both contracts and database jobs PASS**: 191/191 Node tests,
+289/289 pgTAP assertions across 19 SQL files, 28/28 local real
+GoTrue/PostgREST/Storage HTTP subtests, 1/1 real restricted
+`pg.Pool` PostgreSQL binding integration; TypeScript typecheck,
+auth build/smoke, isolated auth-preview checks and source budget
+**140/200** passed. Real local negative cases include wrong credentials,
+restricted-role table access, tampered bytes, stale generations, owner
+block and Trash denial. Earlier CI failure is recorded, not concealed.
+
+**Unproven:** Hosted Supabase/remote TLS handshake and credential provisioning,
+a deployed restricted worker, moderation-operator concurrency against the
+actual driver, public-host canonical-route/direct-asset/CDN revocation,
+account erasure/retention, hosted Brevo, browser E2E, dedicated lint/SAST,
+accessibility and production readiness. The existing Git integration
+automatically generated nonproduction Vercel auth previews on pushes;
+no manual preview, production deployment, public publish or destructive
+operation was authorized or performed.
+
+**Next concrete step:** Extend the ephemeral local `pg.Pool` integration
+with a case-bound moderator block racing the private artifact bind, verify
+portfolio/pointer lock ordering, denial after moderation hold and
+idempotent audit evidence. Keep public serving disabled.

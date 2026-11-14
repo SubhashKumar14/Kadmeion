@@ -284,3 +284,32 @@ passed both jobs on `eda8be5`: 187 Node, 289 pgTAP, 28 local HTTP,
 1 direct PostgreSQL integration, TypeScript and auth builds; 138/200
 file budget. This supersedes the earlier pending-HTTP-test note.
 Documentation-only follow-up commits need no new code-completeness claim.
+
+## Latest verified handoff — B4 real pg.Pool lifecycle (14 November 2026)
+
+Active repository: `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`; old DevFolio repo reference-only.
+Code commit [d033597](https://github.com/SubhashKumar14/Kadmeion/commit/d033597e767589651991c0c478d4d952a9afdb46),
+CI correction [3a73b80](https://github.com/SubhashKumar14/Kadmeion/commit/3a73b80946070167b7692e689fed70d36e37df62).
+[CI 43562124246](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43562124246)
+PASS in both jobs: 191 Node, 289 pgTAP, 28 local HTTP,
+one real restricted node-postgres `pg.Pool` integration, TypeScript/builds,
+140/200 authored files. The initial database CI failure at d033597
+was missing `npm ci`, corrected and retested at 3a73b80.
+
+`packages/storage-adapters/src/private-artifact-pg-worker.ts` is server-only,
+not browser-exported. It requires restricted role proof, strict TLS on remote
+hosts, explicit local opt-in for plaintext loopback, bounded timeouts,
+sanitized errors and idempotent close. `pg@8.23.1` and declarations are
+pinned in lockfile. The real local Supabase test checks bad credentials,
+role isolation, byte tampering, owner block and Trash revocation.
+No hosted worker or credentials have been provisioned.
+
+**Start next iteration:** add an operator case-bound moderation hold race
+to the real local `pg.Pool` binding integration, including stale-generation
+denial and no reprepare while held; verify CI. Do not deploy or enable
+public routes. Public-host/CDN/direct-asset revocation, remote TLS/provider,
+account deletion, browser E2E, lint/SAST/accessibility remain unproven.
+The original 52 LIGHT mockup images are approved in Notion but stored at
+session-local artifact addresses; recover originals before frontend work.
+No DARK set, rejected Canva designs or unapproved static preview.
