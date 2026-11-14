@@ -9,6 +9,24 @@ import {createHash} from 'node:crypto';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MIME=new Set(['image/png','image/jpeg','image/webp','image/avif']);
 const MAX_BYTES=5*1024*1024;
+/**
+ * Reject disguised executable/HTML objects before giving any server-attested
+ * hash. Signature inspection is an ingestion guard, not full image decoding
+ * or malware scanning; a safe media re-encode remains a publication gate.
+ */
+function plausibleRaster(mime:string, bytes:Uint8Array):boolean {
+  if(mime==='image/png')return bytes.length>=8&&
+    [137,80,78,71,13,10,26,10].every((value,index)=>bytes[index]===value);
+  if(mime==='image/jpeg')return bytes.length>=3&&
+    bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff;
+  if(mime==='image/webp')return bytes.length>=12&&
+    String.fromCharCode(...bytes.subarray(0,4))==='RIFF'&&
+    String.fromCharCode(...bytes.subarray(8,12))==='WEBP';
+  if(mime==='image/avif')return bytes.length>=16&&
+    String.fromCharCode(...bytes.subarray(4,8))==='ftyp'&&
+    ['avif','avis'].includes(String.fromCharCode(...bytes.subarray(8,12)));
+  return false;
+}
 type Json=Record<string,unknown>;
 const obj=(x:unknown):x is Json=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 export class PrivateAssetAttestationError extends Error {
@@ -69,7 +87,8 @@ export class PrivateServerAssetByteAttestor {
           Accept:body===undefined?'*/*':'application/json',
           ...(body===undefined?{}:{'Content-Type':'application/json'})},
         body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error'
+        credentials:'omit',cache:'no-store',redirect:'error',
+        signal:AbortSignal.timeout(10000)
       });
     }catch{throw new PrivateAssetAttestationError('PROVIDER');}
     if(!response.ok)throw new PrivateAssetAttestationError(
@@ -117,7 +136,8 @@ export class PrivateServerAssetByteAttestor {
     const response=await this.get('/storage/v1/object/authenticated/kadmeion-private-assets/'+
       encoded,ownerJwt);
     const contentType=(response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
-    requireValid(response.raw?.length===size&&contentType===mime,'INTEGRITY');
+    requireValid(response.raw?.length===size&&contentType===mime&&
+      plausibleRaster(mime,response.raw),'INTEGRITY');
     const hash=createHash('sha256').update(response.raw).digest('hex');
     const after=await this.info(path,ownerJwt,ownerId,mime,size);
     requireValid(before.id===after.id&&before.version===after.version&&

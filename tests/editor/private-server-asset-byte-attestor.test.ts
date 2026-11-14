@@ -88,6 +88,16 @@ test('same-size changed object version and changed bytes fail before privileged 
     assert.ok(calls.every(c=>c.key!=='trusted-service-key'));
   }
 });
+test('server-side attestor rejects forged raster MIME before service credential is used',async()=>{
+  for(const bytes of [
+    new TextEncoder().encode('<script>'),new Uint8Array(8),
+    new TextEncoder().encode('<svg></s')
+  ]){
+    const {worker,calls}=setup({bytes});
+    await assert.rejects(worker.attest(assetId,'owner-jwt'),{code:'INTEGRITY'});
+    assert.ok(calls.every(call=>call.key!=='trusted-service-key'));
+  }
+});
 test('provider outage and forged receipt fail closed',async()=>{
   const outage=setup({fail:'/object/info/'});
   await assert.rejects(outage.worker.attest(assetId,'owner-jwt'),{code:'PROVIDER'});
