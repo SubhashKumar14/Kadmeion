@@ -1569,3 +1569,75 @@ test('P2: real owner-JWT goals, manual correction history and milestones remain 
   assert.deepEqual(successful(await send('/rest/v1/private_goal_milestones?select=id',
     bearer(owner)),'Deleted milestone cascade'),[]);
 });
+
+
+test('P2: real JWT link-only public profile handles never become foreign-visible or provider-verified',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('platform-owner'),stranger=await adminUser('platform-stranger');
+  const providers=[
+    ['GITHUB','Owner-Name','https://github.com/Owner-Name'],
+    ['LEETCODE','owner_name','https://leetcode.com/u/owner_name'],
+    ['CODEFORCES','CF.Handle','https://codeforces.com/profile/CF.Handle'],
+    ['HACKERRANK','owner_name','https://www.hackerrank.com/profile/owner_name'],
+    ['KAGGLE','owner_name','https://www.kaggle.com/owner_name'],
+    ['HUGGING_FACE','Owner-Name','https://huggingface.co/Owner-Name']
+  ];
+  for(const [provider,handle,url] of providers){
+    const rows=successful(await send('/rest/v1/private_platform_links?select=*',{
+      ...json(owner),method:'POST',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{provider,handle}
+    }),'Create private link-only '+provider);
+    assert.equal(rows.length,1);
+    const [row]=rows;
+    assert.equal(row.owner_user_id,owner.id);
+    assert.equal(row.provider,provider);
+    assert.equal(row.handle,handle);
+    assert.equal(row.profile_url,url);
+    assert.equal(row.provenance,'USER_SUPPLIED');
+    assert.equal(row.connection_mode,'LINK_ONLY');
+    assert.equal(row.sync_status,'NOT_SYNCED');
+    assert.equal(row.ownership_verified,false);
+  }
+  const all=successful(await send('/rest/v1/private_platform_links?select=*',
+    bearer(owner)),'Read all six private links');
+  assert.equal(all.length,6);
+  assert.deepEqual(successful(await send(
+    '/rest/v1/private_platform_links?select=id',bearer(stranger)),
+    'Foreign platform link read'),[]);
+  const anonymous=await send('/rest/v1/private_platform_links?select=id');
+  assert.ok(!anonymous.ok,'Anonymous visitor enumerated private platform links');
+  const forgedOwner=await send('/rest/v1/private_platform_links',{
+    ...json(stranger),method:'POST',body:{
+      provider:'GITHUB',handle:'wrong-owner',owner_user_id:owner.id}
+  });
+  assert.ok(!forgedOwner.ok,'Foreign account forged a platform link under owner ID');
+  const spoof=await send('/rest/v1/private_platform_links',{
+    ...json(owner),method:'POST',
+    body:{provider:'GITHUB',handle:'Owner-Name',ownership_verified:true,
+      sync_status:'SYNCED',profile_url:'https://attacker.invalid'}
+  });
+  assert.ok(!spoof.ok,'User supplied immutable provider-evidence columns');
+  const patchForeign=await send(
+    '/rest/v1/private_platform_links?provider=eq.GITHUB&select=id',{
+      ...json(stranger),method:'PATCH',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{handle:'hijacked'}
+    });
+  assert.deepEqual(successful(patchForeign,'Foreign platform edit'),[]);
+  const patch=successful(await send(
+    '/rest/v1/private_platform_links?provider=eq.GITHUB&select=*',{
+      ...json(owner),method:'PATCH',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{handle:'Updated-Name'}
+    }),'Owner updates private link');
+  assert.equal(patch.length,1);
+  assert.equal(patch[0].profile_url,'https://github.com/Updated-Name');
+  const deleted=successful(await send(
+    '/rest/v1/private_platform_links?provider=eq.GITHUB&select=id',{
+      ...json(owner),method:'DELETE',headers:{Prefer:'return=representation'}
+    }),'Owner disconnects one profile');
+  assert.equal(deleted.length,1);
+  assert.equal(successful(await send('/rest/v1/private_platform_links?select=id',
+    bearer(owner)),'Five remaining links').length,5);
+});
