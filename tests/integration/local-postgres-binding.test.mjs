@@ -252,6 +252,43 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(ok(await getStaged(),'Read revoked reviewer grant'),null);
     assert.equal((await serveByHeader()).statusCode,404);
 
+    // B4 UNLISTED activation requires distinct typed owner consent and
+    // privileged probe/activation; no public request is served before that.
+    const intent=ok(await api('/rest/v1/rpc/owner_request_unlisted_publication',{
+      method:'POST',jwt:owner.jwt,body:{
+        p_request_id:frozen.requestId,p_expected_generation:1,
+        p_operation_id:randomUUID(),p_confirmation:'PUBLISH UNLISTED'}
+    }),'Owner explicitly authorized a private unlisted release');
+    assert.equal(intent.status,'AWAITING_HOST');
+    assert.equal(intent.publicServingEnabled,false);
+    const publicRead=()=>api('/rest/v1/rpc/service_read_unlisted_release',{
+      method:'POST',key:cfg.service,jwt:cfg.service,
+      body:{p_portfolio_id:portfolioId}});
+    assert.equal(ok(await publicRead(),'Unlisted absent before host probe'),null);
+    const hostStage=ok(await api('/rest/v1/rpc/service_prepare_unlisted_release',{
+      method:'POST',key:cfg.service,jwt:cfg.service,
+      body:{p_intent_id:intent.intentId}
+    }),'Trusted service prepared hidden unlisted candidate');
+    assert.equal(hostStage.status,'PROBE_PENDING');
+    assert.equal(hostStage.publicServingEnabled,false);
+    assert.equal(ok(await publicRead(),'Unlisted unavailable during host probe'),null);
+    const candidate=ok(await api('/rest/v1/rpc/service_probe_unlisted_release',{
+      method:'POST',key:cfg.service,jwt:cfg.service,
+      body:{p_portfolio_id:portfolioId}}),'Server-only probe');
+    assert.equal(candidate.status,'PROBE_PENDING');
+    assert.equal(candidate.htmlSha256,bound.htmlSha256);
+    assert.equal(candidate.html,new TextDecoder().decode(artifact.files[0].bytes));
+    const activated=ok(await api('/rest/v1/rpc/service_activate_unlisted_release',{
+      method:'POST',key:cfg.service,jwt:cfg.service,
+      body:{p_portfolio_id:portfolioId,
+        p_expected_generation:hostStage.releaseGeneration,
+        p_html_sha256:bound.htmlSha256}
+    }),'Internal unlisted activation without external host proof');
+    assert.equal(activated.status,'ACTIVATED_NEEDS_EXTERNAL_HTTP_VERIFICATION');
+    assert.equal(activated.publicUrl,null);
+    assert.equal(ok(await publicRead(),'Read guarded live-unlisted SQL output').htmlSha256,
+      bound.htmlSha256);
+
     const direct={requestId:frozen.requestId,expectedGeneration:1,
       manifestJson:JSON.stringify(artifact.manifest),
       html:new TextDecoder().decode(artifact.files[0].bytes)};
@@ -277,6 +314,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       code:'BINDING_UNCONFIRMED'});
     await assert.rejects(bindPrivateArtifactToPointer(ctx),{code:'POINTER_CONFLICT'});
     await assert.rejects(writer.bindPrivateArtifact(direct),{code:'SQL_UNCONFIRMED'});
+    assert.equal(ok(await publicRead(),'Blocked unlisted route'),null);
     const after=await pointer.read(portfolioId);
     assert.equal(after.status,'BLOCKED');
     assert.equal(after.publicServingEnabled,false);
