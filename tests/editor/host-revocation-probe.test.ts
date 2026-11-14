@@ -43,6 +43,8 @@ test('wrong or partial direct asset coverage is rejected before any HTTP fetch',
     {...input,candidateDirectPaths:['/one','/one']},
     {...input,candidateDirectPaths:['https://foreign.example/a']},
     {...input,canonicalPath:'/app/admin'},
+    {...input,canonicalPath:'/api/private'},
+    {...input,canonicalPath:'/auth/signin'},
     {...input,origin:'http://127.0.0.1:8765'},
     {...input,origin:'https://127.0.0.1/'},
     {...input,origin:'https://user:secret@kadmeion.vercel.app/'}

@@ -27,6 +27,8 @@ export class HostRevocationProbeError extends Error {
 }
 const DIRECT=/^\/[a-zA-Z0-9._/-]{1,512}$/;
 const PUBLIC=/^\/[a-z][a-z0-9_]{2,29}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const RESERVED=new Set(['u','app','auth','signin','signup','templates',
+  'r','status','explore','api']);
 const UNLISTED=/^\/api\/unlisted\?portfolioId=[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function trustedOrigin(origin:string,local:boolean):URL {
   let u:URL;
@@ -98,7 +100,8 @@ export async function probeHostRevocation(
 ):Promise<HostRevocationObservation>{
   if(!input||!Array.isArray(input.candidateDirectPaths)||
      input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
-     !((typeof input.canonicalPath==='string'&&PUBLIC.test(input.canonicalPath))||
+     !((typeof input.canonicalPath==='string'&&PUBLIC.test(input.canonicalPath)&&
+         !RESERVED.has(input.canonicalPath.slice(1).split('/')[0]))||
        (typeof input.canonicalPath==='string'&&UNLISTED.test(input.canonicalPath)))||
      input.candidateDirectPaths.some(path=>!pathValid(path)||path===input.canonicalPath)||
      new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
