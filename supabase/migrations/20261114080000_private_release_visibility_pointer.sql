@@ -92,6 +92,14 @@ begin
       or v_event.candidate_request_id is distinct from p_request_id
       or v_event.candidate_manifest_sha256 is distinct from p_manifest_sha256 then
       raise exception using errcode='23505',message='PRIVATE_POINTER_OPERATION_REUSED'; end if;
+    -- A historical idempotency receipt must not falsely claim that a later
+    -- block, Trash or different prepare left this candidate current.
+    perform 1 from public.private_release_visibility_pointers
+      where portfolio_id=p_portfolio_id and generation=v_event.resulting_generation
+        and status='PREPARED_PRIVATE' and candidate_request_id=p_request_id
+        and candidate_manifest_sha256=p_manifest_sha256;
+    if not found then
+      raise exception using errcode='40001',message='PRIVATE_POINTER_CONFLICT'; end if;
     return jsonb_build_object('portfolioId',p_portfolio_id,'generation',
       v_event.resulting_generation,'status','PREPARED_PRIVATE',
       'alreadyRecorded',true,'publicServingEnabled',false,'publicUrl',null,
