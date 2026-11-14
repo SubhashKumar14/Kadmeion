@@ -97,8 +97,10 @@ select is(kadmeion_private.bind_private_artifact_candidate(
   '30000000-0000-4000-8000-0000000000c1',1,
   current_setting('kd.bind.manifest'),current_setting('kd.bind.html')
   )->>'publicServingEnabled','false','trusted binding is not publication');
+reset role;
 select is((select count(*) from kadmeion_private.private_artifact_bindings)::bigint,
   1::bigint,'one private record per pointer generation');
+set local role service_role;
 
 do $block$
 declare denied boolean:=false;
@@ -165,6 +167,7 @@ begin
   if not denied then raise exception 'Revoked private pointer accepted binding';end if;
 end $block$;
 select pass('replayed bind cannot survive owner block/revocation');
+reset role;
 select is((select count(*) from kadmeion_private.private_artifact_bindings)::bigint,
   1::bigint,'revocation leaves historical integrity evidence but no live state');
 select * from finish();

@@ -98,7 +98,8 @@ test('wrong portfolio and cloned unattested snapshot are rejected before pointer
   await assert.rejects(bindPrivateArtifactToPointer(f.ctx),{code:'VALIDATION'});
   assert.equal(reads,0);
   const f2=await fixture();
-  f2.ctx.loader.load=async()=>({...await f2.ctx.loader.load(requestId),
+  const originalLoad=f2.ctx.loader.load;
+  f2.ctx.loader.load=async()=>({...await originalLoad(requestId),
     snapshot:structuredClone(source.snapshot)});
   // No WeakMap proof is transferable to an owner-submitted clone.
   await assert.rejects(bindPrivateArtifactToPointer(f2.ctx),{code:'VALIDATION'});
