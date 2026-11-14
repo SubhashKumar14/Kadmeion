@@ -25,6 +25,7 @@ import {DirectSqlPrivateArtifactBindingWriter}
 import {openPrivateArtifactPgWorker}
   from '../../packages/storage-adapters/src/private-artifact-pg-worker.ts';
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
+import {handleUnlistedRequest} from '../../api/unlisted.mjs';
 
 function localSettings(){
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION,'1',
@@ -289,6 +290,26 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal(ok(await publicRead(),'Read guarded live-unlisted SQL output').htmlSha256,
       bound.htmlSha256);
 
+    async function publicHostRead(){
+      const response={statusCode:0,body:null,headers:new Map(),
+        setHeader(k,v){this.headers.set(k.toLowerCase(),v);},
+        end(body){this.body=body;}};
+      await handleUnlistedRequest({method:'GET',
+        url:'/api/unlisted?portfolioId='+portfolioId},response,{
+        env:{KADMEION_UNLISTED_DELIVERY_ENABLED:'true',
+          KADMEION_LOCAL_INTEGRATION:'1',
+          KADMEION_SUPABASE_URL:cfg.origin,
+          KADMEION_SUPABASE_SERVICE_ROLE_KEY:cfg.service},
+        http:fetch});
+      return response;
+    }
+    const site=await publicHostRead();
+    assert.equal(site.statusCode,200,'Server-only unlisted HTTP gate did not serve');
+    assert.equal(site.body,new TextDecoder().decode(artifact.files[0].bytes));
+    assert.match(site.headers.get('cache-control'),/no-store/);
+    assert.match(site.headers.get('content-security-policy'),/script-src 'none'/);
+
+
     const direct={requestId:frozen.requestId,expectedGeneration:1,
       manifestJson:JSON.stringify(artifact.manifest),
       html:new TextDecoder().decode(artifact.files[0].bytes)};
@@ -315,6 +336,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     await assert.rejects(bindPrivateArtifactToPointer(ctx),{code:'POINTER_CONFLICT'});
     await assert.rejects(writer.bindPrivateArtifact(direct),{code:'SQL_UNCONFIRMED'});
     assert.equal(ok(await publicRead(),'Blocked unlisted route'),null);
+    assert.equal((await publicHostRead()).statusCode,404,
+      'Owner unpublish must deny the previously live unlisted HTTP URL');
     const after=await pointer.read(portfolioId);
     assert.equal(after.status,'BLOCKED');
     assert.equal(after.publicServingEnabled,false);
