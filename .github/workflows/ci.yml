@@ -16,11 +16,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
+      # Temporary lockfile capture on isolated branch for a reproducible
+      # runtime/compiler major-version upgrade; remove after lock is committed.
+      - name: Resolve and output lockfile for review (temporary)
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          node -e 'console.log("KADMEION_LOCK_BEGIN"+JSON.stringify(JSON.parse(require("node:fs").readFileSync("package-lock.json","utf8")))+"KADMEION_LOCK_END")'
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build:auth
@@ -42,15 +48,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: supabase/setup-cli@v1
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v3
         with:
           version: 3.1.0
       - run: supabase start
       - run: supabase test db
       - name: Lint PL/pgSQL definitions in isolated database
         run: supabase db lint --schema public,kadmeion_private --level error --fail-on error
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
