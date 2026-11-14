@@ -12,6 +12,20 @@ export interface AccountErasureReceipt {
   erasureExecuted:false;
   retentionVerified:false;
 }
+export interface AccountExitReauthChallenge {
+  challengeId:string;
+  status:'AWAITING_NEW_SIGN_IN';
+  expiresAt:string;
+  alreadyIssued:boolean;
+  deletionAllowed:false;
+}
+export interface AccountExitReauthVerification {
+  challengeId:string;
+  status:'NEW_SIGN_IN_VERIFIED';
+  expiresAt:string;
+  alreadyVerified:boolean;
+  deletionAllowed:false;
+}
 export interface AccountExitPreflight {
   status:'INVENTORY_ONLY';
   maxCountPerCategory:1000;
@@ -116,18 +130,49 @@ export class SupabasePrivateAccountErasureService {
         throw new PrivateAccountErasureError('FORBIDDEN','Account exit access denied.');
       const error:unknown=await response.json().catch(()=>null);
       const message=record(error)?error.message:null;
-      if(message==='ACCOUNT_ERASURE_REQUEST_QUOTA_REACHED')
+      if(message==='ACCOUNT_ERASURE_REQUEST_QUOTA_REACHED'||
+        message==='REAUTH_CHALLENGE_QUOTA_REACHED')
         throw new PrivateAccountErasureError('QUOTA_EXCEEDED','Request limit reached.');
       if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL')
         throw new PrivateAccountErasureError('VALIDATION','Invalid account exit request.');
       if(response.status===409||message==='ACCOUNT_ERASURE_ALREADY_REQUESTED'||
-        message==='ERASURE_WITHDRAWAL_OPERATION_REUSED')
+        message==='ERASURE_WITHDRAWAL_OPERATION_REUSED'||
+        message==='REAUTH_OPERATION_REUSED'||message==='REAUTH_PROOF_ALREADY_BOUND')
         throw new PrivateAccountErasureError('CONFLICT','Account exit request conflicts with existing state.');
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit operation failed.');
     }
     return response.json().catch(()=>{
       throw new PrivateAccountErasureError('INVALID_ACK','Invalid account exit response.');
     });
+  }
+  /** An explicit owner challenge; a new login must establish a different session. */
+  async beginReauth(operationId:string):Promise<AccountExitReauthChallenge>{
+    if(!uuid(operationId))
+      throw new ContractError('VALIDATION','Invalid reauthentication operation ID.');
+    const raw=await this.send('rpc/begin_private_account_exit_reauth',{
+      p_operation_id:operationId
+    });
+    if(!record(raw)||!uuid(raw.challengeId)||raw.status!=='AWAITING_NEW_SIGN_IN'||
+      !date(raw.expiresAt)||typeof raw.alreadyIssued!=='boolean'||
+      raw.deletionAllowed!==false)
+      throw new PrivateAccountErasureError('INVALID_ACK','Invalid reauthentication challenge.');
+    return {challengeId:raw.challengeId,status:'AWAITING_NEW_SIGN_IN',
+      expiresAt:raw.expiresAt as string,alreadyIssued:raw.alreadyIssued,
+      deletionAllowed:false};
+  }
+  /** Call only with a fresh Supabase JWT obtained by authenticating again. */
+  async completeReauth(challengeId:string):Promise<AccountExitReauthVerification>{
+    if(!uuid(challengeId))
+      throw new ContractError('VALIDATION','Invalid reauthentication challenge ID.');
+    const raw=await this.send('rpc/complete_private_account_exit_reauth',{
+      p_challenge_id:challengeId
+    });
+    if(!record(raw)||raw.challengeId!==challengeId||raw.status!=='NEW_SIGN_IN_VERIFIED'||
+      !date(raw.expiresAt)||typeof raw.alreadyVerified!=='boolean'||
+      raw.deletionAllowed!==false)
+      throw new PrivateAccountErasureError('INVALID_ACK','Unverified new-sign-in evidence.');
+    return {challengeId,status:'NEW_SIGN_IN_VERIFIED',expiresAt:raw.expiresAt as string,
+      alreadyVerified:raw.alreadyVerified,deletionAllowed:false};
   }
   /** Advisory only: session presence/fresh login is NOT an erasure authorisation. */
   async preflight():Promise<AccountExitPreflight>{

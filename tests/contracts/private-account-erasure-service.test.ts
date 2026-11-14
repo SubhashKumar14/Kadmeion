@@ -175,3 +175,55 @@ test('preflight requires auth and rejects stale, anonymous or denied provider re
   await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
     {status:400})).preflight(),{code:'PROVIDER_UNAVAILABLE'});
 });
+
+const challengeId='40000000-0000-4000-8000-000000000004';
+const challengeReceipt={
+  challengeId,status:'AWAITING_NEW_SIGN_IN',expiresAt:'2026-11-14T01:50:00Z',
+  alreadyIssued:false,deletionAllowed:false
+} as const;
+const verifiedReceipt={
+  challengeId,status:'NEW_SIGN_IN_VERIFIED',expiresAt:'2026-11-14T01:50:00Z',
+  alreadyVerified:false,deletionAllowed:false
+} as const;
+
+test('begin reauth requires owner JWT, exact operation and no embedded credentials',async()=>{
+  const service=client(async(url,init)=>{
+    assert.equal(url,origin+'/rest/v1/rpc/begin_private_account_exit_reauth');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.redirect,'error');
+    assert.equal(init?.cache,'no-store');
+    assert.deepEqual(JSON.parse(init?.body as string),{p_operation_id:operationId});
+    return ok({...challengeReceipt,internalOwner:'not forwarded'});
+  });
+  assert.deepEqual(await service.beginReauth(operationId),challengeReceipt);
+  await assert.rejects(service.beginReauth('bad'),{code:'VALIDATION'});
+});
+test('complete reauth verifies exact challenge, but never grants deletion',async()=>{
+  const service=client(async(url,init)=>{
+    assert.equal(url,origin+'/rest/v1/rpc/complete_private_account_exit_reauth');
+    assert.deepEqual(JSON.parse(init?.body as string),{p_challenge_id:challengeId});
+    return ok({...verifiedReceipt,internalSession:'not forwarded'});
+  });
+  assert.deepEqual(await service.completeReauth(challengeId),verifiedReceipt);
+  await assert.rejects(service.completeReauth('wrong'),{code:'VALIDATION'});
+  for(const invalid of [
+    {...verifiedReceipt,challengeId:requestId},
+    {...verifiedReceipt,deletionAllowed:true},
+    {...verifiedReceipt,status:'DELETED'},
+    {...verifiedReceipt,alreadyVerified:'true'},
+    {...verifiedReceipt,expiresAt:0}
+  ]){
+    await assert.rejects(client(async()=>ok(invalid)).completeReauth(challengeId),
+      {code:'INVALID_ACK'});
+  }
+});
+test('reauth network failure, expired session and malformed proof fail closed',async()=>{
+  for(const status of [401,403]){
+    await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
+      {status})).beginReauth(operationId),{code:status===401?'AUTH_EXPIRED':'FORBIDDEN'});
+  }
+  await assert.rejects(client(async()=>{throw Error('offline');}).completeReauth(challengeId),
+    {code:'PROVIDER_UNAVAILABLE'});
+  await assert.rejects(client(async()=>ok({...challengeReceipt,deletionAllowed:true}))
+    .beginReauth(operationId),{code:'INVALID_ACK'});
+});

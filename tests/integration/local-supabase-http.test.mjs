@@ -72,7 +72,7 @@ async function adminUser(label) {
   const session=successful(auth,'Real JWT sign-in '+label);
   assert.ok(typeof session.access_token==='string'&&session.access_token.length>50);
   assert.equal(session.user.id,user.id);
-  return {id:user.id,token:session.access_token};
+  return {id:user.id,token:session.access_token,email,password};
 }
 function bearer(user){return {bearer:user.token};}
 function json(user){return {...bearer(user),headers:{'Content-Type':'application/json'}};}
@@ -441,5 +441,59 @@ test('B5: owner account-exit preflight checks active server session and tenant f
     successful(logout,'Local owner signout');
     const stale=await post(owner);
     assert.ok(!stale.ok,'Signed-out JWT retained private preflight access');
+  });
+});
+
+test('B5: deliberate account-exit reauthentication requires a NEW live owner sign-in',
+  {timeout:120_000},async t=>{
+  const owner=await adminUser('challenge-owner');
+  const outsider=await adminUser('challenge-outsider');
+  const begin='/rest/v1/rpc/begin_private_account_exit_reauth';
+  const complete='/rest/v1/rpc/complete_private_account_exit_reauth';
+  const operation=randomUUID();
+  const issue=async (who,id=operation)=>send(begin,{...json(who),method:'POST',
+    body:{p_operation_id:id}});
+  const finish=async(who,id)=>send(complete,{...json(who),method:'POST',
+    body:{p_challenge_id:id}});
+  let challengeId;
+  await t.test('anonymous denied and owner operation idempotent',async()=>{
+    const anon=await send(begin,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:{p_operation_id:operation}});
+    assert.ok(!anon.ok,'Anonymous created an exit reauth challenge');
+    const started=successful(await issue(owner),'Owner reauth begin');
+    challengeId=started.challengeId;
+    assert.match(challengeId,/^[0-9a-f-]{36}$/i);
+    assert.equal(started.status,'AWAITING_NEW_SIGN_IN');
+    assert.equal(started.deletionAllowed,false);
+    const repeat=successful(await issue(owner),'Idempotent reauth begin');
+    assert.equal(repeat.challengeId,challengeId);
+    assert.equal(repeat.alreadyIssued,true);
+  });
+  await t.test('another owner and the original session cannot finish proof',async()=>{
+    assert.ok(!(await finish(outsider,challengeId)).ok,
+      'Different owner completed reauth proof');
+    assert.ok(!(await finish(owner,challengeId)).ok,
+      'Original session was accepted without reauthentication');
+    const hidden=await send('/rest/v1/private_account_exit_reauth_challenges?select=id',
+      bearer(owner));
+    assert.ok(!hidden.ok,'Owner directly read protected proof data');
+  });
+  await t.test('fresh password sign-in creates distinct provider session proof',async()=>{
+    const login=successful(await send('/auth/v1/token?grant_type=password',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:{email:owner.email,password:owner.password}
+    }),'New explicit GoTrue login');
+    assert.equal(login.user.id,owner.id);
+    assert.notEqual(login.access_token,owner.token);
+    const newOwner={...owner,token:login.access_token};
+    const proof=successful(await finish(newOwner,challengeId),
+      'Complete fresh account-exit sign-in proof');
+    assert.equal(proof.status,'NEW_SIGN_IN_VERIFIED');
+    assert.equal(proof.alreadyVerified,false);
+    assert.equal(proof.deletionAllowed,false);
+    const repeated=successful(await finish(newOwner,challengeId),'Replay same proof');
+    assert.equal(repeated.alreadyVerified,true);
+    assert.ok(!(await finish(owner,challengeId)).ok,
+      'Original old session reused a verified challenge');
   });
 });
