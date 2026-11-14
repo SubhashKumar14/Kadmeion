@@ -12,6 +12,7 @@ import { randomUUID,createHash } from 'node:crypto';
 import {Client,Pool} from 'pg';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
+import {handlePublishedIdentity} from '../../api/published-identity.mjs';
 import {randomBytes} from 'node:crypto';
 import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/src/private-delivery-denial-gate.ts';
 import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapters/src/private-account-data-export.ts';
@@ -163,6 +164,71 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
       body:{owner_user_id:owner.id,slug:'forged-'+randomUUID().slice(0,8),title:'Forgery'}
     });
     assert.ok(!forged.ok,'Cross-owner project creation was accepted');
+  });
+  await t.test('public identity and case-study HTTP routes enforce projection and withdrawal', async t => {
+    const actor = await adminUser('publisher');
+    const handle = 'public_' + randomUUID().slice(0, 8);
+    const slug = 'published-case';
+    const server = createServer((req, res) => void handlePublishedIdentity(req, res, {env: {
+      KADMEION_PUBLIC_IDENTITY_ENABLED: 'true', KADMEION_LOCAL_INTEGRATION: '1',
+      KADMEION_SUPABASE_URL: cfg.origin, KADMEION_SUPABASE_SERVICE_ROLE_KEY: cfg.service
+    }}));
+    server.listen(0, '127.0.0.1');
+    t.after(() => new Promise((resolve, reject) =>
+      server.close(error => error ? reject(error) : resolve())));
+    await once(server, 'listening');
+    const origin = 'http://127.0.0.1:' + server.address().port;
+    const profileRoute = origin + '/u/' + handle;
+    const caseRoute = profileRoute + '/projects/' + slug;
+    const call = (name, body, user = actor) => send('/rest/v1/rpc/' + name, {
+      ...json(user), method: 'POST', body
+    });
+    assert.equal((await fetch(profileRoute)).status, 404);
+    successful(await send('/rest/v1/profiles?user_id=eq.' + actor.id, {
+      ...json(actor), method: 'PATCH', body: {handle, display_name: '<script>name</script>'}
+    }), 'Set public identity fixture');
+    successful(await send('/rest/v1/profile_sharing_preferences', {
+      ...json(actor), method: 'POST',
+      body: {user_id: actor.id, publication_requested: true, share_display_name: true}
+    }), 'Set profile intent');
+    successful(await call('owner_publish_profile_projection', {p_confirmation: 'PUBLISH PROFILE'}), 'Publish profile');
+    const identity = await fetch(profileRoute);
+    assert.equal(identity.status, 200);
+    assert.match(identity.headers.get('cache-control'), /no-store/);
+    assert.match(await identity.text(), /&lt;script&gt;name&lt;\/script&gt;/);
+    const [project] = successful(await send('/rest/v1/projects?select=id,revision', {
+      ...json(actor), method: 'POST', headers: {'Content-Type': 'application/json', Prefer: 'return=representation'},
+      body: {owner_user_id: actor.id, slug, title: 'Published case'}
+    }), 'Create draft case');
+    const revised = successful(await call('update_private_project_case_study', {
+      p_project_id: project.id, p_base_revision: project.revision, p_case_study: {sections: [
+        {id: 'a', kind: 'challenge', title: 'Visible section', body: 'Visible content', visible: true},
+        {id: 'b', kind: 'results', title: 'Hidden section', body: 'Secret notes', visible: false}
+      ]}
+    }), 'Save private case sections');
+    successful(await send('/rest/v1/project_exposure_intents', {
+      ...json(actor), method: 'POST',
+      body: {project_id: project.id, owner_user_id: actor.id, show_case_study: true}
+    }), 'Set case intent');
+    assert.equal((await fetch(caseRoute)).status, 404);
+    const publication = {p_project_id: project.id, p_expected_revision: revised.revision,
+      p_confirmation: 'PUBLISH CASE STUDY'};
+    assert.equal((await call('owner_publish_case_study_projection', publication, stranger)).ok, false);
+    successful(await call('owner_publish_case_study_projection', publication), 'Publish case');
+    const published = await fetch(caseRoute);
+    assert.equal(published.status, 200);
+    const html = await published.text();
+    assert.match(html, /Visible content/);
+    assert.doesNotMatch(html, /Secret notes|Hidden section/);
+    for (const show_case_study of [false, true]) {
+      successful(await send('/rest/v1/project_exposure_intents?project_id=eq.' + project.id, {
+        ...json(actor), method: 'PATCH', body: {show_case_study}
+      }), 'Change case visibility');
+      assert.equal((await fetch(caseRoute)).status, 404);
+    }
+    successful(await call('owner_publish_case_study_projection', publication), 'Republish case');
+    successful(await call('trash_private_item', {p_item_type: 'project', p_item_id: project.id}), 'Trash case');
+    assert.equal((await fetch(caseRoute)).status, 404);
   });
   const ownerPath=owner.id+'/ci-'+randomUUID().slice(0,8)+'/cover.png';
   const object='/storage/v1/object/'+bucket+'/'+ownerPath;

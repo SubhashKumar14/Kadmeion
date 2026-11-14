@@ -4,6 +4,14 @@
   "outputDirectory": "apps/auth-web/vercel-dist",
   "rewrites": [
     {
+      "source": "/u/:handle/projects/:slug",
+      "destination": "/api/published-identity?handle=:handle&slug=:slug"
+    },
+    {
+      "source": "/u/:handle",
+      "destination": "/api/published-identity?handle=:handle"
+    },
+    {
       "source": "/signin",
       "destination": "/index.html"
     },
