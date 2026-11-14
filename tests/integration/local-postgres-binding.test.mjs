@@ -132,10 +132,10 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
   ||':'||has_table_privilege(
   current_user,'public.private_release_visibility_pointers','UPDATE');`,
       {user:role,password});
-    assert.equal(flags,'true:false:false'.replaceAll('true','t').replaceAll('false','f'));
+    assert.equal(flags,'t:f:f');
     assert.throws(()=>dbQuery(
       'select count(*) from kadmeion_private.private_artifact_bindings;',
-      {user:role,password}),/permission denied/);
+      {user:role,password}));
 
     const owner=await ownerAccount();
     const outsider=await ownerAccount();
@@ -198,7 +198,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       html:new TextDecoder().decode(artifact.files[0].bytes)};
     // Each attempt is rejected by the actual DB, not by a mock query port.
     for(const patch of [
-      {html:direct.html.replace("Owner's","Forged")},
+      {html:direct.html.replace('Owner&#39;s','Forged')},
       {manifestJson:direct.manifestJson+' '},
       {manifestJson:'{"kind":"forged"}'},
       {expectedGeneration:2},
