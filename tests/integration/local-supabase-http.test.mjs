@@ -1038,11 +1038,63 @@ test('B5: real local owner export reads RLS records and verifies private Storage
   assert.equal(body.assets[0].downloadedSha256,createHash('sha256').update(png).digest('hex'));
   assert.deepEqual(Buffer.from(body.assets[0].base64,'base64'),Buffer.from(png));
   assert.equal(body.evidence.providerExpectedHashesVerified,false);
+  assert.equal(body.evidence.providerObjectVersionPinned,false);
+  assert.equal(body.evidence.storageObjectVersionCheckedBeforeAndAfter,true);
+  assert.ok(typeof body.assets[0].storageVersionAtRead==='string'&&
+    body.assets[0].storageVersionAtRead.length>0);
   assert.equal(body.limitations.completeAccountExport,false);
+  const ownerOverwrite=await send('/storage/v1/object/'+bucket+'/'+path,{
+    ...bearer(owner),method:'PUT',
+    headers:{'Content-Type':'image/png'},body:png
+  });
+  assert.ok(!ownerOverwrite.ok,'Owner overwrote a registered private object path');
   const foreignExporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,
     async()=>outsider.token);
   await assert.rejects(foreignExporter.export(snapshot.snapshotId),{code:'AUTH_EXPIRED'});
   successful(await send('/auth/v1/logout',{...bearer(owner),method:'POST'}),
     'Export owner logout');
   await assert.rejects(exporter.export(snapshot.snapshotId),{code:'AUTH_EXPIRED'});
+});
+
+test('B5: real local same-size provider overwrite during export fails version recheck',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('export-race-owner');
+  const project=successful(await send('/rest/v1/projects?select=id',{
+    ...json(owner),method:'POST',
+    headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug:'race-'+randomUUID().slice(0,8),
+      title:'Storage overwrite race fixture'}
+  }),'Create owner race project')[0];
+  const path=owner.id+'/race-'+randomUUID().slice(0,8)+'/cover.png';
+  successful(await send('/storage/v1/object/'+bucket+'/'+path,{
+    ...bearer(owner),method:'POST',headers:{'Content-Type':'image/png'},body:png
+  }),'Upload initial owner image');
+  successful(await send('/rest/v1/rpc/register_private_project_image',{
+    ...json(owner),method:'POST',body:{
+      p_project_id:project.id,p_object_path:path,p_mime_type:'image/png',
+      p_byte_size:png.length,p_alt_text:'Race fixture'
+    }
+  }),'Register race image');
+  const snapshot=successful(await send(
+    '/rest/v1/rpc/create_private_account_exit_inventory',{
+      ...json(owner),method:'POST',
+      body:{p_operation_id:randomUUID(),p_request_id:null}
+    }),'Capture race inventory');
+  let replaced=false;
+  const intercept=async(input,init)=>{
+    if(!replaced&&String(input).includes('/storage/v1/object/authenticated/')){
+      replaced=true;
+      const changed=new Uint8Array(png);
+      changed[changed.length-1]^=1; // Same MIME/length, different bytes.
+      successful(await send('/storage/v1/object/'+bucket+'/'+path,{
+        method:'PUT',key:cfg.service,bearer:cfg.service,
+        headers:{'Content-Type':'image/png'},body:changed
+      }),'Local service-role fixture overwrite');
+    }
+    return fetch(input,init);
+  };
+  const exporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,
+    async()=>owner.token,intercept);
+  await assert.rejects(exporter.export(snapshot.snapshotId),{code:'INTEGRITY'});
+  assert.equal(replaced,true,'Fixture did not exercise provider overwrite');
 });
