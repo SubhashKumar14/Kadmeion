@@ -21,6 +21,8 @@ export interface GoalMilestone {
   id:string;goal_id:string;owner_user_id:string;operation_id:string;
   title:string;due_on:string|null;completed_at:string|null;created_at:string;
 }
+export interface PrivateGoalPage<T> {items:T[];nextCursor:string|null;}
+
 export type GoalUpdate=Partial<Pick<PrivateGoal,'title'|'description'|'target_value'|'unit'|'due_on'|'status'>>;
 export class PrivateGoalsError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|'CONFLICT'|'PROVIDER_UNAVAILABLE'|
@@ -176,6 +178,49 @@ export class SupabasePrivateGoalsService {
       return {row:this.one(raw,valid),replayed:true};
     }
   }
+  /**
+   * Stable UUID-keyset pagination; unlike limit=100 lists this does not imply
+   * that a large owner's full history has been returned. IDs are ordered, not
+   * presentation timestamps; the UI can sort within a completely loaded set.
+   */
+  private async readPage<T extends {id:string;goal_id?:string}>(
+    table:'private_goals'|'private_goal_progress_events'|'private_goal_milestones',
+    valid:(row:unknown)=>row is T,
+    limit:number,afterId:string|null,goalId:string|null=null
+  ):Promise<PrivateGoalPage<T>> {
+    if(!Number.isSafeInteger(limit)||limit<1||limit>100||
+       (afterId!==null&&!validId(afterId))||
+       (goalId!==null&&!validId(goalId)))
+      throw new PrivateGoalsError('VALIDATION');
+    const after=afterId?.toLowerCase()??null;
+    const goal=goalId?.toLowerCase()??null;
+    const params=new URLSearchParams();
+    params.set('select','*');
+    if(goal)params.set('goal_id','eq.'+goal);
+    if(after)params.set('id','gt.'+after);
+    params.set('order','id.asc');
+    params.set('limit',String(limit+1));
+    const raw=await this.send(table+'?'+params.toString(),'GET');
+    if(!Array.isArray(raw)||raw.length>limit+1||raw.some(row=>!valid(row))||
+       (goal!==null&&raw.some(row=>row.goal_id!==goal))||
+       (after!==null&&raw.some(row=>row.id<=after))||
+       raw.some((row,i)=>i>0&&raw[i-1].id>=row.id))
+      throw new PrivateGoalsError('INVALID_ACK');
+    const rows=raw as T[];
+    const items=rows.slice(0,limit);
+    return {items,nextCursor:rows.length>limit?items[items.length-1].id:null};
+  }
+  listGoalsPage(limit=50,afterId:string|null=null):Promise<PrivateGoalPage<PrivateGoal>> {
+    return this.readPage('private_goals',validGoal,limit,afterId);
+  }
+  listProgressPage(goalId:string,limit=50,afterId:string|null=null):
+    Promise<PrivateGoalPage<GoalProgress>> {
+    return this.readPage('private_goal_progress_events',validProgress,limit,afterId,goalId);
+  }
+  listMilestonesPage(goalId:string,limit=50,afterId:string|null=null):
+    Promise<PrivateGoalPage<GoalMilestone>> {
+    return this.readPage('private_goal_milestones',validMilestone,limit,afterId,goalId);
+  }
   async createGoal(operationId:string,title:string,description='',
     targetValue:number|null=null,unit:string|null=null,dueOn:string|null=null):Promise<PrivateGoal>{
     if(!validId(operationId)||!validText(title,1,160)||
@@ -280,7 +325,10 @@ export class SupabasePrivateGoalsService {
     const raw=await this.send('private_goal_milestones?id=eq.'+id+'&select=*','PATCH',fields);
     const result=this.one(raw,validMilestone);
     if(result.id!==id||Object.entries(fields).some(([k,v])=>
-      result[k as keyof GoalMilestone]!==v))throw new PrivateGoalsError('INVALID_ACK');
+      k==='completed_at'&&typeof v==='string'&&typeof result.completed_at==='string'
+        ? Date.parse(result.completed_at)!==Date.parse(v)
+        : result[k as keyof GoalMilestone]!==v))
+      throw new PrivateGoalsError('INVALID_ACK');
     return result;
   }
   async deleteMilestone(id:string):Promise<string> {

@@ -136,12 +136,52 @@ test('identical network retries recover existing owner-scoped records; changed i
     {code:'CONFLICT'});
 });
 test('UUID case is canonicalized before owner-bound writes and acknowledgments',async()=>{
-  const client=make(async(url,init)=>{
-    assert.ok(!String(url).includes('90000000-0000-4000-8000-00000000000A'));
+  const upper='A0000000-0000-4000-8000-000000000004';
+  const lower=upper.toLowerCase();
+  const client=make(async(_url,init)=>{
     const body=JSON.parse(String(init?.body));
-    assert.equal(body.operation_id,'90000000-0000-4000-8000-000000000004');
-    return Response.json([goal]);
+    assert.equal(body.operation_id,lower);
+    return Response.json([{...goal,operation_id:lower}]);
   });
-  assert.equal((await client.createGoal(operation.toUpperCase(),goal.title,'',25,'sessions',
-    '2027-03-01')).operation_id,operation);
+  assert.equal((await client.createGoal(upper,goal.title,'',25,'sessions',
+    '2027-03-01')).operation_id,lower);
+});
+
+
+test('complete private goal histories can be read in bounded keyset pages',async()=>{
+  const second={...goal,id:eventId,operation_id:'90000000-0000-4000-8000-000000000005'};
+  const urls:string[]=[];
+  const client=make(async(url)=>{
+    urls.push(String(url));
+    if(urls.length===1)return Response.json([goal,second]);
+    return Response.json([second]);
+  });
+  const first=await client.listGoalsPage(1);
+  assert.deepEqual(first.items,[goal]);
+  assert.equal(first.nextCursor,goal.id);
+  const next=await client.listGoalsPage(1,first.nextCursor);
+  assert.deepEqual(next.items,[second]);
+  assert.equal(next.nextCursor,null);
+  assert.match(urls[0],/limit=2/);
+  assert.match(urls[1],/id=gt\./);
+});
+
+test('pagination rejects duplicate, unordered, wrong-goal and oversized replies',async()=>{
+  const repeated=make(async()=>Response.json([goal,goal]));
+  await assert.rejects(repeated.listGoalsPage(1),{code:'INVALID_ACK'});
+  const foreign=make(async()=>Response.json([{...progress,
+    goal_id:'80000000-0000-4000-8000-000000000008'}]));
+  await assert.rejects(foreign.listProgressPage(goalId),{code:'INVALID_ACK'});
+  const oversize=make(async()=>Response.json(Array(3).fill(goal)));
+  await assert.rejects(oversize.listGoalsPage(1),{code:'INVALID_ACK'});
+  await assert.rejects(repeated.listGoalsPage(101),{code:'VALIDATION'});
+  await assert.rejects(repeated.listGoalsPage(1,'/bad'),{code:'VALIDATION'});
+});
+
+test('manual milestone completion accepts canonicalized provider timestamp response',async()=>{
+  const input='2026-11-15T12:20:00.000Z';
+  const canonical='2026-11-15T12:20:00+00:00';
+  const client=make(async()=>Response.json([{...milestone,completed_at:canonical}]));
+  const response=await client.updateMilestone(eventId,{completed_at:input});
+  assert.equal(response.completed_at,canonical);
 });
