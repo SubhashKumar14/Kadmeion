@@ -385,3 +385,14 @@ data-export artifact contract with Storage reconciliation and
 retention disclosures, without destructive operations or production
 deployment. Independently prove host canonical-route AND direct-asset
 revocation before ever enabling public publishing/erasure.
+
+
+**Verified code CI addendum:** [run 43576521919](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43576521919)
+passed both jobs on code commit `88b8f843`: 194 Node,
+300 pgTAP, 34 real local HTTP, 1 restricted PostgreSQL and
+1 operator/pg.Pool race, plus typecheck/auth builds and 143/200 file
+budget. Do not confuse earlier port-binding failures with application
+test failures. The later database CI concurrency fix `5c28d79`
+requires a separate run result. Next task remains safe owner-data export
+and Storage/provider inventory reconciliation, with no destructive
+account deletion or public serving.
