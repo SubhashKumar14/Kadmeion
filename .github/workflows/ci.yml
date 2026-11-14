@@ -48,7 +48,7 @@ jobs:
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
       - name: Test restricted direct PostgreSQL artifact binding (local only)
-        run: node --test tests/integration/local-postgres-binding.test.mjs
+        run: node --experimental-strip-types --test tests/integration/local-postgres-binding.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
 # Only an ephemeral local Supabase stack: no cloud secrets, no production writes.
