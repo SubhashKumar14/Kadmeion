@@ -40,10 +40,12 @@ type Options={
   infoBefore?:Record<string,unknown>;
   infoAfter?:Record<string,unknown>;
   attestation?:Record<string,unknown>;
+  audit?:Record<string,unknown>;
+  auditAfter?:Record<string,unknown>;
 };
 function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'owner-jwt'){
   const paths:string[]=[];
-  let reconcileCount=0,identityCount=0,infoCount=0;
+  let reconcileCount=0,identityCount=0,infoCount=0,auditCount=0;
   const fetcher:typeof fetch=async(input,init)=>{
     const url=new URL(String(input));paths.push(url.pathname+url.search);
     assert.equal(url.origin,origin);
@@ -64,6 +66,19 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
       reconcileCount++;
       return json(reconcileCount===2&&options.after?options.after:
         (options.reconcile??reconciliation));
+    }
+    if(url.pathname==='/rest/v1/rpc/read_private_account_audit_export'){
+      auditCount++;
+      assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
+      const categories=Object.fromEntries([
+        'reviewerGrants','moderationCases','moderationEvents','accountExitRequests',
+        'reauthChallenges','inventorySnapshots','releasePointers','releaseEvents'
+      ].map(key=>[key,[]]));
+      return json(auditCount===2&&options.auditAfter?options.auditAfter:
+        (options.audit??{snapshotId:snapshot,ownerUserId:owner,
+          status:'BOUNDED_OWNER_AUDIT',maxRowsPerCategory:100,categories,
+          tokenDigestsIncluded:false,sessionsIncluded:false,
+          completeAccountExport:false,deletionAllowed:false}));
     }
     if(url.pathname==='/rest/v1/rpc/read_private_asset_content_attestations'){
       assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
@@ -129,6 +144,9 @@ test('owner-only bounded export contains private records, real bytes and digest 
   assert.equal(paths.filter(p=>p.includes('/object/info/authenticated/')).length,2);
   assert.equal(body.evidence.crossTableAtomicSnapshot,false);
   assert.equal(body.limitations.completeAccountExport,false);
+  assert.equal(body.restrictedAudit.reviewerGrants.length,0);
+  assert.equal(Object.keys(body.restrictedAudit).length,8);
+  assert.equal(paths.filter(p=>p.includes('read_private_account_audit_export')).length,2);
   assert.equal(body.limitations.deletionAllowed,false);
   assert.equal(paths.filter(p=>p.includes('reconcile_private_account_exit_storage')).length,2);
   assert.equal(paths.filter(p=>p==='/auth/v1/user').length,2);
@@ -290,4 +308,51 @@ test('same-size bytes with unchanged provider identity but different digest fail
   const modified=new Uint8Array(png);modified[modified.length-1]^=1;
   const {service}=fixture({assetBytes:modified});
   await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
+});
+
+
+test('bounded export includes owner audit events without secret digests',async()=>{
+  const categories=Object.fromEntries([
+    'reviewerGrants','moderationCases','moderationEvents','accountExitRequests',
+    'reauthChallenges','inventorySnapshots','releasePointers','releaseEvents'
+  ].map(k=>[k,[]]));
+  categories.reviewerGrants=[{id:assetId,request_id:snapshot,
+    portfolio_id:objectId,expires_at:'2026-11-14T00:00:00Z'}];
+  categories.moderationEvents=[{event_type:'OWNER_APPEAL',detail:'Case reviewed'}];
+  const {service}=fixture({audit:{snapshotId:snapshot,ownerUserId:owner,
+    status:'BOUNDED_OWNER_AUDIT',maxRowsPerCategory:100,categories,
+    tokenDigestsIncluded:false,sessionsIncluded:false,
+    completeAccountExport:false,deletionAllowed:false}});
+  const bytes=(await service.export(snapshot)).bytes;
+  const output=JSON.parse(new TextDecoder().decode(bytes));
+  assert.equal(output.restrictedAudit.reviewerGrants.length,1);
+  assert.equal(output.restrictedAudit.moderationEvents[0].event_type,'OWNER_APPEAL');
+  assert.ok(!JSON.stringify(output.restrictedAudit).includes('token_sha256'));
+});
+
+test('audit export refuses foreign, oversized, password-bearing and changing records',async()=>{
+  const empty=Object.fromEntries([
+    'reviewerGrants','moderationCases','moderationEvents','accountExitRequests',
+    'reauthChallenges','inventorySnapshots','releasePointers','releaseEvents'
+  ].map(k=>[k,[]]));
+  const base={snapshotId:snapshot,ownerUserId:owner,status:'BOUNDED_OWNER_AUDIT',
+    maxRowsPerCategory:100,categories:empty,
+    tokenDigestsIncluded:false,sessionsIncluded:false,
+    completeAccountExport:false,deletionAllowed:false};
+  for(const audit of [
+    {...base,ownerUserId:stranger},
+    {...base,tokenDigestsIncluded:true},
+    {...base,deletionAllowed:true},
+    {...base,categories:{...empty,reviewerGrants:[{token_sha256:'secret'}]}},
+    {...base,categories:{...empty,reviewerGrants:Array.from({length:101},()=>({}))}},
+    {...base,categories:{...empty,unexpected:[]}}
+  ]){
+    const {service,paths}=fixture({audit});
+    await assert.rejects(service.export(snapshot));
+    assert.ok(!paths.some(p=>p.includes('/storage/v1/object/authenticated/')),
+      'Unauthorized audit metadata triggered private asset download');
+  }
+  await assert.rejects(fixture({auditAfter:{...base,categories:{
+    ...empty,moderationEvents:[{event_type:'PUBLISH'}]
+  }}}).service.export(snapshot),{code:'UNVERIFIED'});
 });
