@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(8);
+select plan(9);
 select has_function('public','reconcile_private_account_exit_storage',
   array['uuid'],'owner Storage metadata reconciliation RPC exists');
 select ok(has_function_privilege('authenticated',
@@ -41,5 +41,10 @@ begin
   if not denied then raise exception 'Anonymous synthetic session reached RPC'; end if;
 end $$;
 select pass('live session is required before argument validation');
+select ok(not exists(
+  select 1 from pg_policies
+  where schemaname='storage' and tablename='objects'
+    and policyname='kd_storage_private_update'
+), 'registered private Storage paths have no owner overwrite policy');
 select * from finish();
 rollback;
