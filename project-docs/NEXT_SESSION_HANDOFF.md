@@ -64,3 +64,13 @@ Then follow owner-approved **Phase 2** provider sync/growth/opt-in analytics wit
 **First response in the new chat:** Identify the actual GitHub commit/tree, read the available handoff docs, report what is and is not proven, show an exact B0 implementation plan and start B0 immediately using supported tools. Do not ask me to repeat the 115 decisions. If the docs cannot be fetched, ask only for the v3 ZIP; otherwise proceed. Give me a concise checkpoint after B0 and clear next milestone B1. Never describe tests, remote pushes or cloud deployments as done until tool evidence confirms them.
 
 ## END COPY-READY PROMPT
+
+---
+
+## Latest implementation handoff — 14 November 2026 (supersedes historical “not started” statement)
+
+Active implementation repository: `SubhashKumar14/Kadmeion`, branch `feat/b0-backend-foundation`; older `DevFolio-App` is reference-only. Last code commit: [`4649cc0`](https://github.com/SubhashKumar14/Kadmeion/commit/4649cc09b2d755529112241753345bf244146650), which implemented owner-only B5 account-erasure **request/status/withdrawal only**. [CI 43534756934](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43534756934) passed application and local database/HTTP jobs. Check the newest branch head and CI again before writing.
+
+Account requests are `REQUESTED_BLOCKED`, not a deletion commitment. `reauth_verified`, `public_revocation_verified`, `access_terminated`, `erasure_executed`, and `retention_verified` are DB-constrained false. There is no destructive worker, no account access termination, no verified backup/cache retention window and no public-host revocation proof. Account deletion is separate from 15-day item Trash. Read `project-docs/IMPLEMENTATION_STATUS.md` newest B5 section and source UI-92/112 + WF-047.
+
+Next implement **bounded owner-only account-exit preflight/inventory and a verified recent-reauth contract**, with negative tenant and stale-session tests; do not create a purge or pretend JWT possession alone proves recent reauthentication. Public hosting, rollback, direct-asset revocation, hosted Brevo email, browser accessibility, dedicated lint/SAST and B6 backend integration gates remain open. Use only 52 explicitly approved original LIGHT images after backend completion; no DARK mockup set or rejected Canva designs. Do not deploy manually or change production without approval; existing Git integration automatically produces nonproduction auth previews.
