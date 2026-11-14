@@ -28,8 +28,8 @@ select ok(not has_function_privilege('authenticated',
 select ok(not has_table_privilege('authenticated',
   'kadmeion_private.unlisted_release_routes','SELECT'),
   'owners cannot query trusted live route rows');
-select like(pg_get_functiondef('public.service_read_unlisted_release(uuid)'::regprocedure),
-  '%r.stage_generation>v.revocation_generation%',
+select ok(pg_get_functiondef('public.service_read_unlisted_release(uuid)'::regprocedure)
+    like '%r.stage_generation>v.revocation_generation%',
   'UNLISTED delivery must also reject stale immutable stage after pointer revocation');
 select ok(not has_table_privilege('anon',
   'public.private_unlisted_publication_intents','SELECT'),
