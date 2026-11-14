@@ -258,5 +258,28 @@ select pass('replayed bind cannot survive owner block/revocation');
 reset role;
 select is((select count(*) from kadmeion_private.private_artifact_bindings)::bigint,
   1::bigint,'revocation leaves historical integrity evidence but no live state');
+
+select has_table('public','private_unlisted_publication_intents',
+  'signed-in owner publication intent is distinct from freeze');
+select has_table('kadmeion_private','unlisted_release_routes',
+  'service-only UNLISTED routing pointer exists');
+select ok(not has_table_privilege('anon',
+  'kadmeion_private.unlisted_release_routes','SELECT'),
+  'anonymous client cannot inspect public delivery source');
+select ok(not has_table_privilege('authenticated',
+  'kadmeion_private.unlisted_release_routes','INSERT'),
+  'owners cannot forge a LIVE route');
+select ok(not has_function_privilege('authenticated',
+  'public.service_prepare_unlisted_release(uuid)','EXECUTE'),
+  'owners cannot activate a public route directly');
+select ok(not has_function_privilege('authenticated',
+  'public.service_activate_unlisted_release(uuid,bigint,text)','EXECUTE'),
+  'owners cannot forge host verification');
+select ok(not has_function_privilege('anon',
+  'public.service_read_unlisted_release(uuid)','EXECUTE'),
+  'anonymous cannot bypass the trusted public resolver RPC');
+select ok(has_function_privilege('service_role',
+  'public.service_read_unlisted_release(uuid)','EXECUTE'),
+  'restricted backend resolver may query release bytes');
 select * from finish();
 rollback;
