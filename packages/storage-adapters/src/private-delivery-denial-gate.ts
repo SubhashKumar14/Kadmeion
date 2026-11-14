@@ -38,7 +38,8 @@ const deny=(reason:PrivateGateReason,generation=0,revocationGeneration=0):
   PrivateGateDeny=>({status:'DENY',reason,generation,revocationGeneration,
     servingAllowed:false,publicUrl:null,hostRevocationVerified:false});
 export class PrivateServerDeliveryDenialGate {
-  constructor(private readonly reader:TrustedPrivateDenialReader){}
+  private readonly reader:TrustedPrivateDenialReader;
+  constructor(reader:TrustedPrivateDenialReader){this.reader=reader;}
   async check(request:unknown):Promise<PrivateGateDeny>{
     if(!validRequest(request))return deny('INVALID_REQUEST');
     let raw:unknown;
