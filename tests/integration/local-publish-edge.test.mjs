@@ -163,17 +163,19 @@ test('B5: actual local Deno Trash scheduler refuses unauthenticated calls and st
   });
   try {
     let response=null;
+    const observed=new Set();
     for(let i=0;i<50;i++){
       if(child.exitCode!==null)break;
       try{
         const r=await request('Bearer '+sweepSecret);
         if([200,207].includes(r.status)){response=r;break;}
+        observed.add(String(r.status));
         await r.body?.cancel();
-      }catch{/* local isolate may still be starting */}
+      }catch(error){observed.add('transport:'+(error instanceof Error?error.name:'unknown'));}
       await delay(300);
     }
     assert.ok(response,'Local Trash Edge bundle did not serve: exit='+child.exitCode+
-      '; startup='+diagnostics.join(' | '));
+      '; statuses='+[...observed].join(',')+'; startup='+diagnostics.join(' | '));
     const body=await response.json();
     assert.equal(typeof body.purged,'number');
     assert.equal(typeof body.pending,'number');
