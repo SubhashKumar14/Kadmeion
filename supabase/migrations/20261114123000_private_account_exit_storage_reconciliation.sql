@@ -1,3 +1,9 @@
+-- B2 hardening discovered during reconciliation: previously authenticated owners
+-- could UPDATE verified object path/MIME/size after the registration RPC. Restrict
+-- changes to accessibility text; verified object identity remains immutable.
+revoke update on public.project_assets from authenticated;
+grant update (alt_text) on public.project_assets to authenticated;
+
 -- B5: read-only, bounded Storage metadata reconciliation for an existing owner
 -- account-exit inventory. NOT a byte export, deletion manifest or revocation proof.
 -- Evaluated against current database metadata; may differ from prior inventory time.
