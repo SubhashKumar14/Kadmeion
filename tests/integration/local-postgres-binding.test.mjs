@@ -132,7 +132,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
   ||':'||has_table_privilege(
   current_user,'public.private_release_visibility_pointers','UPDATE');`,
       {user:role,password});
-    assert.equal(flags,'t:f:f');
+    assert.equal(flags,'true:false:false');
     assert.throws(()=>dbQuery(
       'select count(*) from kadmeion_private.private_artifact_bindings;',
       {user:role,password}));
