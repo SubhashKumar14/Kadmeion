@@ -678,3 +678,50 @@ the owner-approved hosting proof.
 **Limitations:** This fixture intentionally contains no bytes or ALLOW path. It **does not** prove real public-host interception, direct CDN asset invalidation, cache revocation, hosted Supabase TLS, production worker credentials, erasure, email, browser E2E, dedicated lint/SAST or accessibility. No production writes, manual Vercel deployment, public publish or merge to `main`. Existing Vercel Git integration automatically generated nonproduction previews on feature-branch pushes.
 
 **Next independent backend critical path:** Implement a strictly non-destructive, owner-scoped account-exit export/erasure inventory manifest with idempotent snapshot and negative tenant tests; keep execution blocked until recent reauthentication, hosted canonical/direct-asset revocation and provider retention are independently verified.
+
+
+## 14 November 2026 — B5 versioned owner-only account-exit inventory snapshot
+
+**Verified baseline:** active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, starting HEAD `9e1eb602`. The historical
+DevFolio repository is reference-only. Notion's latest explicit owner
+approval confirms 52/52 original LIGHT images, no DARK set and no rejected
+Canva substitutes. Original image addresses are session-local, so no
+frontend screen was attempted.
+
+**Implementation (non-destructive):** commits `919a8e3`, `ac1ab65`,
+`249f9b6`, `9939964`, `88b8f84` add:
+- `private_account_exit_inventory_snapshots` with schema version 1,
+  owner-scoped operation idempotency, immutable JSONB count snapshots,
+  a 10-snapshot quota, no direct authenticated table grants, and RLS.
+- `create_private_account_exit_inventory` and
+  `get_private_account_exit_inventory` requiring the exact live GoTrue
+  session; optional association to an active same-owner erasure request.
+- Nine capped owner-scoped counts computed in one MVCC SQL statement,
+  a typed fail-closed client, pgTAP role/permission negatives and real
+  local HTTP tenant, replay, stale-session and immutable-snapshot tests.
+- Explicit `METADATA_SNAPSHOT_ONLY`, `exports=NOT_READY`,
+  `publicRoutes=UNVERIFIED`, `objectStorage=METADATA_ONLY`,
+  `backupRetention=UNVERIFIED`, and `deletionAllowed=false`.
+  This is **not** a full data export, exhaustive purge manifest, object
+  inventory, live public-host revocation, or authorization to delete.
+
+**CI collision and mitigation:** several overlapping push/PR database
+jobs failed to start ephemeral Supabase due to fixed host port 54322 already
+in use, not because an application assertion failed. Commit `5c28d79`
+adds a database-job concurrency group to serialize subsequent CI runs.
+The new code's final CI outcome must be read from the current workflow
+run; do not claim SQL migration, pgTAP or real HTTP integration passed
+until both jobs complete. Contracts/typecheck and tests were observed
+passing in the latest run, but full B5 verification is still pending
+database completion at the time of this entry.
+
+**Authorization:** no production/hosted Supabase mutation, public route,
+account deletion, manual Vercel deployment, main merge or frontend
+implementation. The active request remains `REQUESTED_BLOCKED`.
+
+**Next action:** verify final CI for the inventory migration and fix any
+real pgTAP/HTTP regression. Then extend account-exit export readiness
+with an independently verified, bounded owner-data export and provider
+Storage object reconciliation; do not confuse count snapshots with
+complete export or deletion authority.
