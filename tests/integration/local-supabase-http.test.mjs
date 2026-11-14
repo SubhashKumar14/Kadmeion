@@ -104,6 +104,49 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
     assert.ok(!anonymous.ok || (Array.isArray(anonymous.data)&&anonymous.data.length===0),
       'Anonymous profile listing disclosed an identity');
   });
+  await t.test('public profile projection requires explicit consent and withdraws on privacy changes', async () => {
+    const handle = 'ci_' + randomUUID().slice(0, 8);
+    const profilePath = '/rest/v1/profiles?user_id=eq.' + owner.id;
+    const sharingPath = '/rest/v1/profile_sharing_preferences';
+    const publishPath = '/rest/v1/rpc/owner_publish_profile_projection';
+    const readPath = '/rest/v1/rpc/service_read_published_profile_projection';
+    const lookup = (credentials = {key: cfg.service, bearer: cfg.service}) => send(readPath, {
+      ...credentials, method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: {p_handle: handle}
+    });
+    successful(await send(profilePath, {
+      ...json(owner), method: 'PATCH', body: {handle, display_name: 'Visible name', bio: 'Private bio'}
+    }), 'Set private profile');
+    successful(await send(sharingPath, {
+      ...json(owner), method: 'POST',
+      body: {user_id: owner.id, publication_requested: true, share_display_name: true}
+    }), 'Set profile sharing preferences');
+    assert.equal(successful(await lookup(), 'Read prior to explicit publication'), null);
+    const publish = (actor, confirmation) => send(publishPath, {
+      ...json(actor), method: 'POST', body: {p_confirmation: confirmation}
+    });
+    assert.equal((await publish(owner, 'PUBLISH')).ok, false);
+    assert.equal((await publish(stranger, 'PUBLISH PROFILE')).ok, false);
+    assert.deepEqual(successful(await publish(owner, 'PUBLISH PROFILE'), 'Publish selected fields'),
+      {status: 'PROJECTION_READY', handle});
+    assert.deepEqual(successful(await lookup(), 'Read selected public fields'), {
+      handle, displayName: 'Visible name'
+    });
+    assert.equal((await lookup({bearer: stranger.token})).ok, false);
+    assert.equal((await lookup({})).ok, false);
+    const ownerPreferences = sharingPath + '?user_id=eq.' + owner.id;
+    for (const requested of [false, true]) {
+      successful(await send(ownerPreferences, {
+        ...json(owner), method: 'PATCH', body: {publication_requested: requested}
+      }), 'Change privacy preference');
+      assert.equal(successful(await lookup(), 'Read withdrawn profile'), null);
+    }
+    successful(await publish(owner, 'PUBLISH PROFILE'), 'Republish selected data');
+    successful(await send(profilePath, {
+      ...json(owner), method: 'PATCH', body: {handle: null}
+    }), 'Remove public handle');
+    assert.equal(successful(await lookup(), 'Read withdrawn handle'), null);
+  });
   let projectId;
   await t.test('owner can create a private project, stranger cannot list it or write as owner',async()=>{
     const created=await send('/rest/v1/projects?select=id,owner_user_id,slug',{
