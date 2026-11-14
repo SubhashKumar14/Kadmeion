@@ -156,3 +156,34 @@ test('runtime rejects unknown no-op intents and hidden transaction properties',(
     assert.equal(Object.keys(head.operations).length,0);
   }
 });
+
+
+test('a legacy insertion-order operation record remains safely replayable after upgrade',()=>{
+  const original=make();
+  const command={
+    operationId:'c0000000-0000-4000-8000-000000000009',
+    baseRevision:0,
+    intent:{kind:'UPDATE_CONTENT' as const,slotKey:'hero',content:{title:'Legacy'}}
+  };
+  const saved=applyEditorTransaction(original,command);
+  const legacy={...saved,operations:{[command.operationId]:JSON.stringify(command)}};
+  const replay={intent:{content:{title:'Legacy'},slotKey:'hero',
+    kind:'UPDATE_CONTENT' as const},baseRevision:0,operationId:command.operationId};
+  assert.strictEqual(applyEditorTransaction(legacy,replay),legacy);
+  assert.throws(()=>applyEditorTransaction(legacy,{
+    ...replay,intent:{...replay.intent,content:{title:'Altered'}}}),{code:'VALIDATION'});
+});
+
+test('malformed runtime slot identifiers cannot coerce to an existing slot',()=>{
+  const snapshot=make().snapshot;
+  snapshot.slots.undefined={state:'S0',componentId:'title-stacked@1',content:{title:'Untouched'}};
+  const head=createEditorHead(snapshot);
+  for(const slotKey of [undefined,null,123,{},[]]){
+    assert.throws(()=>applyEditorTransaction(head,{
+      operationId:'d0000000-0000-4000-8000-000000000001',baseRevision:0,
+      intent:{kind:'CLEAR_SLOT',slotKey}
+    } as never),{code:'VALIDATION'});
+  }
+  assert.equal(head.snapshot.slots.undefined.content.title,'Untouched');
+  assert.equal(head.revision,0);
+});

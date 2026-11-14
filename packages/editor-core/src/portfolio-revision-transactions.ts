@@ -49,7 +49,7 @@ const RESERVED_KEYS = new Set(['__proto__','constructor','prototype']);
 const OP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function assertSlotKey(key: string) {
-  if (!SLOT_KEY.test(key) || RESERVED_KEYS.has(key))
+  if (typeof key!=='string' || !SLOT_KEY.test(key) || RESERVED_KEYS.has(key))
     throw new ContractError('VALIDATION', 'Invalid or reserved slot key.');
 }
 
@@ -203,7 +203,16 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
   const seen = Object.hasOwn(head.operations,operationId) ?
     head.operations[operationId] : head.operations[command.operationId];
   if (seen !== undefined) {
-    if (seen !== intentHash) throw new ContractError('VALIDATION', 'Operation ID reused with different content.');
+    // Older browser drafts persisted JSON.stringify(command) with insertion
+    // order. Accept an EXACT semantic replay without rewriting the old head;
+    // never accept a genuinely different intent with the same operation ID.
+    let equivalent=seen===intentHash;
+    if(!equivalent&&typeof seen==='string'&&seen.length<=300000){
+      try{equivalent=commandDigest(JSON.parse(seen) as EditorCommand).hash===intentHash;}
+      catch{equivalent=false;}
+    }
+    if(!equivalent)
+      throw new ContractError('VALIDATION', 'Operation ID reused with different content.');
     return head; // idempotent duplicate; no new version
   }
   assertBaseRevision(command.baseRevision,head.revision);
