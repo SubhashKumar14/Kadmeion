@@ -12,3 +12,8 @@ double_confirm_changes = true
 
 [functions.purge-expired-trash]
 verify_jwt = false
+
+# Owner JWT is validated by gateway AND rechecked against live Auth + RLS.
+# No secret-role token is accepted from browser as owner.
+[functions.complete-private-asset]
+verify_jwt = true
