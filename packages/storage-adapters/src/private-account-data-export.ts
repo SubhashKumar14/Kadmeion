@@ -195,6 +195,36 @@ export class SupabasePrivateAccountDataExporter {
     requireCondition(pins.size===assets.length,'UNVERIFIED','Asset hash pin coverage incomplete.');
     return pins;
   }
+  /**
+   * Owner-live-session, read-only projection of otherwise restricted audit
+   * categories. Every category is bounded, and token hashes/session IDs are
+   * excluded by the server RPC. Cannot be used as an erasure manifest.
+   */
+  private async audit(snapshotId:string,ownerId:string):Promise<JsonObject>{
+    const categories=['reviewerGrants','moderationCases','moderationEvents',
+      'accountExitRequests','reauthChallenges','inventorySnapshots',
+      'releasePointers','releaseEvents'] as const;
+    const raw=await this.json('/rest/v1/rpc/read_private_account_audit_export',
+      MAX_TABLE_BYTES,{p_snapshot_id:snapshotId});
+    requireCondition(object(raw)&&raw.status==='BOUNDED_OWNER_AUDIT'&&
+      raw.snapshotId===snapshotId&&raw.ownerUserId===ownerId&&
+      raw.maxRowsPerCategory===100&&raw.tokenDigestsIncluded===false&&
+      raw.sessionsIncluded===false&&raw.completeAccountExport===false&&
+      raw.deletionAllowed===false&&object(raw.categories)&&
+      Object.keys(raw.categories).length===categories.length&&
+      categories.every(key=>Array.isArray((raw.categories as JsonObject)[key])&&
+        ((raw.categories as JsonObject)[key] as unknown[]).length<=100),
+      'UNVERIFIED','Restricted audit export receipt is incomplete or foreign.');
+    const data=raw.categories as JsonObject;
+    for(const name of categories)for(const entry of data[name] as unknown[]){
+      requireCondition(object(entry)&&
+        !Object.keys(entry).some(key=>[
+          'token_sha256','rawToken','refresh_token','access_token',
+          'initial_session_id','verified_session_id'
+        ].includes(key)),'INTEGRITY','Restricted audit data contained forbidden credentials.');
+    }
+    return data;
+  }
   private async rows(table:typeof TABLES[number][0],column:string,ownerId:string):
     Promise<JsonObject[]> {
     const raw=await this.json('/rest/v1/'+table+'?select=*&'+column+'=eq.'+
@@ -211,6 +241,7 @@ export class SupabasePrivateAccountDataExporter {
     requireCondition(isUuid(snapshotId),'VALIDATION','Valid owner inventory snapshot ID required.');
     const owner=await this.owner();
     const before=await this.reconcile(snapshotId);
+    const auditBefore=await this.audit(snapshotId,owner.id);
     const records:Record<string,JsonObject[]>={};
     for(const [table,column] of TABLES)records[table]=await this.rows(table,column,owner.id);
     const assets=records.project_assets;
@@ -274,12 +305,16 @@ export class SupabasePrivateAccountDataExporter {
     }
     const after=await this.reconcile(snapshotId);
     requireCondition(after===before,'UNVERIFIED','Storage inventory changed during export.');
+    const auditAfter=await this.audit(snapshotId,owner.id);
+    requireCondition(JSON.stringify(auditAfter)===JSON.stringify(auditBefore),
+      'UNVERIFIED','Restricted audit history changed during export.');
     const finalOwner=await this.owner();
     requireCondition(finalOwner.id===owner.id,'AUTH_EXPIRED','Owner session changed during export.');
     const envelope={
       kind:'kadmeion-bounded-private-account-export',schemaVersion:1,
       exportedAt:new Date().toISOString(),owner:{id:owner.id,email:owner.email},
-      inventorySnapshotId:snapshotId,records,assets:verifiedAssets,
+      inventorySnapshotId:snapshotId,records,restrictedAudit:auditBefore,
+      assets:verifiedAssets,
       evidence:{registeredAssets:before,downloadedAssets:verifiedAssets.length,
         downloadedByteCount:total,downloadedByteHashes:'SHA-256',
         providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
@@ -288,8 +323,8 @@ export class SupabasePrivateAccountDataExporter {
         crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
       limitations:{completeAccountExport:false,
         omittedCategories:['case-study revision history','reviewer grants',
-          'moderation and appeals','account erasure history',
-          'inventory snapshots','provider integrations and backups'],
+          'provider integrations and backups',
+          'non-atomic provider-side histories'],
         providerRetentionVerified:false,publicRouteRevocationVerified:false,
         deletionAllowed:false}
     };
