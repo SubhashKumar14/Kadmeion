@@ -135,6 +135,29 @@ export class SupabasePrivateAccountDataExporter {
       'UNVERIFIED','Storage metadata is not reconciled with the owner inventory.');
     return raw.registeredAssets as number;
   }
+  /**
+   * Read Storage's owner-authorized object identity. This is a change detector,
+   * NOT immutable versioned download or an expected provider content hash.
+   * Private object GETs are not version-addressable in this API.
+   */
+  private async objectInfo(path:string,ownerId:string,mime:string,size:number):
+    Promise<{id:string;version:string;updatedAt:string}> {
+    const objectPath=path.split('/').map(encodeURIComponent).join('/');
+    const raw=await this.json('/storage/v1/object/info/authenticated/kadmeion-private-assets/'+
+      objectPath,65536);
+    requireCondition(object(raw)&&isUuid(raw.id)&&
+      raw.name===path&&raw.bucket_id==='kadmeion-private-assets'&&
+      raw.owner_id===ownerId&&typeof raw.version==='string'&&
+      raw.version.length>0&&raw.version.length<=128&&
+      typeof raw.updated_at==='string'&&
+      !Number.isNaN(Date.parse(raw.updated_at))&&object(raw.metadata)&&
+      Number.isSafeInteger(Number(raw.metadata.size))&&Number(raw.metadata.size)===size&&
+      typeof raw.metadata.mimetype==='string'&&
+      raw.metadata.mimetype.toLowerCase()===mime,
+      'INTEGRITY','Storage object identity or version is missing or mismatched.');
+    return {id:raw.id as string,version:raw.version as string,
+      updatedAt:raw.updated_at as string};
+  }
   private async rows(table:typeof TABLES[number][0],column:string,ownerId:string):
     Promise<JsonObject[]> {
     const raw=await this.json('/rest/v1/'+table+'?select=*&'+column+'=eq.'+
@@ -156,6 +179,79 @@ export class SupabasePrivateAccountDataExporter {
     const assets=records.project_assets;
     requireCondition(assets.length===before,'UNVERIFIED','Asset inventory changed during export.');
     requireCondition(assets.length<=MAX_ASSETS,'LIMIT_EXCEEDED','Too many assets for bounded byte export.');
+    // Pin every registered object BEFORE any byte download. This prevents
+    // an ordinary same-path replacement from silently crossing the export.
+    const pins=new Map<string,{id:string;version:string;updatedAt:string}>();
+    for(const asset of assets){
+      const path=asset.object_path,mime=asset.mime_type,size=asset.byte_size;
+      requireCondition(typeof path==='string'&&
+        new RegExp('^'+owner.id+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+
+      const path=asset.object_path,mime=asset.mime_type,size=asset.byte_size;
+      requireCondition(typeof path==='string'&&
+        new RegExp('^'+owner.id+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$').test(path)&&
+        typeof mime==='string'&&['image/png','image/jpeg','image/webp','image/avif'].includes(mime)&&
+        typeof size==='number'&&Number.isSafeInteger(size)&&size>0&&size<=MAX_ASSET_BYTES,
+        'INTEGRITY','Invalid verified asset metadata.');
+      requireCondition(total+size<=MAX_TOTAL_ASSET_BYTES,'LIMIT_EXCEEDED',
+        'Private asset bytes exceed export limit.');
+      const objectPath=path.split('/').map(encodeURIComponent).join('/');
+      const response=await this.request('/storage/v1/object/authenticated/kadmeion-private-assets/'+
+        objectPath,MAX_ASSET_BYTES);
+      const actualMime=(response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
+      requireCondition(response.bytes.length===size&&actualMime===mime,'INTEGRITY',
+        'Private asset bytes do not match registered size or MIME.');
+      total+=response.bytes.length;
+      const pin=pins.get(path)!;
+      verifiedAssets.push({path,mimeType:mime,byteSize:size,
+        storageObjectId:pin.id,storageVersionAtRead:pin.version,
+        downloadedSha256:await sha256(response.bytes),base64:base64(response.bytes)});
+    }
+    // Re-read ALL object versions after ALL downloads, not merely immediately
+    // after each one; a late overwrite of an earlier asset must also fail.
+    for(const asset of assets){
+      const path=asset.object_path as string;
+      const pin=pins.get(path)!;
+      const current=await this.objectInfo(path,owner.id,
+        asset.mime_type as string,asset.byte_size as number);
+      requireCondition(current.id===pin.id&&current.version===pin.version&&
+        current.updatedAt===pin.updatedAt,'INTEGRITY',
+        'Private Storage object changed while exporting.');
+    }
+    const after=await this.reconcile(snapshotId);
+    requireCondition(after===before,'UNVERIFIED','Storage inventory changed during export.');
+    const finalOwner=await this.owner();
+    requireCondition(finalOwner.id===owner.id,'AUTH_EXPIRED','Owner session changed during export.');
+    const envelope={
+      kind:'kadmeion-bounded-private-account-export',schemaVersion:1,
+      exportedAt:new Date().toISOString(),owner:{id:owner.id,email:owner.email},
+      inventorySnapshotId:snapshotId,records,assets:verifiedAssets,
+      evidence:{registeredAssets:before,downloadedAssets:verifiedAssets.length,
+        downloadedByteCount:total,downloadedByteHashes:'SHA-256',
+        providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
+        storageObjectVersionCheckedBeforeAndAfter:true,
+        crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
+      limitations:{completeAccountExport:false,
+        omittedCategories:['case-study revision history','reviewer grants',
+          'moderation and appeals','account erasure history',
+          'inventory snapshots','provider integrations and backups'],
+        providerRetentionVerified:false,publicRouteRevocationVerified:false,
+        deletionAllowed:false}
+    };
+    const bytes=encoder.encode(JSON.stringify(envelope));
+    requireCondition(bytes.byteLength<=MAX_EXPORT_BYTES,'LIMIT_EXCEEDED',
+      'Export document exceeds maximum size.');
+    return {filename:'kadmeion-private-account-partial-export.json',
+      mime:'application/json',bytes,status:'BOUNDED_PARTIAL_EXPORT',
+      completeAccountExport:false,deletionAllowed:false};
+  }
+}
+).test(path)&&
+        typeof mime==='string'&&['image/png','image/jpeg','image/webp','image/avif'].includes(mime)&&
+        typeof size==='number'&&Number.isSafeInteger(size)&&size>0&&size<=MAX_ASSET_BYTES,
+        'INTEGRITY','Invalid verified asset metadata.');
+      requireCondition(!pins.has(path),'INTEGRITY','Duplicate registered asset path.');
+      pins.set(path,await this.objectInfo(path,owner.id,mime,size));
+    }
     let total=0;
     const verifiedAssets:JsonObject[]=[];
     for(const asset of assets){
