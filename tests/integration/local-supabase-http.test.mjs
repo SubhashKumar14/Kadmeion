@@ -707,6 +707,10 @@ test('account erasure removes active account data only after fresh owner confirm
   }), 'Begin account erasure proof');
   const inputs = {p_request_id: request.requestId, p_challenge_id: challenge.challengeId,
     p_confirmation: 'DELETE MY ACCOUNT'};
+  const objectPath = '/storage/v1/object/' + bucket + '/' + owner.id + '/exit/test.png';
+  successful(await send(objectPath, {
+    ...bearer(owner), method: 'POST', body: png, headers: {'Content-Type': 'image/png'}
+  }), 'Upload account-exit fixture');
   const execute = (actor, args = inputs) => post(actor, 'owner_execute_account_erasure', args);
   assert.equal((await execute(outsider)).ok, false);
   assert.equal((await execute(owner)).data?.message, 'ERASURE_REAUTH_REQUIRED');
@@ -719,6 +723,12 @@ test('account erasure removes active account data only after fresh owner confirm
     p_challenge_id: challenge.challengeId
   }), 'Verify account erasure sign-in');
   assert.equal((await execute(fresh, {...inputs, p_confirmation: 'DELETE'})).ok, false);
+  assert.equal((await execute(fresh)).data?.message, 'ERASURE_STORAGE_CLEANUP_REQUIRED');
+  await send(objectPath, {...bearer(outsider), method: 'DELETE'});
+  assert.equal((await execute(fresh)).data?.message, 'ERASURE_STORAGE_CLEANUP_REQUIRED');
+  await send(objectPath, {...bearer(owner), method: 'DELETE'});
+  assert.equal((await execute(fresh)).data?.message, 'ERASURE_STORAGE_CLEANUP_REQUIRED');
+  successful(await send(objectPath, {...bearer(fresh), method: 'DELETE'}), 'Remove account-exit upload');
   const receipt = successful(await execute(fresh), 'Erase active account');
   assert.equal(receipt.status, 'ACTIVE_ACCOUNT_ERASED');
   assert.equal(receipt.accessTerminated, true);

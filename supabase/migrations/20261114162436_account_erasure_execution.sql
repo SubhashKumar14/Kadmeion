@@ -41,6 +41,31 @@ begin
 end;
 $function$;
 
+-- Use the Storage DELETE API to remove bytes. The database policy allows
+-- cleanup only while the owner has an active erasure request and fresh proof.
+create function kadmeion_private.can_remove_account_exit_uploads()
+returns boolean language sql stable security definer set search_path=''
+as $function$
+  select exists(
+    select 1 from public.private_account_erasure_requests request
+    join public.private_account_exit_reauth_challenges challenge
+      on challenge.owner_user_id=request.owner_user_id
+    join auth.sessions session on session.id=challenge.verified_session_id
+      and session.user_id=challenge.owner_user_id
+    where request.owner_user_id=(select auth.uid()) and request.status='REQUESTED_BLOCKED'
+      and challenge.verified_at is not null and challenge.expires_at>statement_timestamp()
+      and session.id::text=(select auth.jwt()->>'session_id')
+  )
+$function$;
+revoke all on function kadmeion_private.can_remove_account_exit_uploads() from public,anon,service_role;
+grant execute on function kadmeion_private.can_remove_account_exit_uploads() to authenticated;
+create policy kd_storage_erase_owned_uploads on storage.objects for delete to authenticated
+using (
+  bucket_id='kadmeion-private-assets' and owner_id=(select auth.uid()::text)
+  and (storage.foldername(name))[1]=(select auth.uid()::text)
+  and (select kadmeion_private.can_remove_account_exit_uploads())
+);
+
 create function public.owner_execute_account_erasure(
   p_request_id uuid,p_challenge_id uuid,p_confirmation text
 ) returns jsonb language plpgsql security definer set search_path=''

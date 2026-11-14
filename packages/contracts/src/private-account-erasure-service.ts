@@ -209,7 +209,7 @@ export class SupabasePrivateAccountErasureService {
       const message=record(error)?error.message:null;
       if(message==='LIVE_SESSION_REQUIRED')
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
-      if(message==='NEW_SIGN_IN_REQUIRED')
+      if(message==='NEW_SIGN_IN_REQUIRED'||message==='ERASURE_REAUTH_REQUIRED')
         throw new PrivateAccountErasureError('REAUTH_REQUIRED','Sign in again after starting the account-exit challenge.');
       if(message==='REAUTH_CHALLENGE_EXPIRED')
         throw new PrivateAccountErasureError('CHALLENGE_EXPIRED','This challenge expired; start a new one.');
@@ -221,8 +221,10 @@ export class SupabasePrivateAccountErasureService {
         message==='REAUTH_CHALLENGE_QUOTA_REACHED'||
         message==='INVENTORY_SNAPSHOT_QUOTA_REACHED')
         throw new PrivateAccountErasureError('QUOTA_EXCEEDED','Request limit reached.');
-      if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL')
+      if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL'||message==='INVALID_ERASURE_EXECUTION')
         throw new PrivateAccountErasureError('VALIDATION','Invalid account exit request.');
+      if(message==='ERASURE_STORAGE_CLEANUP_REQUIRED')
+        throw new PrivateAccountErasureError('CONFLICT','Remove your private uploads before erasing the account.');
       if(response.status===409||message==='ACCOUNT_ERASURE_ALREADY_REQUESTED'||
         message==='ERASURE_WITHDRAWAL_OPERATION_REUSED'||
         message==='REAUTH_OPERATION_REUSED'||message==='REAUTH_PROOF_ALREADY_BOUND'||
@@ -359,6 +361,26 @@ export class SupabasePrivateAccountErasureService {
     return receipt(await this.send('rpc/request_private_account_erasure',{
       p_operation_id:operationId,p_confirmation:confirmation
     }));
+  }
+  async execute(requestId:string,challengeId:string,confirmation:'DELETE MY ACCOUNT'):Promise<{
+    status:'ACTIVE_ACCOUNT_ERASED';
+    receiptId:string;
+    accessTerminated:true;
+    backupErasureVerified:false;
+    externalCopiesErased:false;
+  }>{
+    if(!uuid(requestId)||!uuid(challengeId)||confirmation!=='DELETE MY ACCOUNT')
+      throw new ContractError('VALIDATION','Exact account exit confirmation is required.');
+    const raw=await this.send('rpc/owner_execute_account_erasure',{
+      p_request_id:requestId,p_challenge_id:challengeId,p_confirmation:confirmation
+    });
+    if(!record(raw)||raw.status!=='ACTIVE_ACCOUNT_ERASED'||!uuid(raw.receiptId)||
+       raw.accessTerminated!==true||raw.backupErasureVerified!==false||raw.externalCopiesErased!==false)
+      throw new PrivateAccountErasureError('INVALID_ACK','Account erasure was not confirmed.');
+    return {
+      status:'ACTIVE_ACCOUNT_ERASED',receiptId:raw.receiptId,accessTerminated:true,
+      backupErasureVerified:false,externalCopiesErased:false
+    };
   }
   async withdraw(requestId:string,operationId:string):Promise<AccountErasureReceipt>{
     if(!uuid(requestId)||!uuid(operationId))
