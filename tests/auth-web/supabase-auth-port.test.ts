@@ -198,3 +198,55 @@ test('OAuth denies open redirect, no session store, expired/malformed verifier a
   assert.ok((await unavailable.port.signInWithOAuth({provider:'google',
     options:{redirectTo:'http://localhost:3000/auth/callback'}})).error);
 });
+
+
+test('signing out other sessions preserves the verified current browser session',async()=>{
+  const saved=storage();
+  const requests:string[]=[];
+  const {port}=mock((async(url:string|URL|Request,options?:RequestInit)=>{
+    const u=String(url);
+    requests.push(u);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.includes('/logout?scope=others')){
+      assert.equal(options?.method,'POST');
+      assert.equal((options?.headers as Record<string,string>).Authorization,
+        'Bearer '+tokens.access_token);
+      return json({});
+    }
+    if(u.endsWith('/user'))return json(user);
+    return json({},404);
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({email:user.email!,password:'password'})).error,null);
+  const kept=[...saved.data.values()][0];
+  assert.equal((await port.signOut({scope:'others'})).error,null);
+  assert.equal([...saved.data.values()][0],kept);
+  assert.equal((await port.getUser()).data.user?.id,user.id);
+  assert.ok(requests.some(u=>u.includes('/logout?scope=others')));
+});
+
+test('remote failure when revoking other sessions preserves current session and reports error',async()=>{
+  const saved=storage();
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password'))return json(tokens);
+    throw new Error('unavailable');
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({email:user.email!,password:'password'})).error,null);
+  const value=[...saved.data.values()][0];
+  const result=await port.signOut({scope:'others'});
+  assert.ok(result.error);
+  assert.equal([...saved.data.values()][0],value);
+  assert.equal(result.data,null);
+});
+
+test('local sign-out clears the current browser session and denies later access',async()=>{
+  const saved=storage();
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password'))return json(tokens);
+    if(String(url).includes('/logout?scope=local'))return json({});
+    return json({},404);
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({email:user.email!,password:'password'})).error,null);
+  assert.equal((await port.signOut({scope:'local'})).error,null);
+  assert.equal(saved.data.size,0);
+  assert.ok((await port.getUser()).error);
+});

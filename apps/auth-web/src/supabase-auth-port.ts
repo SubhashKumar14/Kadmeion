@@ -209,10 +209,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signOut({ scope = 'local' }: { scope: 'local' | 'global' | 'others' } = { scope: 'local' }): Promise<AuthOutcome<unknown>> {
     return this.outcome(async () => {
-      const token = this.session?.access_token;
+      if(!['local','global','others'].includes(scope))
+        throw new Error('Invalid sign-out scope.');
+      const current = await this.refreshed();
+      if(scope === 'others'){
+        // Supabase preserves the invoking session for 'others'. A network
+        // rejection cannot be reported as successful remote revocation.
+        if(!current)throw new Error('Sign in again to revoke other sessions.');
+        await this.request('/logout?scope=others','POST',{},current.access_token);
+        return {};
+      }
       try {
-        if (token) await this.request('/logout?scope=' + scope, 'POST', {}, token);
+        if(current)await this.request('/logout?scope='+scope,'POST',{},current.access_token);
       } finally {
+        // Local/global sign-out clears this browser even if the network fails.
+        // On network failure the caller sees an error, not proof of remote revoke.
         this.store(null);
       }
       return {};
