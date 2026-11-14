@@ -118,3 +118,18 @@ test('a forged canonical string cannot borrow the database SHA',async()=>{
     ...receipt,snapshotCanonicalJson:altered,snapshot:JSON.parse(altered)
   })).load(reqId),{code:'INTEGRITY_FAILED'});
 });
+
+test('private frozen RPC rejects oversized envelope before parsing any snapshot',async()=>{
+  for(const response of [
+    new Response('{}',{headers:{'Content-Type':'application/json','Content-Length':'33554433'}}),
+    Response.json(receipt,{headers:{'Content-Length':'4'}}),
+    new Response(JSON.stringify(receipt),{headers:{'Content-Type':'text/html'}})
+  ]){
+    await assert.rejects(client(async()=>response).load(reqId),{code:'INTEGRITY_FAILED'});
+  }
+});
+test('private frozen RPC bounds unknown streamed bytes even without Content-Length',async()=>{
+  const bytes='x'.repeat(32*1024*1024+1);
+  const response=new Response(bytes,{headers:{'Content-Type':'application/json'}});
+  await assert.rejects(client(async()=>response).load(reqId),{code:'INTEGRITY_FAILED'});
+});

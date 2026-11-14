@@ -6,6 +6,36 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 const SHA=/^[0-9a-f]{64}$/;
 const encoder=new TextEncoder();
 const MAX_CANONICAL_BYTES=12*1024*1024;
+// PostgreSQL JSONB canonical source may double in transfer due to JSON escapes;
+// enforce the envelope limit BEFORE parsing (or storing unlimited response bytes).
+const MAX_RPC_BYTES=32*1024*1024;
+async function readPrivateRpcJson(response:Response,limit:number):Promise<unknown> {
+  const contentType=response.headers.get('content-type');
+  if(!contentType||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(contentType))
+    throw Error('Private RPC must be JSON.');
+  const contentLength=response.headers.get('content-length');
+  if(contentLength!==null&&(!/^\d+$/.test(contentLength)||Number(contentLength)>limit))
+    throw Error('Private RPC exceeds size limit.');
+  if(!response.body)throw Error('Missing private RPC body.');
+  const reader=response.body.getReader(),chunks:Uint8Array[]=[];
+  let size=0;
+  try {
+    for(;;){
+      const {done,value}=await reader.read();
+      if(done)break;
+      if(!(value instanceof Uint8Array))throw Error('Invalid private RPC response chunk.');
+      size+=value.byteLength;
+      if(size>limit){await reader.cancel();throw Error('Private RPC exceeds size limit.');}
+      chunks.push(value);
+    }
+  }finally{reader.releaseLock();}
+  const encoding=response.headers.get('content-encoding');
+  if(contentLength!==null&&(!encoding||encoding.toLowerCase()==='identity')&&
+      Number(contentLength)!==size)throw Error('Private RPC length mismatch.');
+  const bytes=new Uint8Array(size);let offset=0;
+  for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+  return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+}
 
 interface PrivateAttestation {
   portfolioId:string;revision:number;snapshotSha256:string;
@@ -94,7 +124,7 @@ export class SupabasePrivateFrozenRevisionLoader {
       throw new FrozenLoadError('PROVIDER_UNAVAILABLE','Private database is unreachable.');
     }
     if(!response.ok){
-      const problem:unknown=await response.json().catch(()=>null);
+      const problem:unknown=await readPrivateRpcJson(response,65536).catch(()=>null);
       const message=record(problem)?problem.message:null;
       if(message==='PRIVATE_FROZEN_REVISION_NOT_FOUND')
         throw new FrozenLoadError('NOT_FOUND','Private frozen request was not found.');
@@ -104,7 +134,7 @@ export class SupabasePrivateFrozenRevisionLoader {
         throw new FrozenLoadError('AUTH_EXPIRED','Session was rejected or access denied.');
       throw new FrozenLoadError('PROVIDER_UNAVAILABLE','Private frozen revision read failed.');
     }
-    const raw:unknown=await response.json().catch(()=>null);
+    const raw:unknown=await readPrivateRpcJson(response,MAX_RPC_BYTES).catch(()=>null);
     if(!record(raw)||raw.requestId!==requestId||
        typeof raw.portfolioId!=='string'||!UUID.test(raw.portfolioId)||
        typeof raw.revision!=='number'||!Number.isSafeInteger(raw.revision)||raw.revision<1||
