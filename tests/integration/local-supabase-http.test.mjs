@@ -616,3 +616,31 @@ test('B4: artifact binding RPC and private binding registry cannot be read over 
     }
   }
 });
+
+test('B5: case-bound operator BLOCK cannot be forged over local REST',
+  {timeout:45_000},async()=>{
+  const ordinary=await adminUser('moderation-denial');
+  const path='/rest/v1/rpc/operator_block_private_portfolio';
+  const body={p_case_id:randomUUID(),p_portfolio_id:randomUUID(),
+    p_operation_id:randomUUID()};
+  const anonymous=await send(path,{method:'POST',
+    headers:{'Content-Type':'application/json'},body});
+  assert.ok(!anonymous.ok,'Anonymous caller created an operator block');
+  const regular=await send(path,{...json(ordinary),method:'POST',body});
+  assert.ok(!regular.ok,'Nonoperator created an operator block');
+  const forged=await send('/rest/v1/private_release_visibility_events',{
+    ...json(ordinary),method:'POST',
+    body:{portfolio_id:body.p_portfolio_id,owner_user_id:ordinary.id,
+      operation_id:body.p_operation_id,event_type:'OPERATOR_BLOCK',
+      resulting_generation:1}});
+  assert.ok(!forged.ok,'Regular user forged operator audit event');
+  for(const key of [cfg.anon,cfg.service]){
+    for(const profile of [undefined,'kadmeion_private']){
+      const headers={};
+      if(profile)headers['Accept-Profile']=profile;
+      const response=await send('/rest/v1/moderation_portfolio_holds?select=portfolio_id',
+        {key,bearer:key,headers});
+      assert.ok(!response.ok,'Private moderation hold leaked through Data API');
+    }
+  }
+});
