@@ -137,10 +137,14 @@ export class SupabasePrivateAccountErasureService {
       'projectAssetMetadata','frozenReleaseRequests','reviewerGrants',
       'trashRecords','accountExitRequests'
     ] as const;
+    const counts=record(raw)&&record(raw.counts)?raw.counts:null;
     if(!record(raw)||raw.status!=='INVENTORY_ONLY'||raw.maxCountPerCategory!==1000||
-      typeof raw.countsCapped!=='boolean'||!record(raw.counts)||
-      !names.every(k=>Number.isSafeInteger(raw.counts[k]) &&
-        (raw.counts[k] as number)>=0 && (raw.counts[k] as number)<=1000)||
+      typeof raw.countsCapped!=='boolean'||counts===null||
+      !names.every(k=>{
+        const value=counts[k];
+        return typeof value==='number'&&Number.isSafeInteger(value)&&
+          value>=0&&value<=1000;
+      })||
       raw.liveSessionChecked!==true||typeof raw.freshSignInCandidate!=='boolean'||
       raw.recentReauthVerified!==false||raw.deletionAllowed!==false||
       raw.publicRoutes!=='UNVERIFIED'||raw.objectStorage!=='METADATA_ONLY'||
@@ -149,7 +153,7 @@ export class SupabasePrivateAccountErasureService {
     return {
       status:'INVENTORY_ONLY',maxCountPerCategory:1000,
       countsCapped:raw.countsCapped as boolean,
-      counts:Object.fromEntries(names.map(k=>[k,raw.counts[k]])) as AccountExitPreflight['counts'],
+      counts:Object.fromEntries(names.map(k=>[k,counts[k]])) as AccountExitPreflight['counts'],
       liveSessionChecked:true,freshSignInCandidate:raw.freshSignInCandidate as boolean,
       recentReauthVerified:false,publicRoutes:'UNVERIFIED',objectStorage:'METADATA_ONLY',
       exports:'NOT_TRACKED',integrations:'NOT_TRACKED',deletionAllowed:false
