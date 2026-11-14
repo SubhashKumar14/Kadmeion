@@ -189,7 +189,8 @@ export class SupabasePrivateModerationService {
       p_case_id:caseId,p_portfolio_id:portfolioId,p_operation_id:operationId
     });
     if (!isRecord(raw) || raw.caseId !== caseId || raw.portfolioId !== portfolioId ||
-        !Number.isSafeInteger(raw.generation) || (raw.generation as number) < 1 ||
+        typeof raw.generation !== 'number' || !Number.isSafeInteger(raw.generation) ||
+        raw.generation < 1 ||
         raw.status !== 'BLOCKED' || raw.stillBlocked !== true ||
         typeof raw.alreadyRecorded !== 'boolean' ||
         raw.publicServingEnabled !== false || raw.publicUrl !== null ||
