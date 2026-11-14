@@ -177,3 +177,66 @@ test('operator block denies signed-out calls and maps case conflicts',async()=>{
     {message:'MODERATION_HOLD_ALREADY_ACTIVE'},{status:400}))
     .blockPrivatePortfolio(caseId,portfolioId,operationId),{code:'CONFLICT'});
 });
+
+
+test('administrator-only private hold lift validates rationale and never republishes',async()=>{
+  const portfolioId='40000000-0000-4000-8000-000000000004';
+  const service=client(async(url,init)=>{
+    assert.equal(String(url),origin+'/rest/v1/rpc/operator_lift_private_moderation_hold');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.cache,'no-store');
+    assert.deepEqual(JSON.parse(init?.body as string),{
+      p_case_id:caseId,p_portfolio_id:portfolioId,p_operation_id:operationId,
+      p_rationale:summary
+    });
+    return ok({caseId,portfolioId,generation:3,status:'RELEASED_PRIVATE',
+      alreadyRecorded:false,publicServingEnabled:false,publicUrl:null,
+      hostRevocationVerified:false,privateTrace:'not projected'});
+  });
+  assert.deepEqual(await service.liftPrivateHold(caseId,portfolioId,operationId,summary),{
+    caseId,portfolioId,generation:3,status:'RELEASED_PRIVATE',
+    alreadyRecorded:false,publicServingEnabled:false,publicUrl:null,
+    hostRevocationVerified:false
+  });
+});
+test('hold lift rejects forged state or ID, including claims of public serving',async()=>{
+  const portfolioId='40000000-0000-4000-8000-000000000004';
+  const valid={caseId,portfolioId,generation:3,status:'RELEASED_PRIVATE',
+    alreadyRecorded:true,publicServingEnabled:false,publicUrl:null,
+    hostRevocationVerified:false};
+  for(const patch of [
+    {caseId:ownerId},{portfolioId:ownerId},{generation:0},
+    {status:'PUBLISHED'},{alreadyRecorded:'yes'},
+    {publicServingEnabled:true},{publicUrl:'https://fake.invalid'},
+    {hostRevocationVerified:true}
+  ]) {
+    await assert.rejects(client(async()=>ok({...valid,...patch}))
+      .liftPrivateHold(caseId,portfolioId,operationId,summary),{code:'INVALID_ACK'});
+  }
+  let count=0;
+  const service=client(async()=>{count++;throw Error('not reached');});
+  await assert.rejects(service.liftPrivateHold('bad',portfolioId,operationId,summary),
+    {code:'VALIDATION'});
+  await assert.rejects(service.liftPrivateHold(caseId,portfolioId,operationId,'short'),
+    {code:'VALIDATION'});
+  assert.equal(count,0);
+});
+test('admin-only hold lift requires signed-in operator and resolved case',async()=>{
+  const portfolioId='40000000-0000-4000-8000-000000000004';
+  await assert.rejects(client(async()=>{throw Error('no request');},null)
+    .liftPrivateHold(caseId,portfolioId,operationId,summary),{code:'AUTH_EXPIRED'});
+  await assert.rejects(client(async()=>Response.json(
+    {message:'MODERATION_CASE_NOT_RESOLVED'},{status:400}))
+    .liftPrivateHold(caseId,portfolioId,operationId,summary),{code:'CONFLICT'});
+  await assert.rejects(client(async()=>Response.json(
+    {message:'ADMINISTRATOR_REQUIRED'},{status:403}))
+    .liftPrivateHold(caseId,portfolioId,operationId,summary),{code:'FORBIDDEN'});
+});
+test('owner moderation events accept reasoned hold release but no arbitrary events',async()=>{
+  const data={id:operationId,case_id:caseId,actor_user_id:null,
+    event_type:'OPERATOR_HOLD_LIFT',detail:summary,created_at:time};
+  assert.deepEqual(await client(async()=>ok([data])).listOwnerEvents(),[data]);
+  await assert.rejects(client(async()=>ok([{...data,event_type:'PUBLISH'}]))
+    .listOwnerEvents(),{code:'INVALID_ACK'});
+});

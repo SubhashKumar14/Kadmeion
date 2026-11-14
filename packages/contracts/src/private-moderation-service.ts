@@ -20,6 +20,11 @@ export interface OperatorPrivatePortfolioBlockReceipt {
   publicUrl: null;
   hostRevocationVerified: false;
 }
+export interface OperatorPrivateHoldLiftReceipt {
+  caseId:string;portfolioId:string;generation:number;
+  status:'RELEASED_PRIVATE';alreadyRecorded:boolean;
+  publicServingEnabled:false;publicUrl:null;hostRevocationVerified:false;
+}
 export interface ModerationAppealReceipt {
   caseId: string;
   status: 'APPEAL_RECORDED';
@@ -45,7 +50,7 @@ export interface OwnerModerationEvent {
   id: string;
   case_id: string;
   actor_user_id: string | null;
-  event_type: 'OPENED' | 'OWNER_APPEAL' | 'OPERATOR_DECISION';
+  event_type: 'OPENED' | 'OWNER_APPEAL' | 'OPERATOR_DECISION' | 'OPERATOR_HOLD_LIFT';
   detail: string;
   created_at: string;
 }
@@ -61,7 +66,7 @@ export class PrivateModerationError extends Error {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REASONS = ['ABUSE','SECURITY','LEGAL','SPAM'] as const;
 const STATUSES = ['OPEN','APPEAL_PENDING','CLOSED'] as const;
-const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION'] as const;
+const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION','OPERATOR_HOLD_LIFT'] as const;
 const isRecord = (value: unknown): value is Record<string,unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const isUUID = (value: unknown): value is string => typeof value === 'string' && UUID.test(value);
@@ -142,13 +147,16 @@ export class SupabasePrivateModerationService {
         throw new PrivateModerationError('QUOTA_EXCEEDED','Operator case quota reached.');
       if (typeof message === 'string' &&
           ['INVALID_MODERATION_CASE','INVALID_APPEAL','INVALID_MODERATION_DECISION',
-           'INVALID_MODERATION_LIMIT','INVALID_OPERATOR_BLOCK'].includes(message))
+           'INVALID_MODERATION_LIMIT','INVALID_OPERATOR_BLOCK','INVALID_HOLD_LIFT'].includes(message))
         throw new PrivateModerationError('VALIDATION','Moderation request rejected.');
       if (response.status === 409 || (typeof message === 'string' &&
           ['MODERATION_OPERATION_ID_REUSED','APPEAL_OPERATION_ID_REUSED',
            'DECISION_OPERATION_ID_REUSED','CASE_ALREADY_CLOSED',
            'MODERATION_BLOCK_OPERATION_REUSED','MODERATION_HOLD_ALREADY_ACTIVE',
-           'MODERATION_CASE_NOT_OPEN','MODERATION_HOLD_STATE_CONFLICT'].includes(message)))
+           'MODERATION_CASE_NOT_OPEN','MODERATION_HOLD_STATE_CONFLICT',
+           'MODERATION_CASE_NOT_RESOLVED','HOLD_CASE_SCOPE_MISMATCH',
+           'HOLD_LIFT_OPERATION_REUSED','HOLD_LIFT_STATE_CHANGED',
+           'HOLD_LIFT_POINTER_CONFLICT'].includes(message)))
         throw new PrivateModerationError('CONFLICT','Operation ID or case state conflicts.');
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation operation was not acknowledged.');
     }
@@ -199,6 +207,26 @@ export class SupabasePrivateModerationService {
         'Operator private block was not confirmed.');
     return {caseId,portfolioId,generation:raw.generation as number,
       status:'BLOCKED',stillBlocked:true,alreadyRecorded:raw.alreadyRecorded,
+      publicServingEnabled:false,publicUrl:null,hostRevocationVerified:false};
+  }
+
+  /** Administrator only. Clears a resolved INTERNAL hold while leaving release BLOCKED. */
+  async liftPrivateHold(caseId:string,portfolioId:string,operationId:string,
+    rationale:string):Promise<OperatorPrivateHoldLiftReceipt>{
+    requireUUID(caseId);requireUUID(portfolioId);requireUUID(operationId);
+    const raw=await this.request('rpc/operator_lift_private_moderation_hold',{
+      p_case_id:caseId,p_portfolio_id:portfolioId,p_operation_id:operationId,
+      p_rationale:boundedText(rationale,20,2000)
+    });
+    if(!isRecord(raw)||raw.caseId!==caseId||raw.portfolioId!==portfolioId||
+      typeof raw.generation!=='number'||!Number.isSafeInteger(raw.generation)||
+      raw.generation<1||raw.status!=='RELEASED_PRIVATE'||
+      typeof raw.alreadyRecorded!=='boolean'||
+      raw.publicServingEnabled!==false||raw.publicUrl!==null||
+      raw.hostRevocationVerified!==false)
+      throw new PrivateModerationError('INVALID_ACK','Administrator hold lift was not confirmed.');
+    return {caseId,portfolioId,generation:raw.generation,
+      status:'RELEASED_PRIVATE',alreadyRecorded:raw.alreadyRecorded,
       publicServingEnabled:false,publicUrl:null,hostRevocationVerified:false};
   }
   async listOperatorCases(max = 25): Promise<OperatorModerationCase[]> {
