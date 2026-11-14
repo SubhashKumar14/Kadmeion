@@ -308,3 +308,70 @@ server-side artifact/manifest-to-private-candidate binding contract, without
 activating a live pointer. Before any public serving, obtain approval for
 the host and prove canonical/direct-asset 404/410, cache behavior, rollback
 and privacy revocation in a nonproduction environment.
+
+
+## 14 November 2026 — B4 trusted private artifact-to-pointer binding
+
+**Verified baseline:** Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, previous head `bbc3175`. Older DevFolio
+repo is historical. Owner's latest Notion register confirms all 52 exact
+LIGHT screen images approved and prohibits generating DARK-theme mockup
+sets; static approval is not application implementation proof.
+
+**Committed private-only functionality:** New
+`kadmeion_private.private_artifact_bindings` registry (RLS, no anon or
+authenticated privileges), and non-exposed
+`kadmeion_private.bind_private_artifact_candidate()` executable only by
+`service_role`. It acquires the owned portfolio row lock BEFORE the
+candidate pointer lock, rehashes the frozen DB snapshot, verifies its
+revision/visibility/source pins, checks expected pointer generation and
+status, recomputes SHA-256 over supplied exact UTF-8 HTML and manifest
+text, requires a single precisely matching `index.html` manifest,
+and inserts an immutable, idempotent **private** binding for that
+generation. Block/Trash or pointer replacement causes conflict;
+historical bindings are never serving grants.
+
+The `private-artifact-pointer-binding.ts` server-only orchestration
+requires an *attested* frozen revision from the authenticated owner
+loader, builds/independently verifies the safe scriptless HTML artifact,
+compares the currently prepared private pointer and its manifest hash,
+then invokes an injected **restricted SQL writer**. It validates
+the returned receipt and never exposes public serving permission.
+This module is intentionally NOT exported from the browser-facing
+storage-adapters index. The runtime SQL writer is an interface,
+**not yet wired to a real hosted server connection**. In particular,
+SQL verifies byte/hash/source consistency but cannot prove that a
+privileged caller used the trusted renderer; the deployed worker must
+satisfy that prerequisite. No public release is served.
+
+**Code references:** `6597b99` (restricted binding schema and pgTAP),
+`ba13181` (trusted orchestration and Node negative tests),
+`6e100c4` (fixed test harness without widening DB rights),
+`2baf79c` (added real local HTTP tests that private binding
+RPC/table remain unreachable through PostgREST even with service role).
+
+**Verified CI:** [GitHub Actions 43549661331](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43549661331)
+passed both jobs at `6e100c4`: 180/180 Node tests,
+268 pgTAP tests in 18 SQL test files, 26/26 local GoTrue/PostgREST/Storage
+HTTP tests, TypeScript, auth build/smoke/preview, file budget 133/200.
+The HTTP-denial commit `2baf79c` has its own CI; confirm completion
+before calling that extra test passed. No hosted Supabase, production
+database, public HTTP route, CDN invalidation, browser E2E, lint or
+dedicated SAST was verified.
+
+**Security and release caveat:** Owner-provided manifest digest alone
+remains untrusted. A trusted worker must rebuild rendered bytes and
+obtain a matching restricted binding; neither binding nor hash equality
+authorizes public visibility. Public host, immutable asset URL
+interception, cache behavior, rollback races, selected free-tier
+deployment and real host revocation remain unverified. There was no
+manual Vercel deploy, production promotion, hosted data mutation,
+account erasure or frontend implementation in this run.
+
+**Next backend critical action:** Implement and locally integration-test
+the **server-only direct-SQL binding executor** (without exposing
+service credentials to client/Edge previews); prove it consumes a
+frozen owner-RPC snapshot and writes only independently verified bytes
+to the restricted binding RPC, with concurrency/revocation and malicious
+renderer/manifest negatives. Do not activate public hosting until owner
+approval and live canonical/direct-asset negative tests.
