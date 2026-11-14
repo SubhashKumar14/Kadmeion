@@ -1,6 +1,10 @@
-/** Fail-closed size bounded JSON reader for private service-key RPC calls. */
-export async function readBoundedRpcJson(response, limit=800000) {
-  if(!Number.isSafeInteger(limit)||limit<1||limit>800000)throw Error('Invalid RPC limit');
+/**
+ * Fail-closed bounded JSON reader for private service-key RPC calls.
+ * Transport JSON can be roughly twice the served HTML size when quotes and
+ * backslashes are escaped. The HTML envelope retains its own 750 KB cap.
+ */
+export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
+  if(!Number.isSafeInteger(limit)||limit<1||limit>2 * 1024 * 1024)throw Error('Invalid RPC limit');
   const type=response?.headers?.get('content-type');
   if(typeof type!=='string'||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
     throw Error('Invalid RPC content type');

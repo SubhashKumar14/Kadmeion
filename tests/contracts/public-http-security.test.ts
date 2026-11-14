@@ -29,9 +29,21 @@ test('RPC reader enforces JSON media type, declared and streamed byte limits',as
   assert.deepEqual(await readBoundedRpcJson(Response.json({ok:true})),{ok:true});
   for(const input of [
     new Response('{}',{headers:{'content-type':'text/html'}}),
-    new Response('{}',{headers:{'content-type':'application/json','content-length':'800001'}}),
-    new Response('a'.repeat(800001),{headers:{'content-type':'application/json'}})
+    new Response('{}',{headers:{'content-type':'application/json','content-length':'2097153'}}),
+    new Response('a'.repeat(2097153),{headers:{'content-type':'application/json'}})
   ])await assert.rejects(readBoundedRpcJson(input));
+});
+test('RPC JSON escaping may expand valid bounded HTML without dropping the release',async()=>{
+  const largeHtml=html.replace('</body>','<p>'+('\\'.repeat(710000))+'</p></body>');
+  assert.ok(Buffer.byteLength(largeHtml)<750000);
+  const envelope=JSON.stringify(payload(largeHtml));
+  assert.ok(Buffer.byteLength(envelope)>800000,
+    'Fixture must exceed prior transport cap despite a valid HTML artifact');
+  const decoded=await readBoundedRpcJson(Response.json(payload(largeHtml)));
+  assert.equal(decoded.html,largeHtml);
+  const {res}=await invoke(handlePublicPortfolio,{data:payload(largeHtml)});
+  assert.equal(res.statusCode,200);
+  assert.equal(res.headers.get('x-kadmeion-served-sha256'),digest(res.body));
 });
 test('public route is denied unless deliberately enabled',async()=>{
   const {res,calls}=await invoke(handlePublicPortfolio,{config:{...env,KADMEION_PUBLIC_PORTFOLIO_ENABLED:'false'}});
@@ -78,7 +90,7 @@ test('public release rejects tampered, executable or unexpected response fields'
 test('both public adapters reject oversized or non-JSON upstream bodies',async()=>{
   for(const handler of [handlePublicPortfolio,handlePublishedIdentity])
     for(const response of [
-      new Response('{}',{headers:{'content-type':'application/json','content-length':'900000'}}),
+      new Response('{}',{headers:{'content-type':'application/json','content-length':'2097153'}}),
       new Response('null',{headers:{'content-type':'text/html'}}),
       Response.json({message:'unavailable'},{status:500})
     ]){
