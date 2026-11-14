@@ -1,7 +1,7 @@
 export type AuthRedirect =
   | { kind: 'tokens'; parameters: URLSearchParams }
   | { kind: 'token_hash'; tokenHash: string; type: string }
-  | { kind: 'unsupported_oauth' }
+  | { kind: 'oauth_code'; code: string }
   | { kind: 'error'; message: string }
   | { kind: 'none' };
 
@@ -17,6 +17,8 @@ export function parseAuthRedirect(address: string): AuthRedirect {
   if (query.has('token_hash') && query.has('type'))
     return { kind: 'token_hash', tokenHash: query.get('token_hash') ?? '', type: query.get('type') ?? '' };
   if (query.has('code'))
-    return { kind: 'unsupported_oauth' };
+    return url.pathname === '/auth/callback' ?
+      { kind: 'oauth_code', code: query.get('code') ?? '' } :
+      { kind: 'error', message: 'OAuth callback was delivered to an unexpected route.' };
   return { kind: 'none' };
 }

@@ -15,6 +15,8 @@ assert.match(contract, /AuthService/);
 const config = JSON.parse(await readFile(resolve(target, 'config.json'), 'utf8'));
 assert.equal(config.supabaseUrl, 'https://scyooqjitjzjdxgtanso.supabase.co');
 assert.ok(config.publishableKey.startsWith('sb_publishable_') || config.publishableKey.startsWith('eyJ'));
+assert.equal(typeof config.emailDeliveryVerified, 'boolean');
+assert.equal(typeof config.googleOAuthEnabled, 'boolean');
 const vercel = JSON.parse(await readFile(resolve('vercel.json'), 'utf8'));
 assert.equal(vercel.outputDirectory, 'apps/auth-web/vercel-dist');
 for (const route of ['/signin', '/signup', '/login', '/register', '/auth/callback', '/reset-password', '/workspace'])

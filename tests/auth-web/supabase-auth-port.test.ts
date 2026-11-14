@@ -117,3 +117,84 @@ test('rejected server session immediately clears the browser token', async () =>
   assert.ok((await port.getUser()).error);
   assert.equal(saved.data.size, 0);
 });
+
+
+test('Google OAuth generates a secure S256 challenge and exact allowlisted callback',async()=>{
+  const oauth=storage();
+  const {port,saved}=mock((async()=>{throw new Error('sign-in URL should not fetch')}) as typeof fetch);
+  const securePort=new SupabaseBrowserAuthPort({
+    supabaseUrl:'https://project.supabase.co',publishableKey:'sb_publishable_test',
+    appOrigin:'http://localhost:3000',storage:saved,oauthStorage:oauth,
+    fetcher: (async()=>{throw new Error('no network expected')}) as typeof fetch
+  });
+  const response=await securePort.signInWithOAuth({provider:'google',
+    options:{redirectTo:'http://localhost:3000/auth/callback'}});
+  assert.equal(response.error,null);
+  const url=new URL(response.data.url!);
+  assert.equal(url.origin,'https://project.supabase.co');
+  assert.equal(url.pathname,'/auth/v1/authorize');
+  assert.equal(url.searchParams.get('flow_type'),'pkce');
+  assert.equal(url.searchParams.get('code_challenge_method'),'s256');
+  assert.equal(url.searchParams.get('provider'),'google');
+  assert.equal(url.searchParams.get('redirect_to'),'http://localhost:3000/auth/callback');
+  const tx=JSON.parse(oauth.data.get('kadmeion.oauth.google.pkce.v1')!);
+  assert.equal(tx.verifier.length,64);
+  const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(tx.verifier)));
+  assert.equal(url.searchParams.get('code_challenge'),
+    Buffer.from(digest).toString('base64url'));
+  assert.ok(!JSON.stringify([...saved.data]).includes(tx.verifier),'verifier must stay out of persistent auth storage');
+  assert.ok(!response.data.url?.includes(tx.verifier),'authorization URL must never leak the verifier');
+});
+
+test('OAuth exchange uses one-time same-tab PKCE verifier and verifies session independently',async()=>{
+  const persistent=storage(),oauth=storage();
+  const requests:Array<{url:string;options:RequestInit}>=[];
+  const port=new SupabaseBrowserAuthPort({
+    supabaseUrl:'https://project.supabase.co',publishableKey:'sb_publishable_test',
+    appOrigin:'http://localhost:3000',storage:persistent,oauthStorage:oauth,
+    fetcher:(async(url:string|URL|Request,options?:RequestInit)=>{
+      requests.push({url:String(url),options:options!});
+      if(String(url).includes('grant_type=pkce'))return json(tokens);
+      if(String(url).endsWith('/user'))return json(user);
+      return json({},404);
+    }) as typeof fetch
+  });
+  const initiate=await port.signInWithOAuth({provider:'google',
+    options:{redirectTo:'http://localhost:3000/auth/callback'}});
+  assert.equal(initiate.error,null);
+  const expected=JSON.parse(oauth.data.get('kadmeion.oauth.google.pkce.v1')!).verifier;
+  const exchanged=await port.exchangeCodeForSession('a-valid-auth-code');
+  assert.equal(exchanged.error,null);
+  assert.equal(oauth.data.size,0,'verifier must be consumed before token exchange');
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].options.method,'POST');
+  assert.deepEqual(JSON.parse(requests[0].options.body as string),{
+    auth_code:'a-valid-auth-code',code_verifier:expected});
+  assert.equal((await port.getUser()).data.user?.id,user.id);
+  assert.ok([...persistent.data.values()].join('').includes(tokens.access_token));
+  const replay=await port.exchangeCodeForSession('a-valid-auth-code');
+  assert.ok(replay.error,'replaying auth code may not re-send a verifier');
+  assert.equal(requests.filter(x=>x.url.includes('grant_type=pkce')).length,1);
+});
+
+test('OAuth denies open redirect, no session store, expired/malformed verifier and invalid callback',async()=>{
+  const oauth=storage(),saved=storage();
+  const port=new SupabaseBrowserAuthPort({
+    supabaseUrl:'https://project.supabase.co',publishableKey:'sb_publishable_test',
+    appOrigin:'http://localhost:3000',storage:saved,oauthStorage:oauth,
+    fetcher:(async()=>{throw new Error('unexpected exchange')}) as typeof fetch
+  });
+  const forbidden=await port.signInWithOAuth({provider:'google',
+    options:{redirectTo:'https://attacker.invalid/auth/callback'}});
+  assert.ok(forbidden.error);
+  assert.equal(oauth.data.size,0);
+  assert.ok((await port.exchangeCodeForSession('short')).error);
+  oauth.setItem('kadmeion.oauth.google.pkce.v1',JSON.stringify({
+    verifier:'a'.repeat(64),expiresAt:Date.now()-5000,
+    redirectTo:'http://localhost:3000/auth/callback'}));
+  assert.ok((await port.exchangeCodeForSession('valid-123456789')).error);
+  assert.equal(oauth.data.size,0);
+  const unavailable=mock((async()=>json(tokens)) as typeof fetch);
+  assert.ok((await unavailable.port.signInWithOAuth({provider:'google',
+    options:{redirectTo:'http://localhost:3000/auth/callback'}})).error);
+});

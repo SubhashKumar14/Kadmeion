@@ -17,7 +17,8 @@ test('recognizes token-hash email templates and malformed OAuth callback safely'
   assert.deepEqual(parseAuthRedirect('http://localhost:3000/auth/callback?token_hash=xyz&type=invite'), {
     kind: 'token_hash', tokenHash: 'xyz', type: 'invite'
   });
-  assert.deepEqual(parseAuthRedirect('http://localhost:3000/auth/callback?code=secret'), { kind: 'unsupported_oauth' });
+  assert.deepEqual(parseAuthRedirect('http://localhost:3000/auth/callback?code=secret'), { kind: 'oauth_code', code: 'secret' });
+  assert.equal(parseAuthRedirect('http://localhost:3000/login?code=secret').kind, 'error');
 });
 
 test('never surfaces provider error descriptions or secret values in a message', () => {

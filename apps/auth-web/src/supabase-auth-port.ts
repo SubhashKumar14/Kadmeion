@@ -4,6 +4,13 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
 const STORAGE_KEY = 'kadmeion.auth.session.v1';
+const OAUTH_PKCE_KEY = 'kadmeion.oauth.google.pkce.v1';
+const OAUTH_TTL_MS = 5*60*1000;
+const encoder=new TextEncoder();
+function base64url(bytes:Uint8Array):string {
+  let raw='';for(const b of bytes)raw+=String.fromCharCode(b);
+  return btoa(raw).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');
+}
 class AuthHttpError extends Error {
   readonly status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
@@ -29,11 +36,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private readonly publishableKey: string;
   private readonly appOrigin: string;
   private readonly storage: StorageLike;
+  private readonly oauthStorage: StorageLike | null;
   private readonly fetcher: typeof fetch;
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
 
-  constructor(input: { supabaseUrl: string; publishableKey: string; appOrigin: string; storage: StorageLike; fetcher?: typeof fetch }) {
+  constructor(input: { supabaseUrl: string; publishableKey: string; appOrigin: string; storage: StorageLike; oauthStorage?: StorageLike; fetcher?: typeof fetch }) {
     const endpoint = new URL(input.supabaseUrl);
     if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(endpoint.hostname)))
       throw new Error('Supabase URL must use HTTPS.');
@@ -46,6 +54,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.appOrigin = application.origin;
     this.publishableKey = input.publishableKey;
     this.storage = input.storage;
+    // OAuth PKCE is a short-lived same-tab transaction, never localStorage.
+    this.oauthStorage = input.oauthStorage ?? null;
     this.fetcher = input.fetcher ?? fetch;
     this.session = this.readSession();
   }
@@ -209,12 +219,60 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  signInWithOAuth(): Promise<AuthOutcome<{ url: string | null }>> {
-    return Promise.resolve({ data: { url: null }, error: { message: 'Google OAuth is not configured.' } });
+  signInWithOAuth({provider,options}:{provider:'google';options:{redirectTo:string}}):
+      Promise<AuthOutcome<{url:string|null}>> {
+    return this.outcome(async()=>{
+      if(provider!=='google'||options.redirectTo!==this.appOrigin+'/auth/callback')
+        throw new Error('Google OAuth requires the approved same-origin callback.');
+      if(!this.oauthStorage)
+        throw new Error('Secure session storage is required for Google sign-in.');
+      if(!globalThis.crypto?.getRandomValues || !globalThis.crypto?.subtle)
+        throw new Error('Secure browser cryptography is unavailable.');
+      const verifier=base64url(crypto.getRandomValues(new Uint8Array(48)));
+      const challenge=base64url(new Uint8Array(await crypto.subtle.digest('SHA-256',encoder.encode(verifier))));
+      // Store only the one-time verifier in same-tab storage, not a JWT or a
+      // provider credential. A second flow intentionally invalidates the first.
+      try{
+        this.oauthStorage.setItem(OAUTH_PKCE_KEY,JSON.stringify({
+          verifier,expiresAt:Date.now()+OAUTH_TTL_MS,redirectTo:options.redirectTo
+        }));
+      }catch{throw new Error('Cannot store a secure temporary OAuth session.');}
+      const url=new URL(this.origin+'/auth/v1/authorize');
+      url.searchParams.set('provider','google');
+      url.searchParams.set('redirect_to',options.redirectTo);
+      url.searchParams.set('flow_type','pkce');
+      url.searchParams.set('code_challenge',challenge);
+      url.searchParams.set('code_challenge_method','s256');
+      return {url:url.toString()};
+    });
   }
 
-  exchangeCodeForSession(): Promise<AuthOutcome<unknown>> {
-    return Promise.resolve({ data: null, error: { message: 'Google OAuth is not configured.' } });
+  exchangeCodeForSession(code:string):Promise<AuthOutcome<unknown>> {
+    return this.outcome(async()=>{
+      if(typeof code!=='string'|| !/^[A-Za-z0-9._-]{8,2048}$/.test(code))
+        throw new Error('Invalid OAuth callback code.');
+      if(!this.oauthStorage)
+        throw new Error('The OAuth flow must be restarted in this browser tab.');
+      let saved:string|null;
+      try{
+        saved=this.oauthStorage.getItem(OAUTH_PKCE_KEY);
+        // One-shot, including on network failure; no replay of a consumed code.
+        this.oauthStorage.removeItem(OAUTH_PKCE_KEY);
+      }catch{throw new Error('Cannot recover the temporary OAuth session.');}
+      let state:unknown;
+      try{state=JSON.parse(saved??'null');}catch{state=null;}
+      const tx=state&&typeof state==='object'?state as Json:null;
+      if(!tx||typeof tx.verifier!=='string'||!/^[A-Za-z0-9_-]{64}$/.test(tx.verifier)||
+        tx.redirectTo!==this.appOrigin+'/auth/callback'||
+        typeof tx.expiresAt!=='number'||!Number.isFinite(tx.expiresAt)||
+        Date.now()>=tx.expiresAt||tx.expiresAt>Date.now()+OAUTH_TTL_MS)
+        throw new Error('The OAuth session expired or originated in another tab.');
+      const result=await this.request('/token?grant_type=pkce','POST',
+        {auth_code:code,code_verifier:tx.verifier});
+      const session=this.decodeSession(result);
+      this.store(session);
+      return {user:session.user};
+    });
   }
 
   /** Consumes an implicit-flow invitation, confirmation or recovery link. */

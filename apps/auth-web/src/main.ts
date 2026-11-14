@@ -3,7 +3,7 @@ import { parseAuthRedirect } from './auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from './supabase-auth-port.ts';
 import { cleanHandleInput, checkHandleInput, validatePasswordPair } from './form-helpers.ts';
 
-type Config = { supabaseUrl?: string; publishableKey?: string };
+type Config = { supabaseUrl?: string; publishableKey?: string; emailDeliveryVerified?: boolean; googleOAuthEnabled?: boolean };
 const sections = ['login', 'register', 'forgot-password', 'set-password', 'workspace', 'callback'] as const;
 const notice = document.querySelector<HTMLParagraphElement>('#notice');
 const currentUser = document.querySelector<HTMLParagraphElement>('#current-user');
@@ -71,9 +71,15 @@ async function main(): Promise<void> {
       supabaseUrl: config.supabaseUrl,
       publishableKey: config.publishableKey,
       appOrigin: location.origin,
-      storage: window.localStorage
+      storage: window.localStorage,
+      oauthStorage: window.sessionStorage
     });
-    service = new AuthService(auth, { siteOrigin: location.origin, emailDeliveryVerified: true, googleOAuthConfigured: false });
+    service = new AuthService(auth, {
+      siteOrigin: location.origin,
+      // Explicit operator proof flags default OFF; do not infer SMTP success.
+      emailDeliveryVerified: config.emailDeliveryVerified === true,
+      googleOAuthConfigured: config.googleOAuthEnabled === true
+    });
   } catch (error) {
     show('login');
     message(errorText(error), true);
@@ -187,8 +193,12 @@ async function main(): Promise<void> {
     try {
       let kind: 'invite' | 'recovery' | 'confirmation';
       if (redirect.kind === 'error') throw new Error(redirect.message);
-      if (redirect.kind === 'unsupported_oauth')
-        throw new Error('Google sign-in is not configured for this verification application.');
+      if (redirect.kind === 'oauth_code') {
+        const verified = await service.finishOAuth(redirect.code);
+        if (currentUser) currentUser.textContent = verified.email ?? 'Your Kadmeion account';
+        navigate('workspace', 'Google authentication session verified.');
+        return;
+      }
       if (redirect.kind === 'tokens') kind = await auth.acceptTokens(redirect.parameters);
       else kind = await auth.verifyTokenHash(redirect.tokenHash, redirect.type);
       if (kind === 'invite' || kind === 'recovery') navigate('set-password', 'Authentication link verified. Choose a password.');

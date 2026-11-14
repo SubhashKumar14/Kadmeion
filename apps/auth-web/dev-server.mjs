@@ -6,6 +6,8 @@ const root = resolve(import.meta.dirname, '../..');
 const port = 3000;
 const supabaseUrl = process.env.VITE_SUPABASE_URL ?? '';
 const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '';
+const emailDeliveryVerified = process.env.KADMEION_EMAIL_DELIVERY_VERIFIED === 'true';
+const googleOAuthEnabled = process.env.KADMEION_GOOGLE_OAUTH_ENABLED === 'true';
 let apiOrigin = '';
 try {
   const u = new URL(supabaseUrl);
@@ -25,7 +27,7 @@ createServer(async (req, res) => {
   if (!['GET', 'HEAD'].includes(req.method ?? '')) { res.writeHead(405, security); res.end(); return; }
   if (pathname === '/config.json') {
     res.writeHead(200, { ...security, 'Content-Type': 'application/json', 'Content-Security-Policy': security['Content-Security-Policy'] });
-    res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ supabaseUrl, publishableKey }));
+    res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ supabaseUrl, publishableKey, emailDeliveryVerified, googleOAuthEnabled }));
     return;
   }
   let file = '';

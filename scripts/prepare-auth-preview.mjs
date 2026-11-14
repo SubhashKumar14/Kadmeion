@@ -18,7 +18,9 @@ await cp(resolve('apps/auth-web/styles.css'), resolve(target, 'styles.css'));
 await cp(resolve('.auth-build/apps'), resolve(target, 'compiled/apps'), { recursive: true });
 await cp(resolve('.auth-build/packages'), resolve(target, 'compiled/packages'), { recursive: true });
 await writeFile(resolve(target, 'config.json'), JSON.stringify({
-  supabaseUrl: parsed.origin, publishableKey: key
+  supabaseUrl: parsed.origin, publishableKey: key,
+  emailDeliveryVerified: process.env.KADMEION_EMAIL_DELIVERY_VERIFIED === 'true',
+  googleOAuthEnabled: process.env.KADMEION_GOOGLE_OAUTH_ENABLED === 'true'
 }) + '\n');
 await writeFile(resolve(target, 'robots.txt'), 'User-agent: *\nDisallow: /\n');
 console.log('Built B1 authentication-only Vercel static preview bundle.');
