@@ -827,3 +827,86 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
     await admin.end().catch(()=>{});
   }
 });
+
+
+test('B5: real owner inventory snapshots are immutable, bounded and tenant-private',
+  {timeout:120_000},async t=>{
+  const owner=await adminUser('inventory-owner');
+  const outsider=await adminUser('inventory-outsider');
+  const create='/rest/v1/rpc/create_private_account_exit_inventory';
+  const read='/rest/v1/rpc/get_private_account_exit_inventory';
+  const operation=randomUUID();
+  const post=(who,path,body)=>send(path,{...json(who),method:'POST',body});
+  const initial=successful(await post(owner,create,{
+    p_operation_id:operation,p_request_id:null}),'Owner inventory snapshot');
+  assert.equal(initial.schemaVersion,1);
+  assert.equal(initial.alreadyCaptured,false);
+  assert.equal(initial.deletionAllowed,false);
+  assert.equal(initial.inventory.status,'METADATA_SNAPSHOT_ONLY');
+  assert.equal(initial.inventory.consistency,'SINGLE_STATEMENT_MVCC');
+  assert.equal(initial.inventory.publicRoutes,'UNVERIFIED');
+  assert.equal(initial.inventory.exports,'NOT_READY');
+  assert.equal(initial.inventory.backupRetention,'UNVERIFIED');
+  assert.equal(initial.inventory.recentReauthVerified,false);
+  assert.equal(initial.inventory.publicRevocationVerified,false);
+  assert.equal(initial.inventory.deletionAllowed,false);
+  assert.equal(initial.inventory.counts.projects,0);
+  await t.test('anonymous, outsider and direct table access cannot read snapshots',async()=>{
+    assert.ok(!(await send(create,{method:'POST',headers:{
+      'Content-Type':'application/json'},body:{p_operation_id:randomUUID()}})).ok);
+    assert.ok(!(await post(outsider,read,{p_snapshot_id:initial.snapshotId})).ok);
+    assert.ok(!(await send('/rest/v1/private_account_exit_inventory_snapshots?select=id',
+      bearer(owner))).ok);
+    assert.ok(!(await send('/rest/v1/private_account_exit_inventory_snapshots',{
+      ...json(owner),method:'POST',body:{id:randomUUID(),inventory:{deletionAllowed:true}}
+    })).ok);
+  });
+  await t.test('owner idempotency returns same frozen snapshot after data changes',async()=>{
+    successful(await send('/rest/v1/projects?select=id',{
+      ...json(owner),method:'POST',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{owner_user_id:owner.id,slug:'inventory-'+randomUUID().slice(0,8),
+        title:'Inventory-only test project'}
+    }),'Create owner inventory fixture');
+    const replay=successful(await post(owner,create,{
+      p_operation_id:operation,p_request_id:null}),'Idempotent inventory replay');
+    assert.equal(replay.snapshotId,initial.snapshotId);
+    assert.equal(replay.alreadyCaptured,true);
+    assert.deepEqual(replay.inventory,initial.inventory);
+    const fetched=successful(await post(owner,read,{
+      p_snapshot_id:initial.snapshotId}),'Read immutable inventory');
+    assert.deepEqual(fetched.inventory,initial.inventory);
+    const newer=successful(await post(owner,create,{
+      p_operation_id:randomUUID(),p_request_id:null}),'New owner inventory');
+    assert.equal(newer.inventory.counts.projects,1);
+    assert.equal(newer.inventory.deletionAllowed,false);
+    const other=successful(await post(outsider,create,{
+      p_operation_id:randomUUID(),p_request_id:null}),'Other owner inventory');
+    assert.equal(other.inventory.counts.projects,0);
+    assert.notEqual(other.snapshotId,initial.snapshotId);
+  });
+  await t.test('foreign or withdrawn erasure request cannot be attached',async()=>{
+    const request=successful(await post(owner,
+      '/rest/v1/rpc/request_private_account_erasure',{
+        p_operation_id:randomUUID(),p_confirmation:'DELETE MY ACCOUNT'
+      }),'Owner request for inventory association');
+    assert.ok(!(await post(outsider,create,{
+      p_operation_id:randomUUID(),p_request_id:request.requestId})).ok);
+    assert.ok(!(await post(owner,create,{
+      p_operation_id:operation,p_request_id:request.requestId})).ok,
+      'Reused operation was rebound to a different erasure request');
+    successful(await post(owner,'/rest/v1/rpc/withdraw_private_account_erasure',{
+      p_request_id:request.requestId,p_operation_id:randomUUID()
+    }),'Withdraw request before snapshot association');
+    assert.ok(!(await post(owner,create,{
+      p_operation_id:randomUUID(),p_request_id:request.requestId})).ok,
+      'Withdrawn erasure request was attached to inventory');
+  });
+  await t.test('signed-out JWT cannot create or retrieve inventory',async()=>{
+    successful(await send('/auth/v1/logout',{...bearer(owner),method:'POST'}),
+      'Inventory owner signout');
+    assert.ok(!(await post(owner,create,{
+      p_operation_id:randomUUID(),p_request_id:null})).ok);
+    assert.ok(!(await post(owner,read,{p_snapshot_id:initial.snapshotId})).ok);
+  });
+});
