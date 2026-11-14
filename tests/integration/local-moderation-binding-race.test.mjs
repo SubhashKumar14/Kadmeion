@@ -225,14 +225,20 @@ test('B6: operator hold wins both pg.Pool TOCTOU and live row-lock races',
       [caseId,second.portfolioId,randomUUID()]);
     assertBlocked(blockResult.rows[0].receipt);
     let settled=false;
+    // Attach rejection handling immediately: a contended pg request may reject
+    // before COMMIT on a slow runner. Awaiting it later is otherwise an
+    // unhandledRejection even when the expected SQL_UNCONFIRMED is correct.
     const pending=worker.writer.bindPrivateArtifact(second.direct)
+      .then(()=>({ok:true}),error=>({ok:false,error}))
       .finally(()=>{settled=true;});
     // A real separate pg connection is now contending with the uncommitted
     // moderation row lock. Do not let an assertion leak an open transaction.
     await new Promise(resolve=>setTimeout(resolve,150));
     assert.equal(settled,false,'binding must wait for portfolio lock');
     await tx.query('COMMIT');
-    await assert.rejects(pending,{code:'SQL_UNCONFIRMED'});
+    const outcome=await pending;
+    assert.equal(outcome.ok,false,'blocked binding must reject after COMMIT');
+    assert.equal(outcome.error?.code,'SQL_UNCONFIRMED');
     const secondAfter=await second.pointer.read(second.portfolioId);
     assertBlocked(secondAfter);
     assert.equal(secondAfter.generation,2);
