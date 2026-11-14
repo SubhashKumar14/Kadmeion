@@ -130,3 +130,62 @@ test('B4: actual local publication Edge gateway enforces JWT and owner intent ac
     await rm(folder,{recursive:true,force:true});
   }
 });
+
+
+test('B5: actual local Deno Trash scheduler refuses unauthenticated calls and stays bounded',
+  {timeout:90000},async()=>{
+  const folder=await mkdtemp(join(tmpdir(),'kadmeion-trash-sweep-'));
+  const settings=join(folder,'sweep.env');
+  const sweepSecret='s'.repeat(48);
+  await writeFile(settings,[
+    'KADMEION_LOCAL_INTEGRATION=1',
+    'KADMEION_TRASH_SWEEP_ENABLED=true',
+    'KADMEION_TRASH_SWEEP_SECRET='+sweepSecret
+  ].join('\n')+'\n');
+  const child=spawn('supabase',
+    ['functions','serve','purge-expired-trash','--no-verify-jwt','--env-file',settings],{
+      stdio:['ignore','pipe','pipe'],
+      env:{...process.env,KADMEION_LOCAL_INTEGRATION:'1'}
+    });
+  const diagnostics=[];
+  const capture=data=>{
+    for(const line of String(data).slice(0,10000).split(/\r?\n/))
+      if(/error|failed|denied|unable|resolution/i.test(line)&&diagnostics.length<6)
+        diagnostics.push(line.replace(/(?:eyJ|sb_secret_)[A-Za-z0-9_.-]+/g,'[redacted]')
+          .replaceAll(sweepSecret,'[redacted]').slice(0,150));
+  };
+  child.stderr?.on('data',capture);
+  child.stdout?.on('data',capture);
+  const endpoint=api.origin+'/functions/v1/purge-expired-trash';
+  const request=authorization=>fetch(endpoint,{
+    method:'POST',headers:{authorization},credentials:'omit',
+    redirect:'error',cache:'no-store',signal:AbortSignal.timeout(5000)
+  });
+  try {
+    let response=null;
+    for(let i=0;i<50;i++){
+      if(child.exitCode!==null)break;
+      try{
+        const r=await request('Bearer '+sweepSecret);
+        if([200,207].includes(r.status)){response=r;break;}
+        await r.body?.cancel();
+      }catch{/* local isolate may still be starting */}
+      await delay(300);
+    }
+    assert.ok(response,'Local Trash Edge bundle did not serve: exit='+child.exitCode+
+      '; startup='+diagnostics.join(' | '));
+    const body=await response.json();
+    assert.equal(typeof body.purged,'number');
+    assert.equal(typeof body.pending,'number');
+    assert.ok(body.purged>=0&&body.purged<=10);
+    const denied=await request('Bearer wrong-secret');
+    assert.equal(denied.status,401,'Invalid scheduler secret must never trigger a purge');
+    await denied.body?.cancel();
+    const missing=await request('');
+    assert.equal(missing.status,401,'Anonymous scheduler must never trigger a purge');
+    await missing.body?.cancel();
+  }finally {
+    child.kill('SIGTERM');
+    await rm(folder,{recursive:true,force:true});
+  }
+});
