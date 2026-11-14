@@ -48,6 +48,58 @@
       "destination": "/index.html"
     },
     {
+      "source": "/app/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/auth/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/r/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/templates/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/status/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/explore/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/settings/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/dashboard/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/workspace/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/app",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/templates",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/explore",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/status",
+      "destination": "/index.html"
+    },
+    {
       "source": "/:handle([a-z][a-z0-9_]{2,29})/:slug([a-z0-9-]{3,64})",
       "destination": "/api/public-portfolio?handle=:handle&slug=:slug"
     }

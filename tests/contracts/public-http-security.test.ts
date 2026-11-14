@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {handlePublicPortfolio} from '../../api/public-portfolio.mjs';
@@ -139,4 +140,24 @@ test('published case study validates each section and escapes HTML',async()=>{
     const {res}=await invoke(handlePublishedIdentity,{url,data:bad});
     assert.equal(res.statusCode,503);
   }
+});
+
+test('Vercel reserves all frontend system paths before generic published portfolio routing',()=>{
+  const config=JSON.parse(readFileSync(new URL('../../vercel.json',import.meta.url),'utf8'));
+  const routes=config.rewrites;
+  const publicIndex=routes.findIndex((route:{source:string})=>route.source.startsWith('/:handle('));
+  assert.ok(publicIndex>0);
+  for(const prefix of ['app','auth','r','templates','status','explore','settings','dashboard','workspace']){
+    const index=routes.findIndex((route:{source:string;destination:string})=>
+      route.source==='/'+prefix+'/:path*'&&route.destination==='/index.html');
+    assert.ok(index>=0&&index<publicIndex,prefix+' must not fall through to public portfolio API');
+  }
+  for(const path of ['/app','/templates','/explore','/status']){
+    const index=routes.findIndex((route:{source:string;destination:string})=>
+      route.source===path&&route.destination==='/index.html');
+    assert.ok(index>=0&&index<publicIndex,path+' must have safe SPA handling');
+  }
+  assert.ok(routes.some((route:{source:string;destination:string})=>
+    route.source==='/u/:handle/projects/:slug'&&
+    route.destination.startsWith('/api/published-identity')));
 });
