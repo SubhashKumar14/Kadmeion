@@ -118,3 +118,60 @@ test('untrusted API origins are rejected before fetching',()=>{
   assert.throws(()=>new SupabasePrivateAccountErasureService(origin,' ',async()=>null),
     {code:'VALIDATION'});
 });
+
+const validPreflight={
+  status:'INVENTORY_ONLY',maxCountPerCategory:1000,countsCapped:false,
+  counts:{projects:2,portfolios:1,portfolioRevisions:3,projectExposureIntents:1,
+    projectAssetMetadata:4,frozenReleaseRequests:1,reviewerGrants:1,
+    trashRecords:0,accountExitRequests:1},
+  liveSessionChecked:true,freshSignInCandidate:true,recentReauthVerified:false,
+  publicRoutes:'UNVERIFIED',objectStorage:'METADATA_ONLY',
+  exports:'NOT_TRACKED',integrations:'NOT_TRACKED',deletionAllowed:false
+} as const;
+
+test('preflight calls owner-only RPC without an owner id and projects only bounded evidence',async()=>{
+  let calls=0;
+  const service=client(async(url,init)=>{
+    calls++;
+    assert.equal(url,origin+'/rest/v1/rpc/private_account_exit_preflight');
+    assert.equal(init?.method,'POST');
+    assert.deepEqual(JSON.parse(init?.body as string),{});
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.cache,'no-store');
+    assert.equal(init?.redirect,'error');
+    assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer owner-jwt');
+    return ok({...validPreflight,secret:'server value excluded'});
+  });
+  assert.deepEqual(await service.preflight(),validPreflight);
+  assert.equal(calls,1);
+});
+test('preflight does not treat fresh sign-in as completed reauthentication',async()=>{
+  const oldSession={...validPreflight,freshSignInCandidate:false};
+  assert.deepEqual(await client(async()=>ok(oldSession)).preflight(),oldSession);
+  for(const invalid of [
+    {...validPreflight,recentReauthVerified:true},
+    {...validPreflight,deletionAllowed:true},
+    {...validPreflight,publicRoutes:'VERIFIED'},
+    {...validPreflight,exports:'READY'},
+    {...validPreflight,liveSessionChecked:false},
+    {...validPreflight,maxCountPerCategory:100000},
+    {...validPreflight,counts:{...validPreflight.counts,projects:-1}},
+    {...validPreflight,counts:{...validPreflight.counts,projects:1001}},
+    {...validPreflight,counts:{...validPreflight.counts,projects:'2'}},
+    {...validPreflight,countsCapped:'false'}
+  ]){
+    await assert.rejects(client(async()=>ok(invalid)).preflight(),{code:'INVALID_ACK'});
+  }
+});
+test('preflight requires auth and rejects stale, anonymous or denied provider responses',async()=>{
+  let count=0;
+  await assert.rejects(client(async()=>{count++;throw Error('network');},null).preflight(),
+    {code:'AUTH_EXPIRED'});
+  assert.equal(count,0);
+  for(const status of [401,403]){
+    const error=client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},{status}));
+    await assert.rejects(error.preflight(),{code:status===401?'AUTH_EXPIRED':'FORBIDDEN'});
+  }
+  await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
+    {status:400})).preflight(),{code:'PROVIDER_UNAVAILABLE'});
+});

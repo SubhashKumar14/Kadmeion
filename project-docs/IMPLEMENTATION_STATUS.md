@@ -91,3 +91,22 @@ All project-docs files remain unchanged.
 **Deployment:** Git integration automatically created a nonproduction Vercel auth preview from the feature-branch push; no manual Vercel deploy, production promotion, host selection, production DB mutation or public publishing was authorized or performed.
 
 **Next action:** implement a bounded owner-only account-exit preflight/footprint (projects, portfolios, current release intents and export readiness) with tenant-negative SQL/HTTP tests, and define/test an actual recent reauthentication proof contract without treating a mere JWT or typed phrase as reauthentication. Keep erasure execution and public delivery disabled until independent host revocation and retention evidence are verified.
+
+
+## B5 account-exit preflight — local implementation checkpoint (14 November 2026)
+
+- Added an owner-only, count-capped (1,000 per category) advisory RPC and typed client.
+- Counts are scoped to the requesting owner and include projects, portfolios, portfolio revisions,
+  exposure intents, project asset *metadata*, frozen release intents, reviewer grants, Trash
+  records and account-exit requests. Counts include historic/trashed rows where applicable.
+- Requires a server-side `auth.sessions` row matching the authenticated JWT `session_id`;
+  a signed-out JWT or a subject claim alone is not sufficient for access.
+- A session created within five minutes is reported only as `freshSignInCandidate`.
+  **This is not verified reauthentication**: `recentReauthVerified=false` and
+  `deletionAllowed=false` are hardcoded, with no destructive worker.
+- There is no export queue or integration inventory, public-route resolver, Storage object
+  reconciliation or backup retention proof. Those are explicitly `NOT_TRACKED` /
+  `UNVERIFIED` / `METADATA_ONLY`. Advisory counts are not an atomic purge manifest.
+- Tests cover malformed receipts, unauthenticated/forged requests, tenant-scoped live
+  GoTrue JWT preflight and signed-out session rejection. Check actual latest CI run
+  before marking database tests as passed; no hosted Supabase changes authorized.

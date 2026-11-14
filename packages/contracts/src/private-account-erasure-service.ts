@@ -12,6 +12,25 @@ export interface AccountErasureReceipt {
   erasureExecuted:false;
   retentionVerified:false;
 }
+export interface AccountExitPreflight {
+  status:'INVENTORY_ONLY';
+  maxCountPerCategory:1000;
+  countsCapped:boolean;
+  counts:{
+    projects:number;portfolios:number;portfolioRevisions:number;
+    projectExposureIntents:number;projectAssetMetadata:number;
+    frozenReleaseRequests:number;reviewerGrants:number;trashRecords:number;
+    accountExitRequests:number;
+  };
+  liveSessionChecked:true;
+  freshSignInCandidate:boolean;
+  recentReauthVerified:false;
+  publicRoutes:'UNVERIFIED';
+  objectStorage:'METADATA_ONLY';
+  exports:'NOT_TRACKED';
+  integrations:'NOT_TRACKED';
+  deletionAllowed:false;
+}
 export interface PrivateAccountErasureEntry {
   id:string;
   status:AccountErasureRequestStatus;
@@ -109,6 +128,32 @@ export class SupabasePrivateAccountErasureService {
     return response.json().catch(()=>{
       throw new PrivateAccountErasureError('INVALID_ACK','Invalid account exit response.');
     });
+  }
+  /** Advisory only: session presence/fresh login is NOT an erasure authorisation. */
+  async preflight():Promise<AccountExitPreflight>{
+    const raw=await this.send('rpc/private_account_exit_preflight',{});
+    const names=[
+      'projects','portfolios','portfolioRevisions','projectExposureIntents',
+      'projectAssetMetadata','frozenReleaseRequests','reviewerGrants',
+      'trashRecords','accountExitRequests'
+    ] as const;
+    if(!record(raw)||raw.status!=='INVENTORY_ONLY'||raw.maxCountPerCategory!==1000||
+      typeof raw.countsCapped!=='boolean'||!record(raw.counts)||
+      !names.every(k=>Number.isSafeInteger(raw.counts[k]) &&
+        (raw.counts[k] as number)>=0 && (raw.counts[k] as number)<=1000)||
+      raw.liveSessionChecked!==true||typeof raw.freshSignInCandidate!=='boolean'||
+      raw.recentReauthVerified!==false||raw.deletionAllowed!==false||
+      raw.publicRoutes!=='UNVERIFIED'||raw.objectStorage!=='METADATA_ONLY'||
+      raw.exports!=='NOT_TRACKED'||raw.integrations!=='NOT_TRACKED')
+      throw new PrivateAccountErasureError('INVALID_ACK','Invalid account-exit preflight evidence.');
+    return {
+      status:'INVENTORY_ONLY',maxCountPerCategory:1000,
+      countsCapped:raw.countsCapped as boolean,
+      counts:Object.fromEntries(names.map(k=>[k,raw.counts[k]])) as AccountExitPreflight['counts'],
+      liveSessionChecked:true,freshSignInCandidate:raw.freshSignInCandidate as boolean,
+      recentReauthVerified:false,publicRoutes:'UNVERIFIED',objectStorage:'METADATA_ONLY',
+      exports:'NOT_TRACKED',integrations:'NOT_TRACKED',deletionAllowed:false
+    };
   }
   async request(operationId:string,confirmation:'DELETE MY ACCOUNT'):Promise<AccountErasureReceipt>{
     if(!uuid(operationId)||confirmation!=='DELETE MY ACCOUNT')

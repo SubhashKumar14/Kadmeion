@@ -401,3 +401,45 @@ test('B5: real JWT account-erasure requests stay owner-private and never erase',
     assert.equal(profile[0].user_id,owner.id);
   });
 });
+
+test('B5: owner account-exit preflight checks active server session and tenant footprint',
+  {timeout:120_000},async t=>{
+  const owner=await adminUser('preflight-owner');
+  const outsider=await adminUser('preflight-outsider');
+  const route='/rest/v1/rpc/private_account_exit_preflight';
+  const post=async user=>send(route,{...json(user),method:'POST',body:{}});
+  await t.test('anonymous and missing session are denied',async()=>{
+    const anon=await send(route,{method:'POST',headers:{'Content-Type':'application/json'},body:{}});
+    assert.ok(!anon.ok,'Anonymous account-exit inventory accessible');
+  });
+  await t.test('owner sees real private counts but not other owner data',async()=>{
+    const before=successful(await post(owner),'Owner exit preflight');
+    assert.equal(before.status,'INVENTORY_ONLY');
+    assert.equal(before.liveSessionChecked,true);
+    assert.equal(before.recentReauthVerified,false);
+    assert.equal(before.deletionAllowed,false);
+    assert.equal(before.publicRoutes,'UNVERIFIED');
+    assert.equal(before.exports,'NOT_TRACKED');
+    assert.equal(before.counts.projects,0);
+    const created=await send('/rest/v1/projects?select=id',{
+      ...json(owner),method:'POST',headers:{'Content-Type':'application/json',
+        Prefer:'return=representation'},body:{
+          owner_user_id:owner.id,slug:'exit-'+randomUUID().slice(0,8),title:'Exit count project'
+        }});
+    successful(created,'Owner preflight project fixture');
+    const own=successful(await post(owner),'Owner populated preflight');
+    assert.equal(own.counts.projects,1);
+    assert.equal(own.countsCapped,false);
+    assert.equal(own.freshSignInCandidate,true);
+    const other=successful(await post(outsider),'Isolated outsider preflight');
+    assert.equal(other.counts.projects,0);
+    assert.equal(other.counts.accountExitRequests,0);
+    assert.equal(other.deletionAllowed,false);
+  });
+  await t.test('a signed-out but still-present JWT cannot read private preflight',async()=>{
+    const logout=await send('/auth/v1/logout',{...bearer(owner),method:'POST'});
+    successful(logout,'Local owner signout');
+    const stale=await post(owner);
+    assert.ok(!stale.ok,'Signed-out JWT retained private preflight access');
+  });
+});
