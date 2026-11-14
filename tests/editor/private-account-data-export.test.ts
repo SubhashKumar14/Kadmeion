@@ -33,10 +33,12 @@ type Options={
   identity?:string;
   after?:Record<string,unknown>;
   failPath?:string;
+  infoBefore?:Record<string,unknown>;
+  infoAfter?:Record<string,unknown>;
 };
 function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'owner-jwt'){
   const paths:string[]=[];
-  let reconcileCount=0,identityCount=0;
+  let reconcileCount=0,identityCount=0,infoCount=0;
   const fetcher:typeof fetch=async(input,init)=>{
     const url=new URL(String(input));paths.push(url.pathname+url.search);
     assert.equal(url.origin,origin);
@@ -66,6 +68,18 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
           ?'user_id':'owner_user_id'),'eq.'+owner);
       return json((options.rows??baseRows)[table]??[]);
     }
+    if(url.pathname.startsWith('/storage/v1/object/info/authenticated/')){
+      infoCount++;
+      assert.equal(url.pathname,
+        '/storage/v1/object/info/authenticated/kadmeion-private-assets/'+assetPath);
+      return json({
+        id:'40000000-0000-4000-8000-000000000004',
+        name:assetPath,bucket_id:'kadmeion-private-assets',owner_id:owner,
+        version:'storage-v1',updated_at:'2026-11-14T00:00:00.000Z',
+        metadata:{size:png.length,mimetype:'image/png'},
+        ...(infoCount===1?options.infoBefore:options.infoAfter)
+      });
+    }
     if(url.pathname.startsWith('/storage/v1/object/authenticated/')){
       assert.equal(url.pathname,'/storage/v1/object/authenticated/kadmeion-private-assets/'+assetPath);
       return new Response(options.assetBytes??png,{
@@ -93,6 +107,10 @@ test('owner-only bounded export contains private records, real bytes and digest 
   assert.deepEqual(Uint8Array.from(atob(body.assets[0].base64),c=>c.charCodeAt(0)),png);
   assert.match(body.assets[0].downloadedSha256,/^[a-f0-9]{64}$/);
   assert.equal(body.evidence.providerExpectedHashesVerified,false);
+  assert.equal(body.evidence.providerObjectVersionPinned,false);
+  assert.equal(body.evidence.storageObjectVersionCheckedBeforeAndAfter,true);
+  assert.equal(body.assets[0].storageVersionAtRead,'storage-v1');
+  assert.equal(paths.filter(p=>p.includes('/object/info/authenticated/')).length,2);
   assert.equal(body.evidence.crossTableAtomicSnapshot,false);
   assert.equal(body.limitations.completeAccountExport,false);
   assert.equal(body.limitations.deletionAllowed,false);
@@ -199,4 +217,30 @@ test('new private categories reject cross-tenant injection before any Storage do
     await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
     assert.equal(paths.some(p=>p.includes('/storage/v1/object/')),false);
   }
+});
+
+test('same-size Storage overwrite with changed provider version fails closed',async()=>{
+  const {service,paths}=fixture({infoAfter:{version:'storage-v2'}});
+  await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
+  assert.equal(paths.filter(p=>p.includes('/object/info/authenticated/')).length,2);
+  assert.equal(paths.some(p=>p.includes('/object/authenticated/')),true);
+});
+test('missing or forged provider Storage identity fails before byte download',async()=>{
+  for(const infoBefore of [
+    {version:null},{version:''},{owner_id:stranger},
+    {bucket_id:'public'},{name:stranger+'/cover-one/image.png'},
+    {metadata:{size:png.length,mimetype:'image/jpeg'}},
+    {metadata:{size:png.length+1,mimetype:'image/png'}}
+  ]){
+    const {service,paths}=fixture({infoBefore});
+    await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
+    assert.equal(paths.some(p=>p.includes('/object/authenticated/')),false);
+  }
+});
+test('post-download Storage object id and updated_at changes fail closed',async()=>{
+  for(const infoAfter of [
+    {id:'50000000-0000-4000-8000-000000000005'},
+    {updated_at:'2026-11-14T00:01:00.000Z'}
+  ])await assert.rejects(fixture({infoAfter}).service.export(snapshot),
+    {code:'INTEGRITY'});
 });
