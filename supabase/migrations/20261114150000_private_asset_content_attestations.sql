@@ -141,3 +141,102 @@ grant execute on function public.read_private_asset_content_attestations(uuid)
   to authenticated;
 comment on function public.read_private_asset_content_attestations(uuid) is
   'Owner-only read of server-worker byte digests, bound to a live session. Not provider-signed or an atomic export snapshot.';
+
+
+-- B5 restricted OWNER-SCOPED audit export projection. This does not bypass
+-- retention, third-party provider limitations or authorized deletion gates.
+-- Never disclose reviewer token digests or GoTrue session identifiers.
+create function public.read_private_account_audit_export(p_snapshot_id uuid)
+returns jsonb language plpgsql security definer set search_path=''
+as $function$
+declare
+  v_owner uuid := (select auth.uid());
+  v_live_session uuid;
+  v_items jsonb;
+  v_result jsonb;
+  v_category record;
+begin
+  v_live_session:=kadmeion_private.require_live_exit_auth_session();
+  if p_snapshot_id is null or not exists(
+    select 1 from public.private_account_exit_inventory_snapshots
+    where id=p_snapshot_id and owner_user_id=v_owner
+  ) then
+    raise exception using errcode='42501',message='PRIVATE_INVENTORY_NOT_FOUND';
+  end if;
+  select jsonb_build_object(
+    'reviewerGrants',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select id,request_id,portfolio_id,expires_at,revoked_at,created_at
+        from public.private_reviewer_grants
+        where owner_user_id=v_owner order by created_at,id limit 101
+      ) t),'[]'::jsonb),
+    'moderationCases',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select id,reason_code,summary,status,created_at,updated_at
+        from public.private_moderation_cases
+        where owner_user_id=v_owner order by created_at,id limit 101
+      ) t),'[]'::jsonb),
+    'moderationEvents',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select e.id,e.case_id,e.actor_user_id,e.event_type,e.detail,e.created_at
+        from public.private_moderation_events e
+        where e.owner_user_id=v_owner order by e.created_at,e.id limit 101
+      ) t),'[]'::jsonb),
+    'accountExitRequests',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select id,status,created_at,withdrawn_at,
+          public_revocation_verified,reauth_verified,access_terminated,
+          erasure_executed,retention_verified
+        from public.private_account_erasure_requests
+        where owner_user_id=v_owner order by created_at,id limit 101
+      ) t),'[]'::jsonb),
+    'reauthChallenges',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select id,created_at,expires_at,verified_at
+        from public.private_account_exit_reauth_challenges
+        where owner_user_id=v_owner order by created_at,id limit 101
+      ) t),'[]'::jsonb),
+    'inventorySnapshots',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select id,schema_version,captured_at,inventory
+        from public.private_account_exit_inventory_snapshots
+        where owner_user_id=v_owner order by captured_at,id limit 101
+      ) t),'[]'::jsonb),
+    'releasePointers',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select portfolio_id,status,generation,revocation_generation,
+          candidate_request_id,candidate_manifest_sha256,updated_at
+        from public.private_release_visibility_pointers
+        where owner_user_id=v_owner order by updated_at,portfolio_id limit 101
+      ) t),'[]'::jsonb),
+    'releaseEvents',coalesce((
+      select jsonb_agg(to_jsonb(t)) from (
+        select id,portfolio_id,event_type,expected_generation,
+          resulting_generation,created_at
+        from public.private_release_visibility_events
+        where owner_user_id=v_owner order by created_at,id limit 101
+      ) t),'[]'::jsonb)
+  ) into v_items;
+  for v_category in select key,value from jsonb_each(v_items) loop
+    if jsonb_array_length(v_category.value)>100 then
+      raise exception using errcode='54000',message='ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED';
+    end if;
+  end loop;
+  if octet_length(v_items::text)>1048576 then
+    raise exception using errcode='54000',message='ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED';
+  end if;
+  v_result:=jsonb_build_object(
+    'snapshotId',p_snapshot_id,'ownerUserId',v_owner,
+    'status','BOUNDED_OWNER_AUDIT','maxRowsPerCategory',100,
+    'categories',v_items,'tokenDigestsIncluded',false,
+    'sessionsIncluded',false,'completeAccountExport',false,
+    'deletionAllowed',false);
+  return v_result;
+end;
+$function$;
+revoke all on function public.read_private_account_audit_export(uuid)
+  from public,anon;
+grant execute on function public.read_private_account_audit_export(uuid)
+  to authenticated;
+comment on function public.read_private_account_audit_export(uuid) is
+  'Owner-live-session restricted audit export; bounded to 100 per category, omits reviewer secret digests/session IDs, never a full export or deletion authorization.';
