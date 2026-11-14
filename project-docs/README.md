@@ -1,5 +1,8 @@
 # Kadmeion — Complete Capstone Design and Documentation Package
 
+> **Current implementation differs from this historical 12-Nov planning snapshot.** See [current backend evidence and unresolved gates](BACKEND_CURRENT_STATUS.md) and [chronological implementation changes](IMPLEMENTATION_STATUS.md). "NOT IMPLEMENTED" labels below describe the document creation date, not today's feature branch.
+
+
 > **Kadmeion planning artifact · 12 November 2026 · NOT IMPLEMENTED.** `[APPROVED]` = explicit owner choice; `[PROPOSED]` = specification or architecture suggestion; `[PROOF]` = requires technical/test evidence. No code, deployment, integration, screenshots or performance claims are implied.
 
 **Date:** 2026-11-12 · **Owner decisions recorded:** 115 (`UI-001`–`UI-115`) · **Screens/panels:** 52 · **Detailed end-to-end workflows:** 53 · **Planned tests:** 138 (`NOT_RUN`) · **Technical proofs:** 20 (unproven/not run).
