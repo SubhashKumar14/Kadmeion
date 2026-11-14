@@ -575,3 +575,22 @@ test('B5: deliberate account-exit reauthentication requires a NEW live owner sig
       'Original old session reused a verified challenge');
   });
 });
+
+test('B4: future private host denial RPC is not exposed on the Data API',
+  {timeout:30_000},async()=>{
+  const body={p_portfolio_id:randomUUID(),p_resource:'CANONICAL_HTML'};
+  const route='/rest/v1/rpc/private_delivery_denial_gate';
+  for(const [key,label] of [
+    [cfg.anon,'anonymous'],
+    [cfg.service,'service role']
+  ]){
+    for(const headers of [
+      {'Content-Type':'application/json'},
+      {'Content-Type':'application/json','Content-Profile':'kadmeion_private'}
+    ]){
+      const response=await send(route,{method:'POST',key,bearer:key,
+        headers,body});
+      assert.ok(!response.ok,label+' unexpectedly reached private gate over REST');
+    }
+  }
+});

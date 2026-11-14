@@ -265,3 +265,46 @@ TypeScript, auth build/smoke, isolated auth-preview verification and
 125/200 authored application/config/test file budget. This proves the
 ephemeral local CI paths, not a hosted provider, browser E2E, CDN revocation,
 production security, lint, SAST or accessibility. No public route enabled.
+
+
+## B4 trusted private canonical/direct-asset read — 14 November 2026
+
+**Verified baseline:** Active repo `SubhashKumar14/Kadmeion`, branch
+`feat/b0-backend-foundation`, prior head `b684449`. The original DevFolio
+repo is historical only. Latest Notion owner register supersedes older pending
+records and confirms **52/52 original LIGHT screens approved**, no DARK mockup
+set and no permission to substitute rejected Canva mockups.
+
+**Implementation:** `kadmeion_private.private_delivery_denial_gate` is a
+service-role-only, non-exposed SQL RPC that performs one fresh private-pointer
+read for either canonical HTML or a content-addressed direct immutable asset.
+It validates input shape/digest and returns only an explicit **DENY**, a minimal
+generation/revocation fence and `hostRevocationVerified=false`. Prepared
+candidate, blocked state, missing portfolio, malicious paths, mismatched
+hashes and unavailable providers never grant serving permission. The paired
+`PrivateServerDeliveryDenialGate` TypeScript contract consumes this response
+and rejects forged ALLOW receipts, public URLs, contradictory counters and
+extra private data. There is **no public-serving implementation** here.
+
+**Checks/evidence:** Initial code commit
+[`1b29acb`](https://github.com/SubhashKumar14/Kadmeion/commit/1b29acbce127642d85feac282b1f373c9e26788e)
+passed local database/pgTAP and HTTP CI but application CI detected
+unsupported Node 22 parameter-property syntax. Fix commit
+[`750c0bd`](https://github.com/SubhashKumar14/Kadmeion/commit/750c0bd26c202988be40d44378b7518bd4f8b34b)
+passed application CI; check final SQL/HTTP and post-documentation CI separately.
+Added an extra HTTP check that the internal RPC cannot be reached through
+PostgREST even using a service role. Do not infer a host-level negative test
+from an internal SQL test.
+
+**Unresolved critical blocker:** No chosen/authorized external public host,
+route adapter, cache proof, direct immutable object interception, rollback,
+public-view verification, hosted email or production data lifecycle. SQL
+pointer revocation does **not** prove previously cached hosted bytes are
+inaccessible. No new frontend designs, manual Vercel deployment, production
+change, account purge, or public release occurred.
+
+**Next action:** Validate the final CI and then implement a verified
+server-side artifact/manifest-to-private-candidate binding contract, without
+activating a live pointer. Before any public serving, obtain approval for
+the host and prove canonical/direct-asset 404/410, cache behavior, rollback
+and privacy revocation in a nonproduction environment.

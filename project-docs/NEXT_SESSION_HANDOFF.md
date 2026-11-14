@@ -114,3 +114,28 @@ direct-asset revocation semantics without deploying. Verify host selection,
 cache controls, direct immutable URLs and rollback before anyone can claim a
 published link revoked. Continue backend-first and obtain approval before any
 Vercel static preview, production change, or irreversible deletion.
+
+
+## Current B4 trusted read continuation (14 November 2026)
+
+Freshly verify `feat/b0-backend-foundation` HEAD/CI. The host-neutral
+`PrivatePublicDeliveryPolicy` and owner-only transactional
+`private_release_visibility_pointers` already existed before this run.
+This iteration added `kadmeion_private.private_delivery_denial_gate`
+(only service_role, non-exposed schema, both canonical and direct hashed
+asset inputs) and `PrivateServerDeliveryDenialGate` fail-closed validation,
+with pgTAP/Node/HTTP negative tests.
+
+The SQL function NEVER grants access. Candidate manifests are still owner-
+submitted and unverified by DB, and no trusted public host, CDN invalidation,
+asset storage adapter or serving endpoint exists. Owner block increments
+revocation generation; this is evidence of a private DB mutation, not live
+URL or direct-asset revocation. Do not conflate the private restricted
+denial contract with a host public resolver. Maintain all 52 owner-approved
+original LIGHT screens but do not begin frontend until backend gate passes;
+DARK-theme mockup production and rejected Canva assets remain prohibited.
+
+NEXT: verify final CI, then implement secure server-side private artifact
+manifest binding/attestation prior to any host selection. Require explicit
+user approval before Vercel preview deployment, public delivery, production
+changes or irreversible account deletion.
