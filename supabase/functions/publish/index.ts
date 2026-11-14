@@ -90,7 +90,7 @@ function headers(origin?:string,allowed=false):Headers {
 function error(code:number,message:string,origin?:string,allowed=false):Response {
   return Response.json({error:message},{status:code,headers:headers(origin,allowed)});
 }
-async function bounded(request:Request,limit:number):Promise<unknown> {
+async function bounded(request:Request|Response,limit:number):Promise<unknown> {
   const length=request.headers.get('content-length');
   if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
     throw Error('Response too large');
@@ -133,11 +133,7 @@ async function getJson(url:string,headers:Record<string,string>,http:typeof fetc
     await response.body?.cancel();
     throw Error('Invalid provider media type');
   }
-  return bounded(new Request('https://local.invalid',{method:'POST',
-    body:response.body,headers:{
-      ...(response.headers.get('content-length')?
-        {'Content-Length':response.headers.get('content-length')!}:{})
-    }}),MAX_RPC_BYTES);
+  return bounded(response,MAX_RPC_BYTES);
 }
 export async function handleOwnerPublishRelease(request:Request,deps:Dependencies={}):Promise<Response> {
   const env=deps.env??serverEnv();
