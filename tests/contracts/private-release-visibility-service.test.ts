@@ -145,3 +145,28 @@ test('untrusted origins and missing publishable keys are rejected',()=>{
   assert.throws(()=>new SupabasePrivateReleasePointerService(base,' ',async()=>null),
     {code:'VALIDATION'});
 });
+
+test('unlisted consent is an owner request with no delivery authority',async()=>{
+  const waiting={intentId:operation,status:'AWAITING_HOST',alreadyRecorded:false,
+    publicServingEnabled:false,publicUrl:null};
+  const service=client(async(url,init)=>{
+    assert.equal(url,base+'/rest/v1/rpc/owner_request_unlisted_publication');
+    assert.deepEqual(JSON.parse(init?.body as string),{
+      p_request_id:request,p_expected_generation:1,p_operation_id:operation,
+      p_confirmation:'PUBLISH UNLISTED'
+    });
+    return Response.json(waiting);
+  });
+  assert.deepEqual(await service.requestUnlistedPublication(request,1,operation,'PUBLISH UNLISTED'),waiting);
+  await assert.rejects(service.requestUnlistedPublication(request,0,operation,'PUBLISH UNLISTED'),
+    {code:'VALIDATION'});
+  for(const bad of [
+    {...waiting,status:'LIVE'},{...waiting,status:'USED'},{...waiting,publicUrl:'https://example.test'}
+  ]){
+    await assert.rejects(client(async()=>Response.json(bad)).requestUnlistedPublication(
+      request,1,operation,'PUBLISH UNLISTED'),{code:'INVALID_ACK'});
+  }
+  const used={...waiting,status:'USED',alreadyRecorded:true};
+  assert.deepEqual(await client(async()=>Response.json(used)).requestUnlistedPublication(
+    request,1,operation,'PUBLISH UNLISTED'),used);
+});

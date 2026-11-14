@@ -259,11 +259,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
 
     // B4 UNLISTED activation requires distinct typed owner consent and
     // privileged probe/activation; no public request is served before that.
-    const intent=ok(await api('/rest/v1/rpc/owner_request_unlisted_publication',{
-      method:'POST',jwt:owner.jwt,body:{
-        p_request_id:frozen.requestId,p_expected_generation:1,
-        p_operation_id:randomUUID(),p_confirmation:'PUBLISH UNLISTED'}
-    }),'Owner explicitly authorized a private unlisted release');
+    const intent = await pointer.requestUnlistedPublication(
+      frozen.requestId, prepared.generation, randomUUID(), 'PUBLISH UNLISTED');
     assert.equal(intent.status,'AWAITING_HOST');
     assert.equal(intent.publicServingEnabled,false);
     const publicRead=()=>api('/rest/v1/rpc/service_read_unlisted_release',{
@@ -368,11 +365,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       return consentAndProbe(next.generation);
     }
     async function consentAndProbe(generation) {
-      const consent = ok(await api('/rest/v1/rpc/owner_request_unlisted_publication', {
-        method: 'POST', jwt: owner.jwt,
-        body: {p_request_id: frozen.requestId, p_expected_generation: generation,
-          p_operation_id: randomUUID(), p_confirmation: 'PUBLISH UNLISTED'}
-      }), 'Authorize replacement');
+      const consent = await pointer.requestUnlistedPublication(
+        frozen.requestId, generation, randomUUID(), 'PUBLISH UNLISTED');
       ok(await api('/rest/v1/rpc/service_prepare_unlisted_release', {
         method: 'POST', key: cfg.service, jwt: cfg.service,
         body: {p_intent_id: consent.intentId}

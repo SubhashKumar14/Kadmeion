@@ -26,9 +26,16 @@ export interface PrivatePointerReceipt {
   publicUrl:null;
   hostRevocationVerified:false;
 }
+export interface UnlistedPublicationConsent {
+  intentId:string;
+  status:'AWAITING_HOST'|'USED';
+  alreadyRecorded:boolean;
+  publicServingEnabled:false;
+  publicUrl:null;
+}
 export class PrivatePointerError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|'CONFLICT'|
-    'PROVIDER_UNAVAILABLE'|'INVALID_ACK'|'REVISION_UNAVAILABLE';
+    'PROVIDER_UNAVAILABLE'|'INVALID_ACK'|'REVISION_UNAVAILABLE'|'QUOTA_EXCEEDED';
   constructor(code:PrivatePointerError['code'],message:string){
     super(message);this.name='PrivatePointerError';this.code=code;
   }
@@ -124,7 +131,10 @@ export class SupabasePrivateReleasePointerService {
         throw new PrivatePointerError('FORBIDDEN','Private portfolio is unavailable.');
       if(message==='PRIVATE_FROZEN_REQUEST_UNAVAILABLE')
         throw new PrivatePointerError('REVISION_UNAVAILABLE','Frozen revision is unavailable.');
+      if(message==='UNLISTED_INTENT_QUOTA_REACHED')
+        throw new PrivatePointerError('QUOTA_EXCEEDED','The publishing request limit has been reached.');
       if(response.status===409||message==='PRIVATE_POINTER_CONFLICT'||
+        message==='UNLISTED_POINTER_CONFLICT'||message==='UNLISTED_OPERATION_REUSED'||
         message==='PRIVATE_POINTER_OPERATION_REUSED')
         throw new PrivatePointerError('CONFLICT','Private pointer changed; read current state.');
       if(message==='INVALID_PRIVATE_POINTER_PREPARE'||message==='INVALID_PRIVATE_POINTER_BLOCK'||
@@ -150,6 +160,24 @@ export class SupabasePrivateReleasePointerService {
       p_manifest_sha256:manifestSha256,p_expected_generation:expectedGeneration,
       p_operation_id:operationId
     }),portfolioId,'PREPARE',expectedGeneration);
+  }
+  async requestUnlistedPublication(requestId:string,expectedGeneration:number,
+    operationId:string,confirmation:'PUBLISH UNLISTED'):Promise<UnlistedPublicationConsent>{
+    if(!uuid(requestId)||!uuid(operationId)||!generation(expectedGeneration)||
+       expectedGeneration<1||confirmation!=='PUBLISH UNLISTED')
+      throw new PrivatePointerError('VALIDATION','Explicit unlisted publishing confirmation is required.');
+    const raw=await this.call('owner_request_unlisted_publication',{
+      p_request_id:requestId,p_expected_generation:expectedGeneration,
+      p_operation_id:operationId,p_confirmation:confirmation
+    });
+    if(!record(raw)||!uuid(raw.intentId)||typeof raw.alreadyRecorded!=='boolean'||
+       (raw.status!=='AWAITING_HOST'&&!(raw.status==='USED'&&raw.alreadyRecorded))||
+       raw.publicServingEnabled!==false||raw.publicUrl!==null)
+      throw new PrivatePointerError('INVALID_ACK','Unlisted publishing consent was not confirmed.');
+    return {
+      intentId:raw.intentId,status:raw.status,alreadyRecorded:raw.alreadyRecorded,
+      publicServingEnabled:false,publicUrl:null
+    };
   }
   async block(portfolioId:string,operationId:string):Promise<PrivatePointerReceipt>{
     if(!uuid(portfolioId)||!uuid(operationId))
