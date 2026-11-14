@@ -205,6 +205,31 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.equal((await bindPrivateArtifactToPointer(ctx)).alreadyBound,true);
     assert.equal((await bindPrivateArtifactToPointer({...ctx,writer:legacyPsqlWriter})).alreadyBound,true);
 
+
+    // B4 real local HTTP: staging is invisible until a checked private bind.
+    const trustedStage=ok(await api('/rest/v1/rpc/store_private_reviewer_stage_artifact',{
+      method:'POST',jwt:cfg.service,key:cfg.service,
+      body:{p_request_id:frozen.requestId,p_expected_generation:1,
+        p_html:new TextDecoder().decode(artifact.files[0].bytes)}
+    }),'Store private staged bytes with trusted service role');
+    assert.equal(trustedStage.status,'STAGED_PRIVATE');
+    assert.equal(trustedStage.htmlSha256,bound.htmlSha256);
+    const reviewer=ok(await api('/rest/v1/rpc/issue_private_reviewer_grant',{
+      method:'POST',jwt:owner.jwt,
+      body:{p_request_id:frozen.requestId,p_operation_id:randomUUID(),
+        p_valid_minutes:60}
+    }),'Issue owner-scoped reviewer token');
+    const getStaged=()=>api('/rest/v1/rpc/read_private_reviewer_stage_artifact',{
+      method:'POST',jwt:cfg.service,key:cfg.service,
+      body:{p_grant_id:reviewer.grantId,p_raw_token:reviewer.rawToken}});
+    const bytes=ok(await getStaged(),'Read real reviewer staging bytes');
+    assert.equal(bytes.html,new TextDecoder().decode(artifact.files[0].bytes));
+    assert.equal(bytes.publicServingEnabled,false);
+    ok(await api('/rest/v1/rpc/revoke_private_reviewer_grant',{
+      method:'POST',jwt:owner.jwt,body:{p_grant_id:reviewer.grantId}
+    }),'Revoke real reviewer token');
+    assert.equal(ok(await getStaged(),'Read revoked reviewer grant'),null);
+
     const direct={requestId:frozen.requestId,expectedGeneration:1,
       manifestJson:JSON.stringify(artifact.manifest),
       html:new TextDecoder().decode(artifact.files[0].bytes)};
