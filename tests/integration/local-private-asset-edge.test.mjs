@@ -71,10 +71,23 @@ test('B5 locally bundled Edge handler checks real gateway, origin and input',
     }
     assert.equal(ready,true,'Edge bundle must reject invalid UUID; observed HTTP: '+
       [...statuses].join(',')+'; exit='+worker.exitCode+'; startup='+diagnostics.join(' | '));
-    const denied=await request({assetId:'invalid'},{Origin:'https://foreign.invalid'});
+    // The local CLI may briefly restart its Deno isolate after the first hit.
+    // Retry only transport exceptions; never retry an unexpected HTTP status.
+    const stable=async(call)=>{
+      let last;
+      for(let attempt=0;attempt<4;attempt++){
+        if(worker.exitCode!==null)
+          throw Error('Edge process exited: '+worker.exitCode+'; '+diagnostics.join(' | '));
+        try{return await call();}
+        catch(error){last=error;await delay(250);}
+      }
+      throw Error('Local Edge HTTP transport unavailable: '+
+        (last instanceof Error?last.message:'unknown')+'; '+diagnostics.join(' | '));
+    };
+    const denied=await stable(()=>request({assetId:'invalid'},{Origin:'https://foreign.invalid'}));
     assert.equal(denied.status,403,'Origin policy must reject foreign browsers');
     await denied.body?.cancel();
-    const browser=await request({assetId:'invalid'},{Origin:'http://localhost:3000'});
+    const browser=await stable(()=>request({assetId:'invalid'},{Origin:'http://localhost:3000'}));
     assert.equal(browser.status,400);
     // Supabase's local gateway can override a function's Access-Control-Allow-Origin
     // with "*". CORS is NOT authorization: the preceding foreign-origin 403 is
@@ -82,10 +95,10 @@ test('B5 locally bundled Edge handler checks real gateway, origin and input',
     assert.ok(['http://localhost:3000','*'].includes(
       browser.headers.get('access-control-allow-origin')));
     await browser.body?.cancel();
-    const anonymous=await fetch(url,{
+    const anonymous=await stable(()=>fetch(url,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({assetId:'invalid'}),redirect:'error',
-      signal:AbortSignal.timeout(5000)});
+      signal:AbortSignal.timeout(5000)}));
     assert.ok(anonymous.status===401||anonymous.status===403,
       'Gateway must reject requests without a verified user JWT');
     await anonymous.body?.cancel();

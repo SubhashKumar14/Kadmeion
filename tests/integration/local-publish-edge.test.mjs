@@ -78,18 +78,30 @@ test('B4: actual local publication Edge gateway enforces JWT and owner intent ac
       [...statuses].join(',')+'; exit='+child.exitCode+
       '; startup='+diagnostics.join(' | '));
 
-    const foreign=await request(anon,{intentId:'not-a-uuid'},
-      {Origin:'https://foreign.invalid'});
+    // Keep a bounded retry for CLI runtime restarts, not for wrong HTTP codes.
+    const stable=async(call)=>{
+      let last;
+      for(let attempt=0;attempt<4;attempt++){
+        if(child.exitCode!==null)
+          throw Error('Publish isolate exited: '+child.exitCode+'; '+diagnostics.join(' | '));
+        try{return await call();}
+        catch(error){last=error;await delay(250);}
+      }
+      throw Error('Local publish transport unavailable: '+
+        (last instanceof Error?last.message:'unknown')+'; '+diagnostics.join(' | '));
+    };
+    const foreign=await stable(()=>request(anon,{intentId:'not-a-uuid'},
+      {Origin:'https://foreign.invalid'}));
     assert.equal(foreign.status,403);
     await foreign.body?.cancel();
-    const allowed=await request(anon,{intentId:'not-a-uuid'},
-      {Origin:'http://localhost:3000'});
+    const allowed=await stable(()=>request(anon,{intentId:'not-a-uuid'},
+      {Origin:'http://localhost:3000'}));
     assert.equal(allowed.status,400);
     await allowed.body?.cancel();
-    const anonymous=await fetch(functionUrl,{
+    const anonymous=await stable(()=>fetch(functionUrl,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({intentId:randomUUID()}),
-      redirect:'error',signal:AbortSignal.timeout(5000)});
+      redirect:'error',signal:AbortSignal.timeout(5000)}));
     assert.ok([401,403].includes(anonymous.status),
       'Anonymous browser bypassed the Supabase Edge JWT gateway');
     await anonymous.body?.cancel();
@@ -108,7 +120,7 @@ test('B4: actual local publication Edge gateway enforces JWT and owner intent ac
     assert.equal(signed.status,200,'Local owner sign-in failed');
     const token=(await signed.json()).access_token;
     assert.ok(typeof token==='string'&&token.length>70);
-    const nonOwner=await request(token,{intentId:randomUUID()});
+    const nonOwner=await stable(()=>request(token,{intentId:randomUUID()}));
     assert.equal(nonOwner.status,404,
       'Owner must not be able to operate without their own release consent');
     const body=await nonOwner.text();
