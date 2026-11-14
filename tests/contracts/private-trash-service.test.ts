@@ -114,3 +114,17 @@ test('expired trash worker reports individual failure and continues without fals
   const r=await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http});
   assert.equal(r.status,207);assert.deepEqual(await r.json(),{purged:0,pending:1});
 });
+
+test('local Edge container resolves the internal Kong origin only when explicitly opted in',async()=>{
+  const local={...sweepEnv,SUPABASE_URL:'http://kong:8000',KADMEION_LOCAL_INTEGRATION:'1'};
+  const http=(async(url:RequestInfo|URL)=>{
+    assert.equal(String(url),'http://kong:8000/rest/v1/rpc/service_list_expired_trash');
+    return Response.json([]);
+  }) as typeof fetch;
+  const response=await handlePurgeExpiredTrash(scheduled(),{env:local,http});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{purged:0,pending:0});
+  const blocked=await handlePurgeExpiredTrash(scheduled(),{
+    env:{...local,KADMEION_LOCAL_INTEGRATION:'0'},http});
+  assert.equal(blocked.status,404);
+});

@@ -30,7 +30,7 @@ function configured(env:Env):{origin:string;key:string;secret:string}|null {
     if(env.KADMEION_TRASH_SWEEP_ENABLED!=='true')return null;
     const url=new URL(env.SUPABASE_URL??'');
     const local=env.KADMEION_LOCAL_INTEGRATION==='1'&&
-      ['http://127.0.0.1:54321','http://localhost:54321'].includes(url.origin);
+      ['http://127.0.0.1:54321','http://localhost:54321','http://kong:8000'].includes(url.origin);
     if(!local&&url.origin!=='https://scyooqjitjzjdxgtanso.supabase.co')return null;
     if(url.pathname!=='/'||url.username||url.password||url.search||url.hash)return null;
     const key=env.SUPABASE_SERVICE_ROLE_KEY,secret=env.KADMEION_TRASH_SWEEP_SECRET;
