@@ -208,9 +208,14 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
         {code:'SQL_UNCONFIRMED'});
     }
 
-    // Inject an owner revocation BETWEEN pointer.read and DB bind, proving
-    // the SQL transaction rechecks generation and cannot publish old bytes.
-    await pointer.block(portfolioId,randomUUID());
+    // Revoke AFTER the orchestrator reads a prepared pointer but BEFORE its
+    // direct SQL bind. The DB must reject the stale generation atomically.
+    const raced={...ctx,writer:{bindPrivateArtifact:async request=>{
+      await pointer.block(portfolioId,randomUUID());
+      return writer.bindPrivateArtifact(request);
+    }}};
+    await assert.rejects(bindPrivateArtifactToPointer(raced),{
+      code:'BINDING_UNCONFIRMED'});
     await assert.rejects(bindPrivateArtifactToPointer(ctx),{code:'POINTER_CONFLICT'});
     await assert.rejects(writer.bindPrivateArtifact(direct),{code:'SQL_UNCONFIRMED'});
     const after=await pointer.read(portfolioId);
