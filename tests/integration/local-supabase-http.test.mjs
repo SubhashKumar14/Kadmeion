@@ -963,6 +963,11 @@ test('B5: Storage reconciliation is owner-only and never proves export or erasur
     p_project_id:project.id,p_object_path:path,p_mime_type:'image/png',
     p_byte_size:png.length,p_alt_text:'Private test pixel'
   }),'Register real private Storage object');
+  const tamper=await send('/rest/v1/project_assets?object_path=eq.'+
+    encodeURIComponent(path),{
+    ...json(owner),method:'PATCH',body:{byte_size:png.length+1}
+  });
+  assert.ok(!tamper.ok,'Owner altered verified asset byte size without Storage proof');
   const matched=successful(await post(owner,rpc,input),'Registered Storage metadata match');
   assert.equal(matched.status,'METADATA_MATCH_ONLY');
   assert.equal(matched.registeredAssets,1);
