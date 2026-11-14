@@ -1117,6 +1117,11 @@ test('B5: real local same-size provider overwrite during export fails version re
       p_byte_size:png.length,p_alt_text:'Race fixture'
     }
   }),'Register race image');
+  const raceAssets=successful(await send('/rest/v1/project_assets?select=id&object_path=eq.'+
+    encodeURIComponent(path),bearer(owner)),'Race asset lookup');
+  assert.equal(raceAssets.length,1);
+  await new PrivateServerAssetByteAttestor(cfg.origin,cfg.anon,cfg.service)
+    .attest(raceAssets[0].id,owner.token);
   const snapshot=successful(await send(
     '/rest/v1/rpc/create_private_account_exit_inventory',{
       ...json(owner),method:'POST',
