@@ -362,6 +362,31 @@ export class SupabasePrivateAccountErasureService {
       p_operation_id:operationId,p_confirmation:confirmation
     }));
   }
+  async removeUploadBatch():Promise<number>{
+    const paths=await this.send('rpc/owner_list_account_exit_uploads',{});
+    if(!Array.isArray(paths)||paths.length>100||paths.some(path=>
+      typeof path!=='string'||!uuid(path.split('/')[0])||path.split('/').length<2||
+      path.split('/').some((part:string)=>!part||part==='.'||part==='..'||part.includes('\\'))))
+      throw new PrivateAccountErasureError('INVALID_ACK','Invalid account-exit upload inventory.');
+    if(paths.length===0)return 0;
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
+    let response:Response;
+    try{
+      response=await this.http(this.origin+'/storage/v1/object/kadmeion-private-assets',{
+        method:'DELETE',headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json'},
+        credentials:'omit',cache:'no-store',redirect:'error',body:JSON.stringify({prefixes:paths})
+      });
+    }catch{
+      throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
+    }
+    if(!response.ok)
+      throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
+    const remaining=await this.send('rpc/owner_list_account_exit_uploads',{});
+    if(!Array.isArray(remaining)||paths.some(path=>remaining.includes(path)))
+      throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
+    return paths.length;
+  }
   async execute(requestId:string,challengeId:string,confirmation:'DELETE MY ACCOUNT'):Promise<{
     status:'ACTIVE_ACCOUNT_ERASED';
     receiptId:string;

@@ -66,6 +66,26 @@ using (
   and (select kadmeion_private.can_remove_account_exit_uploads())
 );
 
+create function public.owner_list_account_exit_uploads()
+returns jsonb language plpgsql stable security definer set search_path=''
+as $function$
+declare
+  v_owner uuid := (select auth.uid());
+begin
+  if not kadmeion_private.can_remove_account_exit_uploads() then
+    raise exception using errcode='42501',message='ERASURE_REAUTH_REQUIRED';
+  end if;
+  return coalesce((select jsonb_agg(upload.name order by upload.name) from (
+    select name from storage.objects
+    where bucket_id='kadmeion-private-assets' and owner_id=v_owner::text
+      and split_part(name,'/',1)=v_owner::text
+    order by name limit 100
+  ) upload),'[]'::jsonb);
+end;
+$function$;
+revoke all on function public.owner_list_account_exit_uploads() from public,anon,service_role;
+grant execute on function public.owner_list_account_exit_uploads() to authenticated;
+
 create function public.owner_execute_account_erasure(
   p_request_id uuid,p_challenge_id uuid,p_confirmation text
 ) returns jsonb language plpgsql security definer set search_path=''
