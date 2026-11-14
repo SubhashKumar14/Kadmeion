@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public, extensions;
-select plan(13);
+select plan(25);
 select has_table('public', 'profiles', 'owner profiles exist');
 select has_table('public', 'profile_sharing_preferences', 'private sharing intent exists');
 select has_table('kadmeion_private', 'operator_roles', 'operator grants live outside public API');
@@ -21,5 +21,31 @@ select ok(
   end,
   'Optional RLS event helper is absent or inaccessible to anonymous clients'
 );
+
+select has_table('public','private_platform_links','owner private platform connections exist');
+select ok((select relrowsecurity from pg_class
+  where oid='public.private_platform_links'::regclass),
+  'platform connections enforce row-level security');
+select ok(not has_table_privilege('anon','public.private_platform_links','SELECT'),
+  'anonymous cannot enumerate platform handles');
+select ok(has_column_privilege('authenticated','public.private_platform_links',
+  'handle','INSERT'),'owner may insert a handle');
+select ok(has_column_privilege('authenticated','public.private_platform_links',
+  'handle','UPDATE'),'owner may update handle');
+select ok(not has_column_privilege('authenticated','public.private_platform_links',
+  'owner_user_id','UPDATE'),'owner cannot forge ownership');
+select ok(not has_column_privilege('authenticated','public.private_platform_links',
+  'provider','UPDATE'),'provider identity requires explicit disconnect and reconnect');
+select ok(not has_column_privilege('authenticated','public.private_platform_links',
+  'profile_url','INSERT'),'user cannot inject an arbitrary URL');
+select ok(not has_column_privilege('authenticated','public.private_platform_links',
+  'ownership_verified','INSERT'),'owner cannot forge verification');
+select ok(not has_column_privilege('authenticated','public.private_platform_links',
+  'sync_status','UPDATE'),'owner cannot claim imported metrics were synced');
+select ok(not has_column_privilege('authenticated','public.private_platform_links',
+  'connection_mode','UPDATE'),'owner cannot claim a non-link-only integration');
+select ok((select count(*)=4 from pg_policies where schemaname='public'
+  and tablename='private_platform_links'),
+  'links have separate owner select/insert/update/delete policies');
 select * from finish();
 rollback;
