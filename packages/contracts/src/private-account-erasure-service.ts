@@ -58,7 +58,7 @@ export interface PrivateAccountErasureEntry {
 }
 export class PrivateAccountErasureError extends Error {
   readonly code:'AUTH_EXPIRED'|'FORBIDDEN'|'VALIDATION'|'CONFLICT'|
-    'QUOTA_EXCEEDED'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK';
+    'REAUTH_REQUIRED'|'CHALLENGE_EXPIRED'|'QUOTA_EXCEEDED'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK';
   constructor(code:PrivateAccountErasureError['code'],message:string){
     super(message);this.name='PrivateAccountErasureError';this.code=code;
   }
@@ -124,12 +124,18 @@ export class SupabasePrivateAccountErasureService {
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit request was not acknowledged.');
     }
     if(!response.ok){
+      const error:unknown=await response.json().catch(()=>null);
+      const message=record(error)?error.message:null;
+      if(message==='LIVE_SESSION_REQUIRED')
+        throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
+      if(message==='NEW_SIGN_IN_REQUIRED')
+        throw new PrivateAccountErasureError('REAUTH_REQUIRED','Sign in again after starting the account-exit challenge.');
+      if(message==='REAUTH_CHALLENGE_EXPIRED')
+        throw new PrivateAccountErasureError('CHALLENGE_EXPIRED','This challenge expired; start a new one.');
       if(response.status===401)
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Session expired.');
       if(response.status===403)
         throw new PrivateAccountErasureError('FORBIDDEN','Account exit access denied.');
-      const error:unknown=await response.json().catch(()=>null);
-      const message=record(error)?error.message:null;
       if(message==='ACCOUNT_ERASURE_REQUEST_QUOTA_REACHED'||
         message==='REAUTH_CHALLENGE_QUOTA_REACHED')
         throw new PrivateAccountErasureError('QUOTA_EXCEEDED','Request limit reached.');
