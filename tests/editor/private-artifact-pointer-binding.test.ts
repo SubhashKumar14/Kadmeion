@@ -208,7 +208,7 @@ test('staging never calls writer for mismatched digest or malformed acknowledgem
 });
 
 test('service stage writer rejects untrusted URLs and forwards only privileged bytes',async()=>{
-  const {SupabaseTrustedReviewerStageWriter}=
+  const {SupabaseTrustedReviewerStageWriter,stagePrivateReviewerArtifact}=
     await import('../../packages/storage-adapters/src/private-reviewer-staging.ts');
   assert.throws(()=>new SupabaseTrustedReviewerStageWriter(
     'http://attacker.invalid','eyJ'+'x'.repeat(90)),{code:'INVALID_INPUT'});
