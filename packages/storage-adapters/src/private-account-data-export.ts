@@ -16,9 +16,10 @@ type JsonObject=Record<string,unknown>;
 const object=(v:unknown):v is JsonObject=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const isUuid=(v:unknown):v is string=>typeof v==='string'&&UUID.test(v);
 export class PrivateAccountExportError extends Error {
-  constructor(readonly code:'VALIDATION'|'AUTH_EXPIRED'|'PROVIDER_UNAVAILABLE'|
-    'INTEGRITY'|'LIMIT_EXCEEDED'|'UNVERIFIED',message:string){
-    super(message);this.name='PrivateAccountExportError';
+  readonly code:'VALIDATION'|'AUTH_EXPIRED'|'PROVIDER_UNAVAILABLE'|
+    'INTEGRITY'|'LIMIT_EXCEEDED'|'UNVERIFIED';
+  constructor(code:PrivateAccountExportError['code'],message:string){
+    super(message);this.name='PrivateAccountExportError';this.code=code;
   }
 }
 export interface PrivateAccountExportArtifact {
@@ -72,9 +73,11 @@ async function boundedBytes(response:Response,max:number):Promise<Uint8Array> {
 }
 export class SupabasePrivateAccountDataExporter {
   private readonly origin:string;
-  constructor(endpoint:string,private readonly publishableKey:string,
-    private readonly accessToken:()=>Promise<string|null>,
-    private readonly http:typeof fetch=fetch){
+  private readonly publishableKey:string;
+  private readonly accessToken:()=>Promise<string|null>;
+  private readonly http:typeof fetch;
+  constructor(endpoint:string,publishableKey:string,
+    accessToken:()=>Promise<string|null>,http:typeof fetch=fetch){
     let url:URL;
     try{url=new URL(endpoint);}catch{throw new PrivateAccountExportError('VALIDATION','Invalid API origin.');}
     requireCondition((url.protocol==='https:'||
@@ -83,7 +86,8 @@ export class SupabasePrivateAccountDataExporter {
       'VALIDATION','Trusted Supabase API origin required.');
     requireCondition(typeof publishableKey==='string'&&publishableKey.trim().length>0,
       'VALIDATION','Publishable key required.');
-    this.origin=url.origin;
+    this.origin=url.origin;this.publishableKey=publishableKey;
+    this.accessToken=accessToken;this.http=http;
   }
   private async request(path:string,max:number,body?:Record<string,unknown>):Promise<{bytes:Uint8Array;headers:Headers}> {
     const jwt=await this.accessToken();
