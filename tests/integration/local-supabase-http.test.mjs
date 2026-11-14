@@ -15,6 +15,7 @@ import {once} from 'node:events';
 import {randomBytes} from 'node:crypto';
 import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/src/private-delivery-denial-gate.ts';
 import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapters/src/private-account-data-export.ts';
+import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
 
 
 function localSupabaseCredentials() {
@@ -1019,11 +1020,36 @@ test('B5: real local owner export reads RLS records and verifies private Storage
       p_byte_size:png.length,p_alt_text:'Export test pixel'
     }
   }),'Owner export image registration');
+  const registered=successful(await send('/rest/v1/project_assets?select=id&object_path=eq.'+
+    encodeURIComponent(path),bearer(owner)),'Registered asset lookup');
+  assert.equal(registered.length,1);
+  const attestor=new PrivateServerAssetByteAttestor(cfg.origin,cfg.anon,cfg.service);
+  assert.deepEqual(await attestor.attest(registered[0].id,owner.token),
+    {assetId:registered[0].id,status:'WRITE_ONCE_ATTESTED'});
+  const directForged=await send('/rest/v1/rpc/record_private_asset_content_attestation',{
+    ...json(owner),method:'POST',body:{p_asset_id:registered[0].id,
+      p_storage_object_id:randomUUID(),p_storage_version:'fake',
+      p_expected_sha256:'0'.repeat(64)}
+  });
+  assert.ok(!directForged.ok,'Owner invoked service-only digest writer');
   const snapshot=successful(await send(
     '/rest/v1/rpc/create_private_account_exit_inventory',{
       ...json(owner),method:'POST',
       body:{p_operation_id:randomUUID(),p_request_id:null}
     }),'Inventory after asset registration');
+  const attestation=successful(await send(
+    '/rest/v1/rpc/read_private_asset_content_attestations',{
+      ...json(owner),method:'POST',body:{p_snapshot_id:snapshot.snapshotId}
+    }),'Owner live-session digest read');
+  assert.equal(attestation.status,'SERVER_HASH_PINNED');
+  assert.equal(attestation.registeredAssets,1);
+  assert.equal(attestation.attestations.length,1);
+  assert.equal(attestation.attestations[0].expectedSha256,
+    createHash('sha256').update(png).digest('hex'));
+  const foreignPin=await send('/rest/v1/rpc/read_private_asset_content_attestations',{
+    ...json(outsider),method:'POST',body:{p_snapshot_id:snapshot.snapshotId}
+  });
+  assert.ok(!foreignPin.ok,'Other tenant read trusted asset digest');
   const info=successful(await send(
     '/storage/v1/object/info/authenticated/'+bucket+'/'+path,bearer(owner)),
     'Owner private Storage info');
