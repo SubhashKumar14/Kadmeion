@@ -725,3 +725,17 @@ real pgTAP/HTTP regression. Then extend account-exit export readiness
 with an independently verified, bounded owner-data export and provider
 Storage object reconciliation; do not confuse count snapshots with
 complete export or deletion authority.
+
+
+**Post-run verified code CI:** [GitHub Actions 43576521919](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43576521919)
+completed both `contracts` and `database` jobs **PASS** on
+`88b8f843`. Logs: **194/194 Node contract/editor/auth tests**,
+**300/300 pgTAP assertions across 20 SQL files**, **34/34 real local
+GoTrue/PostgREST/Storage HTTP subtests**, **1/1 restricted PostgreSQL
+binding** and **1/1 operator/pg.Pool race**. TypeScript, auth build/smoke,
+isolated auth preview verification and file budget **143/200** passed.
+The database run executed the new snapshot migration and negative
+tenant/idempotency/stale-session tests successfully. The later
+`5c28d79` concurrency-workflow fix and documentation-only commits
+require their own CI completion; this evidence is for code SHA
+`88b8f843` only. Earlier port-collision failures remain recorded.
