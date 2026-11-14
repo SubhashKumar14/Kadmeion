@@ -11,6 +11,6 @@ select ok((select relrowsecurity from pg_class where oid='public.project_exposur
 select ok((select relrowsecurity from pg_class where oid='public.project_assets'::regclass),'assets metadata RLS enabled');
 select ok(not has_table_privilege('anon','public.projects','SELECT'),'anonymous cannot list private projects');
 select ok((select not public from storage.buckets where id='kadmeion-private-assets'),'asset bucket is private');
-select is((select count(*)::integer from pg_policies where schemaname='storage' and tablename='objects' and policyname like 'kd_storage_private_%'),3,'private bucket has read/write ownership policies');
+select is((select count(*)::integer from pg_policies where schemaname='storage' and tablename='objects' and policyname like 'kd_storage_private_%'),2,'private bucket has owner read/create policies without overwrite');
 select * from finish();
 rollback;
