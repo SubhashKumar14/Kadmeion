@@ -8,7 +8,7 @@ import type { MyComponentVersion } from '../../../packages/contracts/src/private
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
-import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionHistory, SourceInspector, ThemeInspector } from './portfolio-tools.tsx';
+import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector } from './portfolio-tools.tsx';
 
 const presets = [
   {id: 'arc', title: 'Arc', tone: 'curved', detail: 'Curved hero and a project showcase.'},
@@ -278,6 +278,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [pickedComponent,setPickedComponent]=useState('');
   const [openedSource, setOpenedSource] = useState(false);
   const [openedAssets,setOpenedAssets]=useState(false);
+  const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
 
   useEffect(() => {
@@ -413,7 +414,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {!record && !error && <p role="status">Loading portfolio…</p>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
       onClick={() => void initialize()}>Complete draft setup</button>}
-    {head && (preview ? contentPreview : <><div className="ws-editor-grid" hidden={tool==='Source'||tool==='Assets'}>
+    {head && (preview ? contentPreview : <><div className="ws-editor-grid" hidden={tool==='Source'||tool==='Assets'||tool==='History'}>
       <aside className="ws-project-aside">{tool==='Components'?<div className="ws-editor-component-catalog">
         <p className="ws-kicker">COMPATIBLE BUILDING BLOCKS</p>
         <h2>Components</h2>
@@ -482,7 +483,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       <aside className="ws-project-fields">
         <div className="ws-editor-tool"><nav aria-label="Editor panels">{['Content', 'Components', 'My Components', 'Theme', 'Assets', 'Source', 'History'].map(item =>
           <button type="button" key={item} className="ws-secondary" aria-pressed={tool === item} onClick={() => {
-            setTool(item); if(item==='Source')setOpenedSource(true); if(item==='Assets')setOpenedAssets(true);
+            setTool(item);if(item==='Source')setOpenedSource(true);
+            if(item==='Assets')setOpenedAssets(true);if(item==='History')setOpenedHistory(true);
           }}>{item}</button>)}</nav></div>
         {tool === 'Components' && <div className="ws-editor-tool" aria-label="Slot compatibility">
           <p className="ws-kicker">COMPONENT PLACEMENT</p>
@@ -505,7 +507,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
 
-        {tool === 'History' && record && <RevisionHistory port={port} id={id} revision={record.revision} onRestore={restore}/>}
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
@@ -558,7 +559,12 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               onClick={() => apply({kind: 'RESTORE_STASH', slotKey: slot})}>Restore last assignment</button>}
         </>}</>}
       </aside>
-    </div>{openedAssets&&<div hidden={tool!=='Assets'}>
+    </div>{openedHistory&&record&&<div hidden={tool!=='History'}>
+      <RevisionWorkspace port={port} id={id} revision={record.revision}
+        working={head.snapshot} title={record.title} dirty={!!operation}
+        onRestore={restore} back={()=>setTool('Content')}/>
+    </div>}
+    {openedAssets&&<div hidden={tool!=='Assets'}>
       <AssetList port={port} back={()=>setTool('Content')}/>
     </div>}
     {openedSource&&<div hidden={tool!=='Source'}>

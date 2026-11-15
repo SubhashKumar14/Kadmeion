@@ -346,7 +346,13 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:/arc hero cta1/i}).click();
   await expect(page.getByLabel('url',{exact:true})).toHaveValue('https://example.org/portfolio');
   await page.getByRole('button', {name: 'History', exact: true}).click();
+  await expect(page.getByRole('heading',{name:'Revisions',level:2})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Diagnostics',level:2})).toBeVisible();
   await expect(page.getByRole('button', {name: /Revision 2/})).toBeVisible();
+  await page.getByRole('button',{name:/Revision 2/}).click();
+  await page.getByRole('button',{name:'Compare to working copy'}).click();
+  await expect(page.getByRole('status',{name:'Actual snapshot comparison'}))
+    .toContainText('Different project files');
   await capture('25_REVISION_HISTORY_BROWSER');
   const fullscreenPath = await page.getByRole('link', {name: 'Fullscreen saved preview'}).getAttribute('href');
   expect(fullscreenPath).toBeTruthy();

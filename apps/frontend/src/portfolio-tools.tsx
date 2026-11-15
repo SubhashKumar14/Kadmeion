@@ -475,41 +475,140 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
   </div>;
 }
 
-export function RevisionHistory({port, id, revision, onRestore}: {
-  port: SupabaseBrowserAuthPort; id: string; revision: number; onRestore: (snapshot: PortfolioSnapshot) => void;
+export function RevisionHistory({port,id,revision,onRestore,working}: {
+  port:SupabaseBrowserAuthPort;id:string;revision:number;
+  onRestore:(snapshot:PortfolioSnapshot)=>void;working:PortfolioSnapshot;
 }) {
-  const [items, setItems] = useState<{revision: number; createdAt: string}[] | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let active = true;
-    void port.listOwnerRevisions(id).then(result => {
-      if (!active) return;
-      if (result.data) setItems(result.data);
-      else setError(result.error?.message ?? 'Revision history could not be loaded.');
+  const [items,setItems]=useState<{revision:number;createdAt:string}[]|null>(null);
+  const [selected,setSelected]=useState<number|null>(null);
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [comparison,setComparison]=useState<{
+    revision:number;changedFiles:number;changedSlots:number;
+  }|null>(null);
+  useEffect(()=>{
+    let active=true;
+    void port.listOwnerRevisions(id).then(result=>{
+      if(!active)return;
+      if(result.data)setItems(result.data);
+      else setError(result.error?.message??'Revision history could not be loaded.');
     });
-    return () => {active = false;};
-  }, [port, id, revision]);
-
-  async function restore() {
-    if (!selected || busy) return;
-    setBusy(true);
-    try {
-      const result = await port.readOwnerRevision(id, selected);
-      if (!result.data) {setError(result.error?.message ?? 'Could not open the revision.'); return;}
-      onRestore(result.data); setSelected(null);
-    } finally {setBusy(false);}
+    return ()=>{active=false;};
+  },[port,id,revision]);
+  async function readSelected():Promise<PortfolioSnapshot|null>{
+    if(!selected||busy)return null;
+    const result=await port.readOwnerRevision(id,selected);
+    if(!result.data){setError(result.error?.message??'Historical revision cannot be verified.');return null;}
+    return result.data;
   }
-
-  return <div className="ws-editor-tool"><h2>Revision history</h2>
-    {error && <p role="alert">{error}</p>}
-    {!items && !error && <p role="status">Loading saved revisions…</p>}
-    <ul className="ws-editor-slots">{items?.map(item => <li key={item.revision}>
-      <button type="button" disabled={busy} aria-pressed={item.revision === selected} onClick={() => setSelected(item.revision)}>
+  async function compare(){
+    if(!selected||busy)return;
+    setBusy(true);setError('');setComparison(null);
+    try{
+      const historical=await readSelectedUnsafe(selected);
+      if(!historical)return;
+      const paths=new Set([...Object.keys(working.files),...Object.keys(historical.files)]);
+      const keys=new Set([...Object.keys(working.slots),...Object.keys(historical.slots)]);
+      const changedFiles=[...paths].filter(path=>working.files[path]!==historical.files[path]).length;
+      const stable=(v:unknown):string=>JSON.stringify(v,(_key,value)=>{
+        if(value&&typeof value==='object'&&!Array.isArray(value)){
+          return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)));
+        }
+        return value;
+      });
+      const changedSlots=[...keys].filter(key=>stable(working.slots[key])!==stable(historical.slots[key])).length;
+      setComparison({revision:selected,changedFiles,changedSlots});
+    }finally{setBusy(false);}
+  }
+  async function readSelectedUnsafe(version:number):Promise<PortfolioSnapshot|null>{
+    const result=await port.readOwnerRevision(id,version);
+    if(!result.data){setError(result.error?.message??'Historical revision cannot be verified.');return null;}
+    return result.data;
+  }
+  async function restore(){
+    if(!selected||busy)return;
+    setBusy(true);setError('');
+    try{
+      const snapshot=await readSelectedUnsafe(selected);
+      if(snapshot){onRestore(snapshot);setSelected(null);setComparison(null);}
+    }finally{setBusy(false);}
+  }
+  return <div className="ws-editor-tool ws-revision-list">
+    <h2>Saved checkpoints</h2>
+    {error&&<p role="alert">{error}</p>}
+    {!items&&!error&&<p role="status">Loading owner-private revisions…</p>}
+    {items?.length===0&&<p>No saved checkpoints have been returned.</p>}
+    <ul className="ws-editor-slots">{items?.map(item=><li key={item.revision}>
+      <button type="button" disabled={busy} aria-pressed={item.revision===selected}
+        onClick={()=>{setSelected(item.revision);setComparison(null);}}>
         Revision {item.revision}<span>{new Date(item.createdAt).toLocaleString()}</span>
       </button></li>)}</ul>
-    {selected && <><p>Restore revision {selected} into the working draft. The current working copy can be recovered with Undo.</p>
-      <button type="button" className="ws-secondary" disabled={busy} onClick={() => void restore()}>Restore to draft</button></>}
+    <section id="history-comparison" className="ws-revision-compare" aria-label="Version comparison">
+      <h3>Compare &amp; restore</h3>
+      {!selected&&<p>Select a saved checkpoint above to compare it with the current working draft.</p>}
+      {selected&&<>
+        <p>Revision {selected} is an owner-private saved checkpoint. Comparison only reads its historical snapshot.</p>
+        <div className="ws-revision-buttons">
+          <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void compare()}>
+            Compare to working copy</button>
+          <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void restore()}>
+            Restore selected checkpoint to draft</button>
+        </div>
+      </>}
+      {comparison&&<dl className="ws-revision-difference" role="status" aria-label="Actual snapshot comparison">
+        <div><dt>Compared revision</dt><dd>{comparison.revision}</dd></div>
+        <div><dt>Different project files</dt><dd>{comparison.changedFiles}</dd></div>
+        <div><dt>Different component slots</dt><dd>{comparison.changedSlots}</dd></div>
+      </dl>}
+      <p>Restore is a reversible editor transaction, not a public rollback; save the private draft to persist it.</p>
+    </section>
+  </div>;
+}
+
+/** EDIT-08: the approved history layout is a three-pane private workbench,
+ * not a small history list inside the Content inspector. */
+export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestore,back}:{
+  port:SupabaseBrowserAuthPort;id:string;revision:number;
+  working:PortfolioSnapshot;title:string;dirty:boolean;
+  onRestore:(snapshot:PortfolioSnapshot)=>void;back:()=>void;
+}){
+  return <div className="ws-revision-workspace">
+    <aside className="ws-revision-nav">
+      <p className="ws-kicker">DOCUMENT HISTORY</p>
+      <h2>Revisions</h2>
+      <p>Compare actual saved checkpoints. Restore into a working copy without replacing published content.</p>
+      <nav aria-label="Revision history navigation">
+        <a href="#history-current">Current working draft</a>
+        <a href="#history-checkpoints">Saved checkpoints</a>
+        <a href="#history-comparison">Compare &amp; restore</a>
+      </nav>
+      <p className="ws-source-tree-note">Your private draft is versioned. Undo/Redo and a checkpoint restore never bypass release verification.</p>
+      <button type="button" className="ws-secondary" onClick={back}>Back to editor canvas</button>
+    </aside>
+    <section className="ws-revision-center">
+      <div className="ws-revision-breadcrumb">HISTORY / PRIVATE AUTHOR PREVIEW
+        <span>Saved revision {revision} · {dirty?'Uncommitted edits':'No uncommitted edits'}</span></div>
+      <div id="history-current" className="ws-revision-canvas">
+        <PortfolioCanvas snapshot={working} title={title}/>
+      </div>
+      <section id="history-checkpoints" className="ws-revision-bottom">
+        <div className="ws-revision-tab-row"><h2>History &amp; problems</h2>
+          <span>Owner-authenticated history · no fake checkpoints</span></div>
+        <RevisionHistory port={port} id={id} revision={revision}
+          working={working} onRestore={onRestore}/>
+      </section>
+    </section>
+    <aside className="ws-revision-diagnostics">
+      <p className="ws-kicker">PROBLEMS</p><h2>Diagnostics</h2>
+      <p>A private draft check is not a public deployment or a compilation audit.</p>
+      <dl>
+        <div><dt>Current working state</dt><dd>{dirty?'Uncommitted private changes':'Same revision as last save'}</dd></div>
+        <div><dt>Saved revision</dt><dd>{revision}</dd></div>
+        <div><dt>Source diagnostics</dt><dd>Not executed or compiled here</dd></div>
+        <div><dt>Concurrent save conflicts</dt><dd>Checked only on the next compare-and-swap save</dd></div>
+        <div><dt>Public release</dt><dd>Not authorized by revision history</dd></div>
+      </dl>
+      <p className="ws-source-diagnostics-note">History can restore versioned private bytes. It cannot assert host/CDN withdrawal, public image delivery or current visitor reachability.</p>
+    </aside>
   </div>;
 }

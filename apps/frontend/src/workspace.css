@@ -803,3 +803,60 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-shell .ws-editor-grid .pv-hero h2{font-size:26px}
 .ws-editor-shell .ws-editor-grid .pv-hero-grid{min-height:215px}
 }
+
+/* EDIT-08: native approved three-pane private revision and diagnostics surface.
+   It uses real owner revision API data and never simulates history records. */
+.ws-revision-workspace{display:grid;grid-template-columns:minmax(190px,19%) minmax(0,1fr) minmax(220px,21%);
+  min-height:calc(100dvh - 108px);background:var(--panel)}
+.ws-revision-nav,.ws-revision-diagnostics{padding:21px 15px;min-width:0}
+.ws-revision-nav{border-right:1px solid var(--line)}
+.ws-revision-diagnostics{border-left:1px solid var(--line)}
+.ws-revision-nav h2,.ws-revision-diagnostics h2{
+  font:500 25px/1.2 Georgia,serif;margin:0 0 10px}
+.ws-revision-nav p:not(.ws-kicker),.ws-revision-diagnostics p:not(.ws-kicker){
+  font-size:12px;line-height:1.6;color:var(--body)}
+.ws-revision-nav nav{display:grid;gap:7px;margin:20px 0}
+.ws-revision-nav nav a{display:block;min-height:42px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:8px;background:var(--surface);
+  color:var(--ink);font-size:12px}
+.ws-revision-nav nav a:hover,.ws-revision-nav nav a:focus-visible{
+  border-color:var(--accent-strong);background:var(--accent-soft)}
+.ws-revision-nav>button{margin:10px 0;width:100%}
+.ws-revision-center{min-width:0;background:var(--surface-soft);padding:0 16px 24px}
+.ws-revision-breadcrumb{display:flex;justify-content:space-between;flex-wrap:wrap;gap:7px;
+  min-height:44px;align-items:center;color:var(--body);font-size:10px;letter-spacing:.05em}
+.ws-revision-canvas{height:310px;overflow:auto;border:1px solid var(--line);
+  border-radius:9px;background:var(--panel)}
+.ws-revision-canvas .pv-document{padding:0!important;border:0!important;
+  min-height:300px!important;max-height:none!important}
+.ws-revision-canvas .pv-section{padding:12px 21px}
+.ws-revision-canvas .pv-hero{min-height:220px}
+.ws-revision-canvas .pv-hero-grid{min-height:195px}
+.ws-revision-canvas .pv-hero h2{font-size:30px}
+.ws-revision-canvas .pv-hero-art{min-height:155px}
+.ws-revision-bottom{border:1px solid var(--line);border-radius:9px;background:var(--panel);
+  padding:16px 20px;min-height:225px;margin-top:12px}
+.ws-revision-tab-row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.ws-revision-tab-row h2{font:500 22px Georgia,serif;margin:0 0 8px}
+.ws-revision-tab-row span{font-size:10px;color:var(--body)}
+.ws-revision-list h2{font:600 13px Arial,sans-serif;margin:7px 0 9px}
+.ws-revision-list .ws-editor-slots{display:flex;flex-wrap:wrap;gap:8px;max-height:135px;overflow:auto}
+.ws-revision-list .ws-editor-slots button{min-width:150px;min-height:45px;text-align:left}
+.ws-revision-compare{margin-top:12px}
+.ws-revision-compare h3{font-size:13px;margin:8px 0}
+.ws-revision-compare p{color:var(--body);font-size:11px;line-height:1.55}
+.ws-revision-buttons{display:flex;gap:7px;flex-wrap:wrap}
+.ws-revision-buttons button{font-size:11px;min-height:35px;padding:6px 11px}
+.ws-revision-difference{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
+.ws-revision-difference div{border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-width:105px}
+.ws-revision-difference dt{color:var(--body);font-size:10px}
+.ws-revision-difference dd{font-size:18px;margin:4px 0 0;color:var(--ink)}
+.ws-revision-diagnostics dl{display:grid;gap:13px;margin:18px 0}
+.ws-revision-diagnostics dl>div{border-bottom:1px solid var(--line);padding-bottom:11px}
+.ws-revision-diagnostics dt{font-size:12px;font-weight:750}
+.ws-revision-diagnostics dd{margin:4px 0 0;font-size:11px;color:var(--body);line-height:1.5}
+@media(max-width:1150px){.ws-revision-workspace{grid-template-columns:175px minmax(0,1fr) 215px}
+  .ws-revision-nav,.ws-revision-diagnostics{padding:15px 10px}}
+@media(max-width:900px){.ws-revision-workspace{grid-template-columns:1fr}
+  .ws-revision-nav,.ws-revision-diagnostics{border:0;border-bottom:1px solid var(--line)}
+  .ws-revision-canvas{height:300px}}
