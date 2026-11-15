@@ -384,5 +384,50 @@ select ok(public.service_read_frozen_release_png(repeat('f',64),
   p_raw_token=>current_setting('kd.media.token')) is null,
   'a reviewer token cannot select the same image from a foreign manifest');
 reset role;
+insert into public.private_account_erasure_requests(id,owner_user_id,operation_id) values
+ ('71000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-0000000000c1',
+ '71000000-0000-4000-8000-000000000002');
+select ok(kadmeion_private.account_exit_revocation_unverified('00000000-0000-4000-8000-0000000000c1'),
+  'historical media and an active reviewer block account erasure');
+select ok(not has_function_privilege('authenticated',
+  'public.service_record_account_exit_host_denial(uuid,text,integer)','EXECUTE'),
+  'authenticated owner cannot record an independent host receipt');
+set local role service_role;
+select ok(public.service_account_exit_withdrawal_plan('71000000-0000-4000-8000-000000000001') is null,
+  'active reviewer or prepared portfolio prevent a withdrawal plan');
+reset role;
+update public.private_reviewer_grants set revoked_at=statement_timestamp()
+  where owner_user_id='00000000-0000-4000-8000-0000000000c1' and revoked_at is null;
+set local role authenticated;
+select is(public.owner_block_private_release_pointer(
+  '10000000-0000-4000-8000-0000000000c1','71000000-0000-4000-8000-000000000003')->>'status',
+  'BLOCKED','account exit fixture removes the prepared release pointer');
+reset role;
+insert into public.private_unlisted_publication_intents(
+  portfolio_id,owner_user_id,request_id,operation_id,expected_pointer_generation)
+values('10000000-0000-4000-8000-0000000000c1','00000000-0000-4000-8000-0000000000c1',
+  '30000000-0000-4000-8000-0000000000c1','71000000-0000-4000-8000-000000000004',3);
+set local role service_role;
+select set_config('kd.exit.plan',
+  public.service_account_exit_withdrawal_plan('71000000-0000-4000-8000-000000000001')::text,true);
+select ok((current_setting('kd.exit.plan')::jsonb->'paths') ?
+  ('/api/unlisted?portfolioId=10000000-0000-4000-8000-0000000000c1&manifest='||
+    current_setting('kd.media.manifestsha')||'&asset='||current_setting('kd.media.sha')),
+  'withdrawal plan contains the actual exact direct media address');
+select ok(not public.service_record_account_exit_host_denial(
+  '71000000-0000-4000-8000-000000000001',current_setting('kd.exit.plan')::jsonb->>'planSha256',0),
+  'a partial count cannot acknowledge account exit');
+select ok(public.service_record_account_exit_host_denial(
+  '71000000-0000-4000-8000-000000000001',current_setting('kd.exit.plan')::jsonb->>'planSha256',
+  2*jsonb_array_length(current_setting('kd.exit.plan')::jsonb->'paths')),
+  'a trusted service can record exactly the current scoped denial plan');
+reset role;
+select ok(not kadmeion_private.account_exit_revocation_unverified('00000000-0000-4000-8000-0000000000c1'),
+ 'current scoped host receipt clears the application exposure gate');
+update public.private_release_visibility_pointers set generation=generation+1,
+  revocation_generation=generation+1
+  where portfolio_id='10000000-0000-4000-8000-0000000000c1';
+select ok(kadmeion_private.account_exit_revocation_unverified('00000000-0000-4000-8000-0000000000c1'),
+ 'a later pointer change invalidates old denial proof');
 select * from finish();
 rollback;

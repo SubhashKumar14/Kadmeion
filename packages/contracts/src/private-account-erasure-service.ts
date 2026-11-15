@@ -12,6 +12,15 @@ export interface AccountErasureReceipt {
   erasureExecuted:false;
   retentionVerified:false;
 }
+export interface AccountContentWithdrawalReceipt {
+  status:'APPLICATION_CONTENT_WITHDRAWN';
+  blockedPortfolios:number;
+  revokedReviewerGrants:number;
+  withdrawnProfiles:number;
+  withdrawnCaseStudies:number;
+  hostRevocationVerified:false;
+  erasureExecuted:false;
+}
 export interface AccountExitReauthChallenge {
   challengeId:string;
   status:'AWAITING_NEW_SIGN_IN';
@@ -261,7 +270,7 @@ export class SupabasePrivateAccountErasureService {
         message==='REAUTH_CHALLENGE_QUOTA_REACHED'||
         message==='INVENTORY_SNAPSHOT_QUOTA_REACHED')
         throw new PrivateAccountErasureError('QUOTA_EXCEEDED','Request limit reached.');
-      if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL'||message==='INVALID_ERASURE_EXECUTION')
+      if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL'||message==='INVALID_ERASURE_EXECUTION'||message==='INVALID_EXIT_WITHDRAWAL')
         throw new PrivateAccountErasureError('VALIDATION','Invalid account exit request.');
       if(message==='ERASURE_PUBLIC_REVOCATION_UNVERIFIED')
         throw new PrivateAccountErasureError('CONFLICT',
@@ -271,7 +280,7 @@ export class SupabasePrivateAccountErasureService {
       if(response.status===409||message==='ACCOUNT_ERASURE_ALREADY_REQUESTED'||
         message==='ERASURE_WITHDRAWAL_OPERATION_REUSED'||
         message==='REAUTH_OPERATION_REUSED'||message==='REAUTH_PROOF_ALREADY_BOUND'||
-        message==='INVENTORY_OPERATION_REUSED')
+        message==='INVENTORY_OPERATION_REUSED'||message==='EXIT_WITHDRAWAL_OPERATION_STALE')
         throw new PrivateAccountErasureError('CONFLICT','Account exit request conflicts with existing state.');
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit operation failed.');
     }
@@ -404,6 +413,25 @@ export class SupabasePrivateAccountErasureService {
     return receipt(await this.send('rpc/request_private_account_erasure',{
       p_operation_id:operationId,p_confirmation:confirmation
     }));
+  }
+  async withdrawPublicContent(requestId:string,challengeId:string,operationId:string,
+    confirmation:'WITHDRAW PUBLIC CONTENT'):Promise<AccountContentWithdrawalReceipt>{
+    if(![requestId,challengeId,operationId].every(uuid)||confirmation!=='WITHDRAW PUBLIC CONTENT')
+      throw new ContractError('VALIDATION','Exact public content withdrawal confirmation is required.');
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
+    const raw=await this.send('rpc/owner_withdraw_account_exit_content',{
+      p_request_id:requestId,p_challenge_id:challengeId,p_operation_id:operationId,
+      p_confirmation:confirmation
+    },jwt);
+    if(await this.token()!==jwt)
+      throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during withdrawal.');
+    const counts=['blockedPortfolios','revokedReviewerGrants','withdrawnProfiles','withdrawnCaseStudies'] as const;
+    if(!record(raw)||Object.keys(raw).length!==7||raw.status!=='APPLICATION_CONTENT_WITHDRAWN'||
+       raw.hostRevocationVerified!==false||raw.erasureExecuted!==false||
+       counts.some(key=>!Number.isSafeInteger(raw[key])||Number(raw[key])<0))
+      throw new PrivateAccountErasureError('INVALID_ACK','Application content withdrawal was not confirmed.');
+    return raw as unknown as AccountContentWithdrawalReceipt;
   }
   async removeUploadBatch():Promise<number>{
     const jwt=await this.token();

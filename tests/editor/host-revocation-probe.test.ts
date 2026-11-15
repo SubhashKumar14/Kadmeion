@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {probeHostRevocation,verifyReleaseWithdrawal} from
+import {attestAccountExitHostDenial,probeHostRevocation,verifyReleaseWithdrawal} from
   '../../packages/storage-adapters/src/host-revocation-probe.ts';
 
 const input={origin:'https://kadmeion.vercel.app',
@@ -170,4 +170,38 @@ test('missing, mismatched, cacheable or untracked live media cannot establish a 
     sha,async()=>{withdrawals++;},async()=>{assert.fail('must validate paths before fetch');}),
   {code:'INVALID_INPUT'});
   assert.equal(withdrawals,0);
+});
+
+
+test('account exit records a DB-scoped receipt only after exact canonical and direct GET/HEAD denial',async()=>{
+  const planSha256='a'.repeat(64);
+  const path='/api/public-portfolio?handle=release_owner&slug=release-fixture&manifest='+
+    'b'.repeat(64)+'&asset='+'c'.repeat(64);
+  const paths=[input.canonicalPath,path,'/u/release_owner','/u/release_owner/projects/sample-project'];
+  for(const visible of [false,true]){
+    const calls:string[]=[];
+    let recorded=false;
+    const attempt=attestAccountExitHostDenial({requestId:'e262a5d6-b099-4886-9bde-3e01d02b5ef7',
+      origin:input.origin,
+      rpc:async(operation,body)=>{
+        if(operation==='service_account_exit_withdrawal_plan')return {paths,planSha256};
+        assert.equal(body.p_plan_sha256,planSha256);
+        assert.equal(body.p_checks,paths.length*2);
+        recorded=true;
+        return true;
+      },
+      http:async(url,options)=>{
+        const address=new URL(String(url));
+        const suffix=address.pathname+address.search;
+        calls.push(options?.method+' '+suffix);
+        return response(visible&&suffix===path?200:404,{},options?.method==='HEAD'?'':'Not found');
+      }
+    });
+    if(visible)await assert.rejects(attempt,{code:'STILL_VISIBLE'});
+    else{
+      assert.deepEqual(await attempt,{status:'APPLICATION_HOST_DENIAL_RECORDED',observedHttpRequests:8});
+      assert.ok(calls.includes('HEAD '+path));
+    }
+    assert.equal(recorded,!visible);
+  }
 });

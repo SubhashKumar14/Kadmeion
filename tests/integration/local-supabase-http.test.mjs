@@ -763,9 +763,21 @@ test('account erasure removes active account data only after fresh owner confirm
   const privateObject='/storage/v1/object/authenticated/'+bucket+'/'+owner.id+'/exit/test.png';
   assert.equal((await send(privateObject,bearer(fresh))).ok,true,
     'Direct Storage delete bypassed the account exit revocation prerequisite');
-  successful(await send(sharingPath+'?user_id=eq.'+owner.id,{
-    ...json(fresh),method:'PATCH',body:{publication_requested:false}
-  }),'Withdraw the unpublished exposure consent');
+  const operationId=randomUUID();
+  const withdrawal={
+    p_request_id:request.requestId,p_challenge_id:challenge.challengeId,p_operation_id:operationId,
+    p_confirmation:'WITHDRAW PUBLIC CONTENT'
+  };
+  assert.equal((await post(outsider,'owner_withdraw_account_exit_content',withdrawal)).ok,false);
+  assert.equal((await post(owner,'owner_withdraw_account_exit_content',withdrawal)).ok,false);
+  const withdrawn=await service.withdrawPublicContent(request.requestId,challenge.challengeId,operationId,
+    'WITHDRAW PUBLIC CONTENT');
+  assert.equal(withdrawn.status,'APPLICATION_CONTENT_WITHDRAWN');
+  assert.equal(withdrawn.hostRevocationVerified,false);
+  assert.equal(withdrawn.erasureExecuted,false);
+  assert.equal((await send(privateObject,bearer(fresh))).ok,true,'Withdrawal removed private uploads');
+  assert.deepEqual(await service.withdrawPublicContent(request.requestId,challenge.challengeId,operationId,
+    'WITHDRAW PUBLIC CONTENT'),withdrawn);
   assert.equal(await service.removeUploadBatch(), 1);
   assert.equal(await service.removeUploadBatch(), 0);
   const receipt = await service.execute(request.requestId, challenge.challengeId, 'DELETE MY ACCOUNT');

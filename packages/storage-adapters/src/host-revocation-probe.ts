@@ -229,3 +229,51 @@ export async function verifyReleaseWithdrawal(
   return Object.freeze({...after,liveAssetPathsVerified:liveAssets.size,
     observedHttpRequests:after.observedHttpRequests+1+liveAssets.size});
 }
+
+const PORTFOLIO_ASSET_QUERY=/^\/api\/public-portfolio\?handle=([a-z][a-z0-9_]{2,29})&slug=([a-z0-9-]{3,64})(?:&manifest=[a-f0-9]{64}&asset=[a-f0-9]{64})?$/;
+const IDENTITY_QUERY=/^\/api\/published-identity\?handle=([a-z][a-z0-9_]{2,29})(?:&slug=([a-z0-9-]{3,64}))?$/;
+const IDENTITY_PATH=/^\/u\/([a-z][a-z0-9_]{2,29})(?:\/projects\/([a-z0-9-]{3,64}))?$/;
+const UNLISTED_ASSET_SUFFIX=/&manifest=[a-f0-9]{64}&asset=[a-f0-9]{64}$/;
+const REQUEST_UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+
+function accountExitPath(path:unknown):path is string {
+  if(typeof path!=='string'||path.length>512)return false;
+  if(canonicalPathValid(path)||UNLISTED.test(path.replace(UNLISTED_ASSET_SUFFIX,'')))return true;
+  const match=PORTFOLIO_ASSET_QUERY.exec(path)??IDENTITY_QUERY.exec(path)??IDENTITY_PATH.exec(path);
+  return !!match&&HANDLE_PATTERN.test(match[1])&&
+    (match[2]===undefined||PORTFOLIO_SLUG.test(match[2]));
+}
+
+/** Trusted operator only. Check the server's complete path plan before recording
+ * fresh, scoped denial. The database recomputes the plan before accepting it. */
+export async function attestAccountExitHostDenial(input:{
+  requestId:string;origin:string;allowLocal?:boolean;
+  rpc:(operation:'service_account_exit_withdrawal_plan'|'service_record_account_exit_host_denial',
+    body:Record<string,string|number>)=>Promise<unknown>;
+  http?:typeof fetch;
+}):Promise<{status:'APPLICATION_HOST_DENIAL_RECORDED';observedHttpRequests:number}>{
+  if(!REQUEST_UUID.test(input.requestId))
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const raw=await input.rpc('service_account_exit_withdrawal_plan',{p_request_id:input.requestId});
+  if(raw===null||typeof raw!=='object'||Array.isArray(raw))
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const {paths,planSha256}=raw as Record<string,unknown>;
+  if(typeof planSha256!=='string'||!SHA256.test(planSha256)||
+     !Array.isArray(paths)||paths.length>256||paths.some(path=>!accountExitPath(path))||
+     new Set(paths).size!==paths.length)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const http=input.http??fetch;
+  for(let offset=0;offset<paths.length;offset+=6){
+    await Promise.all(paths.slice(offset,offset+6).map(async(path:string)=>{
+      for(const method of ['GET','HEAD'] as const)
+        await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
+    }));
+  }
+  const count=paths.length*2;
+  const recorded=await input.rpc('service_record_account_exit_host_denial',{
+    p_request_id:input.requestId,p_plan_sha256:planSha256,p_checks:count
+  });
+  if(recorded!==true) throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  return {status:'APPLICATION_HOST_DENIAL_RECORDED',observedHttpRequests:count};
+}
