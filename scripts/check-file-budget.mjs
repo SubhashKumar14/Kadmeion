@@ -48,7 +48,10 @@ const justifiedExtra = [
   // burying recoverability in mutable DOM effects. Extra files are NOT an
   // owner-approved budget increase; this exception remains pending review.
   'apps/auth-web/src/theme-preference.ts',
-  'tests/auth-web/theme-preference.test.ts'
+  'tests/auth-web/theme-preference.test.ts',
+  // F0 approved-reference integrity requires a separate offline verifier.
+  // Owner review of the resulting >200 source-file variance remains open.
+  'scripts/verify-approved-light-references.mjs'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

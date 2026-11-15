@@ -21,7 +21,8 @@
     "dev:auth": "npm run build:auth && node apps/auth-web/dev-server.mjs",
     "smoke:auth": "node scripts/smoke-auth-server.mjs",
     "build:auth:preview": "npm run build:auth && node scripts/prepare-auth-preview.mjs",
-    "verify:auth:preview": "node scripts/verify-auth-preview.mjs"
+    "verify:auth:preview": "node scripts/verify-auth-preview.mjs",
+    "verify:approved-light": "node scripts/verify-approved-light-references.mjs"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

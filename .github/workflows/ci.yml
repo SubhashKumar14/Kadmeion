@@ -37,6 +37,8 @@ jobs:
       - run: npm test
       - name: Validate D01-D90, UI, workflow, case and proof evidence indexes
         run: node scripts/verify-backend-traceability.mjs
+      - name: Audit 52 approved LIGHT references and corrected full-screen preview
+        run: npm run verify:approved-light
       - run: npm run check:file-budget
       # B07 release smoke uses no JWTs, accounts, secrets or mutating RPCs.
       # PR-only: main's isolated code CI remains independent of paused free hosting.
