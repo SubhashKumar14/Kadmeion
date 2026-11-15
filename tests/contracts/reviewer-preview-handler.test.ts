@@ -172,3 +172,16 @@ test('reviewer requires a real noindex meta in head, not a body text mention',as
   assert.equal(res.statusCode,503);
   assert.equal(res.body,'Temporarily unavailable');
 });
+
+test('reviewer rejects duplicate or crawler-specific robot directives',async()=>{
+  for(const forged of [
+    html.replace('</head>','<meta name="robots" content="index"></head>'),
+    html.replace('</head>','<meta name=robots content=index></head>'),
+    html.replace('</head>','<meta name="googlebot" content="index"></head>'),
+    html.replace('<meta name="robots" content="noindex">','<!--<meta name="robots" content="noindex">-->')
+  ]){
+    const data={...receipt,html:forged,htmlSha256:createHash('sha256').update(forged).digest('hex')};
+    const {res}=await run({data});
+    assert.equal(res.statusCode,503,'The private head must not contain a conflicting robots policy');
+  }
+});
