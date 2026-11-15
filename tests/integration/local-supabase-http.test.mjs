@@ -1140,6 +1140,21 @@ test('B5: real owner inventory snapshots are immutable, bounded and tenant-priva
     const newer=successful(await post(owner,create,{
       p_operation_id:randomUUID(),p_request_id:null}),'New owner inventory');
     assert.equal(newer.inventory.counts.projects,1);
+    const metadataRpc='/rest/v1/rpc/owner_export_account_metadata';
+    assert.ok(!(await post(outsider,metadataRpc,{p_snapshot_id:newer.snapshotId})).ok);
+    assert.ok(!(await send(metadataRpc,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:{p_snapshot_id:newer.snapshotId}})).ok);
+    const metadataExporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,async()=>owner.token);
+    const metadata=await metadataExporter.exportApplicationMetadata(newer.snapshotId);
+    const contents=JSON.parse(new TextDecoder().decode(metadata.bytes));
+    assert.equal(contents.records.projects.length,1);
+    assert.equal(contents.records.projects[0].owner_user_id,owner.id);
+    assert.equal(contents.records.projects[0].title,'Inventory-only test project');
+    assert.equal(contents.ownerUserId,owner.id);
+    assert.equal(contents.storageBytesIncluded,false);
+    assert.equal(contents.providerDataIncluded,false);
+    assert.equal(contents.deletionAllowed,false);
+    assert.deepEqual(contents.verifiedReleaseHistory,[]);
     assert.equal(newer.inventory.deletionAllowed,false);
     const other=successful(await post(outsider,create,{
       p_operation_id:randomUUID(),p_request_id:null}),'Other owner inventory');

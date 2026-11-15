@@ -251,6 +251,52 @@ export class SupabasePrivateAccountDataExporter {
         'Export source returned a foreign or malformed owner record.');
     return raw as JsonObject[];
   }
+  /** Atomic application data and release history; download separately from Storage evidence. */
+  async exportApplicationMetadata(snapshotId:string):Promise<{
+    filename:'kadmeion-account-metadata.json'; mime:'application/json'; bytes:Uint8Array;
+    status:'APPLICATION_METADATA_SNAPSHOT';storageBytesIncluded:false;providerDataIncluded:false;
+  }>{
+    requireCondition(isUuid(snapshotId),'VALIDATION','Valid owner inventory snapshot ID required.');
+    const token=await this.accessToken();
+    requireCondition(typeof token==='string'&&token.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===token,'AUTH_EXPIRED','The account session changed. Start a new export.');
+      return token;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const owner=await scoped.owner();
+    const envelope=await scoped.json('/rest/v1/rpc/owner_export_account_metadata',
+      12*1024*1024,{p_snapshot_id:snapshotId});
+    requireCondition(object(envelope)&&envelope.status==='APPLICATION_METADATA_SNAPSHOT'&&
+      envelope.schemaVersion===1&&envelope.snapshotId===snapshotId&&envelope.ownerUserId===owner.id&&
+      typeof envelope.capturedAt==='string'&&!Number.isNaN(Date.parse(envelope.capturedAt))&&
+      envelope.storageBytesIncluded===false&&envelope.providerDataIncluded===false&&
+      envelope.deletionAllowed===false&&object(envelope.records)&&object(envelope.restrictedAudit)&&
+      Array.isArray(envelope.verifiedReleaseHistory)&&envelope.verifiedReleaseHistory.length<=MAX_ROWS&&
+      Object.keys(envelope.records).length===TABLES.length,
+    'INTEGRITY','Invalid application metadata export receipt.');
+    for(const [table,ownerColumn] of TABLES){
+      const rows=envelope.records[table];
+      requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&
+        rows.every(row=>object(row)&&row[ownerColumn]===owner.id),
+      'INTEGRITY','Application metadata returned a foreign owner record.');
+    }
+    for(const row of envelope.verifiedReleaseHistory){
+      requireCondition(object(row)&&isUuid(row.intent_id)&&isUuid(row.portfolio_id)&&isUuid(row.request_id)&&
+        typeof row.html_sha256==='string'&&/^[a-f0-9]{64}$/.test(row.html_sha256),
+      'INTEGRITY','Invalid verified release history.');
+    }
+    for(const rows of Object.values(envelope.restrictedAudit)){
+      requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&
+        rows.every(row=>object(row)&&!Object.keys(row).some(key=>
+          /(?:session_id|access_token|refresh_token|token_sha256|rawToken)/i.test(key))),
+      'INTEGRITY','Application metadata contains invalid restricted audit records.');
+    }
+    await sameSession();
+    return {filename:'kadmeion-account-metadata.json',mime:'application/json',
+      bytes:encoder.encode(JSON.stringify(envelope)),status:'APPLICATION_METADATA_SNAPSHOT',
+      storageBytesIncluded:false,providerDataIncluded:false};
+  }
   /** Returns JSON bytes for a user-triggered local Blob download. Never uploads them. */
   async export(snapshotId:string):Promise<PrivateAccountExportArtifact> {
     requireCondition(isUuid(snapshotId),'VALIDATION','Valid owner inventory snapshot ID required.');
