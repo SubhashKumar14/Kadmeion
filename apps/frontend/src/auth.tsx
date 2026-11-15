@@ -108,7 +108,7 @@ export function AuthApp(){
   const [notice,setNotice]=useState('');
   const [error,setError]=useState('');
   const [pending,setPending]=useState(false);
-  const [outcome,setOutcome]=useState<Outcome>('email-requested');
+  const [outcome,setOutcome]=useState<Outcome | null>(null);
   const [identity,setIdentity]=useState<string|null>(null);
   const heading=useRef<HTMLHeadingElement>(null);
   const redirectStarted=useRef(false);
@@ -116,7 +116,7 @@ export function AuthApp(){
   const auth=config.value;
   function setAuthMode(next:Mode,route?:string,clearSecrets=true){
     if(clearSecrets){setPassword('');setConfirm('');}
-    setError('');setNotice('');
+    setError('');setNotice('');setOutcome(null);
     setMode(next);
     const target=route??('/'+next);
     history.replaceState(null,'',target);

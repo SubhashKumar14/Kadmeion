@@ -85,7 +85,8 @@ const justifiedExtra = [
   'apps/frontend/src/projects.tsx',
   // Approved vector identity assets shared by public and private shells.
   'apps/frontend/public/brand/kadmeion-mark.svg',
-  'apps/frontend/public/brand/kadmeion-wordmark.svg'
+  'apps/frontend/public/brand/kadmeion-wordmark.svg',
+  'apps/frontend/e2e/owner.spec.ts'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

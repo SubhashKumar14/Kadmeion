@@ -136,3 +136,25 @@ jobs:
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
 # Only an ephemeral local Supabase stack: no cloud secrets, no production writes.
+      - name: Exercise authenticated React workflows against the isolated Supabase stack
+        run: |
+          npm ci --prefix apps/frontend --ignore-scripts --no-fund
+          credentials="$(supabase status -o env)"
+          VITE_SUPABASE_PUBLISHABLE_KEY="$(sed -n 's/^ANON_KEY="\(.*\)"$/\1/p' <<<"$credentials")"
+          KADMEION_TEST_SERVICE_ROLE_KEY="$(sed -n 's/^SERVICE_ROLE_KEY="\(.*\)"$/\1/p' <<<"$credentials")"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+          test -n "$KADMEION_TEST_SERVICE_ROLE_KEY"
+          export VITE_SUPABASE_PUBLISHABLE_KEY KADMEION_TEST_SERVICE_ROLE_KEY
+          unset credentials
+          npm run test:e2e --prefix apps/frontend -- owner.spec.ts
+        env:
+          VITE_SUPABASE_URL: http://127.0.0.1:54321
+          KADMEION_LOCAL_BROWSER: '1'
+          KADMEION_BROWSER_CAPTURE_DIR: /tmp/kadmeion-owner-captures
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: kadmeion-owner-browser-captures
+          path: /tmp/kadmeion-owner-captures/*.png
+          if-no-files-found: ignore
+          retention-days: 1

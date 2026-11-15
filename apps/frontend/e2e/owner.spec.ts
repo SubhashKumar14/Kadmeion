@@ -1,0 +1,89 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { expect, test, type Page } from '@playwright/test';
+
+const origin = 'http://127.0.0.1:54321';
+
+async function localUser(label: string) {
+  const serviceKey = process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if (!serviceKey || process.env.VITE_SUPABASE_URL !== origin)
+    throw new Error('The owner browser fixture requires isolated local Supabase.');
+  const email = 'ci-' + randomUUID() + '@testing.invalid';
+  const password = 'LocalFixture!' + randomUUID();
+  const response = await fetch(origin + '/auth/v1/admin/users', {
+    method: 'POST',
+    headers: {apikey: serviceKey, Authorization: 'Bearer ' + serviceKey, 'Content-Type': 'application/json'},
+    body: JSON.stringify({email, password, email_confirm: true, user_metadata: {display_name: label}}),
+    redirect: 'error',
+    signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) throw new Error('Local GoTrue fixture creation failed with HTTP ' + response.status);
+  return {email, password};
+}
+
+async function signIn(page: Page, user: {email: string; password: string}) {
+  await page.goto('/signin');
+  await page.getByLabel('Email address').fill(user.email);
+  await page.locator('#signin-password').fill(user.password);
+  await page.getByRole('button', {name: 'Sign in', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Session verified'})).toBeVisible();
+}
+
+test('real owner onboarding and project revision are private across browser sessions', async ({page, browser}, testInfo) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
+  test.setTimeout(90_000);
+  const [owner, outsider] = await Promise.all([localUser('CI Portfolio Owner'), localUser('CI Other Owner')]);
+  const captureDir = process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  async function capture(name: string) {
+    if (!captureDir) return;
+    await mkdir(captureDir, {recursive: true});
+    await page.screenshot({path: captureDir + '/' + name + '.png', animations: 'disabled'});
+  }
+
+  await page.setViewportSize({width: 1534, height: 960});
+  await signIn(page, owner);
+  await page.getByRole('link', {name: 'Open private workspace'}).click();
+  await expect(page.getByRole('heading', {name: /Make room for/})).toBeVisible();
+  await capture('11_WORKSPACE_BROWSER');
+
+  await page.goto('/app/onboarding');
+  await expect(page.getByRole('group', {name: 'Choose your next step'})).toBeVisible();
+  await capture('10_ONBOARDING_BROWSER');
+  await page.getByRole('button', {name: 'Skip selected step'}).click();
+  await expect(page.getByRole('status')).toContainText('saved as skipped');
+  await page.reload();
+  await expect(page.getByText('Skipped in your private account')).toBeVisible();
+
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading', {name: 'Start your project library.'})).toBeVisible();
+  await capture('13_PROJECTS_BROWSER');
+  await page.getByRole('button', {name: 'Add project', exact: true}).click();
+  const drawer = page.getByRole('dialog', {name: 'Add a project'});
+  await drawer.getByLabel('Project title').fill('Private browser project');
+  await drawer.getByLabel('Summary (optional)').fill('Disposable local test project');
+  await capture('14_PROJECT_DRAWER_BROWSER');
+  await drawer.getByRole('button', {name: 'Save project'}).click();
+  await expect(page.getByRole('status')).toContainText('Saved privately');
+  await page.getByRole('link', {name: 'Private browser project', exact: true}).click();
+  await expect(page.getByLabel('Project title')).toHaveValue('Private browser project');
+  const projectPath = new URL(page.url()).pathname;
+  await page.getByLabel('Short description').fill('Updated through the owner revision writer');
+  await page.getByRole('button', {name: 'Save changes'}).click();
+  await expect(page.getByRole('status')).toHaveText('Private draft saved.');
+  await page.reload();
+  await expect(page.getByLabel('Short description')).toHaveValue('Updated through the owner revision writer');
+  await expect(page.getByText('SAVED DRAFT · REVISION 1')).toBeVisible();
+  await capture('15_PROJECT_DETAIL_BROWSER');
+
+  const foreign = await browser.newContext({baseURL: testInfo.project.use.baseURL});
+  try {
+    const other = await foreign.newPage();
+    await signIn(other, outsider);
+    await other.goto(projectPath);
+    await expect(other.getByRole('alert')).toContainText('Project unavailable');
+    await expect(other.getByLabel('Project title')).toHaveCount(0);
+    await expect(other.getByText('Private browser project', {exact: true})).toHaveCount(0);
+  } finally {
+    await foreign.close();
+  }
+});
