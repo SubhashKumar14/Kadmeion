@@ -977,3 +977,13 @@ At code SHA `719fc0c16a0f3d150a65f1c8cb2704ff1373deaa`, frontend CI [43750740550
 **Code in this change:** `apps/frontend/src/workspace.tsx` adds a genuine accessible runtime light/dark toggle to the compact rail on qualified editor/preview routes; `apps/frontend/src/workspace.css` hides only the redundant desktop workspace breadcrumb topbar on those routes and compacts the editor heading and change-notice height, retaining the focus-recoverable back navigation. This follows the approved EDIT screenshots without removing functional theme switching. `apps/frontend/e2e/owner.spec.ts` now verifies light/dark toggling on real authenticated editor before capture, and fixes selected-image duplicate text locator. No new authored file, no paid service, no public hosting activation or main merge.
 
 **Status:** Await new exact-SHA frontend/root CI and screenshots. Compare #18–26 with approved LIGHT PNG; check whether this compact header actually improves SSIM before retaining it as accepted. Next: fix any e2e break; complete remaining F6 acceptance evidence and media attestation/proof gates.
+
+---
+
+## EDIT-06 decodable image prerequisite — 16 Nov 2026
+
+**Critical observed issue before the write-once upload:** The former Chromium test PNG fixture had proper `image/png` signature but **broken image stream** (independently reproduced when decoding with Pillow). Supabase Storage and registration only verify owner/object size/MIME, not full image decodability; so claiming a usable uploaded image on metadata alone would be unsafe. This correction adds actual browser-native `createImageBitmap` decode with strict width/height and max 24-million-pixel (each <=8192 px) bounds; fallback `HTMLImageElement.decode()` uses a short-lived, immediately revoked local object URL. All decoding occurs before owner/project lookup and **before** any write-once Storage upload. Browser without decoder fails closed. File signature + MIME + quota constraints remain. The unit-level Node mock still checks Storage/RPC protocol while real Chromium validates decodability.
+
+**Test:** `apps/frontend/e2e/owner.spec.ts` first selects intentionally corrupt PNG data with a valid magic header and asserts an owner-visible `cannot be decoded` error (no upload), then uploads a genuinely decodable 70-byte PNG (generated and independently decoded) and verifies real local private registration and persisted record. No external API or paid dependencies.
+
+**Pending:** This commit's exact-SHA frontend, Node and isolated browser/database CI; screenshot parity #23/#24 still separate. Byte SHA attestation, host/CDN revocation and public image delivery explicitly blocked; no hosted database changes, main merge or recurring spend.

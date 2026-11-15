@@ -723,6 +723,34 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const format=mime[file.type];
       const bytes=new Uint8Array(await file.slice(0,16).arrayBuffer());
       if(!format||!format.magic(bytes))throw new Error('File bytes do not match the selected image format.');
+      // Header/MIME checks do not detect truncated or decompression-bomb
+      // images. Browser-native decoding must succeed before write-once upload.
+      // Node contract tests independently test bytes and RPC protocol without
+      // a browser decoder; authenticated Chromium covers real image decoding.
+      if(typeof window!=='undefined'){
+        let width=0,height=0;
+        if(typeof createImageBitmap==='function'){
+          let bitmap:ImageBitmap;
+          try{bitmap=await createImageBitmap(file);}
+          catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
+          try{width=bitmap.width;height=bitmap.height;}
+          finally{bitmap.close();}
+        }else{
+          if(typeof Image==='undefined'||typeof URL.createObjectURL!=='function')
+            throw new Error('Private image validation is unavailable in this browser.');
+          const temporary=URL.createObjectURL(file);
+          try{
+            const image=new Image();
+            image.src=temporary;
+            await image.decode();
+            width=image.naturalWidth;height=image.naturalHeight;
+          }catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
+          finally{URL.revokeObjectURL(temporary);}
+        }
+        if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||
+          width<1||height<1||width>8192||height>8192||width*height>24_000_000)
+          throw new Error('Image dimensions exceed the private preview safety limit.');
+      }
       const {session,userId}=await this.ownerSession();
       const params=new URLSearchParams({select:'id,owner_user_id',
         id:'eq.'+projectId,owner_user_id:'eq.'+userId,

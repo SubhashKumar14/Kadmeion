@@ -284,8 +284,15 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Owner project').selectOption(projectPath.split('/').at(-1)!);
   await page.getByLabel('Image alt text').fill('Tiny private image for an isolated browser test');
   await page.getByLabel('Private image file').setInputFiles({
+    name:'broken-header-only.png',mimeType:'image/png',
+    buffer:Buffer.from([137,80,78,71,13,10,26,10,1,2,3,4])
+  });
+  await page.getByRole('button',{name:'Upload private image'}).click();
+  await expect(page.locator('.ws-asset-manager').getByRole('alert'))
+    .toContainText('cannot be decoded');
+  await page.getByLabel('Private image file').setInputFiles({
     name:'browser-test.png',mimeType:'image/png',
-    buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64')
+    buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64')
   });
   await page.getByRole('button',{name:'Upload private image'}).click();
   await expect(page.locator('.ws-asset-manager').getByRole('status'))
