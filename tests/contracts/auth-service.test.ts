@@ -70,3 +70,45 @@ test('auth recovery and OAuth use only a normalized, trusted application origin'
  });
  assert.ok(local);
 });
+
+
+test('B10 normalizes thrown provider/network failures without revealing backend details',async()=>{
+ const failures=[
+  {
+   action:(s:AuthService)=>s.register({
+     email:'dev@example.com',password:'strong-password',
+     displayName:'Dev',handle:'developer'
+   }),
+   method:'signUp'
+  },
+  {action:(s:AuthService)=>s.login('dev@example.com','password'),method:'signInWithPassword'},
+  {action:(s:AuthService)=>s.requestPasswordReset('dev@example.com'),method:'resetPasswordForEmail'},
+  {action:(s:AuthService)=>s.updatePassword('strong-password'),method:'updateUser'},
+  {action:(s:AuthService)=>s.logout('others'),method:'signOut'},
+  {action:(s:AuthService)=>s.googleLogin(),method:'signInWithOAuth'},
+  {action:(s:AuthService)=>s.finishOAuth('valid-code-12345'),method:'exchangeCodeForSession'}
+ ] as const;
+ for(const item of failures){
+   const port=mockPort();
+   (port as any)[item.method]=async()=>{throw new Error('SMTP private credential from provider');};
+   const service=new AuthService(port,{siteOrigin:'https://app.example',
+     emailDeliveryVerified:true,googleOAuthConfigured:true});
+   await assert.rejects(item.action(service),(error:unknown)=>
+     error instanceof AuthFlowError&&error.code==='PROVIDER_UNAVAILABLE'&&
+     !error.message.includes('credential'));
+ }
+});
+
+test('B10 refuses incomplete registration and password-update acknowledgements',async()=>{
+ const port=mockPort();
+ port.signUp=async()=>({data:{user:null,session:null},error:null});
+ port.updateUser=async()=>({data:{user:null},error:null});
+ const service=new AuthService(port,{siteOrigin:'https://app.example',
+   emailDeliveryVerified:true,googleOAuthConfigured:false});
+ await assert.rejects(service.register({
+   email:'dev@example.com',password:'strong-password',
+   displayName:'Dev',handle:'developer'
+ }),{code:'AUTH_FAILED'});
+ await assert.rejects(service.updatePassword('strong-password'),
+   {code:'AUTH_EXPIRED'});
+});

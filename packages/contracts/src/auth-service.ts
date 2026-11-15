@@ -27,6 +27,16 @@ export class AuthFlowError extends Error {
   }
 }
 
+/**
+ * Normalize thrown Supabase/network failures. Provider URLs, raw error
+ * objects and credentials must never escape into auth UI error messages.
+ * Errors returned inside AuthOutcome are handled separately by each flow.
+ */
+async function authProviderCall<T>(fn:()=>Promise<T>,message:string):Promise<T>{
+  try{return await fn();}
+  catch{throw new AuthFlowError('PROVIDER_UNAVAILABLE',message);}
+}
+
 export function validateAuthEmail(value: unknown): string {
   if (typeof value !== 'string') throw new AuthFlowError('VALIDATION', 'Email is required.');
   const email = value.trim().toLowerCase();
@@ -79,23 +89,28 @@ export class AuthService {
     const handleCandidate = normalizeHandle(input.handle);
     const displayName = input.displayName?.trim();
     if (!displayName || displayName.length > 80) throw new AuthFlowError('VALIDATION', 'Enter a display name.');
-    const { data, error } = await this.auth.signUp({
+    const { data, error } = await authProviderCall(()=>this.auth.signUp({
       email, password: input.password,
       options: { data: { display_name: displayName, handle_candidate: handleCandidate } }
-    });
-    if (error) throw new AuthFlowError('AUTH_FAILED', 'Registration could not be completed.');
+    }), 'Registration is temporarily unavailable.');
+    if (error || !data?.user?.id)
+      throw new AuthFlowError('AUTH_FAILED', 'Registration could not be completed.');
     // Handle candidate is NOT reserved until authenticated ownership/uniqueness update.
-    return { status: data.session && data.user ? 'signed_in' : 'confirmation_required', handleCandidate } as const;
+    return { status: data.session?.access_token && data.user ? 'signed_in' :
+      'confirmation_required', handleCandidate } as const;
   }
 
   async login(emailInput: unknown, password: string): Promise<AuthUser> {
     const email = validateAuthEmail(emailInput);
     if (!password) throw new AuthFlowError('VALIDATION', 'Password is required.');
-    const attempt = await this.auth.signInWithPassword({ email, password });
-    if (attempt.error || !attempt.data?.session?.access_token)
+    const attempt = await authProviderCall(
+      ()=>this.auth.signInWithPassword({ email, password }),
+      'Sign-in service is temporarily unavailable.');
+    if (attempt?.error || !attempt?.data?.session?.access_token)
       throw new AuthFlowError('AUTH_FAILED', 'Incorrect credentials or sign-in unavailable.');
-    const check = await this.auth.getUser();
-    if (check.error || !check.data?.user?.id)
+    const check = await authProviderCall(
+      ()=>this.auth.getUser(),'Unable to verify the sign-in session.');
+    if (check?.error || !check?.data?.user?.id)
       throw new AuthFlowError('AUTH_EXPIRED', 'Unable to verify the authenticated session.');
     return check.data.user;
   }
@@ -104,41 +119,52 @@ export class AuthService {
     if (!this.config.emailDeliveryVerified)
       throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Password recovery is unavailable until email delivery is verified.');
     const email = validateAuthEmail(emailInput);
-    const { error } = await this.auth.resetPasswordForEmail(email, {
-      redirectTo: this.config.siteOrigin + '/reset-password'
-    });
+    const { error } = await authProviderCall(
+      ()=>this.auth.resetPasswordForEmail(email, {
+        redirectTo: this.config.siteOrigin + '/reset-password'
+      }), 'Unable to submit the recovery request.');
     if (error) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to submit the recovery request.');
     // Do not claim a message was delivered or an account exists.
   }
 
   async updatePassword(password: string): Promise<void> {
     passwordForCreation(password);
-    const { error } = await this.auth.updateUser({ password });
-    if (error) throw new AuthFlowError('AUTH_EXPIRED', 'The password reset session is invalid or expired.');
+    const { data, error } = await authProviderCall(
+      ()=>this.auth.updateUser({ password }),
+      'Password update service is temporarily unavailable.');
+    if (error || !data?.user?.id)
+      throw new AuthFlowError('AUTH_EXPIRED',
+        'The password reset session is invalid or expired.');
   }
 
   async logout(scope: 'local' | 'global' | 'others' = 'local'): Promise<void> {
-    const { error } = await this.auth.signOut({ scope });
+    const { error } = await authProviderCall(
+      ()=>this.auth.signOut({ scope }),
+      'Unable to complete sign-out.');
     if (error) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to complete sign-out.');
   }
 
   async googleLogin(): Promise<string> {
     if (!this.config.googleOAuthConfigured)
       throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Google sign-in is not configured.');
-    const { data, error } = await this.auth.signInWithOAuth({
-      provider: 'google', options: { redirectTo: this.config.siteOrigin + '/auth/callback' }
-    });
-    if (error || !data.url) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'OAuth could not begin.');
+    const { data, error } = await authProviderCall(
+      ()=>this.auth.signInWithOAuth({
+        provider: 'google', options: { redirectTo: this.config.siteOrigin + '/auth/callback' }
+      }), 'OAuth service is temporarily unavailable.');
+    if (error || !data?.url) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'OAuth could not begin.');
     return data.url;
   }
 
   async finishOAuth(code: string): Promise<AuthUser> {
     if (!/^[\w.-]{8,2048}$/.test(code))
       throw new AuthFlowError('VALIDATION', 'Invalid OAuth callback.');
-    const result = await this.auth.exchangeCodeForSession(code);
-    if (result.error) throw new AuthFlowError('AUTH_FAILED', 'OAuth callback failed.');
-    const current = await this.auth.getUser();
-    if (current.error || !current.data.user)
+    const result = await authProviderCall(
+      ()=>this.auth.exchangeCodeForSession(code),
+      'OAuth callback provider is temporarily unavailable.');
+    if (result?.error) throw new AuthFlowError('AUTH_FAILED', 'OAuth callback failed.');
+    const current = await authProviderCall(
+      ()=>this.auth.getUser(),'OAuth session verification is temporarily unavailable.');
+    if (current?.error || !current?.data?.user?.id)
       throw new AuthFlowError('AUTH_EXPIRED', 'OAuth session could not be verified.');
     return current.data.user;
   }
