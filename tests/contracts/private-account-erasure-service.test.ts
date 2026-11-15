@@ -421,3 +421,18 @@ test('a full verification page needs an exact Storage deletion receipt',async()=
     assert.equal(calls,3);
   }
 });
+
+
+test('account deletion refuses an unverified external release and CDN revocation state',async()=>{
+ const service=client(async(url,init)=>{
+   assert.equal(url,origin+'/rest/v1/rpc/owner_execute_account_erasure');
+   assert.equal(init?.method,'POST');
+   return Response.json({message:'ERASURE_PUBLIC_REVOCATION_UNVERIFIED'},{
+     status:409,headers:{'Content-Type':'application/json'}
+   });
+ });
+ await assert.rejects(service.execute(requestId,withdrawId,'DELETE MY ACCOUNT'),
+   (error:unknown)=>error instanceof Error&&
+    (error as {code?:string}).code==='CONFLICT'&&
+    error.message.includes('independently revoked'));
+});

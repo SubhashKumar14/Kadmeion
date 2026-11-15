@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(7);
+select plan(9);
 select has_table('public','private_account_exit_reauth_challenges',
   'server-private account exit reauthentication registry exists');
 select ok((select relrowsecurity from pg_class
@@ -34,5 +34,11 @@ begin
   if not denied then raise exception 'No live session accepted for completion'; end if;
 end $$;
 select pass('completion cannot use a subject claim without a real session');
+select ok(position('ERASURE_PUBLIC_REVOCATION_UNVERIFIED' in
+  pg_get_functiondef('public.owner_execute_account_erasure(uuid,uuid,text)'::regprocedure))>0,
+  'irreversible account deletion includes explicit public release and reviewer revocation gate');
+select ok(not has_function_privilege('anon',
+  'public.owner_execute_account_erasure(uuid,uuid,text)','EXECUTE'),
+  'anonymous cannot bypass the guarded destructive account-erasure RPC');
 select * from finish();
 rollback;

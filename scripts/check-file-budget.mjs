@@ -18,7 +18,8 @@ const justifiedExtra = [
   'packages/contracts/src/private-notifications-service.ts',
   'tests/contracts/private-notifications-service.test.ts',
   'packages/storage-adapters/src/safe-png-publication.ts',
-  'tests/editor/safe-png-publication.test.ts'
+  'tests/editor/safe-png-publication.test.ts',
+  'supabase/migrations/20261115130000_erasure_public_release_revocation_gate.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

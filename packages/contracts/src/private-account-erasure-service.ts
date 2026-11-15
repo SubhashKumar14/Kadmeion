@@ -263,6 +263,9 @@ export class SupabasePrivateAccountErasureService {
         throw new PrivateAccountErasureError('QUOTA_EXCEEDED','Request limit reached.');
       if(message==='INVALID_ERASURE_REQUEST'||message==='INVALID_ERASURE_WITHDRAWAL'||message==='INVALID_ERASURE_EXECUTION')
         throw new PrivateAccountErasureError('VALIDATION','Invalid account exit request.');
+      if(message==='ERASURE_PUBLIC_REVOCATION_UNVERIFIED')
+        throw new PrivateAccountErasureError('CONFLICT',
+          'Account deletion is blocked until public releases and reviewer links are independently revoked.');
       if(message==='ERASURE_STORAGE_CLEANUP_REQUIRED')
         throw new PrivateAccountErasureError('CONFLICT','Remove your private uploads before erasing the account.');
       if(response.status===409||message==='ACCOUNT_ERASURE_ALREADY_REQUESTED'||
