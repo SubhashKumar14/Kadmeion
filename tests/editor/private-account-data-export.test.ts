@@ -192,6 +192,20 @@ test('owner session changing during download invalidates the export',async()=>{
   await assert.rejects(fixture({identity:stranger}).service.export(snapshot),
     {code:'AUTH_EXPIRED'});
 });
+
+test('an access token change aborts export before the next private request',async()=>{
+  let token='owner-jwt';
+  const visits:string[]=[];
+  const service=new SupabasePrivateAccountDataExporter(origin,'publishable',async()=>token,
+    async(input,init)=>{
+      visits.push(new URL(String(input)).pathname);
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer owner-jwt');
+      token='other-owner-jwt';
+      return json({id:owner,email:'owner@example.test'});
+    });
+  await assert.rejects(service.export(snapshot),{code:'AUTH_EXPIRED'});
+  assert.deepEqual(visits,['/auth/v1/user']);
+});
 test('bounded limits reject 101 rows, 9 assets and forged paths',async()=>{
   const over={...baseRows,projects:Array.from({length:101},(_,i)=>({
     owner_user_id:owner,id:String(i)

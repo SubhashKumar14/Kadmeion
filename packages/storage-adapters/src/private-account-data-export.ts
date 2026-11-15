@@ -249,6 +249,20 @@ export class SupabasePrivateAccountDataExporter {
   /** Returns JSON bytes for a user-triggered local Blob download. Never uploads them. */
   async export(snapshotId:string):Promise<PrivateAccountExportArtifact> {
     requireCondition(isUuid(snapshotId),'VALIDATION','Valid owner inventory snapshot ID required.');
+    const token=await this.accessToken();
+    requireCondition(typeof token==='string'&&token.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===token,'AUTH_EXPIRED',
+        'The account session changed. Start a new export.');
+      return token;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const artifact=await scoped.exportForSession(snapshotId);
+    await sameSession();
+    return artifact;
+  }
+
+  private async exportForSession(snapshotId:string):Promise<PrivateAccountExportArtifact> {
     const owner=await this.owner();
     const before=await this.reconcile(snapshotId);
     const auditBefore=await this.audit(snapshotId,owner.id);
