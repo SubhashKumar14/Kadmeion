@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
+import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import { savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
@@ -21,22 +22,127 @@ function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioThe
   } catch { return defaultTheme; }
 }
 
-export function PortfolioCanvas({snapshot, title, standalone, width}: {
+
+type CanvasSection={id:string;layout:string;renderId:string;slots:string[]};
+const TEXT_FIELDS=['title','text','label','description','value','items','note'] as const;
+const SLOT_TITLES:Readonly<Record<string,string>>={
+  title:'headline',text:'introduction',cta:'call to action',cta1:'primary action',
+  cta2:'secondary action',btn1:'primary action',btn2:'secondary action',
+  image:'image',imagea:'image A',imageb:'image B',avatar:'portrait',
+  media:'media',thumbs:'thumbnails',project:'project',card:'project',
+  entries:'experience',items:'skills',links:'links',text1:'first paragraph',
+  text2:'second paragraph',badge:'category',meta:'detail',note:'note'
+};
+function canvasSections(snapshot:PortfolioSnapshot|null|undefined):CanvasSection[] {
+  const source=snapshot?.files['pages/home.page.json'];
+  if(typeof source!=='string')return [];
+  try {
+    const page:unknown=JSON.parse(source);
+    if(!page||typeof page!=='object'||Array.isArray(page)||
+      !('sections' in page)||!Array.isArray(page.sections))return [];
+    const sections:CanvasSection[]=[];
+    for(const item of page.sections.slice(0,32)){
+      if(!item||typeof item!=='object'||Array.isArray(item)||
+        !('id' in item)||typeof item.id!=='string'||
+        !('layout' in item)||typeof item.layout!=='string')continue;
+      const layout=portfolioLayout(item.layout);
+      if(!layout)continue;
+      sections.push({id:item.id,layout:item.layout,renderId:layout.renderId,slots:layout.slots});
+    }
+    return sections;
+  }catch{return [];}
+}
+/** Source bytes never execute in the app. This is only an escaped React text projection. */
+function slotDisplay(slot:PortfolioSnapshot['slots'][string]|undefined):string {
+  if(!slot||slot.state==='EMPTY')return '';
+  for(const key of TEXT_FIELDS){
+    const text=slot.content[key];
+    if(typeof text==='string'&&text.trim())return text;
+  }
+  return '';
+}
+
+export function PortfolioCanvas({snapshot, title, standalone, width, selectedSlot, onSelectSlot}: {
   snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean; width?: number;
+  selectedSlot?:string; onSelectSlot?:(key:string)=>void;
 }) {
-  const theme = readTheme(snapshot);
-  const style: CSSProperties = {
-    background: theme.surface, color: theme.text, colorScheme: theme.mode, borderTopColor: theme.accent, maxWidth: width
+  const theme=readTheme(snapshot);
+  const style:CSSProperties={
+    background:theme.surface,color:theme.text,colorScheme:theme.mode,
+    borderTopColor:theme.accent,maxWidth:width
   };
-  const output = Object.entries(snapshot?.slots ?? {}).flatMap(([key, entry]) => {
-    const text = entry.content.title || entry.content.text || entry.content.label;
-    return text ? [{key, text}] : [];
-  });
-  const Tag = standalone ? 'main' : 'div';
-  return <Tag className={standalone ? 'portfolio-only-preview' : 'ws-studio-canvas'} style={style}>
-    {standalone ? <h1>{title}</h1> : <h2>{title}</h2>}
-    {output.map(({key, text}) => <p key={key}>{text}</p>)}
-    {!standalone && output.length === 0 && <p>This draft has no authored text yet.</p>}
+  const sections=canvasSections(snapshot);
+  const editing=typeof onSelectSlot==='function'&&!standalone;
+  const Slot=({section,name,kind='copy'}:{
+    section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';
+  })=>{
+    const key=section.id+'-'+name.toLowerCase();
+    const assignment=snapshot?.slots[key];
+    const text=slotDisplay(assignment);
+    const label=SLOT_TITLES[name.toLowerCase()]??name;
+    const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
+      (selectedSlot===key?' pv-selected':'');
+    if(editing)return <button className={className} type="button"
+      aria-label={'Edit '+section.renderId+' '+name+' slot in preview'}
+      aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot(key)}>
+      {text||<span className="pv-placeholder">Add {label}</span>}
+    </button>;
+    return text?<span className={className}>{text}</span>:
+      standalone?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
+  };
+  const Tag=standalone?'main':'div';
+  return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
+    style={style} aria-label={standalone?'Saved private portfolio author preview':'Private authoring canvas'}>
+    {!standalone&&<div className="pv-editor-caption">
+      <span>AUTHOR CANVAS / {theme.mode.toUpperCase()}</span>
+      <span>Private draft · Not a live website</span>
+    </div>}
+    <div className="pv-site">
+      <header className="pv-site-head"><strong>{title}</strong>
+        <span>Owner-authored portfolio</span></header>
+      {sections.length===0?<section className="pv-empty-page">
+        <h2>No authored sections yet.</h2>
+        <p>{standalone?'This saved portfolio has no authored sections.':'Add a section using Structure & layers to begin building your page.'}</p>
+      </section>:sections.map((section,index)=>{
+        const headline=section.slots.includes('title');
+        const hero=['L1','L2','L5'].includes(section.renderId);
+        const others=section.slots.filter(name=>name!=='title'&&!['text','cta1','cta2','btn1','btn2'].includes(name));
+        const textSlot=section.slots.includes('text')?'text':
+          section.slots.includes('text1')?'text1':undefined;
+        const buttons=section.slots.filter(name=>['cta','cta1','cta2','btn1','btn2'].includes(name));
+        return <section key={section.id} className={'pv-section pv-layout-'+section.renderId+(hero?' pv-hero':' pv-content-section')}
+          aria-label={'Portfolio section '+(index+1)}>
+          {hero?<div className="pv-hero-grid">
+            <div className="pv-hero-copy">
+              <span className="pv-eyebrow">{section.renderId==='L5'?'YOUR STORY':'PORTFOLIO / INTRODUCTION'}</span>
+              {headline&&<h2><Slot section={section} name="title" kind="title"/></h2>}
+              {textSlot&&<div className="pv-summary"><Slot section={section} name={textSlot}/></div>}
+              <div className="pv-actions">{buttons.map(name=>
+                <Slot section={section} key={name} name={name} kind="action"/>)}</div>
+              {section.slots.includes('note')&&<div className="pv-hero-note"><Slot section={section} name="note" kind="tag"/></div>}
+            </div>
+            <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>
+          </div>:<>
+            <div className="pv-section-heading">
+              {headline&&<h2><Slot section={section} name="title" kind="title"/></h2>}
+              <span className="pv-section-index">{String(index+1).padStart(2,'0')}</span>
+            </div>
+            {textSlot&&<div className="pv-summary"><Slot section={section} name={textSlot}/></div>}
+            <div className={'pv-section-slots pv-section-slots-'+section.renderId}>
+              {others.filter(name=>name!==textSlot).map(name=>{
+                const media=/^(image|imageA|imageB|media|avatar|thumbs)$/i.test(name);
+                return <div className={'pv-slot-cell'+(media?' pv-media-cell':'')} key={name}>
+                  <Slot section={section} name={name} kind={media?'media':'copy'}/>
+                </div>;
+              })}
+            </div>
+            {buttons.length>0&&<div className="pv-actions pv-section-actions">{buttons.map(name=>
+              <Slot section={section} key={name} name={name} kind="action"/>)}</div>}
+          </>}
+        </section>;
+      })}
+      <footer className="pv-site-footer"><span>{title}</span><span>Author preview · Saved content only</span></footer>
+    </div>
   </Tag>;
 }
 

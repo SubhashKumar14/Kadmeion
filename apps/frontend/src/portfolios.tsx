@@ -278,7 +278,12 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
   const assigned = Object.entries(head?.snapshot.slots ?? {});
-  const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'} width={canvasWidth || undefined}/>;
+  const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
+    width={canvasWidth || undefined} selectedSlot={slot}
+    onSelectSlot={preview?undefined:(key)=>{
+      const entry=head?.snapshot.slots[key];
+      setSlot(key);setValue(entry?.content[primaryField(entry.componentId)]??'');setTool('Content');
+    }}/>;
   if (!allowed) return <DeviceLimit/>;
   return <section aria-labelledby="edit-title" className="ws-studio-editor">
     <div className="ws-project-head"><div className="ws-heading">

@@ -206,6 +206,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: /arc hero title/i}).click();
   await page.getByLabel('Text content').fill('Portfolio draft title');
   await page.getByRole('button', {name: 'Apply text'}).click();
+  const previewSlot = page.getByRole('button', {name: 'Edit L1 title slot in preview'});
+  await expect(previewSlot).toContainText('Portfolio draft title');
+  await previewSlot.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByLabel('Text content')).toHaveValue('Portfolio draft title');
   await capture('19_CONTENT_INSPECTOR_BROWSER');
   await page.getByRole('button', {name: 'Sections', exact: true}).click();
   await page.getByLabel('Section layout').selectOption('contact@1');
