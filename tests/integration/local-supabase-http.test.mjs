@@ -891,6 +891,18 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
     const owner=await adminUser('http-deny-owner');
     const outsider=await adminUser('http-deny-outsider');
     const moderator=await adminUser('http-deny-moderator');
+    const notifications='/rest/v1/private_notifications?select=id,event_type,category,priority,target_id,read_at,dismissed_at';
+    const listNotifications=async(actor)=>successful(await send(notifications,bearer(actor)),'List owner notifications');
+    const notifyRpc=(actor,name,body)=>send('/rest/v1/rpc/'+name,{...json(actor),method:'POST',body});
+    const preference=(sync)=>notifyRpc(owner,'owner_set_notification_preferences',{
+      p_reviewer_enabled:false,p_publish_enabled:false,p_sync_enabled:sync
+    });
+    assert.deepEqual(await listNotifications(owner),[]);
+    assert.ok(!(await send(notifications)).ok,'Anonymous notification read succeeded');
+    assert.ok(!(await send('/rest/v1/private_notifications',{
+      ...json(owner),method:'POST',body:{owner_user_id:owner.id}
+    })).ok,'Owner created a synthetic notification');
+    successful(await preference(false),'Disable optional notifications');
     await admin.query('INSERT INTO kadmeion_private.operator_roles(user_id,role) VALUES ($1::uuid,$2)',
       [moderator.id,'moderator']);
     const prepared=async()=>{
@@ -919,6 +931,7 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
       return id;
     };
     const id=await prepared();
+    assert.deepEqual(await listNotifications(owner),[],'Disabled sync must be quiet');
     for(const resource of ['CANONICAL_HTML','DIRECT_ASSET'])
       assert.equal((await gate.check(request(id,resource))).reason,'NO_VERIFIED_PUBLIC_RELEASE');
     await denied(id);
@@ -938,6 +951,27 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
     const blocked=successful(await send('/rest/v1/rpc/operator_block_private_portfolio',{
       ...json(moderator),method:'POST',body:blockBody}),'Operator block');
     assert.equal(blocked.status,'BLOCKED');
+    const notices=await listNotifications(owner);
+    assert.equal(notices.length,2);
+    assert.ok(notices.some(n=>n.event_type==='PORTFOLIO_MODERATION_BLOCKED'&&n.target_id===id));
+    const opened=notices.find(n=>n.event_type==='MODERATION_OPENED');
+    assert.equal(opened.target_id,caseReceipt.caseId);
+    assert.equal(opened.priority,'HIGH');
+    assert.deepEqual(await listNotifications(outsider),[]);
+    assert.deepEqual(await listNotifications(moderator),[]);
+    const ackBody={p_id:opened.id,p_dismiss:false};
+    assert.ok(!(await notifyRpc(outsider,'owner_acknowledge_notification',ackBody)).ok);
+    const read=successful(await notifyRpc(owner,'owner_acknowledge_notification',ackBody),'Mark notice read');
+    assert.ok(read.read_at);
+    assert.equal(read.dismissed_at,null);
+    const dismissed=successful(await notifyRpc(owner,'owner_acknowledge_notification',{
+      ...ackBody,p_dismiss:true
+    }),'Dismiss notice');
+    assert.equal(dismissed.read_at,read.read_at);
+    assert.ok(dismissed.dismissed_at);
+    assert.deepEqual(successful(await notifyRpc(owner,'owner_acknowledge_notification',ackBody),
+      'Replay acknowledgement'),dismissed);
+    assert.ok(!(await listNotifications(owner)).some(n=>n.id===opened.id&&n.dismissed_at===null));
     for(const resource of ['CANONICAL_HTML','DIRECT_ASSET']){
       const verdict=await gate.check(request(id,resource));
       assert.equal(verdict.reason,'PRIVATE_POINTER_BLOCKED');
@@ -945,7 +979,9 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
       assert.equal(verdict.revocationGeneration,2);
     }
     await denied(id);
+    successful(await preference(true),'Opt in to cloud revision notification');
     const trashId=await prepared();
+    assert.ok((await listNotifications(owner)).some(n=>n.event_type==='CLOUD_REVISION_SAVED'&&n.target_id===trashId));
     assert.ok(!(await send('/rest/v1/rpc/trash_private_item',{
       ...json(outsider),method:'POST',
       body:{p_item_type:'portfolio',p_item_id:trashId}})).ok);

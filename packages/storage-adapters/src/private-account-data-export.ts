@@ -13,7 +13,9 @@ const TABLES=[
   ['portfolio_revisions','owner_user_id'],['project_assets','owner_user_id'],
   ['private_release_requests','owner_user_id'],['private_trash_items','owner_user_id'],
   ['private_platform_links','owner_user_id'],['private_goals','owner_user_id'],
-  ['private_goal_progress_events','owner_user_id'],['private_goal_milestones','owner_user_id']
+  ['private_goal_progress_events','owner_user_id'],['private_goal_milestones','owner_user_id'],
+  ['private_notifications','owner_user_id','id,owner_user_id,event_type,category,priority,target_id,created_at,read_at,dismissed_at'],
+  ['private_notification_preferences','owner_user_id']
 ] as const;
 const MAX_ROWS=100,MAX_TABLE_BYTES=1024*1024,MAX_ASSETS=8;
 const MAX_ASSET_BYTES=5*1024*1024,MAX_TOTAL_ASSET_BYTES=8*1024*1024;
@@ -235,9 +237,9 @@ export class SupabasePrivateAccountDataExporter {
     }
     return data;
   }
-  private async rows(table:typeof TABLES[number][0],column:string,ownerId:string):
+  private async rows(table:typeof TABLES[number][0],column:string,ownerId:string,projection='*'):
     Promise<JsonObject[]> {
-    const raw=await this.json('/rest/v1/'+table+'?select=*&'+column+'=eq.'+
+    const raw=await this.json('/rest/v1/'+table+'?select='+projection+'&'+column+'=eq.'+
       encodeURIComponent(ownerId)+'&limit=101',MAX_TABLE_BYTES);
     requireCondition(Array.isArray(raw),'INTEGRITY','Invalid private table response.');
     requireCondition(raw.length<=MAX_ROWS,'LIMIT_EXCEEDED','Owner records exceed bounded export limit.');
@@ -267,7 +269,7 @@ export class SupabasePrivateAccountDataExporter {
     const before=await this.reconcile(snapshotId);
     const auditBefore=await this.audit(snapshotId,owner.id);
     const records:Record<string,JsonObject[]>={};
-    for(const [table,column] of TABLES)records[table]=await this.rows(table,column,owner.id);
+    for(const [table,column,projection] of TABLES)records[table]=await this.rows(table,column,owner.id,projection);
     const assets=records.project_assets;
     requireCondition(assets.length===before,'UNVERIFIED','Asset inventory changed during export.');
     requireCondition(assets.length<=MAX_ASSETS,'LIMIT_EXCEEDED','Too many assets for bounded byte export.');

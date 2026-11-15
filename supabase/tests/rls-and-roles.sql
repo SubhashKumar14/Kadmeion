@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public, extensions;
-select plan(25);
+select plan(32);
 select has_table('public', 'profiles', 'owner profiles exist');
 select has_table('public', 'profile_sharing_preferences', 'private sharing intent exists');
 select has_table('kadmeion_private', 'operator_roles', 'operator grants live outside public API');
@@ -47,5 +47,18 @@ select ok(not has_column_privilege('authenticated','public.private_platform_link
 select ok((select count(*)=4 from pg_policies where schemaname='public'
   and tablename='private_platform_links'),
   'links have separate owner select/insert/update/delete policies');
+select has_table('public','private_notifications','persistent owner inbox exists');
+select ok(not has_any_column_privilege('anon','public.private_notifications','SELECT'),
+  'anonymous cannot read any notification field');
+select ok(not has_any_column_privilege('authenticated','public.private_notifications','INSERT'),
+  'authenticated callers cannot forge notification inserts');
+select ok(not has_any_column_privilege('authenticated','public.private_notifications','UPDATE'),
+  'notification updates are limited to the owner acknowledgement RPC');
+select ok(not has_column_privilege('authenticated','public.private_notifications','source_key','SELECT'),
+  'internal deduplication keys are excluded from owner API output');
+select ok(not has_function_privilege('anon','public.owner_acknowledge_notification(uuid,boolean)','EXECUTE'),
+  'anonymous cannot acknowledge alerts');
+select ok(not has_any_column_privilege('authenticated','public.private_notification_preferences','UPDATE'),
+  'notification preference changes require the scoped RPC');
 select * from finish();
 rollback;
