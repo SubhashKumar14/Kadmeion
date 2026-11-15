@@ -76,7 +76,10 @@ test('cacheable, indexable, redirected or ETagged denial cannot pass',async()=>{
     {'X-Robots-Tag':'index, follow'},
     {'Location':'https://new.example/'},
     {'ETag':'"secret"'},
-    {'Content-Type':'text/html'}
+    {'CDN-Cache-Control':'public, max-age=600'},
+    {'Vercel-CDN-Cache-Control':'no-store, stale-if-error=300'},
+    {'Cache-Control':'no-store, max-age=60'},
+    {'Content-Type':'text/html','Cache-Control':'no-store'}
   ])await assert.rejects(probeHostRevocation(input,async()=>response(404,headers)),
     {code:'UNSAFE_HEADERS'});
 });
@@ -100,7 +103,7 @@ test('release withdrawal proves live bytes first and blocks all paths after the 
     if(!withdrawn){
       assert.equal(new URL(String(url)).pathname,input.canonicalPath);
       assert.equal(options?.method,'GET');
-      return new Response(html,{headers:{'Content-Type':'text/html'}});
+      return new Response(html,{headers:{'Content-Type':'text/html','Cache-Control':'no-store'}});
     }
     return response(404,{},options?.method==='HEAD'?'':'Not found');
   };
@@ -113,10 +116,58 @@ test('release withdrawal proves live bytes first and blocks all paths after the 
 test('an always-denied or unrelated canonical response cannot stand in for a live baseline',async()=>{
   let withdrawals=0;
   for(const before of [response(),new Response('<!doctype html><title>Other release</title>',{
-    headers:{'Content-Type':'text/html'}
+    headers:{'Content-Type':'text/html','Cache-Control':'no-store'}
   })]){
     await assert.rejects(verifyReleaseWithdrawal(input,'a'.repeat(64),
       async()=>{withdrawals++;},async()=>before),{code:'RELEASE_NOT_OBSERVED'});
   }
+  assert.equal(withdrawals,0);
+});
+
+
+test('withdrawal also fetches the exact previously reachable PNG bytes on each manifest path',async()=>{
+  const html='<!doctype html><title>Release with media</title>';
+  const png=Uint8Array.of(137,80,78,71,13,10,26,10);
+  const sha=(bytes:string|Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
+  const path='/releases/assets/'+sha(png)+'.png';
+  const withMedia={...input,candidateDirectPaths:[path,...input.candidateDirectPaths],
+    liveAssets:[{path,sha256:sha(png)}]};
+  let withdrawn=false;
+  const calls:string[]=[];
+  const http:typeof fetch=async(url,options)=>{
+    const current=new URL(String(url)).pathname;
+    calls.push((options?.method??'GET')+' '+current);
+    if(withdrawn)return response(404,{},options?.method==='HEAD'?'':'Not found');
+    return new Response(current===path?png:html,{headers:{
+      'Content-Type':current===path?'image/png':'text/html','Cache-Control':'no-store'
+    }});
+  };
+  const result=await verifyReleaseWithdrawal(withMedia,sha(html),async()=>{withdrawn=true;},http);
+  assert.equal(result.liveAssetPathsVerified,1);
+  assert.equal(result.observedHttpRequests,10);
+  assert.deepEqual(calls.slice(0,2),['GET '+input.canonicalPath,'GET '+path]);
+  assert.ok(calls.includes('HEAD '+path));
+});
+
+test('missing, mismatched, cacheable or untracked live media cannot establish a withdrawal baseline',async()=>{
+  const html='<!doctype html><title>Release</title>';
+  const sha=createHash('sha256').update(html).digest('hex');
+  const path='/assets/'+sha+'.png';
+  const withMedia={...input,candidateDirectPaths:[path],liveAssets:[{path,sha256:sha}]};
+  let withdrawals=0;
+  for(const image of [
+    response(),
+    new Response('wrong',{headers:{'Content-Type':'image/png','Cache-Control':'no-store'}}),
+    new Response(html,{headers:{'Content-Type':'image/png','Cache-Control':'no-store',
+      'Surrogate-Control':'max-age=300'}})
+  ]){
+    await assert.rejects(verifyReleaseWithdrawal(withMedia,sha,async()=>{withdrawals++;},
+      async(url)=>new URL(String(url)).pathname===path?image:new Response(html,{
+        headers:{'Content-Type':'text/html','Cache-Control':'no-store'}
+      })),{code:'RELEASE_NOT_OBSERVED'});
+  }
+  await assert.rejects(verifyReleaseWithdrawal({...input,liveAssets:withMedia.liveAssets},
+    sha,async()=>{withdrawals++;},async()=>{assert.fail('must validate paths before fetch');}),
+  {code:'INVALID_INPUT'});
   assert.equal(withdrawals,0);
 });

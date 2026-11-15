@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {HANDLE_PATTERN,RESERVED_HANDLES} from '../../contracts/src/project.ts';
 
 /**
@@ -11,6 +12,10 @@ export interface HostRevocationProbeInput {
   candidateDirectPaths:readonly string[];
   /** Only isolated local integration hosts may use HTTP loopback. */
   allowLocal?:boolean;
+}
+export interface ReleaseWithdrawalInput extends HostRevocationProbeInput {
+  /** Exact public PNGs in the trusted release manifest, including every serving alias. */
+  liveAssets?: readonly {path:string;sha256:string}[];
 }
 export interface HostRevocationObservation {
   status:'OBSERVED_REVOKED_ON_SCOPED_PATHS';
@@ -27,6 +32,20 @@ export class HostRevocationProbeError extends Error {
     this.name='HostRevocationProbeError';this.code=code;
   }
 }
+const SHA256=/^[a-f0-9]{64}$/;
+const PNG_PATH=/\/([a-f0-9]{64})\.png$/;
+const CACHE_HEADERS=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control'];
+function isUncacheable(headers:Headers):boolean {
+  return CACHE_HEADERS.every((name)=>{
+    const value=headers.get(name);
+    if(value===null)return name!=='cache-control';
+    const directives=value.toLowerCase().split(',').map(directive=>directive.trim());
+    return directives.includes('no-store')&&!directives.includes('public')&&
+      directives.every(directive=>!/^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=/.test(directive)||
+        /^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*(?:0|"0")$/.test(directive));
+  });
+}
+
 const DIRECT=/^\/[a-zA-Z0-9._/-]{1,512}$/;
 const PORTFOLIO_SLUG=/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const UNLISTED=/^\/api\/unlisted\?portfolioId=[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -77,7 +96,7 @@ async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void>
     throw new HostRevocationProbeError('STILL_VISIBLE');
   }
   const h=response.headers;
-  if(!/(?:^|,)\s*no-store\s*(?:,|$)/i.test(h.get('cache-control')??'')||
+  if(response.redirected||!isUncacheable(h)||
      !/(?:^|,)\s*noindex\s*(?:,|$)/i.test(h.get('x-robots-tag')??'')||
      h.has('location')||h.has('etag')||
      !/^text\/plain(?:;|$)/i.test(h.get('content-type')??'')){
@@ -141,43 +160,63 @@ export async function probeHostRevocation(
   });
 }
 
-/** Verify one real pre-withdrawal release and then independently probe the same URL set after withdrawal. */
-export async function verifyReleaseWithdrawal(
-  input:HostRevocationProbeInput,expectedServedSha256:string,
-  withdraw:()=>Promise<void>,http:typeof fetch=fetch
-):Promise<HostRevocationObservation>{
-  const origin=validatedOrigin(input);
-  if(typeof expectedServedSha256!=='string'||!/^[0-9a-f]{64}$/.test(expectedServedSha256)||
-     typeof withdraw!=='function')throw new HostRevocationProbeError('INVALID_INPUT');
-  const paths={...input,origin:origin.origin,candidateDirectPaths:[...input.candidateDirectPaths]};
-  const response=await fetchPath(new URL(paths.canonicalPath,origin),'GET',http);
+async function verifyLiveBytes(
+  response:Response, mime:RegExp, maxBytes:number, expectedDigest:string
+):Promise<void> {
   const reader=response.body?.getReader();
   if(!reader)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  try{
-    if(response.status!==200||response.redirected||
-       !/^text\/html(?:;|$)/i.test(response.headers.get('content-type')??''))
+  try {
+    if(response.status!==200||response.redirected||response.headers.has('location')||
+       !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers))
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-    const bytes=new Uint8Array(750_000);
+    const digest=createHash('sha256');
     let size=0;
     for(;;){
       const chunk=await reader.read();
       if(chunk.done)break;
-      if(chunk.value.byteLength>bytes.byteLength-size)
-        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-      bytes.set(chunk.value,size);
       size+=chunk.value.byteLength;
+      if(size>maxBytes)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+      digest.update(chunk.value);
     }
-    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes.subarray(0,size)));
-    const hex=Array.from(digest,value=>value.toString(16).padStart(2,'0')).join('');
-    if(size===0||hex!==expectedServedSha256)
+    if(size===0||digest.digest('hex')!==expectedDigest)
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  }catch{
+  } catch {
     throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  }finally{
+  } finally {
     await reader.cancel().catch(()=>{});
     reader.releaseLock();
   }
+}
+
+/** Verify the canonical HTML and manifest media before withdrawing, then check all listed paths for denial. */
+export async function verifyReleaseWithdrawal(
+  input:ReleaseWithdrawalInput,expectedServedSha256:string,
+  withdraw:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
+  const origin=validatedOrigin(input);
+  if(typeof expectedServedSha256!=='string'||!SHA256.test(expectedServedSha256)||
+     typeof withdraw!=='function')throw new HostRevocationProbeError('INVALID_INPUT');
+  const assets=input.liveAssets===undefined?[]:input.liveAssets;
+  if(!Array.isArray(assets)||assets.length>12)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const paths={...input,origin:origin.origin,candidateDirectPaths:[...input.candidateDirectPaths]};
+  const liveAssets=new Map<string,string>();
+  for(const asset of assets){
+    if(!asset||typeof asset.path!=='string'||typeof asset.sha256!=='string'||
+       !pathValid(asset.path)||PNG_PATH.exec(asset.path)?.[1]!==asset.sha256||
+       liveAssets.has(asset.path)||!paths.candidateDirectPaths.includes(asset.path))
+      throw new HostRevocationProbeError('INVALID_INPUT');
+    liveAssets.set(asset.path,asset.sha256);
+  }
+
+  const html=await fetchPath(new URL(paths.canonicalPath,origin),'GET',http);
+  await verifyLiveBytes(html,/^text\/html(?:;|$)/i,750_000,expectedServedSha256);
+  for(const [path,sha256] of liveAssets){
+    const image=await fetchPath(new URL(path,origin),'GET',http);
+    await verifyLiveBytes(image,/^image\/png$/i,5*1024*1024,sha256);
+  }
   await withdraw();
   const after=await probeHostRevocation(paths,http);
-  return Object.freeze({...after,observedHttpRequests:after.observedHttpRequests+1});
+  return Object.freeze({...after,liveAssetPathsVerified:liveAssets.size,
+    observedHttpRequests:after.observedHttpRequests+1+liveAssets.size});
 }
