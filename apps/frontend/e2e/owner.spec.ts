@@ -228,6 +228,10 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Portfolio name').fill('Browser portfolio');
   await page.getByRole('button', {name: 'Choose template and create draft'}).click();
   await expect(page.getByRole('heading', {name: 'Browser portfolio', exact: true, level: 1})).toBeVisible();
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','light');
   const editorPath = new URL(page.url()).pathname;
   await expect(page.getByLabel('Text content')).toBeVisible();
   await expect(page.getByText('Illustrative empty-slot copy · Never saved or published')).toBeVisible();
@@ -286,11 +290,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:'Upload private image'}).click();
   await expect(page.locator('.ws-asset-manager').getByRole('status'))
     .toContainText('Image uploaded and privately registered.');
-  await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
+  await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
   await page.reload();
   await page.getByRole('button',{name:'Assets',exact:true}).click();
-  await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
+  await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
 
   await page.getByRole('button', {name: 'Source', exact: true}).click();
   await expect(page.getByRole('navigation',{name:'Source files'})).toBeVisible();

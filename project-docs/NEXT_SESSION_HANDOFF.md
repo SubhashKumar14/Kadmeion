@@ -965,3 +965,15 @@ At code SHA `719fc0c16a0f3d150a65f1c8cb2704ff1373deaa`, frontend CI [43750740550
 **Acceptance:** New exact-SHA TypeScript/build/frontend Chromium and isolated DB/owner Chrome CI required. Compare approved #23 to *empty-state* screenshot only. Full image crop/focal, owner-safe signed thumbnail, replacement and attestation public pipeline remain gated. No new paid service, source file or main/hosted deployment.
 
 **Next:** verify CI and compare #23/#24 to originals; resolve tested failures; save both GitHub+Notion checkpoints.
+
+---
+
+## EDIT-01 shell compactness + test selector correction — 16 November 2026
+
+**Starting SHA:** `ac7b9bd2760bd163c30915a51e6c2636976ef0ef`, [frontend CI 43751562298](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43751562298) passed React/Vite/TypeScript/public Chromium. [Isolated database/owner Chrome 43751568262](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43751568262) failed one browser assertion *after* successful real local Storage upload + verified RPC and auth; the actual registered asset alt text appeared twice (selected gallery button and selected detail definition), so an unscoped strict locator failed. This commit scopes both pre- and post-reload assertions to the actual `.ws-asset-gallery`. No false storage claims are needed.
+
+**Visual result from failed owner run's real screenshots:** Approved #23 asset empty-state paired with `23_ASSET_LIBRARY_BROWSER` now measured resized SSIM **0.7515**, compared to older flat Asset inspector #23 **0.7417**. The new three-pane correct layout is modestly closer but has a duplicate workspace breadcrumb+title header, creating ~100px vertical offset. The approved #23 shows one compact editor heading only. Screen #24 Source still pending authenticated capture beyond asset-stage test failure.
+
+**Code in this change:** `apps/frontend/src/workspace.tsx` adds a genuine accessible runtime light/dark toggle to the compact rail on qualified editor/preview routes; `apps/frontend/src/workspace.css` hides only the redundant desktop workspace breadcrumb topbar on those routes and compacts the editor heading and change-notice height, retaining the focus-recoverable back navigation. This follows the approved EDIT screenshots without removing functional theme switching. `apps/frontend/e2e/owner.spec.ts` now verifies light/dark toggling on real authenticated editor before capture, and fixes selected-image duplicate text locator. No new authored file, no paid service, no public hosting activation or main merge.
+
+**Status:** Await new exact-SHA frontend/root CI and screenshots. Compare #18–26 with approved LIGHT PNG; check whether this compact header actually improves SSIM before retaining it as accepted. Next: fix any e2e break; complete remaining F6 acceptance evidence and media attestation/proof gates.

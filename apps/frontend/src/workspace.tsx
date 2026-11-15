@@ -56,6 +56,12 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
           <Icon name={item.icon} size={18}/><span>{item.title}</span>
         </a>)}
       </nav>
+      {editorOnly&&<button type="button" className="ws-editor-theme-switch" onClick={toggleTheme}
+        aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'}
+        aria-pressed={theme==='dark'}>
+        <Icon name={theme==='light'?'moon':'sun'} size={18}/>
+        <span>{theme==='light'?'Dark':'Light'} mode</span>
+      </button>}
       <div className="ws-rail-bottom">
         <p>Private by default. No portfolio is published from this screen.</p>
         <button type="button" disabled={signOutPending} onClick={onSignOut}>
