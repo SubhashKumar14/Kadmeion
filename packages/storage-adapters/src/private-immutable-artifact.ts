@@ -196,7 +196,8 @@ export async function createPrivateImmutableMediaCandidate(
   const fragments:string[]=[];
   let total=0;
   for(const item of plan){
-    if(!record(item)||Object.keys(item).sort().join(',')!==
+    if(!item||typeof item!=='object'||Array.isArray(item)||
+       Object.keys(item).sort().join(',')!==
        'altText,assetId,expectedSourceSha256'||
        !MEDIA_UUID.test(item.assetId)||assetIds.has(item.assetId)||
        typeof item.expectedSourceSha256!=='string'||
