@@ -117,6 +117,8 @@ Per screen verify light-image visual parity on a known viewport **and** responsi
 
 **Exit:** 52 individually accepted UI implementations (not merely 52 static screenshots), no P0/P1 defects, documented free-tier operational envelope, **separate** approved main merge/production activation.
 
+**Approved screenshot source matrix:** [`registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv`](registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv) contains one owner-approved screenshot-to-archive mapping per screen, corrected #26 and source checksum prefixes. All six ZIP central directories/CRC checks were valid in the authorized Library source inspection, but pixel/functional UI parity is **not** proven by ZIP integrity. Never use a superseded design row.
+
 ## Every run's output contract
 
 1. One **verified remaining-code backlog**, grouped by priority and actual file/test, including current Git branch and hosted migration count.
