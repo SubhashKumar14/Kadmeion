@@ -267,3 +267,26 @@ test('an email callback cannot replace a signed-in account with a different user
   })), /Sign out/);
   assert.deepEqual([...saved.data.entries()],before);
 });
+
+
+test('the provider resend and recovery reject redirect query, credentials and fragments',async()=>{
+  let calls=0;
+  const {port}=mock(async(url,init)=>{
+    calls++;
+    assert.equal(String(url),'https://project.supabase.co/auth/v1/resend?redirect_to='+encodeURIComponent('http://localhost:3000/auth/callback'));
+    assert.deepEqual(JSON.parse(String(init?.body)),{type:'signup',email:'dev@example.com'});
+    return json({});
+  });
+  for(const target of [
+    'http://localhost:3000/auth/callback?next=/other',
+    'http://user@localhost:3000/auth/callback',
+    'http://localhost:3000/auth/callback#fragment'
+  ]) assert.ok((await port.resend({type:'signup',email:'dev@example.com',
+    options:{emailRedirectTo:target}})).error);
+  assert.ok((await port.resetPasswordForEmail('dev@example.com',
+    {redirectTo:'http://localhost:3000/reset-password?next=/other'})).error);
+  assert.equal(calls,0);
+  assert.equal((await port.resend({type:'signup',email:'dev@example.com',
+    options:{emailRedirectTo:'http://localhost:3000/auth/callback'}})).error,null);
+  assert.equal(calls,1);
+});

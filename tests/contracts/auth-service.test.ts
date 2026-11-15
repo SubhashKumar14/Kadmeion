@@ -128,3 +128,26 @@ test('B10 accepts real Supabase data-less signOut response without false session
  await service.logout();
  assert.equal(selected,'local');
 });
+
+
+test('confirmation resend requires verified delivery and submits a neutral provider request',async()=>{
+  const config={siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false};
+  const port=mockPort();
+  let attempts=0;
+  port.resend=async input=>{
+    attempts++;
+    assert.deepEqual(input,{type:'signup',email:'dev@example.com',
+      options:{emailRedirectTo:'https://app.example/auth/callback'}});
+    return {data:{},error:null};
+  };
+  await assert.rejects(new AuthService(port,config).resendSignupConfirmation('dev@example.com'),
+    {code:'PROVIDER_UNAVAILABLE'});
+  assert.equal(attempts,0);
+  const service=new AuthService(port,{...config,emailDeliveryVerified:true});
+  await assert.rejects(service.resendSignupConfirmation('invalid'),{code:'VALIDATION'});
+  await service.resendSignupConfirmation(' DEV@example.com ');
+  assert.equal(attempts,1);
+  port.resend=async()=>{throw Error('private SMTP credentials');};
+  await assert.rejects(service.resendSignupConfirmation('dev@example.com'),
+    {code:'PROVIDER_UNAVAILABLE',message:'Unable to submit the confirmation request.'});
+});

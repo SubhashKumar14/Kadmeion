@@ -193,9 +193,20 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   resetPasswordForEmail(email: string, { redirectTo }: { redirectTo: string }): Promise<AuthOutcome<unknown>> {
     return this.outcome(async () => {
       const destination = new URL(redirectTo);
-      if (destination.origin !== this.appOrigin || destination.pathname !== '/reset-password')
+      if (destination.href !== this.appOrigin + '/reset-password')
         throw new Error('Invalid recovery redirect.');
       return this.request('/recover?redirect_to=' + encodeURIComponent(destination.toString()), 'POST', { email });
+    });
+  }
+
+  resend({type,email,options}:{
+    type:'signup';email:string;options:{emailRedirectTo:string};
+  }):Promise<AuthOutcome<unknown>>{
+    return this.outcome(async()=>{
+      if(type!=='signup'||options.emailRedirectTo!==this.appOrigin+'/auth/callback')
+        throw new Error('Invalid confirmation redirect.');
+      return this.request('/resend?redirect_to='+encodeURIComponent(options.emailRedirectTo),
+        'POST',{type,email});
     });
   }
 

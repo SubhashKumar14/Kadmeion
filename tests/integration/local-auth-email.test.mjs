@@ -71,7 +71,7 @@ test('local Auth email confirmation and password recovery via Mailpit are real, 
     const email='kadmeion-ci-'+randomUUID()+'@testing.invalid';
     const firstPassword='LocalOnly-Alpha-'+randomUUID();
     const nextPassword='LocalOnly-Beta-'+randomUUID();
-    let confirmationId;
+    const confirmationIds=new Set();
     await t.test('signup stays pending until the captured confirmation URL is consumed',async()=>{
       const signup=await go('/auth/v1/signup',{email,password:firstPassword,
         data:{display_name:'Local Auth Email CI'}});
@@ -83,8 +83,14 @@ test('local Auth email confirmation and password recovery via Mailpit are real, 
       const before=await go('/auth/v1/token?grant_type=password',{
         email,password:firstPassword});
       assert.ok(!before.ok,'Unconfirmed signup authenticated');
-      const mail=await messageFor(email);
-      confirmationId=mail.ID;
+      const initial=await messageFor(email);
+      confirmationIds.add(initial.ID);
+      await pause(1100);
+      const resend=await go('/auth/v1/resend?redirect_to='+
+        encodeURIComponent('http://localhost:3000/auth/callback'),{type:'signup',email});
+      assert.equal(resend.ok,true,'Local signup resend request failed');
+      const mail=await messageFor(email,confirmationIds);
+      confirmationIds.add(mail.ID);
       const link=verifyLink(mail);
       assert.equal(link.searchParams.get('type'),'signup');
       const response=await fetch(link.toString(),{
@@ -104,7 +110,7 @@ test('local Auth email confirmation and password recovery via Mailpit are real, 
       const recovery=await go('/auth/v1/recover?redirect_to='+
         encodeURIComponent('http://localhost:3000/reset-password'),{email});
       assert.equal(recovery.ok,true,'Local password-recovery request failed');
-      const mail=await messageFor(email,new Set([confirmationId]));
+      const mail=await messageFor(email,confirmationIds);
       const link=verifyLink(mail);
       assert.equal(link.searchParams.get('type'),'recovery');
       const response=await fetch(link.toString(),{

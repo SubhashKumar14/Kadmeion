@@ -13,6 +13,8 @@ export interface AuthPort {
   signInWithPassword(options: { email: string; password: string }):
     Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>>;
   getUser(): Promise<AuthOutcome<{ user: AuthUser | null }>>;
+  /** Supabase signup resend; optional for legacy AuthPort implementations. */
+  resend?(options: {type:'signup';email:string;options:{emailRedirectTo:string}}):Promise<AuthOutcome<unknown>>;
   resetPasswordForEmail(email: string, options: { redirectTo: string }): Promise<AuthOutcome<unknown>>;
   updateUser(changes: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>>;
   // Supabase Auth signOut returns {error} WITHOUT a data envelope.
@@ -127,6 +129,18 @@ export class AuthService {
       }), 'Unable to submit the recovery request.');
     if (error) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to submit the recovery request.');
     // Do not claim a message was delivered or an account exists.
+  }
+
+  async resendSignupConfirmation(emailInput:unknown):Promise<void>{
+    const resend=this.auth.resend;
+    if(!this.config.emailDeliveryVerified||!resend)
+      throw new AuthFlowError('PROVIDER_UNAVAILABLE','Confirmation email is temporarily unavailable.');
+    const email=validateAuthEmail(emailInput);
+    const outcome=await authProviderCall(()=>resend.call(this.auth,{
+      type:'signup',email,options:{emailRedirectTo:this.config.siteOrigin+'/auth/callback'}
+    }),'Unable to submit the confirmation request.');
+    if(!outcome||outcome.error)
+      throw new AuthFlowError('PROVIDER_UNAVAILABLE','Unable to submit the confirmation request.');
   }
 
   async updatePassword(password: string): Promise<void> {
