@@ -41,9 +41,11 @@ async function signIn(page: Page, user: {email: string; password: string}) {
     await expect(page.getByRole('heading', {name: 'Session verified'})).toBeVisible();
   } catch {
     const mode = await page.locator('.auth-page').getAttribute('data-mode').catch(() => 'unavailable');
-    const hasAlert = await page.getByRole('alert').count() > 0;
+    const alert = (await page.getByRole('alert').allTextContents()).join(' ');
+    const reason = /password is required|enter a valid email|incorrect credentials or sign-in unavailable|unable to verify the authenticated session/i
+      .exec(alert)?.[0] ?? (alert ? 'unclassified alert' : 'no alert');
     throw new Error('Local browser sign-in did not complete. Mode=' + mode +
-      ', alert=' + hasAlert + ', requests=' + requestResults.join(', '));
+      ', reason=' + reason + ', requests=' + requestResults.join(', '));
   } finally {
     page.off('response', onResponse);
     page.off('requestfailed', onRequestFailed);

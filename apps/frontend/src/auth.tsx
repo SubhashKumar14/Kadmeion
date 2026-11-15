@@ -111,6 +111,7 @@ export function AuthApp(){
   const [outcome,setOutcome]=useState<Outcome | null>(null);
   const [identity,setIdentity]=useState<string|null>(null);
   const heading=useRef<HTMLHeadingElement>(null);
+  const enteredCallback = useRef(window.location.pathname === '/auth/callback');
   const redirectStarted=useRef(false);
   const stillMounted=useRef(true);
   const auth=config.value;
@@ -206,6 +207,39 @@ export function AuthApp(){
   // Authentication callback must run at most once: auth instance fixed for mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
+  if (mode === 'callback' || (enteredCallback.current && mode === 'outcome')) {
+    const checking = mode === 'callback';
+    return <main className="auth-callback" id="auth-main">
+      <header className="auth-callback-header">
+        <a href="/" className="auth-home" aria-label="Kadmeion home"><BrandMark/></a>
+        <button type="button" onClick={toggleTheme} className="theme-button"
+          aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+          aria-pressed={theme === 'dark'}>
+          <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16}/>
+          <span>{theme === 'light' ? 'Dark' : 'Light'}</span>
+        </button>
+      </header>
+      <section className="auth-callback-card" aria-labelledby="auth-heading" aria-busy={checking}>
+        <div className="auth-callback-banner" aria-hidden="true">
+          <div className="auth-brand-rings"><span/><span/><span/></div>
+        </div>
+        <p className="eyebrow"><span/> Authentication</p>
+        <h1 id="auth-heading" tabIndex={-1} ref={heading}>
+          {checking ? 'Verifying your session.' : error ? 'Action not completed' :
+            outcome === 'session-verified' ? 'Session verified' : 'Account status'}
+        </h1>
+        {checking ? <p role="status">Checking your link with the authentication service…</p> :
+          error ? <p className="auth-error" role="alert">{error}</p> :
+          notice && <p role="status">{notice}</p>}
+        {!checking && <div className="auth-callback-actions">
+          {identity && <a href="/app" className="auth-submit">Open private workspace</a>}
+          <button type="button" className="auth-submit" onClick={() => setAuthMode('signin', '/signin')}>
+            Return to sign in
+          </button>
+        </div>}
+      </section>
+    </main>;
+  }
   const storyPanel = !!authStories[mode];
   return <>
     <a className="skip-link" href="#auth-main">Skip to account form</a>
@@ -310,10 +344,6 @@ export function AuthApp(){
               <AuthPassword id="confirm-password" label="Confirm new password" value={confirm} setValue={setConfirm} autoComplete="new-password"/>
               <button className="auth-submit" type="submit" disabled={pending||!auth}>Save new password <span aria-hidden="true">→</span></button>
             </form>
-          </section>}
-          {mode==='callback' && <section aria-labelledby="auth-heading">
-            <p className="eyebrow"><span/> Verifying account</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>Checking your link.</h1>
-            <p className="auth-description" role="status">Waiting for the authentication server's response. No access is granted before independent verification.</p>
           </section>}
           {mode==='outcome' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Account update</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>

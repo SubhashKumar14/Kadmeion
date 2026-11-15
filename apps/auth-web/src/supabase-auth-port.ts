@@ -83,7 +83,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.storage = input.storage;
     // OAuth PKCE is a short-lived same-tab transaction, never localStorage.
     this.oauthStorage = input.oauthStorage ?? null;
-    this.fetcher = input.fetcher ?? fetch;
+    this.fetcher = input.fetcher ?? globalThis.fetch.bind(globalThis);
     this.session = this.readSession();
   }
 

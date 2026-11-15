@@ -35,6 +35,21 @@ test('password sign-in keeps session private in browser storage and verifies use
   assert.equal([...saved.data.values()].join('').includes('strong-password'), false);
 });
 
+test('native browser fetch keeps its global receiver', async context => {
+  const browserFetch = context.mock.method(globalThis, 'fetch', async function (this: unknown) {
+    assert.equal(this, globalThis);
+    return json(tokens);
+  });
+  const port = new SupabaseBrowserAuthPort({
+    supabaseUrl: 'https://project.supabase.co', publishableKey: 'sb_publishable_test',
+    appOrigin: 'http://localhost:3000', storage: storage()
+  });
+  const login = await port.signInWithPassword({email: user.email, password: 'test-password'});
+  assert.equal(login.error, null);
+  assert.equal(login.data.session?.user.id, user.id);
+  assert.equal(browserFetch.mock.callCount(), 1);
+});
+
 test('implicit invitation consumes tokens and permits a subsequent password update', async () => {
   const requests: string[] = [];
   const { port } = mock((async (url: string | URL | Request, options?: RequestInit) => {
