@@ -59,3 +59,29 @@ test('ZIP importer rejects a duplicated central entry that hides a different loc
  tampered.set(tampered.slice(manifest.at,manifest.at+46+manifest.length),hidden.at);
  assert.throws(()=>importPortfolioSourceZip(tampered),{code:'VALIDATION'});
 });
+
+test('ZIP importer refuses dot-segment aliases before interpreting the central directory',()=>{
+ const archive=exportPortfolioSourceZip(snapshot);
+ const bytes=new Uint8Array(archive);
+ const view=new DataView(bytes.buffer);
+ const decode=new TextDecoder(),encode=new TextEncoder();
+ let cursor=0,changed=false;
+ for(;cursor+30<bytes.length;){
+   if(view.getUint32(cursor,true)!==0x04034b50)break;
+   const nameLen=view.getUint16(cursor+26,true);
+   const extraLen=view.getUint16(cursor+28,true);
+   const dataLen=view.getUint32(cursor+18,true);
+   const start=cursor+30;
+   const name=decode.decode(bytes.subarray(start,start+nameLen));
+   if(name==='pages/home.page.json'){
+     const alias=encode.encode('pages/./me.page.json');
+     assert.equal(alias.length,nameLen);
+     bytes.set(alias,start);
+     changed=true;break;
+   }
+   cursor=start+nameLen+extraLen+dataLen;
+ }
+ assert.equal(changed,true);
+ assert.throws(()=>importPortfolioSourceZip(bytes),(error:unknown)=>
+   error instanceof Error&&error.message==='Duplicate or unsafe ZIP filename.');
+});

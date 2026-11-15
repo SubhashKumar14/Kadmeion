@@ -74,7 +74,7 @@ test('portable editable source archive still preserves original owned bytes',()=
 test('shared ZIP-STORE writer refuses unsafe names, duplicates and oversize files',()=>{
   const limits={maxEntries:3,maxBytes:1024,maxEntryBytes:50};
   const file={name:'index.html',bytes:encode.encode('test')};
-  for(const name of ['../owner.json','dir//oops','/root','a\\b','a/../b']){
+  for(const name of ['../owner.json','dir//oops','/root','a\\b','a/../b','a/./b','a/.']){
     assert.throws(()=>writeStoredZip([{name,bytes:file.bytes}],limits),{code:'VALIDATION'});
   }
   assert.throws(()=>writeStoredZip([file,file],limits),{code:'VALIDATION'});

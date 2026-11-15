@@ -38,7 +38,8 @@ export function writeStoredZip(parts:readonly StoredZipPart[],limits:StoredZipLi
     const name=part?.name;
     check(typeof name==='string' && name.length<=160 &&
       /^[a-zA-Z0-9][a-zA-Z0-9_./-]*$/.test(name) && !name.includes('..') &&
-      !name.includes('//') && !name.endsWith('/') && !seen.has(name),
+      !name.includes('//') && !name.endsWith('/') &&
+      !name.split('/').includes('.') && !seen.has(name),
       'Unsafe or duplicate ZIP filename.');
     seen.add(name);
     check(part.bytes instanceof Uint8Array && part.bytes.byteLength<=limits.maxEntryBytes,
@@ -121,7 +122,8 @@ export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
     // alias the same file differently across extractors and importers.
     check(!entries.has(name)&&name.length<=160&&
       /^[a-zA-Z0-9][a-zA-Z0-9_./-]*$/.test(name)&&
-      !name.includes('..')&&!name.includes('//')&&!name.endsWith('/'),
+      !name.includes('..')&&!name.includes('//')&&!name.endsWith('/')&&
+      !name.split('/').includes('.'),
       'Duplicate or unsafe ZIP filename.');
     const bytes=data.slice(dataStart,dataStart+size);
     check(crc32(bytes)===crc,'ZIP integrity check failed.');
