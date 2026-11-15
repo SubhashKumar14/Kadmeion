@@ -127,8 +127,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    */
   private isCurrentSession(session: StoredSession): boolean {
     const persisted = this.readSession();
-    return this.session === session &&
-      persisted?.access_token === session.access_token &&
+    return this.session === session && persisted !== null &&
+      persisted.access_token === session.access_token &&
       persisted.refresh_token === session.refresh_token &&
       persisted.user.id === session.user.id;
   }
