@@ -120,19 +120,39 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     return { access_token, refresh_token, expires_at: expiry, user };
   }
 
+  /**
+   * A network response belongs only to the session that initiated it.
+   * Another tab, explicit sign-in or logout may replace that session while
+   * /user, /logout or the refresh-token endpoint is pending.
+   */
+  private isCurrentSession(session: StoredSession): boolean {
+    const persisted = this.readSession();
+    return this.session === session &&
+      persisted?.access_token === session.access_token &&
+      persisted.refresh_token === session.refresh_token &&
+      persisted.user.id === session.user.id;
+  }
+
   private async refreshed(): Promise<StoredSession | null> {
-    if (!this.session) return null;
-    if (this.session.expires_at > Math.floor(Date.now() / 1000) + 45) return this.session;
+    const starting = this.session;
+    if (!starting) return null;
+    if (starting.expires_at > Math.floor(Date.now() / 1000) + 45) return starting;
     if (!this.refreshPromise) {
-      const token = this.session.refresh_token;
+      const token = starting.refresh_token;
       this.refreshPromise = (async () => {
         try {
           const response = await this.request('/token?grant_type=refresh_token', 'POST', { refresh_token: token });
           const updated = this.decodeSession(response);
+          if (updated.user.id !== starting.user.id || !this.isCurrentSession(starting))
+            throw new Error('Authentication session changed during refresh.');
           this.store(updated);
           return updated;
         } catch {
-          try { this.store(null); } catch { /* already unavailable */ }
+          // A failed refresh can invalidate only its own session, never a
+          // newer login or another tab's rotated token.
+          if (this.isCurrentSession(starting)) {
+            try { this.store(null); } catch { /* already unavailable */ }
+          }
           return null;
         }
       })().finally(() => { this.refreshPromise = null; });
@@ -151,11 +171,14 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         email, password, data: options.data
       });
       let session: StoredSession | null = null;
+      const registered = userFrom(response.user ?? response);
       if (typeof response.access_token === 'string') {
         session = this.decodeSession(response);
-        this.store(session);
+        if (!registered || session.user.id !== registered.id)
+          throw new Error('The registration session identity was inconsistent.');
+        this.storeEmailSession(session);
       }
-      return { user: userFrom(response.user ?? response), session };
+      return { user: registered, session };
     });
   }
 
@@ -175,9 +198,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       try {
         const data = await this.request('/user', 'GET', undefined, session.access_token);
         const user = userFrom(data);
-        if (!user) {
-          this.store(null);
-          throw new Error('User verification failed.');
+        if (!user || user.id !== session.user.id || !this.isCurrentSession(session)) {
+          if (this.isCurrentSession(session)) this.store(null);
+          throw new Error('User verification did not match the active session.');
         }
         return { user };
       } catch (error) {
@@ -215,7 +238,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const session = await this.refreshed();
       if (!session) throw new Error('Session expired.');
       const result = await this.request('/user', 'PUT', { password }, session.access_token);
-      return { user: userFrom(result.user ?? result) };
+      const updated = userFrom(result.user ?? result);
+      if (!updated || updated.id !== session.user.id || !this.isCurrentSession(session)) {
+        if (this.isCurrentSession(session)) this.store(null);
+        throw new Error('Password update response did not match the active user.');
+      }
+      return { user: updated };
     });
   }
 
@@ -234,9 +262,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       try {
         if(current)await this.request('/logout?scope='+scope,'POST',{},current.access_token);
       } finally {
-        // Local/global sign-out clears this browser even if the network fails.
-        // On network failure the caller sees an error, not proof of remote revoke.
-        this.store(null);
+        // Local/global sign-out clears only the initiating session; a newer
+        // login while the logout request was pending must not be discarded.
+        // Network failure still does not prove remote refresh revocation.
+        if (current && this.isCurrentSession(current)) this.store(null);
+        if (!current && !this.session) this.store(null);
       }
       return {};
     });
@@ -293,7 +323,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const result=await this.request('/token?grant_type=pkce','POST',
         {auth_code:code,code_verifier:tx.verifier});
       const session=this.decodeSession(result);
-      this.store(session);
+      this.storeEmailSession(session);
       return {user:session.user};
     });
   }
