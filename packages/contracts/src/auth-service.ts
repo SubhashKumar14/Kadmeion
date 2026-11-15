@@ -116,6 +116,11 @@ export class AuthService {
       ()=>this.auth.getUser(),'Unable to verify the sign-in session.');
     if (check?.error || !check?.data?.user?.id)
       throw new AuthFlowError('AUTH_EXPIRED', 'Unable to verify the authenticated session.');
+    // A second tab/provider callback may replace the local session while the
+    // password request is in flight. Never silently switch account identity.
+    if (attempt.data?.session?.user?.id !== check.data.user.id ||
+        (attempt.data?.user?.id && attempt.data.user.id !== check.data.user.id))
+      throw new AuthFlowError('AUTH_EXPIRED', 'The account changed during sign-in. Sign in again.');
     return check.data.user;
   }
 
