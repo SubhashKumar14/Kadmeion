@@ -22,10 +22,10 @@ const iconPaths: Record<IconName, ReactNode> = {
   play: <><path d="m8 5 11 7-11 7V5Z"/></>,
   spark: <><path d="m12 2 2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2Z"/></>
 };
-function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
+export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{iconPaths[name]}</svg>;
 }
-function Brand({ tagline = true }: { tagline?: boolean }) {
+export function Brand({ tagline = true }: { tagline?: boolean }) {
   // Primary vector logo/outlined wordmark master still requires original export.
   // Text-only fallback is intentional: no fabricated logo geometry.
   return <a className="brand" href="/" aria-label="Kadmeion home">
@@ -39,7 +39,7 @@ function getTheme(): Theme {
 function initialReducedMotion(): boolean {
   try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return true; }
 }
-function useTheme(): [Theme, () => void] {
+export function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(getTheme);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -121,7 +121,7 @@ function ProductDemo() {
     </div>
   </div>;
 }
-function ActionLink({children,href,kind='primary'}:{children:ReactNode,href:string,kind?:'primary'|'outline'}) {
+export function ActionLink({children,href,kind='primary'}:{children:ReactNode,href:string,kind?:'primary'|'outline'}) {
   return <a className={'action-link '+kind} href={href}>{children}<Icon name="arrow" size={17}/></a>;
 }
 const faqs=[
