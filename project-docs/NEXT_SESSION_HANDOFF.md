@@ -690,3 +690,11 @@ Root cause of missing frontend CI on shared-source corrections: `.github/workflo
 ### F5 OPS-01–03 compile correction — 15 Nov 2026
 
 [Frontend run 43741447170](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43741447170) FAILED during TypeScript 7 `noUncheckedIndexedAccess` due to pre-existing `private-moderation-service.ts:87` using destructured `handle` and `slug` without an explicit guard. Fixed the parser to reject absent segments before reserved-handle and length checks. The strict public-route check remains fail-closed, unchanged for valid paths. The new correction requires its own frontend and root CI. Draft PR and existing production gates remain untouched.
+
+---
+
+## P2 platform links contract implementation — 15 Nov 2026
+
+**Scope:** Real owner-only six-provider `LINK_ONLY` handles from existing hosted migration `20261115110000_private_platform_links`, without fabricated OAuth, scraping, ownership verification, sync or public exposure. Added `packages/contracts/src/private-platform-links-service.ts` with strict fixed-host URL/handle checks, owner identity, token-scoped requests, bounded JSON, no-store, exact receipts and 403 denial; added `tests/contracts/private-platform-links-service.test.ts` for create/edit/remove/forged-data/absent JWT; explicitly documented both new file-budget exceptions. No hosted migration or paid provider call. This is a code checkpoint pending exact-SHA CI; no claim that P2 frontend screens are finished yet.
+
+**Next:** Wrap service and existing `SupabasePrivateGoalsService` behind verified owner session, implement approved private Growth/Activity/DevScore/Goals/Analytics/Connections UI screens 35–40, test disposable-user private state, preserve unsupported analytics/score as honest unavailable not fictitious dashboards.

@@ -95,6 +95,10 @@ const justifiedExtra = [
   // Restricted role-checked operator console for approved OPS-01–03,
   // a proposed file budget variance, not owner-approved expansion.
   'apps/frontend/src/operations.tsx',
+  // P2 owner-private link-only provider storage: RLS and exact source claims
+  // with separately testable bounded responses, NOT owner-authorized file cap.
+  'packages/contracts/src/private-platform-links-service.ts',
+  'tests/contracts/private-platform-links-service.test.ts',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
