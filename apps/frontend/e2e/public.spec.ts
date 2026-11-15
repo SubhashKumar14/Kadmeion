@@ -189,10 +189,11 @@ test('reviewer and public candidate addresses disclose no records, no token and 
     ['/u/someauthor/projects/private-project','Project story unavailable.'],
     ['/someauthor/private-portfolio','Portfolio page unavailable.']
   ] as const;
+  const configuredOrigin=new URL(test.info().project.use.baseURL??'http://127.0.0.1:5173').origin;
   for(const [route,title] of privateCandidates){
     let external=0;
     const outbound=(req:import('@playwright/test').Request)=>{
-      if(!req.url().startsWith('http://127.0.0.1:4173/'))external++;
+      if(new URL(req.url()).origin!==configuredOrigin)external++;
     };
     page.on('request',outbound);
     await page.goto(route);

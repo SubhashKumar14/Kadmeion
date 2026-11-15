@@ -101,6 +101,10 @@ jobs:
                   "$result" != *"failed to bind host port"* ]]; then
               exit 1
             fi
+            # Only this ephemeral CI project. Remove partially started
+            # local Docker containers before the second attempt. NEVER target
+            # hosted Supabase or other projects.
+            supabase stop --no-backup >/dev/null 2>&1 || true
             sleep 10
           done
       - run: supabase test db
