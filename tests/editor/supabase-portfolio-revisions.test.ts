@@ -67,3 +67,13 @@ test('portable snapshot round-trip preserves private source without sessions',()
   assert.ok(!serialized.includes('user-token'));
   assert.throws(()=>importPortableSnapshot('{"formatVersion":99,"kind":"kadmeion-private-project"}'));
 });
+
+test('cloud revisions reject privileged Supabase API keys before a network request',()=>{
+ const jwt=['eyJhbGciOiJIUzI1NiJ9',
+   Buffer.from(JSON.stringify({role:'service_role'})).toString('base64url'),
+   'c2lnbmF0dXJl'].join('.');
+ for(const key of ['sb_secret_private',jwt])
+   assert.throws(()=>new SupabasePortfolioRevisionStore(
+     'https://project.supabase.co',key,async()=> 'owner-token'
+   ),{code:'VALIDATION'});
+});

@@ -1,4 +1,4 @@
-import { ContractError } from '../../contracts/src/project.ts';
+import { ContractError, isSafeSupabaseClientKey } from '../../contracts/src/project.ts';
 import {createPortfolioPresetDraft,validateSnapshot,type PortfolioPresetId,type PortfolioSnapshot} from '../../editor-core/src/index.ts';
 
 type TokenSupplier = () => Promise<string|null>;
@@ -30,6 +30,8 @@ export class SupabasePortfolioRevisionStore {
         u.username||u.password||u.pathname!=='/'||u.search||u.hash)
       throw new RevisionStorageError('VALIDATION','Invalid Supabase origin.');
     if(!key)throw new RevisionStorageError('VALIDATION','A publishable API key is required.');
+    if(!isSafeSupabaseClientKey(key))
+      throw new RevisionStorageError('VALIDATION','A public Supabase API key is required.');
     this.origin=u.origin;
     this.key=key;this.token=token;this.http=http;
   }

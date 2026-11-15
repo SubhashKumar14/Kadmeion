@@ -1,4 +1,4 @@
-import { ContractError } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey } from './project.ts';
 
 /**
  * B4 private candidate pointer client. It never activates a public URL.
@@ -106,6 +106,8 @@ export class SupabasePrivateReleasePointerService {
       throw new ContractError('VALIDATION','A trusted Supabase API origin is required.');
     if(typeof publishableKey!=='string'||!publishableKey.trim())
       throw new ContractError('VALIDATION','Publishable key is required.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.origin=url.origin;this.key=publishableKey;this.token=accessToken;this.http=http;
   }
   private async call(rpc:string,payload:Record<string,unknown>):Promise<unknown>{

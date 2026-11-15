@@ -1,5 +1,5 @@
 import { validateSnapshot, type PortfolioSnapshot } from '../../editor-core/src/portfolio-revision-transactions.ts';
-import { ContractError } from '../../contracts/src/project.ts';
+import { ContractError, isSafeSupabaseClientKey } from '../../contracts/src/project.ts';
 import type { SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -103,6 +103,8 @@ export class SupabasePrivateFrozenRevisionLoader {
       throw new ContractError('VALIDATION','Only a trusted Supabase API origin is permitted.');
     if(typeof publishableKey!=='string'||!publishableKey.trim())
       throw new ContractError('VALIDATION','Publishable key is required.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.origin=u.origin;this.key=publishableKey;this.token=token;this.http=http;
   }
   async load(requestId:string):Promise<LoadedPrivateFrozenRevision> {
