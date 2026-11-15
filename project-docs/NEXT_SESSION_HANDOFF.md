@@ -755,3 +755,13 @@ The first P2 Growth code run `1a0b8fb` FAILED three observed gates: frontend TS7
 F4 privacy-safe visitor states commit `5cf2ddc` has two observed CI failures: frontend Playwright public test mistakenly hardcoded **port 4173**, although actual `playwright.config.ts` uses **5173**, causing an external-request counter to misclassify 41 same-origin requests; isolated DB workflow failed startup due runner Docker port **54322** occupied after two attempts, with no SQL/contract error shown. Fixes in this commit: derive browser origin from Playwright's configured `baseURL`; add an **ephemeral-runner-only** `supabase stop --no-backup` cleanup between startup retries (current Supabase CLI supports this flag), never on hosted projects. Test results for this SHA remain pending until CI.
 
 **Next:** validate new CI; implement a compact, approved-reference-aligned editor studio with screenshot comparison while preserving safe source/slot render and standalone preview. Capture/compare 48–50 with an authorized local operator fixture when available. Notion final ledger must include both code SHA and truthful visual regression.
+
+---
+
+## F3 compact editor frame — 15 Nov 2026
+
+Code checkpoint following `28dce0b`: `apps/frontend/src/workspace.tsx` attaches editor-only shell class for the verified `/app/portfolios/:id/edit` route; sidebar icons gain explicit accessible labels while only editor route visually collapses the rail. `apps/frontend/src/workspace.css` implements approved EDIT-01 compact icon rail, shortened title/action header, dominant framed canvas, three-pane layers/inspector and responsive desktop widths, preserving ordinary workspace layout and true small-device authoring gate. The 8-layout, escaped owner-source canvas introduced at `890afc2` is unchanged.
+
+**Evidence:** prior `890afc2` screenshot #18 SSIM declined 0.705→0.677 despite functional improvement, so this is a direct geometry correction, NOT proof of approved pixel parity. Current change requires exact-SHA Chromium capture, compare and both frontend/DB CI. Previous `28dce0b` browser test fixed wrong port; isolated database retried local Docker port conflict with project-specific ephemeral cleanup. No paid hosting, provider activation, production DB mutations or main merge.
+
+**Next:** verify both CI workflows for this commit, download new #18 screenshot and compare to exact approved PNG, adjust editor copy/slots further, then continue P1 and operator-positive tests.

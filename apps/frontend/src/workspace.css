@@ -393,3 +393,57 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .pv-section-slots{grid-template-columns:1fr}.pv-layout-L3 .pv-slot-cell:nth-child(1),
   .pv-layout-L4 .pv-slot-cell:nth-child(2){grid-column:auto}
   .pv-site-head span{display:none}.pv-site-footer{flex-direction:column;gap:2px}}
+
+/* EDIT-01: compact, approved-reference-inspired three-pane editor shell.
+ * Dashboard and public shells remain unchanged. */
+@media (min-width:901px){
+.ws-editor-shell{grid-template-columns:76px minmax(0,1fr);width:min(1640px,100%)}
+.ws-editor-shell .ws-rail{padding:22px 8px 16px}
+.ws-editor-shell .ws-brand{padding:0 8px 35px;align-items:center}
+.ws-editor-shell .ws-brand .brand-letters,.ws-editor-shell .ws-brand small{display:none}
+.ws-editor-shell .ws-brand .brand-symbol{width:42px;height:42px}
+.ws-editor-shell .ws-rail-label{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+.ws-editor-shell .ws-rail nav a{justify-content:center;min-height:50px;padding:11px 3px}
+.ws-editor-shell .ws-rail nav a span{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+.ws-editor-shell .ws-rail nav a[aria-current=page]{border-left:0;border-bottom:3px solid #e8a378}
+.ws-editor-shell .ws-rail-bottom{padding:8px 0}
+.ws-editor-shell .ws-rail-bottom p{display:none}
+.ws-editor-shell .ws-rail-bottom button{width:100%;padding:8px 2px;font-size:10px}
+.ws-editor-shell .ws-topbar{min-height:49px;padding:8px 23px}
+.ws-editor-shell .ws-content{padding:0}
+.ws-editor-shell .ws-project-head{align-items:center;padding:15px clamp(15px,2vw,30px);
+  margin:0;border-bottom:1px solid var(--line);min-height:104px}
+.ws-editor-shell .ws-project-head .ws-heading{min-width:0}
+.ws-editor-shell .ws-project-head .ws-heading>a{font-size:11px}
+.ws-editor-shell .ws-project-head .ws-kicker{margin:3px 0 3px;font-size:9px}
+.ws-editor-shell .ws-project-head .ws-heading h1{font-size:clamp(22px,2.3vw,32px);margin:0 0 4px}
+.ws-editor-shell .ws-project-head .ws-heading>p:last-child{font-size:11px;margin:0}
+.ws-editor-shell .ws-project-head .ws-actions{margin:0;gap:6px}
+.ws-editor-shell .ws-project-head .ws-primary,.ws-editor-shell .ws-project-head .ws-secondary{
+  min-height:37px;padding:7px 11px;border-radius:6px;font-size:11px}
+.ws-editor-shell .ws-editor-grid{margin:0;gap:0;align-items:stretch;
+  grid-template-columns:minmax(194px,21%) minmax(0,1fr) minmax(227px,23%);
+  min-height:calc(100dvh - 154px)}
+.ws-editor-shell .ws-editor-grid>.ws-project-aside,
+.ws-editor-shell .ws-editor-grid>.ws-project-fields{
+  margin:0;padding:22px 17px;box-shadow:none;border-radius:0;min-height:0;
+  border:0;background:var(--panel)}
+.ws-editor-shell .ws-editor-grid>.ws-project-aside{border-right:1px solid var(--line)}
+.ws-editor-shell .ws-editor-grid>.ws-project-fields{border-left:1px solid var(--line)}
+.ws-editor-shell .ws-editor-grid>.pv-document{border:0;border-radius:0;box-shadow:none;
+  min-height:550px;max-height:calc(100dvh - 154px);overflow:auto;
+  padding:17px;background:var(--surface-soft)!important}
+.ws-editor-shell .ws-editor-grid .pv-site{border:1px solid var(--line);
+  border-radius:10px;overflow:hidden;box-shadow:0 12px 27px color-mix(in srgb,var(--ink) 5%,transparent)}
+.ws-editor-shell .ws-editor-grid aside h2,.ws-editor-shell .ws-editor-grid .ws-project-fields h2{
+  font-size:22px;line-height:1.2}
+.ws-editor-shell .ws-editor-grid .ws-editor-slots{max-height:45vh}
+.ws-editor-shell .ws-editor-grid .ws-editor-slots button{font-size:11px;min-height:40px}
+.ws-editor-shell .ws-editor-grid .ws-editor-tool nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+.ws-editor-shell .ws-editor-grid .ws-editor-tool nav button{padding:5px;font-size:10px;min-height:37px}
+}
+@media(min-width:901px) and (max-width:1160px){
+.ws-editor-shell .ws-editor-grid{grid-template-columns:185px minmax(0,1fr) 215px}
+.ws-editor-shell .ws-project-head{align-items:flex-start;gap:12px}
+.ws-editor-shell .ws-project-head .ws-actions{justify-content:flex-end}
+}

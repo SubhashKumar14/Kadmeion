@@ -42,7 +42,8 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
 }) {
   const [theme, toggleTheme] = useTheme();
   const route = window.location.pathname.replace(/\/$/, '') || '/';
-  return <div className="ws-shell">
+  const editorOnly=!!portfolioIdFromRoute(route)&&route.endsWith('/edit');
+  return <div className={'ws-shell'+(editorOnly?' ws-editor-shell':'')}>
     <a className="skip-link" href="#ws-content">Skip to workspace content</a>
     <aside className="ws-rail" aria-label="Workspace sidebar">
       <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home">
@@ -50,7 +51,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       </a>
       <p className="ws-rail-label">YOUR WORKSPACE</p>
       <nav aria-label="Workspace navigation">
-        {NAV.map(item => <a key={item.href} href={item.href}
+        {NAV.map(item => <a key={item.href} href={item.href} aria-label={item.title}
           aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) ? 'page' : undefined}>
           <Icon name={item.icon} size={18}/><span>{item.title}</span>
         </a>)}
