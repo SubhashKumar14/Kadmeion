@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
-  applyEditorTransaction, createEditorHead, type EditorHead, type EditorIntent, type PortfolioPresetId
-} from '../../../packages/editor-core/src/index.ts';
+  applyEditorTransaction, createEditorHead, type EditorHead, type EditorIntent
+} from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
+import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
@@ -15,6 +16,12 @@ const presets = [
   {id: 'studio', title: 'Studio', tone: 'modular', detail: 'A project-led layout with room for experience and skills.'},
   {id: 'blank', title: 'Blank', tone: 'blank', detail: 'A private starting point with no preset sections.'}
 ] as const satisfies readonly {id: PortfolioPresetId; title: string; tone: string; detail: string}[];
+
+const sectionLayouts = [
+  ['arc-hero@1', 'Arc hero'], ['collage-hero@1', 'Collage hero'],
+  ['project-showcase@1', 'Project showcase'], ['editorial-bento@1', 'Editorial grid'],
+  ['stepped-hero@1', 'Stepped hero'], ['skills@1', 'Skills'], ['experience@1', 'Experience'], ['contact@1', 'Contact']
+] as const;
 
 const STUDIO = '/app/portfolios';
 const editorPath = (id: string) => STUDIO + '/' + id + '/edit';
@@ -177,6 +184,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [attempt, setAttempt] = useState(0);
   const [preview, setPreview] = useState(false);
   const loaded = useRef('');
+  const [sectionLayout, setSectionLayout] = useState('arc-hero@1');
+  const [sectionPicker, setSectionPicker] = useState(false);
 
   useEffect(() => {
     const key = id + ':' + attempt;
@@ -255,10 +264,19 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {head && (preview ? contentPreview : <div className="ws-editor-grid">
       <aside className="ws-project-aside"><h2>Structure &amp; layers</h2>
         {!assigned.length && <p>This blank draft has no slots.</p>}
+        <button type="button" className="ws-secondary" aria-expanded={sectionPicker}
+          onClick={() => setSectionPicker(current => !current)}>Sections</button>
+        {sectionPicker && <div className="ws-editor-section-picker">
+          <label>Section layout<select value={sectionLayout} onChange={event => setSectionLayout(event.target.value)}>
+            {sectionLayouts.map(([pin, label]) => <option key={pin} value={pin}>{label}</option>)}
+          </select></label>
+          <button type="button" className="ws-secondary" disabled={saving}
+            onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
+        </div>}
         <ul className="ws-editor-slots">{assigned.map(([key, item]) => <li key={key}>
           <button type="button" aria-pressed={slot === key} onClick={() => {
             setSlot(key); setValue(item.content.text ?? '');
-          }}>{key.replaceAll('-', ' ')} <span>{item.state}</span></button>
+          }}>{key.replace(/^section-[0-9a-f-]{36}-/, 'New section: ').replaceAll('-', ' ')} <span>{item.state}</span></button>
         </li>)}</ul>
         <div className="ws-actions">
           <button type="button" className="ws-secondary" disabled={!head.undo.length || saving}
@@ -276,7 +294,12 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                 onClick={() => apply({kind: 'ASSIGN_COMPONENT', slotKey: slot, componentId: 'body-copy@1'})}>Assign text component</button>
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value} onChange={event => setValue(event.target.value)}/></label>
               <button type="button" className="ws-secondary" disabled={saving || value === (active.content.text ?? '')}
-                onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {text: value}})}>Apply text</button></>}
+                onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {text: value}})}>Apply text</button>
+              <button type="button" className="ws-secondary" disabled={saving}
+                onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
+          {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
+            <button type="button" className="ws-secondary" disabled={saving}
+              onClick={() => apply({kind: 'RESTORE_STASH', slotKey: slot})}>Restore last assignment</button>}
         </>}
       </aside>
     </div>)}

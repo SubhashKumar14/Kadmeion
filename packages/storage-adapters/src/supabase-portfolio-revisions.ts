@@ -1,5 +1,6 @@
 import { ContractError, isSafeSupabaseClientKey } from '../../contracts/src/project.ts';
-import {createPortfolioPresetDraft,validateSnapshot,type PortfolioPresetId,type PortfolioSnapshot} from '../../editor-core/src/index.ts';
+import {createPortfolioPresetDraft,type PortfolioPresetId} from '../../editor-core/src/managed-project-files.ts';
+import {validateSnapshot,type PortfolioSnapshot} from '../../editor-core/src/portfolio-revision-transactions.ts';
 
 type TokenSupplier = () => Promise<string|null>;
 type ServiceErrorCode = 'AUTH_EXPIRED'|'REVISION_CONFLICT'|'PROVIDER_UNAVAILABLE'|'VALIDATION';
@@ -105,15 +106,18 @@ export class SupabasePortfolioRevisionStore {
   async loadHead(portfolioId:string):Promise<{revision:number;snapshot:PortfolioSnapshot|null}> {
     const query='?id=eq.'+encodeURIComponent(portfolioId)+'&trashed_at=is.null&select=id,head_revision&limit=1';
     const rows=await this.request('/rest/v1/portfolios'+query,'GET') as Array<{head_revision:number}>;
-    if(!Array.isArray(rows)||rows.length!==1||!Number.isSafeInteger(rows[0]?.head_revision))
+    const row=Array.isArray(rows)&&rows.length===1?rows[0]:undefined;
+    if(!row||!Number.isSafeInteger(row.head_revision))
       throw new RevisionStorageError('PROVIDER_UNAVAILABLE','Portfolio not found or inaccessible.');
-    const revision=rows[0].head_revision;
+    const revision=row.head_revision;
     if(revision===0)return {revision,snapshot:null};
     const revs=await this.request('/rest/v1/portfolio_revisions?portfolio_id=eq.'+
       encodeURIComponent(portfolioId)+'&revision=eq.'+revision+'&select=snapshot&limit=1','GET') as Array<{snapshot:PortfolioSnapshot}>;
-    if(!Array.isArray(revs)||revs.length!==1)
+    const selected=Array.isArray(revs)&&revs.length===1?revs[0]:undefined;
+    if(!selected)
       throw new RevisionStorageError('PROVIDER_UNAVAILABLE','Head points to unavailable revision.');
-    validateSnapshot(revs[0].snapshot);
-    return {revision,snapshot:revs[0].snapshot};
+    validateSnapshot(selected.snapshot);
+    return {revision,snapshot:selected.snapshot};
   }
 }
+

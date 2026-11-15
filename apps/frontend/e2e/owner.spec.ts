@@ -156,6 +156,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Text content').fill('Portfolio draft title');
   await page.getByRole('button', {name: 'Apply text'}).click();
   await capture('19_CONTENT_INSPECTOR_BROWSER');
+  await page.getByRole('button', {name: 'Sections', exact: true}).click();
+  await page.getByLabel('Section layout').selectOption('contact@1');
+  await page.getByRole('button', {name: 'Add section', exact: true}).click();
+  await expect(page.getByRole('button', {name: /new section: title/i})).toBeVisible();
+  await capture('20_SECTIONS_BROWSER');
   await page.getByRole('button', {name: 'Save draft'}).click();
   await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
   await page.reload();

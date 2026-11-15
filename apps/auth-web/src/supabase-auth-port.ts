@@ -1,6 +1,7 @@
 import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
 import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packages/contracts/src/private-project-case-studies.ts';
-import type { PortfolioPresetId, PortfolioSnapshot } from '../../../packages/editor-core/src/index.ts';
+import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 

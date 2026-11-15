@@ -226,3 +226,7 @@
 .ws-editor-slots button{width:100%;min-height:36px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px;text-align:left;padding:8px}
 .ws-editor-slots button[aria-pressed="true"]{border-color:var(--accent);background:var(--surface-soft)}
 .ws-editor-slots span{display:block;color:var(--body);font-size:10px}
+.ws-editor-section-picker{display:grid;gap:8px;padding:12px 0}
+.ws-editor-section-picker label{display:grid;gap:6px}
+.ws-editor-section-picker select{min-height:40px;color:var(--ink);background:var(--panel);border:1px solid var(--line-dark);border-radius:7px}
+.ws-editor-grid aside .ws-secondary{margin-top:5px}

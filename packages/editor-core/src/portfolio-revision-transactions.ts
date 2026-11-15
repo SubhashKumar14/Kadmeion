@@ -1,6 +1,7 @@
-import { ContractError, assertBaseRevision } from '../../contracts/src/index.ts';
+import { ContractError } from '../../contracts/src/project.ts';
+import { assertBaseRevision } from '../../contracts/src/operations.ts';
 import type {MyComponentVersion,MyComponentInput} from '../../contracts/src/private-my-components-service.ts';
-import { assertManagedPath, assertOwnedSourcePath, validateManagedJson, MAX_FILE_BYTES } from './managed-project-files.ts';
+import { assertManagedPath, assertOwnedSourcePath, validateManagedJson, portfolioLayout, MAX_FILE_BYTES } from './managed-project-files.ts';
 
 export type SlotState = 'EMPTY' | 'S0' | 'S1' | 'S2';
 
@@ -29,6 +30,7 @@ export interface EditorHead {
 
 export type EditorIntent =
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
+  | { kind:'ADD_SECTION'; layout:string }
   | { kind:'CLEAR_SLOT'; slotKey:string }
   | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
@@ -163,6 +165,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     throw new ContractError('VALIDATION','Invalid editor transaction intent.');
   const fields:Record<string,readonly string[]>={
     WRITE_MANAGED_FILE:['kind','path','source'],
+    ADD_SECTION:['kind','layout'],
     CLEAR_SLOT:['kind','slotKey'],
     ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
     UPDATE_CONTENT:['kind','slotKey','content'],
@@ -173,8 +176,9 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     UNDO:['kind'],
     REDO:['kind']
   };
-  if(!Object.hasOwn(fields,intent.kind)||
-     Object.keys(intent).some(k=>!fields[intent.kind].includes(k))||
+  const permitted=Object.hasOwn(fields,intent.kind)?fields[intent.kind]:undefined;
+  if(!permitted||
+     Object.keys(intent).some(k=>!permitted.includes(k))||
      ('confirmOwnedReplacement' in intent &&
        typeof intent.confirmOwnedReplacement!=='boolean'))
     throw new ContractError('VALIDATION','Unknown editor command kind or properties.');
@@ -224,8 +228,9 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
   const intent = command.intent;
   if (intent.kind==='UNDO' || intent.kind==='REDO') {
     const source = intent.kind==='UNDO'?head.undo:head.redo;
-    if (!source.length) throw new ContractError('VALIDATION', 'No revision available to restore.');
-    const selected = structuredClone(source[source.length-1]);
+    const previous = source.at(-1);
+    if (!previous) throw new ContractError('VALIDATION', 'No revision available to restore.');
+    const selected = structuredClone(previous);
     validateSnapshot(selected);
     return {
       revision:head.revision+1, snapshot:selected,
@@ -238,6 +243,25 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
   if (intent.kind==='WRITE_MANAGED_FILE') {
     validateManagedJson(intent.path,intent.source);
     next.files[intent.path]=intent.source; // exact user bytes; no implicit formatting
+  } else if (intent.kind==='ADD_SECTION') {
+    const layout=portfolioLayout(intent.layout);
+    const path='pages/home.page.json';
+    const original=next.files[path];
+    if(!layout || typeof original!=='string')
+      throw new ContractError('VALIDATION','Choose an available section layout.');
+    validateManagedJson(path, original);
+    const page=JSON.parse(original) as Record<string,unknown>;
+    if(!Array.isArray(page.sections)||page.sections.length>=32)
+      throw new ContractError('VALIDATION','This page cannot accept another section.');
+    const id='section-'+operationId;
+    if(page.sections.some(row=>row && typeof row==='object' && row.id===id))
+      throw new ContractError('VALIDATION','Section already exists.');
+    for(const name of layout.slots){
+      const key=id+'-'+name.toLowerCase();
+      if(Object.hasOwn(next.slots,key))throw new ContractError('VALIDATION','Section slot already exists.');
+      next.slots[key]={state:'EMPTY',content:{}};
+    }
+    next.files[path]=JSON.stringify({...page,sections:[...page.sections,{id,layout:intent.layout,slotKeys:layout.slots}]});
   } else {
     assertSlotKey(intent.slotKey);
     const slot = Object.hasOwn(next.slots,intent.slotKey) ? next.slots[intent.slotKey] : undefined;
@@ -339,9 +363,10 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         next.slots[intent.slotKey]={...slot,state:intent.source===slot.originalSource?'S1':'S2'};
         break;
       case 'RESTORE_STASH':
-        if (slot.state!=='EMPTY' || !stash.length)
+        const saved=stash.at(-1);
+        if (slot.state!=='EMPTY' || !saved)
           throw new ContractError('VALIDATION', 'Restore requires an empty slot and an available stash.');
-        next.slots[intent.slotKey]=stash[stash.length-1];
+        next.slots[intent.slotKey]=saved;
         next.stashes[intent.slotKey]=stash.slice(0,-1);
         break;
       default:
@@ -417,3 +442,4 @@ export function restoreHistoricalSnapshot(head: EditorHead, source: PortfolioSna
     operations:{...head.operations,[operationId.toLowerCase()]:'historical-restore'}
   };
 }
+

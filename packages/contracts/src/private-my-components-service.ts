@@ -77,7 +77,7 @@ function validRow(raw:unknown):raw is MyComponentVersion {
     Array.isArray(raw.compatible_slot_kinds)&&raw.compatible_slot_kinds.length>=1&&
     raw.compatible_slot_kinds.length<=20&&
     raw.compatible_slot_kinds.every((k:unknown)=>typeof k==='string'&&SLOTS.has(k))&&
-    raw.compatible_slot_kinds.every((k:string,i:number,a:string[])=>i===0||a[i-1]<k)&&
+    raw.compatible_slot_kinds.every((k:string,i:number,a:string[])=>i===0||(a[i-1]??'')<k)&&
     typeof raw.created_at==='string'&&raw.created_at.length<=60&&
     !Number.isNaN(Date.parse(raw.created_at));
 }
@@ -221,3 +221,4 @@ export class SupabaseMyComponentsService {
     return item;
   }
 }
+
