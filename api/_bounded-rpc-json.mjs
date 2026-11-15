@@ -46,6 +46,12 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
  */
 export function containsUnsafeStaticMarkup(html) {
   if (typeof html !== 'string') return true;
+  // HTML5 parses malformed `<a/href=...>` and `<div/onfocus=...>` as
+  // executable attributes even without an intervening space. Reject solidus
+  // attribute separators before the ordinary whitespace-based checks.
+  if (/<\s*[a-z][a-z0-9:-]*\s*\/\s*[a-z]/i.test(html) ||
+      /<[^>]*\/\s*(?:on[a-z]{2,32}|href|src|srcset|action|formaction)\s*=/i.test(html))
+    return true;
   if (/<\s*(?:script|iframe|object|embed|svg|form|input|link|base|img|video|audio|source|picture|track|math|frame|frameset|portal)\b/i.test(html) ||
       /<[^>]*\s+on[a-z]{2,32}\s*=/i.test(html) ||
       /<[^>]*\s+(?:src|srcset|action|formaction)\s*=/i.test(html))
