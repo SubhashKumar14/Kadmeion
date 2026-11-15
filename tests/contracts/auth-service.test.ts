@@ -112,3 +112,19 @@ test('B10 refuses incomplete registration and password-update acknowledgements',
  await assert.rejects(service.updatePassword('strong-password'),
    {code:'AUTH_EXPIRED'});
 });
+
+
+test('B10 accepts real Supabase data-less signOut response without false session claims',async()=>{
+ const port=mockPort();
+ let selected:string|undefined;
+ port.signOut=async options=>{
+   selected=options?.scope;
+   return {error:null};
+ };
+ const service=new AuthService(port,{siteOrigin:'https://app.example',
+   emailDeliveryVerified:false,googleOAuthConfigured:false});
+ await service.logout('others');
+ assert.equal(selected,'others');
+ await service.logout();
+ assert.equal(selected,'local');
+});

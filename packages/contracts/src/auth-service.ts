@@ -15,7 +15,9 @@ export interface AuthPort {
   getUser(): Promise<AuthOutcome<{ user: AuthUser | null }>>;
   resetPasswordForEmail(email: string, options: { redirectTo: string }): Promise<AuthOutcome<unknown>>;
   updateUser(changes: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>>;
-  signOut(options?: { scope: 'local' | 'global' | 'others' }): Promise<AuthOutcome<unknown>>;
+  // Supabase Auth signOut returns {error} WITHOUT a data envelope.
+  signOut(options?: { scope: 'local' | 'global' | 'others' }):
+    Promise<{ error: AuthFailure | null }>;
   signInWithOAuth(options: { provider: OAuthProvider; options: { redirectTo: string } }): Promise<AuthOutcome<{ url: string | null }>>;
   exchangeCodeForSession(code: string): Promise<AuthOutcome<unknown>>;
 }
@@ -137,6 +139,8 @@ export class AuthService {
         'The password reset session is invalid or expired.');
   }
 
+  /** Refresh tokens are revoked by the provider; issued access JWTs may remain
+   * valid until expiration. 'others' does not emit a local SIGNED_OUT event. */
   async logout(scope: 'local' | 'global' | 'others' = 'local'): Promise<void> {
     const { error } = await authProviderCall(
       ()=>this.auth.signOut({ scope }),
