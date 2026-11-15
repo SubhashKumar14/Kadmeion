@@ -1,5 +1,20 @@
 # Kadmeion — Current Backend Implementation State
 
+## 2026-11-15 — Verified B07–B11 continuation (current evidence)
+
+- GitHub backend branch `feat/b0-backend-foundation`, verified code SHA `274c8683e278295f859564bb20f54d0127e774a4`; [GitHub CI #666](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43703455588) **SUCCESS** (both contracts and database jobs; 444 Node tests, 494 database assertions/pgTAP in the isolated Supabase stack).
+- Hosted Supabase schema: **55/55 repository migrations applied** and version-aligned; three Edge Functions active. Latest forward-only migration `20261115133000_account_erasure_jwt_truthful_receipt.sql` changed only the truthfulness of account-deletion session receipts, preserving guarded deletion and grants.
+- Hosted read-only authorization inventory: 40 application-owned tables, all with RLS enabled; no anonymous table-select grants; 82 SECURITY DEFINER functions audited, none anonymous-executable, with empty or pg_catalog restricted search paths.
+- B09: 15-day Trash worker already exists; optional GitHub daily scheduler added at `.github/workflows/trash-expiry.yml`. It is NOT enabled: schedules require the workflow on default branch and separately configured GitHub variable, repository secret and Supabase Edge secrets/flag. No destructive purge is authorized by the repository commit itself.
+- B10: sign-in, registration and OAuth callback reject cross-identity provider confirmations; local Mailpit flows passed, live Brevo DNS/sender/delivery remains a separate manual acceptance item.
+- B08 hosted public acceptance still **NOT COMPLETE**: Vercel reported READY preview builds with SSO deployment protection, project `live=false`; public anonymous route, direct-media revocation/CDN races, JS-off rendering, and outage/independent-host tests remain unproven.
+- File-budget check: 219 tracked source/config/test/CI paths vs 200 originally proposed; 19 separately documented justified exceptions (owner design-budget adjustment not implicitly approved). `project-docs/` remains excluded.
+- The 90-decision register still has PARTIAL/BLOCKED entries; frontend implementation/52-screen acceptance is not established. Full 53-workflow and 20-proof reconciliations are evidence-based in `project-docs/registers/WORKFLOWS_BACKEND_EVIDENCE_2026-11-15.csv` and the handoff below; do not mistake backend subsets for whole UI workflows.
+- **Exit status:** PHASE 1 BACKEND CODE COMPLETE — NOT COMPLETE / NOT YET PROVEN; HOSTED BACKEND VERIFIED — NOT COMPLETE; BACKEND READY FOR FULL FRONTEND ACCEPTANCE — NOT COMPLETE. See `project-docs/B07_B11_VERIFIED_HANDOFF_2026-11-15.md` for proofs and remaining gates.
+
+---
+
+
 ## B08–B11 backend continuation
 
 The existing release host now serves scoped PNGs for canonical public pages, unlisted releases and token-scoped reviewer previews. The PostgreSQL media write enters the existing immutable stage atomically. Publication probes verify the normalized frozen HTML and exact same-origin media before acknowledgement. Public rollback requires explicit owner consent, a verified target at the same canonical address and a fresh host acknowledgement. Reviewer responses, direct assets and denials carry no-store.
