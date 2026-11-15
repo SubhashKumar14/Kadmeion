@@ -92,28 +92,36 @@ export class PrivatePublicDeliveryPolicy {
   }
 
   async check(request:unknown):Promise<PublicDeliveryDecision>{
-    if(!validRequest(request))return deny('INVALID_REQUEST');
+    return (await this.checkWithGeneration(request)).decision;
+  }
+
+  /** Fresh single-read state token for trusted byte-fetch race checks. */
+  async checkWithGeneration(request:unknown):Promise<{
+    decision:PublicDeliveryDecision;generation:number|null;
+  }>{
+    if(!validRequest(request))return {decision:deny('INVALID_REQUEST'),generation:null};
     let raw:unknown;
     try{raw=await this.reader.readLatest(request.portfolioId);}
-    catch{return deny('PROVIDER_UNAVAILABLE');}
-    if(!validState(raw,request.portfolioId))return deny('STATE_UNVERIFIED');
+    catch{return {decision:deny('PROVIDER_UNAVAILABLE'),generation:null};}
+    if(!validState(raw,request.portfolioId))return {decision:deny('STATE_UNVERIFIED'),generation:null};
     const now=this.now();
     if(!Number.isSafeInteger(now)||raw.readAtMs>now||
-       now-raw.readAtMs>MAX_AGE_MS)return deny('STALE_STATE');
+       now-raw.readAtMs>MAX_AGE_MS)return {decision:deny('STALE_STATE'),generation:null};
     if(raw.appliedRevocationGeneration!==raw.generation)
-      return deny('REVOCATION_NOT_APPLIED');
+      return {decision:deny('REVOCATION_NOT_APPLIED'),generation:null};
     if(raw.status!=='LIVE_VERIFIED'||raw.releaseSha256===null)
-      return deny('NOT_LIVE');
+      return {decision:deny('NOT_LIVE'),generation:null};
     if(request.resource==='DIRECT_ASSET'){
-      if(request.releaseSha256!==raw.releaseSha256)return deny('RELEASE_MISMATCH');
+      if(request.releaseSha256!==raw.releaseSha256)return {decision:deny('RELEASE_MISMATCH'),generation:null};
       if(!raw.files.some(f=>f.path===request.path&&f.sha256===request.sha256))
-        return deny('ASSET_NOT_ALLOWED');
+        return {decision:deny('ASSET_NOT_ALLOWED'),generation:null};
     }
     const selected=raw.files.find(f=>f.path===
       (request.resource==='CANONICAL_HTML'?'index.html':request.path));
-    if(!selected)return deny('ASSET_NOT_ALLOWED');
-    return {status:'HOST_PROOF_REQUIRED',releaseSha256:raw.releaseSha256,
-      path:selected.path,sha256:selected.sha256,deployable:false,publicUrl:null};
+    if(!selected)return {decision:deny('ASSET_NOT_ALLOWED'),generation:null};
+    return {decision:{status:'HOST_PROOF_REQUIRED',releaseSha256:raw.releaseSha256,
+      path:selected.path,sha256:selected.sha256,deployable:false,publicUrl:null},
+      generation:raw.generation};
   }
 }
 
@@ -168,7 +176,8 @@ export class PrivateVerifiedReleaseByteGate {
   async inspect(request:unknown):Promise<PrivateDeliveryByteResult>{
     // First authoritative read: malformed requests and unpublished pointers
     // must not reach the private immutable object store at all.
-    const first=await this.policy.check(request);
+    const firstRead=await this.policy.checkWithGeneration(request);
+    const first=firstRead.decision;
     if(first.status!=='HOST_PROOF_REQUIRED')
       return deniedBytes('DENIED_BY_VISIBILITY');
 
@@ -220,8 +229,10 @@ export class PrivateVerifiedReleaseByteGate {
     // Second *independent* trusted pointer read. A withdrawal, moderation
     // restriction, rollback or provider failure during blob loading revokes
     // this candidate. Even two reads cannot prove a future HTTP send is safe.
-    const after=await this.policy.check(request);
+    const afterRead=await this.policy.checkWithGeneration(request);
+    const after=afterRead.decision;
     if(after.status!=='HOST_PROOF_REQUIRED'||
+       afterRead.generation!==firstRead.generation||
        after.releaseSha256!==first.releaseSha256||
        after.path!==first.path||after.sha256!==first.sha256)
       return deniedBytes('POINTER_CHANGED');

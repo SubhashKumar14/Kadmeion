@@ -183,6 +183,7 @@ test('B08 private byte gate blocks withdrawal and rollback during asynchronous b
     {...current(),status:'PRIVATE' as const},
     {...current(),status:'RESTRICTED' as const},
     {...current(),releaseSha256:'d'.repeat(64)},
+    {...current(),generation:8,appliedRevocationGeneration:8},
     {...current(),appliedRevocationGeneration:6}
   ]){
     let reads=0;
@@ -256,4 +257,17 @@ test('B08 verifier never fetches private blobs for invalid requests or revoked f
   }
   assert.equal(blobReads,0);
   assert.equal(authorityReads,2);
+});
+
+
+test('B08 generation token changes cannot be laundered by identical release hashes',async()=>{
+ const make=()=>({...state(),generation:10,appliedRevocationGeneration:10,
+   files:[{path:'index.html',sha256:'c'.repeat(64)}]});
+ const unchanged=await gate(async()=>make()).checkWithGeneration(canonical);
+ assert.equal(unchanged.generation,10);
+ assert.equal(unchanged.decision.status,'HOST_PROOF_REQUIRED');
+ const denied=await gate(async()=>({...make(),generation:11,
+   appliedRevocationGeneration:10})).checkWithGeneration(canonical);
+ assert.equal(denied.generation,null);
+ assert.equal(denied.decision.status,'DENY');
 });
