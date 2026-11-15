@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import { SupabasePrivateTrashService, PrivateTrashError } from '../../packages/contracts/src/private-trash-service.ts';
 
@@ -165,4 +166,17 @@ test('Trash client rejects secret keys and non-root or credential-bearing API UR
    assert.throws(()=>new SupabasePrivateTrashService(
      base,key,async()=>null
    ),{code:'VALIDATION'});
+});
+
+test('B09 daily Trash schedule stays opt-in, secret-gated and bounded',()=>{
+  const workflow=readFileSync(new URL('../../.github/workflows/trash-expiry.yml',import.meta.url),'utf8');
+  assert.match(workflow,/schedule:\s*\n\s*- cron: '[0-9* /,]+?'/);
+  assert.match(workflow,/github\.repository == 'SubhashKumar14\/Kadmeion'/);
+  assert.match(workflow,/vars\.KADMEION_TRASH_SWEEP_SCHEDULE_ENABLED == 'true'/);
+  assert.match(workflow,/secrets\.KADMEION_TRASH_SWEEP_SECRET/);
+  assert.match(workflow,/for batch in 1 2 3 4 5; do/);
+  assert.match(workflow,/if \[ "\$status" != 200 \]; then/);
+  assert.match(workflow,/payload\.pending!==0/);
+  assert.doesNotMatch(workflow,/\b(curl|wget)\b.*--insecure/);
+  assert.doesNotMatch(workflow,/echo.*(SWEEP_SECRET|Authorization)/);
 });
