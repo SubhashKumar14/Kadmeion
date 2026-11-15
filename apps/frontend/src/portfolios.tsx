@@ -525,7 +525,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                   const draft=Object.hasOwn(fieldDrafts,inputKey)?fieldDrafts[inputKey]!:stored;
                   const issue=fieldIssues[inputKey];
                   const id='kd-field-'+inputKey;
-                  return <label key={inputKey}>{field}<input
+                  return <div key={inputKey} className="ws-inspector-secondary-field">
+                    <label htmlFor={id}>{field}</label><input id={id}
                     type={field==='url'?'url':'text'} maxLength={field==='url'?2048:12000}
                     value={draft} aria-invalid={!!issue}
                     aria-describedby={issue?id+'-error':undefined}
@@ -545,7 +546,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                       }else if(apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
                         setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
                       }
-                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</label>;
+                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</div>;
                 })}
               {pendingFields&&<p className="ws-field-hint" role="status">
                 One or more secondary fields have uncommitted edits. Correct or apply them before saving this draft.
