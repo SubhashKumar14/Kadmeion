@@ -113,10 +113,10 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('New absolute progress value').fill('3');
   await page.getByLabel('Manual progress note').fill('Private self-reported update');
   await page.getByRole('button', {name: 'Record manual progress'}).click();
-  await expect(page.getByRole('status')).toContainText('Manual progress saved privately.');
+  await expect(page.getByText('Manual progress saved privately.', {exact: true})).toBeVisible();
   await page.getByLabel('New milestone').fill('Finish the basic exercises');
   await page.getByRole('button', {name: 'Add milestone'}).click();
-  await expect(page.getByRole('status')).toContainText('Milestone saved privately.');
+  await expect(page.getByText('Milestone saved privately.', {exact: true})).toBeVisible();
   await capture('38_PRIVATE_GOALS_BROWSER');
   await page.goto('/app/growth');
   await expect(page.getByText('Private progress, not a leaderboard.')).toBeVisible();

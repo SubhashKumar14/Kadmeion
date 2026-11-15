@@ -12,9 +12,10 @@ export interface PrivatePlatformLink {
   created_at:string;updated_at:string;
 }
 export class PrivatePlatformLinkError extends Error {
-  constructor(readonly code:'VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|'CONFLICT'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK'){
+  readonly code:'VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|'CONFLICT'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK';
+  constructor(code:PrivatePlatformLinkError['code']){
     super('Private platform link could not be verified: '+code);
-    this.name='PrivatePlatformLinkError';
+    this.name='PrivatePlatformLinkError';this.code=code;
   }
 }
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -77,10 +78,13 @@ async function boundedJson(response:Response):Promise<unknown> {
 }
 export class SupabasePrivatePlatformLinksService {
   private readonly origin:string;
+  private readonly key:string;
+  private readonly ownerId:string;
+  private readonly token:()=>Promise<string|null>;
+  private readonly http:typeof fetch;
   constructor(
-    endpoint:string,private readonly key:string,private readonly ownerId:string,
-    private readonly token:()=>Promise<string|null>,
-    private readonly http:typeof fetch=fetch
+    endpoint:string,key:string,ownerId:string,token:()=>Promise<string|null>,
+    http:typeof fetch=fetch
   ){
     let url:URL;
     try{url=new URL(endpoint);}catch{throw new PrivatePlatformLinkError('VALIDATION');}
@@ -89,7 +93,7 @@ export class SupabasePrivatePlatformLinksService {
       url.username||url.password||url.pathname!=='/'||url.search||url.hash||
       !isSafeSupabaseClientKey(key)||!isId(ownerId))
       throw new PrivatePlatformLinkError('VALIDATION');
-    this.origin=url.origin;
+    this.origin=url.origin;this.key=key;this.ownerId=ownerId;this.token=token;this.http=http;
   }
   private async request(method:'GET'|'POST'|'PATCH'|'DELETE',query:string,body?:Record<string,unknown>) {
     const jwt=await this.token();
@@ -130,10 +134,11 @@ export class SupabasePrivatePlatformLinksService {
       ? 'select='+SELECT+'&id=eq.'+existing.id+'&owner_user_id=eq.'+this.ownerId
       : 'select='+SELECT;
     const rows=await this.request(method,query,existing?{handle}:{provider,handle});
-    if(rows.length!==1||rows[0]?.provider!==provider||rows[0].handle!==handle||
-      (existing&&rows[0].id!==existing.id))
+    const row=rows[0];
+    if(rows.length!==1||!row||row.provider!==provider||row.handle!==handle||
+      (existing&&row.id!==existing.id))
       throw new PrivatePlatformLinkError('INVALID_ACK');
-    return rows[0];
+    return row;
   }
   async remove(existing:PrivatePlatformLink):Promise<string> {
     if(!isLink(existing,this.ownerId))throw new PrivatePlatformLinkError('VALIDATION');

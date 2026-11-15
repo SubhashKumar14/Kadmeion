@@ -715,3 +715,11 @@ Root cause of missing frontend CI on shared-source corrections: `.github/workflo
 **Important limits:** No DevScore numeric computation (no credible source evidence), no visitor Analytics enablement or fake graphs, no provider OAuth or sync; these are explicitly deferred capabilities, not completed live features. Goal status update has owner RLS but not a CAS revision primitive, so no cross-tab concurrency guarantee is claimed. Full 52-screen visual pixel comparison, complete UAT/WCAG, public host/revocation and all external gates remain incomplete.
 
 **Next:** Verify build/TS7/Node/Chromium and isolated database CI at this exact SHA; fix failures. Confirm new screenshots against registered originals after authenticated artifact availability; implement incomplete P1 reviewer/public fallback UI and source-safe editor controls, then trace every UAT gate. Persist evidence to Notion and GitHub before ending.
+
+---
+
+### Growth CI corrective checkpoint — 15 Nov 2026
+
+The first P2 Growth code run `1a0b8fb` FAILED three observed gates: frontend TS7 typecheck (`private-goals-service.ts:214` optional last page item); root contracts Node26 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` from a parameter-property declaration in new PlatformLinks adapter; isolated owner Chromium Playwright strict-selector failure because multiple status nodes exist on detailed goal screen. Failures are actual and are not reclassified as success. This fix implements TS7-safe guarded pagination, explicit class-property declarations compatible with Node26 strip-types, and exact-text scoped Playwright status assertions; no insecure casting or weakening of authorization. Exact new commit CI must be read before claiming pass.
+
+**Next:** Run both CI workflows until all jobs green; compare 35–40 screenshots with approved archived PNGs, complete missing F3/F4 security-first UI, keep ₹0 and production gates. Notion log needs appending/readback on this session.

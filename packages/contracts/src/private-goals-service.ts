@@ -211,7 +211,7 @@ export class SupabasePrivateGoalsService {
       throw new PrivateGoalsError('INVALID_ACK');
     const rows=raw as T[];
     const items=rows.slice(0,limit);
-    return {items,nextCursor:rows.length>limit?items[items.length-1].id:null};
+    return {items,nextCursor:rows.length>limit?(items[items.length-1]?.id??null):null};
   }
   listGoalsPage(limit=50,afterId:string|null=null):Promise<PrivateGoalPage<PrivateGoal>> {
     return this.readPage('private_goals',validGoal,limit,afterId);
