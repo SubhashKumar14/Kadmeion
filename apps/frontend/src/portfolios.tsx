@@ -247,8 +247,15 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       if (!result.data) {setError(result.error?.message ?? 'Portfolio unavailable.'); return;}
       loaded.current = key;
       setRecord(result.data);
-      setHead(result.data.snapshot ? createEditorHead(result.data.snapshot) : null);
-      setSlot('');
+      const snapshot=result.data.snapshot;
+      setHead(snapshot ? createEditorHead(snapshot) : null);
+      // Highlight the first actual managed title slot rather than whichever
+      // JSONB map key happened to deserialize first; never insert sample bytes.
+      const chosen=orderedLayerGroups(snapshot).flatMap(group=>group.slots)
+        .find(item=>item.name==='title')?.key??'';
+      const initial=chosen?snapshot?.slots[chosen]:undefined;
+      setSlot(chosen);
+      setValue(initial?.content[primaryField(initial.componentId)]??'');
       setOperation('');
       setError('');
     });
@@ -349,8 +356,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           <button type="button" className="ws-secondary" disabled={saving}
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
-        <ol className="ws-editor-layers">{layerGroups.map(group=><li key={group.id}>
-          <h3>{group.title}</h3>
+        <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}>
+          <details className="ws-editor-layer-group" open={index===0||group.id.startsWith('section-')}>
+          <summary>{group.title}<small>{group.slots.length} slots</small></summary>
           <ul className="ws-editor-slots">{group.slots.map(item=><li key={item.key}>
             <button type="button" aria-pressed={slot===item.key}
               aria-label={(group.id.startsWith('section-')?'New section: ':group.id.replaceAll('-',' ')+' ')+item.name}
@@ -363,7 +371,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               <span className="ws-editor-layer-name">{item.name.replaceAll(/([A-Z])/g,' $1')}</span>
               <span className="ws-editor-layer-state">{item.state==='EMPTY'?'Empty':item.state==='S0'?'Starter':item.state==='S1'?'Owned':'Custom'}</span>
             </button>
-          </li>)}</ul>
+          </li>)}</ul></details>
         </li>)}</ol>
         <div className="ws-actions">
           <button type="button" className="ws-secondary" disabled={!head.undo.length || saving}
@@ -389,7 +397,10 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           {active.state === 'EMPTY'
             ? <button type="button" className="ws-secondary" disabled={saving}
                 onClick={() => apply({kind: 'ASSIGN_COMPONENT', slotKey: slot, componentId: 'body-copy@1'})}>Assign text component</button>
-            : <><label>Text content<textarea rows={5} maxLength={12000} value={value} onChange={event => setValue(event.target.value)}/></label>
+            : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
+                placeholder={active.componentId==='title-stacked@1'&&value===''?
+                  'Example: Build things that make a difference. (not saved)':'Enter your own content'}
+                onChange={event => setValue(event.target.value)}/></label>
               <button type="button" className="ws-secondary" disabled={saving || value === (active.content[primaryField(active.componentId)] ?? '')}
                 onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})}>Apply text</button>
               {active.componentId && Object.hasOwn(contentFields, active.componentId) &&

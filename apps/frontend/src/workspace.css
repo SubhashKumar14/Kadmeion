@@ -463,3 +463,16 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .pv-slot-action .pv-layout-example{font-family:Arial,sans-serif;font-size:12px;font-weight:650;color:inherit;opacity:1}
 .pv-media-blank{display:block;width:100%;min-height:85px}
 @media(max-width:950px){.ws-editor-layers{max-height:45vh}}
+
+/* Collapse long section details while preserving the first active title and
+   each newly added section's keyboard-accessible tree. */
+.ws-editor-layer-group{border-top:1px solid var(--line);padding-top:6px}
+.ws-editor-layer-group summary{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;cursor:pointer;font-size:12px;font-weight:700;color:var(--ink);
+  min-height:39px;padding:5px 8px;border-radius:6px;list-style-position:inside}
+.ws-editor-layer-group summary::marker{color:var(--body)}
+.ws-editor-layer-group summary small{font-size:10px;font-weight:500;color:var(--body)}
+.ws-editor-layer-group summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.ws-editor-layer-group[open] summary{background:var(--surface-soft);margin-bottom:7px}
+.ws-editor-layer-group:not([open]) .ws-editor-slots{display:none}
+.ws-editor-layer-group .ws-editor-slots{max-height:none}
