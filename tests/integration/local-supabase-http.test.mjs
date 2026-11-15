@@ -1558,7 +1558,7 @@ test('B4/B6: local real HTTP public release is revoked after owner project priva
     const after=await read();
     assert.equal(after.status,404,'Withdrawal failed to revoke old immutable HTML');
     assert.equal(await after.text(),'Not found');
-    assert.equal(after.headers.get('x-robots-tag'),'noindex');
+    assert.equal(after.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
     assert.equal((await report(randomUUID())).status,404,'Reports accepted for a withdrawn portfolio');
     const current=successful(await send('/rest/v1/rpc/service_read_public_portfolio',{
       method:'POST',key:cfg.service,bearer:cfg.service,
