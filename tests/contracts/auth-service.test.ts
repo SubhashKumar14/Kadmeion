@@ -11,7 +11,7 @@ function mockPort(): AuthPort {
     updateUser: async () => ({data:{user:{id:'one'}},error:null}),
     signOut: async () => ({data:{},error:null}),
     signInWithOAuth: async () => ({data:{url:'https://accounts.google.com/authorize'},error:null}),
-    exchangeCodeForSession: async () => ({data:{},error:null})
+    exchangeCodeForSession: async () => ({data:{user:{id:'one'}},error:null})
   };
 }
 
@@ -197,4 +197,17 @@ test('B10 immediate registration session must be verified for the same user',asy
   port.signUp=async()=>({data:{user:{id:'new-owner'},
     session:{access_token:'',user:{id:'new-owner'}}},error:null});
   await assert.rejects(service.register(signup),{code:'AUTH_EXPIRED'});
+});
+test('B10 OAuth callback rejects ambiguous or changed identity after code exchange',async()=>{
+  const port=mockPort();
+  const config={siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:true};
+  const service=new AuthService(port,config);
+  assert.deepEqual(await service.finishOAuth('valid-code-12345'),{id:'one'});
+  port.exchangeCodeForSession=async()=>({data:{user:null},error:null});
+  await assert.rejects(service.finishOAuth('valid-code-12345'),{code:'AUTH_FAILED'});
+  port.exchangeCodeForSession=async()=>({data:{user:{id:'other-owner'}},error:null});
+  await assert.rejects(service.finishOAuth('valid-code-12345'),{code:'AUTH_EXPIRED'});
+  port.exchangeCodeForSession=async()=>({data:{user:{id:'one'}},error:null});
+  port.getUser=async()=>({data:{user:{id:'other-owner'}},error:null});
+  await assert.rejects(service.finishOAuth('valid-code-12345'),{code:'AUTH_EXPIRED'});
 });
