@@ -15,7 +15,7 @@ const html='<!doctype html><html lang="en"><head>'+marker+
   '<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;">'+
   '</head><body><h1>Safe</h1></body></html>';
 const digest=html=>createHash('sha256').update(html).digest('hex');
-const payload=html=>({html,htmlSha256:digest(html)});
+const payload=html=>({html,htmlSha256:digest(html),indexable:true});
 async function invoke(handler,{url=path,data=payload(html),httpResponse,method='GET',config=env,body,requestHeaders}={}) {
   const headers=new Map(), calls=[];
   const res={statusCode:0,body:null,headers,setHeader(k,v){headers.set(k.toLowerCase(),v);},
@@ -60,6 +60,25 @@ test('public route serves only verified, indexable bytes with actual served hash
   assert.equal(res.headers.get('cache-control'),'private, no-store');
   assert.equal(calls[0].options.redirect,'error');
   assert.equal(calls[0].options.credentials,'omit');
+});
+test('unacknowledged public canary stays noindex until the same trusted release is acknowledged',async()=>{
+  const pending=await invoke(handlePublicPortfolio,{data:{...payload(html),indexable:false}});
+  assert.equal(pending.res.statusCode,200);
+  assert.match(pending.res.body,/content="noindex,nofollow,noarchive"/);
+  assert.doesNotMatch(pending.res.body,/content="index,follow"/);
+  assert.equal(pending.res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  assert.equal(pending.res.headers.get('x-kadmeion-served-sha256'),digest(html));
+  const acknowledged=await invoke(handlePublicPortfolio,{data:payload(html)});
+  assert.equal(acknowledged.res.statusCode,200);
+  assert.match(acknowledged.res.body,/content="index,follow"/);
+  assert.equal(acknowledged.res.headers.get('x-robots-tag'),'index, follow');
+  assert.notEqual(digest(acknowledged.res.body),digest(html));
+  for(const data of [{html,htmlSha256:digest(html)},
+    {...payload(html),indexable:'true'},{...payload(html),indexable:null}]){
+    const invalid=await invoke(handlePublicPortfolio,{data});
+    assert.equal(invalid.res.statusCode,503,'Missing or forged acknowledgement cannot serve HTML');
+    assert.equal(invalid.res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  }
 });
 test('public HEAD produces no content and still checks publication',async()=>{
   const {res,calls}=await invoke(handlePublicPortfolio,{method:'HEAD'});
