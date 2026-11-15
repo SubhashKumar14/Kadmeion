@@ -89,7 +89,7 @@ async function verifyOwnerComponentRows(value:unknown,ownerId:string):Promise<vo
       isUuid(item.id)&&item.owner_user_id===ownerId&&
       typeof item.component_key==='string'&&
       /^[a-z][a-z0-9-]{2,63}$/.test(item.component_key)&&
-      Number.isInteger(item.version)&&item.version>=1&&item.version<=40&&
+      typeof item.version==='number'&&Number.isInteger(item.version)&&item.version>=1&&item.version<=40&&
       typeof item.display_name==='string'&&item.display_name.trim().length>0&&
       item.display_name.length<=80&&
       typeof item.base_component_pin==='string'&&
