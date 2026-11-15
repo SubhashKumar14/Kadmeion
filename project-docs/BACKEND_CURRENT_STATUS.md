@@ -1,5 +1,18 @@
 # Kadmeion — Current Backend Implementation State
 
+## 15 November 2026 — superseding live verification for this branch
+
+- **Latest green code checkpoint:** `69fd872686efe6710f9e9f474069cbdae39b69ca` on `feat/b0-backend-foundation`. [GitHub CI #692](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43711365872) passed. The earlier [CI #691](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43711016057) passed on `235c2c3305af8b670a57958a7662da73df59f911`.
+- **B07 hosted SQL:** exactly **56 of 56** source migration version identifiers present in hosted Supabase `scyooqjitjzjdxgtanso`; latest `20261115140000_owner_my_components_library.sql`. **3/3** Edge Functions ACTIVE. No migration replay or production mutation was necessary in this continuation.
+- **Recent implementation commits:** `1381dd0` prevents HTML5 solidus attribute parsing bypass in static release validation; `a59e123` adds matching public HTTP negative tests; `235c2c3` requires an actual noindex robots meta in private reviewer and unlisted delivery with negative tests; `69fd872` adds global pgTAP audits for fixed SECURITY DEFINER search paths, no anon public-table SELECT, and nontrivial public UPDATE USING/WITH CHECK.
+- **B07 read-only privilege evidence:** 85 app-defined SECURITY DEFINER routines had fixed `search_path`, none granted to anon. 45 authenticated SECURITY DEFINER advisor warnings remain subject to per-function review; 17 INFO RLS-without-policy warnings are primarily service-only tables; leaked-password protection is not enabled.
+- **D01–D90 register state:** 52 PARTIAL, 2 BLOCKED_EXTERNAL (D10/D20), 12 DEFERRED_APPROVED, 24 NOT_APPLICABLE. Do not calculate a whole-backend completion percentage from the existence of test files. The 53 workflows, 138 acceptance scenarios, 115 UI decisions, and 20 proof gates remain independent acceptance inventories.
+- **Current code remaining / proof-dependent:** independent/approved public-release host and DB-offline availability vs immediate revocation (D10/D20), actual host GET/HEAD/direct-media/CDN race tests, hosted browser JS isolation (untrusted public JS still disabled), complete provider-data and backup retention/erasure assurance, hosted Google OAuth and Brevo delivery, disabled Trash scheduler operational acceptance, frontend-wide browser accessibility and user-facing integration.
+- **Authorization boundary:** no new public host activation, live Auth/DNS/SMTP switch, production secret, scheduled destructive cleanup or protected main merge authorized in this checkpoint. Brevo manual verification remains a later owner task, not a blocker for repository code tests.
+- **Exit:** `PHASE 1 BACKEND CODE COMPLETE` **NOT YET PROVEN**; `HOSTED BACKEND VERIFIED` **NOT YET**; `BACKEND READY FOR FULL FRONTEND ACCEPTANCE` **NOT YET**.
+
+# Kadmeion — Current Backend Implementation State
+
 ## 2026-11-15 — Verified B07–B11 continuation (current evidence)
 
 - GitHub backend branch `feat/b0-backend-foundation`, verified code SHA `274c8683e278295f859564bb20f54d0127e774a4`; [GitHub CI #666](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43703455588) **SUCCESS** (both contracts and database jobs; 444 Node tests, 494 database assertions/pgTAP in the isolated Supabase stack).
