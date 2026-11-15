@@ -11,8 +11,10 @@ export function isSafeSupabaseClientKey(value:unknown):value is string {
   if(value.startsWith('eyJ')){
     const parts=value.split('.');
     if(parts.length!==3||parts.some(part=>!/^[A-Za-z0-9_-]+$/.test(part)))return false;
+    const encodedPayload=parts[1];
+    if(!encodedPayload)return false;
     try{
-      const payload:unknown=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
+      const payload:unknown=JSON.parse(atob(encodedPayload.replace(/-/g,'+').replace(/_/g,'/')));
       return payload!==null&&typeof payload==='object'&&!Array.isArray(payload)&&
         (payload as {role?:unknown}).role==='anon';
     }catch{return false;}
