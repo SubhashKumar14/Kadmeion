@@ -116,3 +116,119 @@ export class PrivatePublicDeliveryPolicy {
       path:selected.path,sha256:selected.sha256,deployable:false,publicUrl:null};
   }
 }
+
+
+/**
+ * B08 host-neutral *private* byte verifier. It bridges a fresh visibility
+ * decision to exact immutable object bytes, then rechecks visibility AFTER
+ * the asynchronous read. It is deliberately not an HTTP server, a signed
+ * grant, an approval to enable CDN caching or proof of race-free publication.
+ *
+ * The trusted reader must enforce object-store access and read exact
+ * content-addressed objects; it must never accept a path or digest supplied
+ * directly by an unvalidated public request. An approved public host must
+ * additionally prove final-response revocation, atomic pointer changes,
+ * no cache bypass and end-to-end access denial.
+ */
+export interface TrustedPrivateReleaseByteReader {
+  readImmutable(input:{
+    portfolioId:string;
+    releaseSha256:string;
+    path:string;
+    expectedSha256:string;
+  }):Promise<unknown>;
+}
+export type PrivateByteVerificationReason =
+  'DENIED_BY_VISIBILITY'|'UNSAFE_FILE_TYPE'|'READER_UNAVAILABLE'|
+  'INVALID_FILE_BYTES'|'BYTES_TOO_LARGE'|'BYTE_HASH_MISMATCH'|
+  'POINTER_CHANGED';
+export type PrivateDeliveryByteResult =
+  | {status:'DENY';reason:PrivateByteVerificationReason;
+     servingAllowed:false;publicUrl:null;hostRevocationVerified:false}
+  | {status:'PRIVATE_BYTES_VERIFIED';releaseSha256:string;path:string;sha256:string;
+     mimeType:'text/html; charset=utf-8'|'image/png';bytes:Uint8Array;
+     servingAllowed:false;publicUrl:null;hostRevocationVerified:false};
+
+const MAX_PRIVATE_HTML=750000;
+const MAX_PRIVATE_PNG=5*1024*1024;
+const PRIVATE_PNG=/^assets\/[0-9a-f]{64}\.png$/;
+const PNG_SIGNATURE=Uint8Array.of(137,80,78,71,13,10,26,10);
+const deniedBytes=(reason:PrivateByteVerificationReason):PrivateDeliveryByteResult=>
+  ({status:'DENY',reason,servingAllowed:false,publicUrl:null,
+    hostRevocationVerified:false});
+
+export class PrivateVerifiedReleaseByteGate {
+  private readonly policy:PrivatePublicDeliveryPolicy;
+  private readonly reader:TrustedPrivateReleaseByteReader;
+
+  constructor(policy:PrivatePublicDeliveryPolicy,reader:TrustedPrivateReleaseByteReader){
+    this.policy=policy;this.reader=reader;
+  }
+
+  async inspect(request:unknown):Promise<PrivateDeliveryByteResult>{
+    // First authoritative read: malformed requests and unpublished pointers
+    // must not reach the private immutable object store at all.
+    const first=await this.policy.check(request);
+    if(first.status!=='HOST_PROOF_REQUIRED')
+      return deniedBytes('DENIED_BY_VISIBILITY');
+
+    // This initial B08 gate accepts ONLY scriptless HTML and sanitized PNG.
+    // Existing policy paths for CSS, JPEG, WebP and fonts need independent
+    // content-safety proof; never implicitly enable them in a read adapter.
+    const isHtml=first.path==='index.html';
+    const isPng=PRIVATE_PNG.test(first.path)&&
+      first.path.slice(7,71)===first.sha256;
+    if(!isHtml&&!isPng)return deniedBytes('UNSAFE_FILE_TYPE');
+
+    let raw:unknown;
+    try{
+      raw=await this.reader.readImmutable({
+        portfolioId:(request as PublicDeliveryRequest).portfolioId,
+        releaseSha256:first.releaseSha256,path:first.path,
+        expectedSha256:first.sha256
+      });
+    }catch{return deniedBytes('READER_UNAVAILABLE');}
+
+    // Defensive copy: readers may return mutable Storage buffers which could
+    // change while hashing or after this method returns.
+    if(!(raw instanceof Uint8Array)||raw.byteLength===0)
+      return deniedBytes('INVALID_FILE_BYTES');
+    const maxBytes=isHtml?MAX_PRIVATE_HTML:MAX_PRIVATE_PNG;
+    if(raw.byteLength>maxBytes)return deniedBytes('BYTES_TOO_LARGE');
+    const bytes=Uint8Array.from(raw);
+    if(isPng&&!PNG_SIGNATURE.every((value,i)=>bytes[i]===value))
+      return deniedBytes('INVALID_FILE_BYTES');
+    if(isHtml){
+      try{
+        const html=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+        if(!html.startsWith('<!doctype html>')||html.includes('\u0000')||
+           !html.includes('noindex,nofollow,noarchive')||
+           !html.includes('script-src &#39;none&#39;'))
+          return deniedBytes('INVALID_FILE_BYTES');
+      }catch{return deniedBytes('INVALID_FILE_BYTES');}
+    }
+
+    let digest:string;
+    try{
+      const bytesHash=await crypto.subtle.digest(
+        'SHA-256',bytes as Uint8Array<ArrayBuffer>);
+      digest=Array.from(new Uint8Array(bytesHash),
+        b=>b.toString(16).padStart(2,'0')).join('');
+    }catch{return deniedBytes('INVALID_FILE_BYTES');}
+    if(digest!==first.sha256)return deniedBytes('BYTE_HASH_MISMATCH');
+
+    // Second *independent* trusted pointer read. A withdrawal, moderation
+    // restriction, rollback or provider failure during blob loading revokes
+    // this candidate. Even two reads cannot prove a future HTTP send is safe.
+    const after=await this.policy.check(request);
+    if(after.status!=='HOST_PROOF_REQUIRED'||
+       after.releaseSha256!==first.releaseSha256||
+       after.path!==first.path||after.sha256!==first.sha256)
+      return deniedBytes('POINTER_CHANGED');
+
+    return {status:'PRIVATE_BYTES_VERIFIED',
+      releaseSha256:first.releaseSha256,path:first.path,
+      sha256:first.sha256,mimeType:isHtml?'text/html; charset=utf-8':'image/png',
+      bytes,servingAllowed:false,publicUrl:null,hostRevocationVerified:false};
+  }
+}
