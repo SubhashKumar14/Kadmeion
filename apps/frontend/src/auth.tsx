@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { AuthService } from '../../../packages/contracts/src/auth-service.ts';
+import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project.ts';
 import { parseAuthRedirect } from '../../auth-web/src/auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { cleanHandleInput, checkHandleInput, validatePasswordPair } from '../../auth-web/src/form-helpers.ts';
@@ -26,6 +27,8 @@ function createAuth(): { value: AuthState | null; error: string } {
   const publishableKey=import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
   if (!supabaseUrl || !publishableKey)
     return { value:null, error:'Supabase authentication is not configured for this preview. Use a locally configured, verified environment.' };
+  if (!isSafeSupabaseClientKey(publishableKey))
+    return { value:null, error:'A privileged or invalid Supabase API key cannot be used in this public browser.' };
   try {
     const storage=window.localStorage;
     const oauthStorage=window.sessionStorage;
