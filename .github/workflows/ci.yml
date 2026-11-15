@@ -77,7 +77,24 @@ jobs:
       - uses: supabase/setup-cli@v3
         with:
           version: 3.1.0
-      - run: supabase start
+      - name: Start isolated Supabase, retry one port collision
+        shell: bash
+        run: |
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+          for attempt in 1 2; do
+            if supabase start >"$log" 2>&1; then
+              cat "$log"
+              exit 0
+            fi
+            cat "$log"
+            result=$(<"$log")
+            if [[ "$attempt" == 2 || "$result" != *"address already in use"* ||
+                  "$result" != *"failed to bind host port"* ]]; then
+              exit 1
+            fi
+            sleep 10
+          done
       - run: supabase test db
       - name: Lint PL/pgSQL definitions in isolated database
         run: supabase db lint --schema public,kadmeion_private --level error --fail-on error

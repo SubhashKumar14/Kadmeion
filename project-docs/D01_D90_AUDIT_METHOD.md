@@ -29,3 +29,16 @@ The private server-only `safe-png-publication.ts` implements bounded PNG validat
 
 Source now implements a trusted owner-scoped private PNG read port, frozen HTML+sanitized image preview candidate, content-addressed media paths, immutable digest manifest, and offline static-media ZIP. The private media source `forTrustedFrozenMedia` checks owner RLS and write-once SHA-256 pins. It is NOT an approved public host, final template renderer or live media revocation. The existing 90-row statuses remain conservative.
 The B09 partial-account export now has a local self-consistency verifier for stored hashes, asset bytes, owner table scoping and explicit incompleteness. It does NOT attest original provider authenticity and cannot authorize deletion.
+
+
+## B07–B11 evidence through 15 November 2026
+
+The 90-row register retains 49 partial, 3 missing, 2 externally blocked, 12 deferred and 24 non-applicable decisions. The status fields are for the whole decision. These code checks advance individual acceptance cases while the approved workflow and UAT rows retain their full-scenario status.
+
+| Decisions and workflows | Local implementation and evidence | Remaining acceptance |
+| --- | --- | --- |
+| D42, D45, D74, D75 · WF-029, WF-031, WF-034, WF-036 · TP-03/04/06/07/08/12 | Frozen-layout PNG rendering and static ZIP, guarded private SQL candidate storage, exact-byte pre-withdrawal and canonical/direct GET/HEAD denial tests. [B08 CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43697667628). | Media-aware public/reviewer delivery, production asset and route revocation, rollback, browser parity, and behavior during a Supabase outage. |
+| D67, D72, D80 · UI-92/112 · WF-047 · TC-093/094/133 · TP-19 | Account portability remains bounded. Account erasure/Storage cleanup require the same exposure predicate. [B09 source and CI](https://github.com/SubhashKumar14/Kadmeion/commit/13c269a90ff89e9955252338e205c3abcd91600a). | Hosted disposable-owner cleanup/erasure, durable host acknowledgment, scheduler execution, complete export and retention disclosures. |
+| D79, D89 · UI-03/07/08/12/13/14 · WF-001/002/004/005/006 · TC-001/003/007/009–012 · TP-01/09 | Local Auth and recovery, ambiguity and account-switch guards, provider errors and GoTrue/Mailpit integration wired into CI. [Auth change](https://github.com/SubhashKumar14/Kadmeion/commit/b05314154a5534f748e1924a68fd40c27bd30e87). | Approved hosted signup/confirmation settings, Google OAuth, authenticated Brevo sender, delivery/resend and production abuse limits. |
+
+The current hosted database has 47 of the 49 branch migration versions, and all three baseline Edge Functions are deployed. The two new migrations stay on the feature branch pending owner authorization. B07 baseline rollout was verified separately. See [hosted baseline evidence](B07_HOSTED_DEPLOYMENT_EVIDENCE.md). The 115 UI decisions, 53 workflows, 138 UAT cases, and 20 proof entries remain distinct requirements. Source findings in the table do not certify 52 approved screens or live production acceptance.
