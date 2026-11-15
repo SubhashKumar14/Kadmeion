@@ -1,0 +1,46 @@
+name: Frontend React 19 + Vite 8 verification
+on:
+  push:
+    branches: ['feat/b0-backend-foundation']
+    paths:
+      - 'apps/frontend/**'
+      - '.github/workflows/frontend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26.13.1'
+      - name: Pin npm to repository-stated release
+        run: npm install --global npm@12.2.2 --no-fund
+      - name: Resolve exact-version lockfile without package lifecycle scripts
+        run: npm install --prefix apps/frontend --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Install from the resolved lockfile
+        run: npm ci --prefix apps/frontend --ignore-scripts --no-fund
+      - name: Verify types, behavior, and production bundle
+        run: |
+          npm run typecheck --prefix apps/frontend
+          npm test --prefix apps/frontend
+          npm run build --prefix apps/frontend
+      - name: Audit production dependency advisories
+        run: npm audit --prefix apps/frontend --omit=dev --audit-level=high
+      - name: Commit reproducible frontend lockfile only after green checks
+        if: github.ref == 'refs/heads/feat/b0-backend-foundation'
+        run: |
+          git add apps/frontend/package-lock.json
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'build(frontend): pin reproducible React 19 and Vite 8 lockfile'
+            git push origin HEAD:feat/b0-backend-foundation
+          fi
