@@ -265,3 +265,20 @@ test('media delivery rewrites only pinned PNGs and reauthorizes every direct rea
   assert.equal((await invoke(handlePublicPortfolio,{url:asset+'&asset='+sha})).calls.length,0);
   assert.equal((await invoke(handlePublicPortfolio,{data:{...release,assetHashes:[manifest]}})).res.statusCode,503);
 });
+
+// HTML5 treats slash-after-tag-name as an attribute separator. The static
+// delivery scanner must not rely solely on whitespace before href/on*.
+test('HTML5 slash-separated executable attributes are refused despite matching digest',async()=>{
+  for(const injected of [
+    '<a/href="javascript:alert(1)">Unsafe link</a>',
+    '<a /href="javascript:alert(1)">Unsafe link</a>',
+    '<details/onmouseover="alert(1)">Unsafe handler</details>',
+    '<a title="okay" /href="javascript:alert(1)">Unsafe link</a>'
+  ]){
+    const tampered=html.replace('</body>',injected+'</body>');
+    const {res}=await invoke(handlePublicPortfolio,{data:payload(tampered)});
+    assert.equal(res.statusCode,503,injected);
+    assert.equal(res.body,'Temporarily unavailable');
+    assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  }
+});
