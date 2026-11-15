@@ -481,3 +481,13 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
    illustration, never used as a verification badge or replacement app mark. */
 .ws-brand-folio{display:block;width:118px;height:118px;max-width:100%;
   object-fit:contain;margin:0 auto 10px;filter:drop-shadow(0 9px 12px color-mix(in srgb,var(--ink) 9%,transparent))}
+
+/* EDIT-03 — real pinned component assignment, no fake drag/drop.
+   Buttons are keyboard operable and never silently replace owned source. */
+.ws-editor-compatible{padding:0;margin:0;list-style:none;display:grid;gap:7px}
+.ws-editor-compatible li{min-width:0}
+.ws-editor-compatible li button{width:100%;display:grid;text-align:left;align-items:start;gap:3px;
+  justify-items:start;white-space:normal;height:auto;min-height:48px;padding:10px 12px}
+.ws-editor-compatible li button span{font-size:12px;font-weight:750}
+.ws-editor-compatible li button small{font-size:10px;line-height:1.4;color:var(--body);
+  overflow-wrap:anywhere;font-weight:400}

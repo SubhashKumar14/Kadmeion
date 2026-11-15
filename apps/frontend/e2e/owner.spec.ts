@@ -248,6 +248,14 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Section layout').selectOption('contact@1');
   await page.getByRole('button', {name: 'Add section', exact: true}).click();
   await expect(page.getByRole('button', {name: /new section: title/i})).toBeVisible();
+  await page.getByRole('button', {name: /new section: title/i}).click();
+  await page.getByRole('button', {name:'Choose compatible component'}).click();
+  await expect(page.getByRole('heading',{name:'Compatible components'})).toBeVisible();
+  await page.getByRole('button',{name:/Heading title-stacked@1/}).click();
+  await expect(page.getByLabel('Text content')).toBeVisible();
+  await page.getByLabel('Text content').fill('Reach out privately');
+  await page.getByRole('button', {name:'Apply text'}).click();
+  await expect(page.getByRole('button',{name:'Edit L8 title slot in preview'})).toContainText('Reach out privately');
   await capture('20_SECTIONS_BROWSER');
   await page.getByRole('button', {name: 'My Components', exact: true}).click();
   await expect(page.getByText('You haven’t saved any component versions.')).toBeVisible();

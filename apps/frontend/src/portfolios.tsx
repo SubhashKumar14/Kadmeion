@@ -71,6 +71,24 @@ function orderedLayerGroups(snapshot:PortfolioSnapshot | null | undefined):Array
   }catch{return [];}
 }
 
+
+/** Known compatible pinned library components only. An empty slot must not
+ * silently accept a mismatched component, an arbitrary code pin, or a media
+ * source without independently verified private asset registration. */
+const insertableComponentPins=[
+  {id:'title-stacked@1',label:'Heading',kinds:['title']},
+  {id:'body-copy@1',label:'Paragraph',kinds:['text','text1','text2','note']},
+  {id:'external-link@1',label:'External link',kinds:['cta','cta1','cta2','btn1','btn2','links']},
+  {id:'project-card@1',label:'Project summary',kinds:['project','card']},
+  {id:'skills-list@1',label:'Skills or experience',kinds:['items','entries']},
+  {id:'technology-tag@1',label:'Technology tag',kinds:['badge']},
+  {id:'author-metric@1',label:'Self-reported metric',kinds:['meta']}
+] as const;
+function compatibleComponentsForSlot(key:string){
+  const kind=key.slice(key.lastIndexOf('-')+1);
+  return insertableComponentPins.filter(item=>(item.kinds as readonly string[]).includes(kind));
+}
+
 const STUDIO = '/app/portfolios';
 const editorPath = (id: string) => STUDIO + '/' + id + '/edit';
 const authoringQuery = '(min-width: 900px)';
@@ -383,10 +401,26 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       </aside>
       {contentPreview}
       <aside className="ws-project-fields">
-        <div className="ws-editor-tool"><nav aria-label="Editor panels">{['Content', 'My Components', 'Theme', 'Assets', 'Source', 'History'].map(item =>
+        <div className="ws-editor-tool"><nav aria-label="Editor panels">{['Content', 'Components', 'My Components', 'Theme', 'Assets', 'Source', 'History'].map(item =>
           <button type="button" key={item} className="ws-secondary" aria-pressed={tool === item} onClick={() => {
             setTool(item); if (item === 'Source') setOpenedSource(true);
           }}>{item}</button>)}</nav></div>
+        {tool === 'Components' && <div className="ws-editor-tool" aria-label="Compatible components">
+          <h2>Compatible components</h2>
+          <p>Choose a pinned component for an empty slot. Existing or owned source is never overwritten here.</p>
+          {!active && <p>Select a slot from Structure &amp; layers or the author canvas.</p>}
+          {active && active.state!=='EMPTY' && <p role="status">This slot contains a component. Use the Content inspector, or move it to unplaced with Undo available, before assigning a new component.</p>}
+          {active?.state==='EMPTY' && compatibleComponentsForSlot(slot).length===0 && <p role="status">
+            No verified compatible library component is available for this slot.
+            Private media requires separate asset registration and attestation.
+          </p>}
+          {active?.state==='EMPTY' && <ul className="ws-editor-compatible">{compatibleComponentsForSlot(slot).map(item=>
+            <li key={item.id}><button type="button" className="ws-secondary" disabled={saving}
+              onClick={()=>{if(apply({kind:'ASSIGN_COMPONENT',slotKey:slot,componentId:item.id}))
+                setTool('Content');}}>
+              <span>{item.label}</span><small>{item.id} · Source remains pinned</small>
+            </button></li>)}</ul>}
+        </div>}
         {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
         {tool === 'Assets' && <AssetList port={port}/>}
@@ -397,7 +431,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
           {active.state === 'EMPTY'
             ? <button type="button" className="ws-secondary" disabled={saving}
-                onClick={() => apply({kind: 'ASSIGN_COMPONENT', slotKey: slot, componentId: 'body-copy@1'})}>Assign text component</button>
+                onClick={() => setTool('Components')}>Choose compatible component</button>
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
                 placeholder={active.componentId==='title-stacked@1'&&value===''?
                   'Example: Build things that make a difference. (not saved)':'Enter your own content'}
