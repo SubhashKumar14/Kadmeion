@@ -756,3 +756,50 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-inspector-secondary-field label{font-size:11px;font-weight:700;color:var(--body)}
 .ws-inspector-secondary-field input{min-width:0;width:100%;min-height:40px;border:1px solid var(--line-dark);
   border-radius:7px;background:var(--panel);color:var(--ink);padding:8px 10px}
+
+/* F3 geometric correction from native-size owner-approved 18–22 LIGHT PNGs.
+   The old 21%/23% editor side panes squeezed the canvas and the right panel's
+   2-column tool buttons pushed functional controls below the first viewport.
+   Do not change standalone/public/phone composition. */
+@media(min-width:1161px){
+.ws-editor-shell .ws-editor-grid{
+  grid-template-columns:minmax(205px,18%) minmax(0,1fr) minmax(230px,21%);
+}
+}
+@media(min-width:901px){
+.ws-editor-shell .ws-editor-grid>.pv-document{padding:12px 15px}
+.ws-editor-shell .ws-editor-grid .pv-section{padding:17px clamp(16px,2vw,27px)}
+.ws-editor-shell .ws-editor-grid .pv-hero{min-height:258px}
+.ws-editor-shell .ws-editor-grid .pv-hero-grid{min-height:235px}
+.ws-editor-shell .ws-editor-grid .pv-hero h2{
+  font-size:clamp(23px,2.15vw,34px);line-height:1.14;margin-bottom:9px
+}
+.ws-editor-shell .ws-editor-grid .pv-hero-copy .pv-eyebrow{margin-bottom:10px}
+.ws-editor-shell .ws-editor-grid .pv-hero .pv-summary{font-size:12px;line-height:1.55}
+.ws-editor-shell .ws-editor-grid .pv-hero-art{min-height:190px}
+.ws-editor-shell .ws-editor-grid .pv-actions{margin-top:11px;gap:7px}
+.ws-editor-shell .ws-editor-grid .pv-actions>.pv-slot-action{min-height:32px;padding:6px 11px;font-size:11px}
+.ws-editor-shell .ws-editor-grid .pv-section-heading h2{font-size:clamp(19px,1.6vw,26px)}
+.ws-editor-shell .ws-editor-grid .pv-section-slots{gap:8px;margin-top:9px}
+.ws-editor-shell .ws-editor-grid .pv-slot-cell{padding:8px 10px;min-height:48px}
+.ws-editor-shell .ws-editor-grid .pv-media-cell{min-height:77px}
+.ws-editor-shell .ws-editor-grid .pv-media-blank{min-height:60px}
+.ws-editor-shell .ws-editor-grid .pv-section-slots-L3 .pv-slot-cell:not(.pv-media-cell){
+  min-height:36px;padding:6px 9px;font-size:11px
+}
+.ws-editor-shell .ws-editor-grid .ws-editor-tool nav{
+  display:flex;flex-wrap:wrap;align-items:center;gap:3px;
+  overflow:visible;padding:0;max-width:100%
+}
+.ws-editor-shell .ws-editor-grid .ws-editor-tool nav button{
+  min-height:26px;padding:4px 6px;font-size:9px;line-height:1.12;white-space:nowrap
+}
+.ws-editor-shell .ws-editor-grid>.ws-project-fields{
+  padding:16px 13px
+}
+.ws-editor-shell .ws-editor-grid .ws-editor-tool{margin-bottom:9px}
+}
+@media(min-width:901px) and (max-width:1160px){
+.ws-editor-shell .ws-editor-grid .pv-hero h2{font-size:26px}
+.ws-editor-shell .ws-editor-grid .pv-hero-grid{min-height:215px}
+}
