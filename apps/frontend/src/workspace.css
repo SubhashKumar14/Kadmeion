@@ -566,3 +566,29 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media(max-width:580px){.ws-preview-sidebar .ws-preview-mode-set{grid-template-columns:1fr}
 .ws-preview-header{display:block}.ws-preview-header-status{margin:12px 0 0}
 .ws-preview-center{padding:0 9px 12px}}
+
+/* EDIT-03: source-grounded building-block catalog and selected-slot details.
+ * Components are selectable only when trusted pin and slot kinds match. */
+.ws-editor-component-catalog{display:grid;gap:10px}
+.ws-editor-component-catalog>p:not(.ws-kicker){font-size:11px;line-height:1.5;color:var(--body)}
+.ws-editor-search{display:grid;gap:6px;color:var(--body);font-size:11px;font-weight:650}
+.ws-editor-search input{width:100%;min-width:0;min-height:42px;padding:8px 10px;
+  background:var(--surface);color:var(--ink);border:1px solid var(--line-dark);border-radius:8px}
+.ws-editor-component-filters{display:flex;flex-wrap:wrap;gap:5px}
+.ws-editor-component-filters button{padding:7px 9px;min-height:32px;font-size:10px}
+.ws-editor-component-filters button[aria-pressed=true]{background:var(--accent-soft);border-color:var(--accent-strong)}
+.ws-editor-component-list{list-style:none;margin:4px 0 12px;padding:0;display:grid;gap:7px}
+.ws-editor-component-list li button{display:grid;text-align:left;align-items:start;gap:4px;width:100%;
+  min-height:60px;border:1px solid var(--line);border-radius:7px;padding:10px;
+  background:var(--surface);color:var(--ink)}
+.ws-editor-component-list li button:disabled{opacity:.6;cursor:not-allowed}
+.ws-editor-component-list li button[aria-pressed=true]{border-color:var(--accent-strong);
+  background:var(--surface-soft)}
+.ws-editor-component-list strong{font-size:12px}
+.ws-editor-component-list small{font-size:9px;color:var(--body);overflow-wrap:anywhere}
+.ws-editor-component-list span{font-size:9px;color:var(--accent-strong)}
+.ws-editor-compatibility{display:grid;gap:8px;padding:11px;background:var(--surface-soft);
+  border:1px solid var(--line);border-radius:8px}
+.ws-editor-compatibility strong{font-size:10px;color:var(--body)}
+.ws-editor-compatibility span{font-size:12px;color:var(--ink);overflow-wrap:anywhere;
+  padding-bottom:7px;border-bottom:1px solid var(--line)}

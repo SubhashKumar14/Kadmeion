@@ -250,14 +250,19 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('button', {name: /new section: title/i})).toBeVisible();
   await page.getByRole('button', {name: /new section: title/i}).click();
   await page.getByRole('button', {name:'Choose compatible component'}).click();
-  await expect(page.getByRole('heading',{name:'Compatible components'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Components',level:2})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Slot compatibility',level:2})).toBeVisible();
+  await page.getByLabel('Find components').fill('heading');
+  await expect(page.getByRole('button',{name:/Project summary project-card@1/})).toHaveCount(0);
+  await page.getByLabel('Find components').fill('');
+  await capture('20_SECTIONS_BROWSER');
   await page.getByRole('button',{name:/Heading title-stacked@1/}).click();
+  await page.getByRole('button',{name:'Add to empty slot'}).click();
   await expect(page.getByLabel('Text content')).toBeVisible();
   await page.getByLabel('Text content').fill('Reach out privately');
   await page.getByRole('button', {name:'Apply text'}).click();
   await expect(page.getByRole('button',{name:'Edit L8 title slot in preview'})
     .filter({hasText:'Reach out privately'})).toBeVisible();
-  await capture('20_SECTIONS_BROWSER');
   await page.getByRole('button', {name: 'My Components', exact: true}).click();
   await expect(page.getByText('You haven’t saved any component versions.')).toBeVisible();
   await capture('21_COMPONENT_LIBRARY_BROWSER');

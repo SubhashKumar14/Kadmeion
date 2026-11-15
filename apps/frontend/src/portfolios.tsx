@@ -254,6 +254,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [sectionLayout, setSectionLayout] = useState('arc-hero@1');
   const [sectionPicker, setSectionPicker] = useState(false);
   const [tool, setTool] = useState('Content');
+  const [componentSearch,setComponentSearch]=useState('');
+  const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
+  const [pickedComponent,setPickedComponent]=useState('');
   const [openedSource, setOpenedSource] = useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
 
@@ -334,6 +337,11 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
   const layerGroups=orderedLayerGroups(head?.snapshot);
+  const compatible=compatibleComponentsForSlot(slot);
+  const chosenComponent=compatible.find(item=>item.id===pickedComponent)??compatible[0];
+  const categoryFor=(id:string):'Text'|'Links'|'Work'=>
+    id==='external-link@1'?'Links':
+    id==='project-card@1'||id==='skills-list@1'||id==='author-metric@1'?'Work':'Text';
   const assigned = Object.entries(head?.snapshot.slots ?? {});
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
@@ -365,7 +373,36 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
       onClick={() => void initialize()}>Complete draft setup</button>}
     {head && (preview ? contentPreview : <div className="ws-editor-grid">
-      <aside className="ws-project-aside"><h2>Structure &amp; layers</h2>
+      <aside className="ws-project-aside">{tool==='Components'?<div className="ws-editor-component-catalog">
+        <p className="ws-kicker">COMPATIBLE BUILDING BLOCKS</p>
+        <h2>Components</h2>
+        <p>Choose a trusted component to place in a compatible, empty slot. Unverified media stays unavailable.</p>
+        <label className="ws-editor-search">Find components
+          <input type="search" value={componentSearch} onChange={event=>setComponentSearch(event.target.value)}
+            placeholder="Search pinned components"/></label>
+        <div className="ws-editor-component-filters" role="group" aria-label="Component categories">
+          {(['All','Text','Links','Work'] as const).map(category=>
+            <button type="button" className="ws-secondary" key={category}
+              aria-pressed={componentCategory===category} onClick={()=>setComponentCategory(category)}>
+              {category}</button>)}
+        </div>
+        <ul className="ws-editor-component-list">{insertableComponentPins.filter(item=>
+          (componentCategory==='All'||categoryFor(item.id)===componentCategory)&&
+          (item.label.toLowerCase().includes(componentSearch.trim().toLowerCase())||
+           item.id.toLowerCase().includes(componentSearch.trim().toLowerCase()))
+        ).map(item=>{
+          const fit=compatible.some(candidate=>candidate.id===item.id);
+          return <li key={item.id}><button type="button" aria-pressed={chosenComponent?.id===item.id&&fit}
+            disabled={active?.state!=='EMPTY'||!fit||saving}
+            onClick={()=>setPickedComponent(item.id)}>
+            <strong>{item.label}</strong>
+            <small>{item.id}</small>
+            <span>{fit?'Compatible with selected slot':'Choose another slot'}</span>
+          </button></li>;
+        })}</ul>
+        {active?.state!=='EMPTY'&&<p className="ws-footnote">Select an empty slot in Structure &amp; layers before adding components.</p>}
+        <button type="button" className="ws-secondary" onClick={()=>setTool('Content')}>Return to layers</button>
+      </div>:<><h2>Structure &amp; layers</h2>
         {!assigned.length && <p>This blank draft has no slots.</p>}
         <button type="button" className="ws-secondary" aria-expanded={sectionPicker}
           onClick={() => setSectionPicker(current => !current)}>Sections</button>
@@ -398,7 +435,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             onClick={() => apply({kind: 'UNDO'})}>Undo</button>
           <button type="button" className="ws-secondary" disabled={!head.redo.length || saving}
             onClick={() => apply({kind: 'REDO'})}>Redo</button>
-        </div>
+        </div></>}
       </aside>
       {contentPreview}
       <aside className="ws-project-fields">
@@ -406,21 +443,23 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           <button type="button" key={item} className="ws-secondary" aria-pressed={tool === item} onClick={() => {
             setTool(item); if (item === 'Source') setOpenedSource(true);
           }}>{item}</button>)}</nav></div>
-        {tool === 'Components' && <div className="ws-editor-tool" aria-label="Compatible components">
-          <h2>Compatible components</h2>
-          <p>Choose a pinned component for an empty slot. Existing or owned source is never overwritten here.</p>
-          {!active && <p>Select a slot from Structure &amp; layers or the author canvas.</p>}
-          {active && active.state!=='EMPTY' && <p role="status">This slot contains a component. Use the Content inspector, or move it to unplaced with Undo available, before assigning a new component.</p>}
-          {active?.state==='EMPTY' && compatibleComponentsForSlot(slot).length===0 && <p role="status">
-            No verified compatible library component is available for this slot.
-            Private media requires separate asset registration and attestation.
-          </p>}
-          {active?.state==='EMPTY' && <ul className="ws-editor-compatible">{compatibleComponentsForSlot(slot).map(item=>
-            <li key={item.id}><button type="button" className="ws-secondary" disabled={saving}
-              onClick={()=>{if(apply({kind:'ASSIGN_COMPONENT',slotKey:slot,componentId:item.id}))
-                setTool('Content');}}>
-              <span>{item.label}</span><small>{item.id} · Source remains pinned</small>
-            </button></li>)}</ul>}
+        {tool === 'Components' && <div className="ws-editor-tool" aria-label="Slot compatibility">
+          <p className="ws-kicker">COMPONENT PLACEMENT</p>
+          <h2>Slot compatibility</h2>
+          <p>Only compatible, pinned source can be assigned; existing authored content is not silently replaced.</p>
+          {!active?<p role="status">Select an empty slot in Structure &amp; layers first.</p>:<>
+            <div className="ws-editor-compatibility">
+              <strong>Target slot</strong><span>{slot.replaceAll('-',' ')}</span>
+              <strong>State</strong><span>{active.state}</span>
+              <strong>Selected component</strong><span>{chosenComponent?.label??'Unavailable'}</span>
+              <strong>Required source</strong><span>{chosenComponent?.id??'Not verified'}</span>
+            </div>
+            {active.state!=='EMPTY'?<p role="status">This slot already holds a component. Move it to unplaced from Content to preserve an Undo path.</p>:
+              chosenComponent?<button type="button" className="ws-primary" disabled={saving}
+                onClick={()=>{if(apply({kind:'ASSIGN_COMPONENT',slotKey:slot,componentId:chosenComponent.id}))setTool('Content');}}>
+                Add to empty slot</button>:
+                <p role="status">No verified component is available for this media slot.</p>}
+          </>}
         </div>}
         {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
