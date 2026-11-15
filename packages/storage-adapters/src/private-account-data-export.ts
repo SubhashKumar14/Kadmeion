@@ -302,9 +302,16 @@ export class SupabasePrivateAccountDataExporter {
     }
     for(const row of envelope.verifiedReleaseHistory){
       requireCondition(object(row)&&isUuid(row.intent_id)&&isUuid(row.portfolio_id)&&isUuid(row.request_id)&&
-        typeof row.html_sha256==='string'&&/^[a-f0-9]{64}$/.test(row.html_sha256),
+        typeof row.html_sha256==='string'&&/^[a-f0-9]{64}$/.test(row.html_sha256)&&
+        safeRestrictedAudit(row),
       'INTEGRITY','Invalid verified release history.');
     }
+    const requiredAudit=['reviewerGrants','moderationCases','moderationEvents',
+      'accountExitRequests','reauthChallenges','inventorySnapshots',
+      'releasePointers','releaseEvents'];
+    requireCondition(Object.keys(envelope.restrictedAudit).sort().join(',')===
+      requiredAudit.sort().join(','),'INTEGRITY',
+      'Application metadata audit inventory omitted a required category.');
     for(const rows of Object.values(envelope.restrictedAudit)){
       requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&
         rows.every(row=>object(row)&&safeRestrictedAudit(row)),
