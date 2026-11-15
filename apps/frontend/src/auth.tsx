@@ -201,7 +201,7 @@ export function AuthApp(){
           </button>
         </div>
         <div className="auth-form-content">
-          {error && <div className="auth-error" role="alert">{error}</div>}
+          {error && mode!=='outcome' && <div className="auth-error" role="alert">{error}</div>}
           {notice && <div className="auth-notice" role="status">{notice}</div>}
           {mode==='signin' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Welcome to Kadmeion</p>
@@ -298,7 +298,7 @@ export function AuthApp(){
               {error?'Action not completed':outcome==='password-updated'?'Password updated':
                 outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Request submitted':'Session verified'}
             </h1>
-            <p className="auth-description">{notice||error||'Check your account details before continuing.'}</p>
+            <p className="auth-description" role={error?'alert':undefined}>{notice||error||'Check your account details before continuing.'}</p>
             {identity&&<p className="auth-identity">Verified account email: {identity}</p>}
             <button type="button" className="auth-submit" onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {identity&&auth&&<button type="button" className="auth-text-button" disabled={pending} onClick={()=>{

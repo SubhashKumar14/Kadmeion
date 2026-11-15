@@ -76,7 +76,7 @@ test('OAuth and recovery callbacks scrub tokens and fail closed when backend is 
   await page.goto('/auth/callback?code=abcdefgh123456789');
   await expect(page).toHaveURL(/\/auth\/callback$/);
   await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
-  await expect(page.getByText(/not configured for this preview/)).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('not configured for this preview');
   await page.goto('/reset-password#access_token=abc123test&refresh_token=12345abcde&type=recovery');
   await expect(page).toHaveURL(/\/reset-password$/);
   await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
