@@ -46,6 +46,7 @@ type Options={
   attestation?:Record<string,unknown>;
   audit?:Record<string,unknown>;
   auditAfter?:Record<string,unknown>;
+  metadata?:Record<string,unknown>;
 };
 function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'owner-jwt'){
   const paths:string[]=[];
@@ -64,6 +65,10 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
       identityCount++;
       return json({id:identityCount===2&&options.identity?options.identity:owner,
         email:'owner@example.test',app_metadata:{secret:'not exported'}});
+    }
+    if(url.pathname==='/rest/v1/rpc/owner_export_account_metadata'){
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_snapshot_id:snapshot});
+      return json(options.metadata??atomicMetadata());
     }
     if(url.pathname==='/rest/v1/rpc/reconcile_private_account_exit_storage'){
       assert.deepEqual(JSON.parse(init?.body as string),{p_snapshot_id:snapshot});
@@ -640,4 +645,90 @@ test('B09 recovery ZIP rejects central-directory and checksum tampering',async()
     zip.slice(0,-10)),{code:'INTEGRITY'});
   await assert.rejects(restoreBoundedPrivateAccountJsonFromRecoveryBundle(
     new Uint8Array(10*1024*1024+1)),{code:'INTEGRITY'});
+});
+
+const ATOMIC_TABLE_NAMES=[
+  'profiles','profile_sharing_preferences','private_onboarding_steps','projects',
+  'project_exposure_intents','portfolios','portfolio_revisions','project_assets',
+  'private_release_requests','private_trash_items','private_platform_links','private_goals',
+  'private_goal_progress_events','private_goal_milestones','private_notifications',
+  'private_notification_preferences'
+];
+function atomicMetadata():Record<string,unknown>{
+  return {
+    status:'APPLICATION_METADATA_SNAPSHOT',schemaVersion:1,snapshotId:snapshot,
+    ownerUserId:owner,capturedAt:'2026-11-15T10:20:00.000Z',
+    storageBytesIncluded:false,providerDataIncluded:false,deletionAllowed:false,
+    records:Object.fromEntries(ATOMIC_TABLE_NAMES.map(name=>[name,baseRows[name]??[]])),
+    restrictedAudit:{reviewerGrants:[{grant_id:'author-owned',activity:{event:'created'}}]},
+    verifiedReleaseHistory:[{
+      intent_id:'10000000-0000-4000-8000-000000000010',
+      portfolio_id:'10000000-0000-4000-8000-000000000011',
+      request_id:'10000000-0000-4000-8000-000000000012',
+      html_sha256:'a'.repeat(64)
+    }]
+  };
+}
+
+test('B09 atomic metadata export preserves all registered categories and pinned owner',async()=>{
+  const {service,paths}=fixture();
+  const result=await service.exportApplicationMetadata(snapshot);
+  assert.equal(result.filename,'kadmeion-account-metadata.json');
+  assert.equal(result.status,'APPLICATION_METADATA_SNAPSHOT');
+  assert.equal(result.storageBytesIncluded,false);
+  assert.equal(result.providerDataIncluded,false);
+  const parsed=JSON.parse(new TextDecoder().decode(result.bytes));
+  assert.deepEqual(Object.keys(parsed.records).sort(),[...ATOMIC_TABLE_NAMES].sort());
+  assert.equal(parsed.records.projects[0].owner_user_id,owner);
+  assert.equal(parsed.verifiedReleaseHistory.length,1);
+  assert.equal(parsed.restrictedAudit.reviewerGrants[0].activity.event,'created');
+  assert.equal(parsed.deletionAllowed,false);
+  assert.equal(paths.filter(p=>p.includes('/rpc/owner_export_account_metadata')).length,1);
+  assert.equal(paths.filter(p=>p==='/auth/v1/user').length,1);
+  assert.equal(paths.some(p=>p.startsWith('/storage/')),false,
+    'Atomic application metadata does not falsely claim Storage export');
+});
+
+test('B09 atomic metadata export rejects foreign owners, missing records and hidden nested credentials',async()=>{
+  const base=atomicMetadata();
+  const variants=[
+    (v:any)=>{v.ownerUserId=stranger;},
+    (v:any)=>{v.snapshotId=stranger;},
+    (v:any)=>{v.capturedAt='not-a-date';},
+    (v:any)=>{v.storageBytesIncluded=true;},
+    (v:any)=>{v.providerDataIncluded=true;},
+    (v:any)=>{v.deletionAllowed=true;},
+    (v:any)=>{delete v.records.projects;},
+    (v:any)=>{v.records.projects[0].owner_user_id=stranger;},
+    (v:any)=>{v.verifiedReleaseHistory[0].html_sha256='invalid';},
+    (v:any)=>{v.restrictedAudit.reviewerGrants[0].activity.credentials={
+      refresh_token:'should-never-leave-server'};},
+    (v:any)=>{v.restrictedAudit.reviewerGrants[0].activity.list=[
+      {tokens:{access_token:'nested-secret'}}];}
+  ];
+  for(const modify of variants){
+    const payload=structuredClone(base);modify(payload);
+    await assert.rejects(fixture({metadata:payload}).service.exportApplicationMetadata(snapshot),
+      {code:'INTEGRITY'});
+  }
+  await assert.rejects(fixture({failPath:'owner_export_account_metadata'})
+    .service.exportApplicationMetadata(snapshot),{code:'PROVIDER_UNAVAILABLE'});
+  const noToken=fixture({},async()=>null);
+  await assert.rejects(noToken.service.exportApplicationMetadata(snapshot),{code:'AUTH_EXPIRED'});
+  assert.equal(noToken.paths.length,0);
+});
+
+test('B09 bounded audit export and offline recovery reject recursively nested secrets',async()=>{
+  const original=await fixture().service.export(snapshot);
+  const parsed=JSON.parse(new TextDecoder().decode(original.bytes));
+  const nested=[{actor:{user:{credentials:{access_token:'secret'}}}}];
+  parsed.restrictedAudit.reviewerGrants=nested;
+  await assert.rejects(verifyBoundedPrivateAccountExport(
+    new TextEncoder().encode(JSON.stringify(parsed))),{code:'INTEGRITY'});
+  const categories={...parsed.restrictedAudit,reviewerGrants:nested};
+  const audit={snapshotId:snapshot,ownerUserId:owner,
+    status:'BOUNDED_OWNER_AUDIT',maxRowsPerCategory:100,categories,
+    tokenDigestsIncluded:false,sessionsIncluded:false,
+    completeAccountExport:false,deletionAllowed:false};
+  await assert.rejects(fixture({audit}).service.export(snapshot),{code:'INTEGRITY'});
 });
