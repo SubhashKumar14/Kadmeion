@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {
-  SupabasePrivateAccountDataExporter
+  SupabasePrivateAccountDataExporter,verifyBoundedPrivateAccountExport
 } from '../../packages/storage-adapters/src/private-account-data-export.ts';
 
 const owner='10000000-0000-4000-8000-000000000001';
@@ -419,4 +419,43 @@ test('export cancels a response stream when it crosses the byte cap',async()=>{
     async()=>new Response(oversized));
   await assert.rejects(exporter.export(snapshot),{code:'LIMIT_EXCEEDED'});
   assert.equal(cancelled,true);
+});
+
+
+test('bounded private export can be checked offline without claiming completeness or authenticity',async()=>{
+  const artifact=await fixture().service.export(snapshot);
+  const check=await verifyBoundedPrivateAccountExport(artifact.bytes);
+  assert.equal(check.status,'LOCALLY_CONSISTENT_PARTIAL_EXPORT');
+  assert.equal(check.ownerId,owner);assert.equal(check.inventorySnapshotId,snapshot);
+  assert.equal(check.assetsChecked,1);assert.equal(check.assetBytesChecked,png.length);
+  assert.ok(check.tablesChecked>=16);
+  assert.equal(check.sha256,createHash('sha256').update(artifact.bytes).digest('hex'));
+  assert.equal(check.completeAccountExport,false);
+  assert.equal(check.documentAuthenticityVerified,false);
+  assert.equal(check.deletionAllowed,false);
+});
+
+test('offline account export verification refuses modified bytes and false retention claims',async()=>{
+  const artifact=await fixture().service.export(snapshot);
+  const original=JSON.parse(new TextDecoder().decode(artifact.bytes));
+  const mutate=(edit:(x:any)=>void)=>{
+    const changed=structuredClone(original);edit(changed);
+    return new TextEncoder().encode(JSON.stringify(changed));
+  };
+  for(const bad of [
+    mutate(x=>{x.assets[0].base64=btoa('other bytes');}),
+    mutate(x=>{x.assets[0].expectedSha256='0'.repeat(64);x.assets[0].downloadedSha256='0'.repeat(64);}),
+    mutate(x=>{x.records.profiles[0].user_id=stranger;}),
+    mutate(x=>{x.records.projects=[];delete x.records.profiles;}),
+    mutate(x=>{x.limitations.completeAccountExport=true;}),
+    mutate(x=>{x.limitations.providerRetentionVerified=true;}),
+    mutate(x=>{x.evidence.downloadedByteCount+=1;}),
+    mutate(x=>{x.restrictedAudit.reviewerGrants=[{rawToken:'private'}];}),
+    mutate(x=>{x.assets[0].path='../outside';}),
+    mutate(x=>{x.deletionAllowed=true;})
+  ])await assert.rejects(verifyBoundedPrivateAccountExport(bad),{
+    code:'INTEGRITY'
+  });
+  await assert.rejects(verifyBoundedPrivateAccountExport(
+    new Uint8Array(16*1024*1024+1)),{code:'VALIDATION'});
 });

@@ -365,3 +365,159 @@ export class SupabasePrivateAccountDataExporter {
       completeAccountExport:false,deletionAllowed:false};
   }
 }
+
+
+/**
+ * B09 OFFLINE CHECK ONLY. Rechecks a downloaded bounded partial account export
+ * for internal consistency and exact embedded asset digests. It cannot prove
+ * document provenance, current provider state, completeness or erasure rights:
+ * anyone can forge a new JSON document with internally matching hashes.
+ */
+export interface VerifiedPartialAccountExport {
+  status:'LOCALLY_CONSISTENT_PARTIAL_EXPORT';
+  sha256:string;
+  ownerId:string;
+  inventorySnapshotId:string;
+  tablesChecked:number;
+  assetsChecked:number;
+  assetBytesChecked:number;
+  documentAuthenticityVerified:false;
+  completeAccountExport:false;
+  deletionAllowed:false;
+}
+export async function verifyBoundedPrivateAccountExport(
+  bytes:Uint8Array
+):Promise<VerifiedPartialAccountExport>{
+  requireCondition(bytes instanceof Uint8Array&&bytes.byteLength>0&&
+    bytes.byteLength<=MAX_EXPORT_BYTES,'VALIDATION',
+    'Invalid or oversized private export file.');
+  let raw:unknown;
+  try{raw=JSON.parse(decoder.decode(bytes));}
+  catch{throw new PrivateAccountExportError('INTEGRITY','Private export is not valid UTF-8 JSON.');}
+  const top=['assets','evidence','exportedAt','inventorySnapshotId','kind',
+    'limitations','owner','records','restrictedAudit','schemaVersion'];
+  requireCondition(object(raw)&&Object.keys(raw).sort().join(',')===top.join(',')&&
+    raw.kind==='kadmeion-bounded-private-account-export'&&raw.schemaVersion===1&&
+    typeof raw.exportedAt==='string'&&!Number.isNaN(Date.parse(raw.exportedAt))&&
+    isUuid(raw.inventorySnapshotId)&&object(raw.owner)&&
+    Object.keys(raw.owner).sort().join(',')==='email,id'&&isUuid(raw.owner.id)&&
+    (raw.owner.email===null||typeof raw.owner.email==='string')&&
+    object(raw.records)&&object(raw.restrictedAudit)&&
+    object(raw.evidence)&&object(raw.limitations)&&Array.isArray(raw.assets),
+    'INTEGRITY','Partial export structure or owner identity is invalid.');
+  const ownerId=raw.owner.id as string;
+  const tableNames=TABLES.map(row=>row[0]).sort();
+  const records=raw.records as JsonObject;
+  requireCondition(Object.keys(records).sort().join(',')===tableNames.join(','),
+    'INTEGRITY','Partial export has missing or unknown record categories.');
+  for(const [table,column] of TABLES){
+    const rows=records[table];
+    requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS,
+      'INTEGRITY','Partial export record category is invalid.');
+    for(const row of rows)
+      requireCondition(object(row)&&row[column]===ownerId,
+        'INTEGRITY','Partial export contains a foreign account row.');
+  }
+  const categories=['reviewerGrants','moderationCases','moderationEvents',
+    'accountExitRequests','reauthChallenges','inventorySnapshots',
+    'releasePointers','releaseEvents'];
+  const audit=raw.restrictedAudit as JsonObject;
+  requireCondition(Object.keys(audit).sort().join(',')===
+    [...categories].sort().join(','),'INTEGRITY',
+    'Private audit categories are missing or unexpected.');
+  const credentials=new Set(['token_sha256','rawToken','refresh_token',
+    'access_token','initial_session_id','verified_session_id']);
+  for(const category of categories){
+    const entries=audit[category];
+    requireCondition(Array.isArray(entries)&&entries.length<=MAX_ROWS,
+      'INTEGRITY','Partial audit category is invalid.');
+    for(const entry of entries)
+      requireCondition(object(entry)&&
+        !Object.keys(entry).some(key=>credentials.has(key)),
+        'INTEGRITY','Private audit contains an excluded secret field.');
+  }
+  const limitations=raw.limitations as JsonObject;
+  requireCondition(Object.keys(limitations).sort().join(',')===
+    'completeAccountExport,deletionAllowed,omittedCategories,providerRetentionVerified,publicRouteRevocationVerified'&&
+    limitations.completeAccountExport===false&&
+    limitations.deletionAllowed===false&&
+    limitations.providerRetentionVerified===false&&
+    limitations.publicRouteRevocationVerified===false&&
+    Array.isArray(limitations.omittedCategories)&&
+    limitations.omittedCategories.length>0&&limitations.omittedCategories.length<=16&&
+    limitations.omittedCategories.every(value=>typeof value==='string'&&
+      value.length>0&&value.length<=120),
+    'INTEGRITY','Export limitations must not claim unsupported guarantees.');
+  const evidence=raw.evidence as JsonObject;
+  const keys=['registeredAssets','downloadedAssets','downloadedByteCount',
+    'downloadedByteHashes','providerExpectedHashesVerified',
+    'providerObjectVersionPinned','trustedServerWorkerHashesVerified',
+    'storageObjectVersionCheckedBeforeAndAfter','crossTableAtomicSnapshot',
+    'storageReconciliationBeforeAndAfter'];
+  requireCondition(Object.keys(evidence).sort().join(',')===
+    keys.sort().join(',')&&
+    evidence.downloadedByteHashes==='SHA-256'&&
+    evidence.providerExpectedHashesVerified===false&&
+    evidence.providerObjectVersionPinned===false&&
+    evidence.trustedServerWorkerHashesVerified===true&&
+    evidence.storageObjectVersionCheckedBeforeAndAfter===true&&
+    evidence.crossTableAtomicSnapshot===false&&
+    evidence.storageReconciliationBeforeAndAfter===true,
+    'INTEGRITY','Private export evidence has unsupported assurances.');
+  const assets=raw.assets as unknown[];
+  const registered=records.project_assets as JsonObject[];
+  requireCondition(assets.length<=MAX_ASSETS&&registered.length===assets.length&&
+    evidence.registeredAssets===assets.length&&
+    evidence.downloadedAssets===assets.length,
+    'INTEGRITY','Private export asset coverage is incomplete.');
+  const seen=new Set<string>();
+  let byteCount=0;
+  for(const entry of assets){
+    requireCondition(object(entry)&&
+      Object.keys(entry).sort().join(',')===
+      'base64,byteSize,downloadedSha256,expectedSha256,mimeType,path,storageObjectId,storageVersionAtRead'&&
+      typeof entry.path==='string'&&
+      new RegExp('^'+ownerId+'/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$').test(entry.path)&&
+      !seen.has(entry.path)&&
+      isUuid(entry.storageObjectId)&&
+      typeof entry.storageVersionAtRead==='string'&&
+      entry.storageVersionAtRead.length>0&&entry.storageVersionAtRead.length<=128&&
+      typeof entry.mimeType==='string'&&
+      ['image/png','image/jpeg','image/webp','image/avif'].includes(entry.mimeType)&&
+      typeof entry.byteSize==='number'&&Number.isSafeInteger(entry.byteSize)&&
+      entry.byteSize>0&&entry.byteSize<=MAX_ASSET_BYTES&&
+      typeof entry.expectedSha256==='string'&&
+      /^[0-9a-f]{64}$/.test(entry.expectedSha256)&&
+      entry.downloadedSha256===entry.expectedSha256&&
+      typeof entry.base64==='string'&&
+      entry.base64.length<=Math.ceil(MAX_ASSET_BYTES/3)*4&&
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(entry.base64),
+      'INTEGRITY','Private export asset metadata is invalid.');
+    seen.add(entry.path);
+    requireCondition(registered.some(row=>row.object_path===entry.path&&
+      row.mime_type===entry.mimeType&&row.byte_size===entry.byteSize),
+      'INTEGRITY','Private exported bytes lack an owner asset row.');
+    let rawBytes:Uint8Array;
+    try{
+      const binary=atob(entry.base64 as string);
+      rawBytes=Uint8Array.from(binary,char=>char.charCodeAt(0));
+    }catch{throw new PrivateAccountExportError('INTEGRITY','Asset base64 cannot be decoded.');}
+    requireCondition(rawBytes.byteLength===entry.byteSize,
+      'INTEGRITY','Private asset byte count is inconsistent.');
+    byteCount+=rawBytes.length;
+    requireCondition(byteCount<=MAX_TOTAL_ASSET_BYTES&&
+      await sha256(rawBytes)===entry.expectedSha256,
+      'INTEGRITY','Private asset SHA-256 does not match its archive bytes.');
+  }
+  requireCondition(evidence.downloadedByteCount===byteCount,
+    'INTEGRITY','Private export byte total does not match its evidence.');
+  return {
+    status:'LOCALLY_CONSISTENT_PARTIAL_EXPORT',
+    sha256:await sha256(bytes),
+    ownerId,inventorySnapshotId:raw.inventorySnapshotId as string,
+    tablesChecked:TABLES.length,assetsChecked:assets.length,
+    assetBytesChecked:byteCount,
+    documentAuthenticityVerified:false,completeAccountExport:false,
+    deletionAllowed:false
+  };
+}
