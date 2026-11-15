@@ -99,6 +99,8 @@ const justifiedExtra = [
   // with separately testable bounded responses, NOT owner-authorized file cap.
   'packages/contracts/src/private-platform-links-service.ts',
   'tests/contracts/private-platform-links-service.test.ts',
+  // P2 actual owner Growth screens (35–40) with manual-only data provenance.
+  'apps/frontend/src/growth.tsx',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));

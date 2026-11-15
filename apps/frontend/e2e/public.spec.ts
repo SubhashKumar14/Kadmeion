@@ -129,7 +129,7 @@ test('auth recovery and registration remain disabled until actual sender proof',
 });
 
 test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
-  for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals']) {
+  for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
     await page.goto(route);
     await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');

@@ -10,6 +10,7 @@ import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, Portfoli
 import { PortfolioRelease, releaseRoute } from './release.tsx';
 import { OwnerSettings, isSettingsRoute } from './settings.tsx';
 import { OperatorConsole, isOperatorRoute } from './operations.tsx';
+import { GrowthApp, isGrowthRoute } from './growth.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -22,6 +23,7 @@ const NAV = [
   { title: 'Portfolio Studio', href: '/app/portfolios', icon: 'layers' },
   { title: 'Profile', href: '/app/profile', icon: 'user' },
   { title: 'Projects', href: '/app/projects', icon: 'folder' },
+  { title: 'Growth', href: '/app/growth', icon: 'activity' },
   { title: 'Settings', href: '/app/settings', icon: 'user' },
   { title: 'Templates', href: '/templates', icon: 'folder' },
   { title: 'Explore', href: '/explore', icon: 'activity' }
@@ -32,7 +34,7 @@ function projectIdFromRoute(path: string): string | undefined {
 }
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || isOperatorRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || isOperatorRoute(path) || isGrowthRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -62,7 +64,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     </aside>
     <div className="ws-main-col">
       <header className="ws-topbar">
-        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : route.startsWith('/app/portfolios') ? 'Portfolio Studio' : isSettingsRoute(route) ? 'Settings' : isOperatorRoute(route) ? 'Restricted operations' : 'Overview'}</span>
+        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : route.startsWith('/app/portfolios') ? 'Portfolio Studio' : isSettingsRoute(route) ? 'Settings' : isOperatorRoute(route) ? 'Restricted operations' : isGrowthRoute(route) ? 'Growth' : 'Overview'}</span>
         <div className="ws-topbar-actions">
           <button type="button" className="ws-theme" onClick={toggleTheme}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
@@ -90,12 +92,12 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Private portfolio chooser available' },
-    { key: 'connections', title: 'Connect developer accounts', description: 'Optional. You can continue without GitHub or any external account.', state: 'Connection controls not available yet' }
+    { key: 'connections', title: 'Connect developer accounts', description: 'Optional. You can continue without GitHub or any external account.', state: 'Optional private handle links available' }
   ];
   function choose() {
     if (choice === 'portfolio') { window.location.assign('/app/portfolios/new'); return; }
     if (choice === 'profile') { window.location.assign('/app/profile'); return; }
-    setNote('Developer connections are optional and unavailable in this workspace.');
+    window.location.assign('/app/integrations');
   }
   return <section className="ws-onboarding" aria-labelledby="ws-title">
     <div className="ws-heading"><p className="ws-kicker">WELCOME / FIRST STEPS</p>
@@ -218,7 +220,7 @@ export function WorkspaceApp() {
           return;
         }
         setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
-        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') || isSettingsRoute(route) || isOperatorRoute(route)) return;
+        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') || isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
         void port.readOwnerWorkspace().then(read=>{
           if (cancelled) return;
           if (read.error || !read.data) {
@@ -285,6 +287,7 @@ export function WorkspaceApp() {
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
       isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
       isOperatorRoute(route) && authRef.current ? <OperatorConsole port={authRef.current} path={route}/> :
+      isGrowthRoute(route) && authRef.current ? <GrowthApp port={authRef.current} path={route}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div className="ws-skeleton-heading" aria-hidden="true"/>

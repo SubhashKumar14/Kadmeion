@@ -698,3 +698,20 @@ Root cause of missing frontend CI on shared-source corrections: `.github/workflo
 **Scope:** Real owner-only six-provider `LINK_ONLY` handles from existing hosted migration `20261115110000_private_platform_links`, without fabricated OAuth, scraping, ownership verification, sync or public exposure. Added `packages/contracts/src/private-platform-links-service.ts` with strict fixed-host URL/handle checks, owner identity, token-scoped requests, bounded JSON, no-store, exact receipts and 403 denial; added `tests/contracts/private-platform-links-service.test.ts` for create/edit/remove/forged-data/absent JWT; explicitly documented both new file-budget exceptions. No hosted migration or paid provider call. This is a code checkpoint pending exact-SHA CI; no claim that P2 frontend screens are finished yet.
 
 **Next:** Wrap service and existing `SupabasePrivateGoalsService` behind verified owner session, implement approved private Growth/Activity/DevScore/Goals/Analytics/Connections UI screens 35–40, test disposable-user private state, preserve unsupported analytics/score as honest unavailable not fictitious dashboards.
+
+---
+
+## Frontend P2 GROWTH-01–06 implementation checkpoint — 15 Nov 2026
+
+**Backend and approved source:** Existing hosted `private_goals`, `private_goal_progress_events`, `private_goal_milestones` and six-provider `private_platform_links` tables enforce owner RLS. UI spec 35–40 and approved LIGHT source PNGs are authority, not evidence of acceptance. No external provider metrics/analytics source exists. Start SHA `4d426b21948f947355f0cd7bb27559279b1f1b43`. The secure LINK_ONLY contract/test commit has green frontend CI; final database run on that SHA requires checking.
+
+**Real code in this commit (pending its own exact-SHA CI):**
+- `apps/frontend/src/growth.tsx`: six owner-only UI surfaces with truthful routes: private growth summary from loaded goal rows; per-goal manually recorded activity; DevScore explicitly unavailable absent validated factor evidence; Goals CRUD subset with owner-RLS create/status updates, absolute progress events, milestones/mark complete, retry/loading/empty states; Analytics remains disabled until consent-backed tracking and public host are proven; six link-only manual provider profiles with exact backend acknowledgments and disconnects, no fake sync or claimed identity proof.
+- `apps/auth-web/src/supabase-auth-port.ts`: session-bound `ownerGrowth()` constructs secure existing Goals and new PlatformLinks services; live Auth session rechecked on token request.
+- `apps/frontend/src/workspace.tsx`: routes/nav and onboarding connections link to private manual profiles, no longer incorrectly says unavailable; `workspace.css` provides reusable responsive light/dark Growth layouts.
+- `apps/frontend/e2e/public.spec.ts`: anonymous denial on all six new routes; `apps/frontend/e2e/owner.spec.ts`: local owner authenticated goal-create/progress/milestone persistence, Activity/DevScore/Analytics truthfulness, private GitHub LINK_ONLY save and reload, six Chromium screenshot capture names.
+- `scripts/check-file-budget.mjs`: proposed source budget exception for isolated Growth UI file. All overage still requires owner decision.
+
+**Important limits:** No DevScore numeric computation (no credible source evidence), no visitor Analytics enablement or fake graphs, no provider OAuth or sync; these are explicitly deferred capabilities, not completed live features. Goal status update has owner RLS but not a CAS revision primitive, so no cross-tab concurrency guarantee is claimed. Full 52-screen visual pixel comparison, complete UAT/WCAG, public host/revocation and all external gates remain incomplete.
+
+**Next:** Verify build/TS7/Node/Chromium and isolated database CI at this exact SHA; fix failures. Confirm new screenshots against registered originals after authenticated artifact availability; implement incomplete P1 reviewer/public fallback UI and source-safe editor controls, then trace every UAT gate. Persist evidence to Notion and GitHub before ending.

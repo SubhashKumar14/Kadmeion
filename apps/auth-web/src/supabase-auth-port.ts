@@ -716,6 +716,27 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** Owner-scoped manual Goals + LINK_ONLY profiles. No external provider sync or analytics. */
+  async ownerGrowth() {
+    return this.outcome(async () => {
+      const {userId} = await this.ownerSession();
+      const token = async () => {
+        try {
+          const current = await this.ownerSession();
+          return current.userId === userId ? current.session.access_token : null;
+        } catch { return null; }
+      };
+      const [goalModule,linkModule] = await Promise.all([
+        import('../../../packages/contracts/src/private-goals-service.ts'),
+        import('../../../packages/contracts/src/private-platform-links-service.ts')
+      ]);
+      return {
+        goals: new goalModule.SupabasePrivateGoalsService(this.origin,this.publishableKey,token,this.fetcher),
+        links: new linkModule.SupabasePrivatePlatformLinksService(this.origin,this.publishableKey,userId,token,this.fetcher)
+      };
+    });
+  }
+
   async ownerSettings() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();

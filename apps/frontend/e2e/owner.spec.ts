@@ -54,7 +54,7 @@ async function signIn(page: Page, user: {email: string; password: string}) {
 
 test('real owner onboarding and project revision are private across browser sessions', async ({page, browser}, testInfo) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const [owner, outsider] = await Promise.all([localUser('CI Portfolio Owner'), localUser('CI Other Owner')]);
   const captureDir = process.env.KADMEION_BROWSER_CAPTURE_DIR;
   async function capture(name: string) {
@@ -99,6 +99,47 @@ test('real owner onboarding and project revision are private across browser sess
   } finally {
     await stale.close();
   }
+
+  await page.goto('/app/growth/goals');
+  await expect(page.getByRole('heading', {name: 'Your goals', exact: true, level: 1})).toBeVisible();
+  await page.getByLabel('Goal title').fill('CI private practice goal');
+  await page.getByLabel('Description').fill('Owner-only browser learning plan');
+  await page.getByLabel('Optional target value').fill('10');
+  await page.getByLabel('Target unit').fill('sessions');
+  await page.getByRole('button', {name: 'Create private goal'}).click();
+  await expect(page.getByRole('status')).toContainText('Owner-private goal saved.');
+  await expect(page.getByRole('button', {name: 'CI private practice goal'})).toBeVisible();
+  await page.getByRole('button', {name: 'CI private practice goal'}).click();
+  await page.getByLabel('New absolute progress value').fill('3');
+  await page.getByLabel('Manual progress note').fill('Private self-reported update');
+  await page.getByRole('button', {name: 'Record manual progress'}).click();
+  await expect(page.getByRole('status')).toContainText('Manual progress saved privately.');
+  await page.getByLabel('New milestone').fill('Finish the basic exercises');
+  await page.getByRole('button', {name: 'Add milestone'}).click();
+  await expect(page.getByRole('status')).toContainText('Milestone saved privately.');
+  await capture('38_PRIVATE_GOALS_BROWSER');
+  await page.goto('/app/growth');
+  await expect(page.getByText('Private progress, not a leaderboard.')).toBeVisible();
+  await capture('35_GROWTH_BROWSER');
+  await page.goto('/app/growth/activity');
+  await page.getByLabel('Activity goal').selectOption({label: 'CI private practice goal'});
+  await expect(page.getByText('Private self-reported update')).toBeVisible();
+  await capture('36_ACTIVITY_BROWSER');
+  await page.goto('/app/growth/devscore');
+  await expect(page.getByText('A numeric DevScore is unavailable.')).toBeVisible();
+  await capture('37_DEVSCORE_BROWSER');
+  await page.goto('/app/analytics');
+  await expect(page.getByRole('button', {name: 'Enable portfolio analytics'})).toBeDisabled();
+  await capture('39_ANALYTICS_BROWSER');
+  await page.goto('/app/integrations');
+  const gitHubCard = page.getByRole('article', {name: 'GitHub'});
+  await gitHubCard.getByLabel('Public handle').fill('ci-browser-owner');
+  await gitHubCard.getByRole('button', {name: 'Save private link'}).click();
+  await expect(gitHubCard.getByRole('status')).toContainText('No provider sync or ownership verification');
+  await expect(gitHubCard.getByText('https://github.com/ci-browser-owner')).toBeVisible();
+  await capture('40_CONNECTIONS_BROWSER');
+  await page.reload();
+  await expect(page.getByRole('article', {name: 'GitHub'}).getByText('https://github.com/ci-browser-owner')).toBeVisible();
 
   await page.goto('/app/onboarding');
   await expect(page.getByRole('group', {name: 'Choose your next step'})).toBeVisible();
