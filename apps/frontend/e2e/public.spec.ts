@@ -180,3 +180,34 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
   await page.getByRole('link', {name: 'Return to home'}).click();
   await expect(page).toHaveURL('/');
 });
+
+test('reviewer and public candidate addresses disclose no records, no token and remain noindex',async({page})=>{
+  const fakeGrant='11111111-1111-4111-8111-111111111111.'+'a'.repeat(64);
+  const privateCandidates=[
+    ['/r/'+fakeGrant,'Reviewer preview unavailable.'],
+    ['/u/someauthor','Developer identity unavailable.'],
+    ['/u/someauthor/projects/private-project','Project story unavailable.'],
+    ['/someauthor/private-portfolio','Portfolio page unavailable.']
+  ] as const;
+  for(const [route,title] of privateCandidates){
+    let external=0;
+    const outbound=(req:import('@playwright/test').Request)=>{
+      if(!req.url().startsWith('http://127.0.0.1:4173/'))external++;
+    };
+    page.on('request',outbound);
+    await page.goto(route);
+    await expect(page.getByRole('heading',{name:title})).toBeVisible();
+    await expect(page.getByRole('status')).toContainText(route.startsWith('/r/')
+      ? 'cannot verify a reviewer token' : 'Only an independently verified public delivery service');
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content','noindex, nofollow, noarchive');
+    await expect(page.getByText(/does not confirm whether any account/)).toBeVisible();
+    await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText(fakeGrant);
+    expect(external).toBe(0);
+    page.off('request',outbound);
+  }
+  await page.goto('/app');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await page.goto('/private-or-expired-example');
+  await expect(page.getByRole('heading',{name:'This page is unavailable.'})).toBeVisible();
+});

@@ -523,3 +523,9 @@ p{line-height:1.55}
 .system-status-note{padding-top:15px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;margin:0}
 @media(max-width:580px){.system-status{padding:29px 22px}.system-status-brand{margin-bottom:45px}
   .system-status-actions{flex-direction:column}.system-status-primary,.system-status-secondary{width:100%}}
+
+/* Neutral 28 / 31–34 visitor states while host-side delivery remains disabled. */
+.visitor-delivery-gate{max-width:960px}
+.visitor-delivery-gate .system-status-disclosure{font-size:13px;line-height:1.65;
+  max-width:590px;color:var(--body);padding:13px 0;border-block:1px solid var(--line)}
+.visitor-delivery-gate .system-status-actions{margin-bottom:24px}
