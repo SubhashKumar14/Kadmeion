@@ -20,6 +20,7 @@ import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/s
 import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapters/src/private-account-data-export.ts';
 import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
 import {SupabasePortfolioRevisionStore} from '../../packages/storage-adapters/src/supabase-portfolio-revisions.ts';
+import {SupabaseMyComponentsService} from '../../packages/contracts/src/private-my-components-service.ts';
 
 
 function localSupabaseCredentials() {
@@ -1796,4 +1797,65 @@ test('P2: real JWT link-only public profile handles never become foreign-visible
   assert.equal(deleted.length,1);
   assert.equal(successful(await send('/rest/v1/private_platform_links?select=id',
     bearer(owner)),'Five remaining links').length,5);
+});
+
+test('B08/WF-025: real GoTrue identity, private versions and replay-safe component reuse',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('mycomponent-owner');
+  const outsider=await adminUser('mycomponent-other');
+  const mine=new SupabaseMyComponentsService(cfg.origin,cfg.anon,async()=>owner.token);
+  const theirs=new SupabaseMyComponentsService(cfg.origin,cfg.anon,async()=>outsider.token);
+  const original='export const title = "original trusted library reference";';
+  const custom='export const title = "private author source";';
+  const componentKey='saved-title-'+randomUUID().slice(0,6);
+  const input={
+    operationId:randomUUID(),componentKey,displayName:'Personal headline',
+    baseComponentPin:'title-stacked@1',pristineSource:original,sourceCode:custom,
+    compatibleSlotKinds:['title','text']
+  };
+  assert.ok(!(await send('/rest/v1/private_my_component_versions?select=*',
+    bearer(owner))).ok,'Owner direct-table SELECT must be disabled');
+  assert.ok(!(await send('/rest/v1/private_my_component_versions?select=*',
+    bearer(outsider))).ok,'Foreign account cannot query source table');
+  assert.ok(!(await send('/rest/v1/rpc/owner_list_my_component_versions',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:{}
+  })).ok,'Anonymous caller must never enumerate reusable source');
+  const first=await mine.saveVersion(input);
+  assert.equal(first.id,input.operationId);
+  assert.equal(first.owner_user_id,owner.id);
+  assert.equal(first.version,1);
+  assert.equal(first.source_code,custom);
+  assert.equal(first.source_sha256,createHash('sha256').update(custom).digest('hex'));
+  assert.deepEqual(first.compatible_slot_kinds,['text','title']);
+  assert.deepEqual(await mine.saveVersion(input),first,'same operation ID is idempotent');
+  await assert.rejects(mine.saveVersion({...input,sourceCode:'different bytes'}),
+    {code:'CONFLICT'});
+  const second=await mine.saveVersion({...input,operationId:randomUUID(),
+    sourceCode:'export const title = "new version";'});
+  assert.equal(second.version,2,'version allocation must be monotonic');
+  const all=await mine.listVersions();
+  assert.equal(all.length,2);
+  assert.equal(all[0].version,2);
+  assert.equal(all[1].version,1);
+  assert.deepEqual(await mine.getVersion(first.id),first);
+  assert.equal(await theirs.getVersion(first.id),null);
+  assert.deepEqual(await theirs.listVersions(),[]);
+  // There is no public trust flag or direct client ability to insert/update.
+  assert.ok(!(await send('/rest/v1/private_my_component_versions',{
+    ...json(owner),method:'POST',body:{
+      id:randomUUID(),owner_user_id:owner.id,component_key:'publicly-trusted',
+      version:1,source_code:'const x=1;',public_executable:true
+    }
+  })).ok,'A client cannot forge server-owned trust or append private code directly');
+  assert.ok(!(await send('/rest/v1/private_my_component_versions?id=eq.'+first.id,{
+    ...json(owner),method:'PATCH',body:{source_code:'replace without version'}
+  })).ok,'An owner cannot mutate historical source bytes');
+  const foreignSave=await send('/rest/v1/rpc/owner_save_my_component',{
+    ...json(outsider),method:'POST',body:{
+      p_operation_id:first.id,p_component_key:componentKey,
+      p_display_name:'Personal headline',p_base_component_pin:'title-stacked@1',
+      p_pristine_source:original,p_source_code:custom,p_slot_kinds:['title']
+    }
+  });
+  assert.ok(!foreignSave.ok,'A cross-account replay cannot claim an existing version ID');
 });
