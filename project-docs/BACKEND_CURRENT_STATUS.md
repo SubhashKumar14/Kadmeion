@@ -7,6 +7,10 @@
 - The host withdrawal verifier checks the exact currently served media when a trusted manifest supplies the PNG paths, then checks canonical and every scoped direct path for GET/HEAD denial and cache-safety. A negative-only path does not count as previously served media.
 - This private storage layer does not activate public routes, publish custom JavaScript, make historical objects directly public, or establish hosted release and reviewer revocation. A media-aware host adapter, provider acceptance and end-to-end publishing/rollback/withdrawal proof remain required.
 
+## B09 erasure and upload cleanup share one revocation prerequisite
+
+Pending migration `20261115130002_account_exit_storage_revocation_gate.sql` checks the same exposure predicate before listing uploads for erasure, deleting them via Storage RLS or deleting the active account. Cleanup also checks the live session expiry. This preserves private uploads for an owner whose exit is blocked by unverified release or reviewer withdrawal. The app stores no new deletion proof and keeps provider/backup erasure unverified.
+
 ## B07 hosted foundation rollout — 15 November 2026
 
 **B07 HOSTED FOUNDATION DEPLOYMENT: COMPLETE.** All 47 migrations, 3 Edge functions and live no-credential deny-by-default smoke verified; downstream production acceptance remains independent.

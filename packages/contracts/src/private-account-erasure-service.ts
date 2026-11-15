@@ -429,6 +429,8 @@ export class SupabasePrivateAccountErasureService {
       if(remaining.some(path=>path.split('/')[0]!==paths[0].split('/')[0])||
         paths.some(path=>remaining.includes(path)))
         throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
+      if(await this.token()!==jwt)
+        throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during upload removal.');
       // A full first page could hide an undeleted path after a concurrent upload.
       if(remaining.length===100&&!(await confirmedRemoval(response,paths)))
         throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Storage could not confirm this batch. Retry cleanup.');

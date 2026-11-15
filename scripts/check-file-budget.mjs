@@ -20,7 +20,8 @@ const justifiedExtra = [
   'packages/storage-adapters/src/safe-png-publication.ts',
   'tests/editor/safe-png-publication.test.ts',
   'supabase/migrations/20261115130000_erasure_public_release_revocation_gate.sql',
-  'supabase/migrations/20261115130001_private_frozen_media_candidates.sql'
+  'supabase/migrations/20261115130001_private_frozen_media_candidates.sql',
+  'supabase/migrations/20261115130002_account_exit_storage_revocation_gate.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

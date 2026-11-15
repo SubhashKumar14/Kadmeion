@@ -752,6 +752,20 @@ test('account erasure removes active account data only after fresh owner confirm
   await send(objectPath, {...bearer(owner), method: 'DELETE'});
   assert.equal((await execute(fresh)).data?.message, 'ERASURE_STORAGE_CLEANUP_REQUIRED');
   const service = new SupabasePrivateAccountErasureService(cfg.origin, cfg.anon, async () => fresh.token);
+  const sharingPath='/rest/v1/profile_sharing_preferences';
+  successful(await send(sharingPath,{
+    ...json(fresh),method:'POST',
+    body:{user_id:owner.id,publication_requested:true,share_display_name:true}
+  }),'Set exposure consent fixture');
+  assert.equal((await execute(fresh)).data?.message,'ERASURE_PUBLIC_REVOCATION_UNVERIFIED');
+  await assert.rejects(service.removeUploadBatch(),{code:'CONFLICT'});
+  await send(objectPath,{...bearer(fresh),method:'DELETE'});
+  const privateObject='/storage/v1/object/authenticated/'+bucket+'/'+owner.id+'/exit/test.png';
+  assert.equal((await send(privateObject,bearer(fresh))).ok,true,
+    'Direct Storage delete bypassed the account exit revocation prerequisite');
+  successful(await send(sharingPath+'?user_id=eq.'+owner.id,{
+    ...json(fresh),method:'PATCH',body:{publication_requested:false}
+  }),'Withdraw the unpublished exposure consent');
   assert.equal(await service.removeUploadBatch(), 1);
   assert.equal(await service.removeUploadBatch(), 0);
   const receipt = await service.execute(request.requestId, challenge.challengeId, 'DELETE MY ACCOUNT');

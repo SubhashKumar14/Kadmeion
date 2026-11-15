@@ -436,3 +436,19 @@ test('account deletion refuses an unverified external release and CDN revocation
     (error as {code?:string}).code==='CONFLICT'&&
     error.message.includes('independently revoked'));
 });
+
+
+test('a session switch while verifying upload removal cannot acknowledge the previous account',async()=>{
+  const path=operationId+'/exit/file.png';
+  let token='owner-jwt';
+  let calls=0;
+  const service=new SupabasePrivateAccountErasureService(origin,'publishable',async()=>token,
+    async(_url,init)=>{
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer owner-jwt');
+      if(++calls===1)return ok([path]);
+      if(calls===3)token='other-owner-jwt';
+      return ok([]);
+    });
+  await assert.rejects(service.removeUploadBatch(),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,3);
+});
