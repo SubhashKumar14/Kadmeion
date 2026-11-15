@@ -1,3 +1,4 @@
+import { isSafeSupabaseClientKey } from './project.ts';
 /**
  * Owner-JWT-only private Growth goals. Progress is deliberately MANUAL;
  * no provider facts, public analytics, fabricated scores or verification
@@ -122,6 +123,8 @@ export class SupabasePrivateGoalsService {
        ['127.0.0.1','localhost'].includes(url.hostname)))||
        url.username||url.password||url.pathname!=='/'||url.search||url.hash||
        typeof publishableKey!=='string'||!publishableKey.trim())
+      throw new PrivateGoalsError('VALIDATION');
+    if(!isSafeSupabaseClientKey(publishableKey))
       throw new PrivateGoalsError('VALIDATION');
     this.origin=url.origin;this.key=publishableKey;this.token=token;this.http=http;
   }

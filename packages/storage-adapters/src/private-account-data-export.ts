@@ -1,3 +1,4 @@
+import { isSafeSupabaseClientKey } from '../../contracts/src/project.ts';
 /**
  * B5 bounded, read-only owner data export. This is deliberately NOT a complete
  * account export, atomic snapshot, erasure manifest, or public release.
@@ -100,6 +101,8 @@ export class SupabasePrivateAccountDataExporter {
       'VALIDATION','Trusted Supabase API origin required.');
     requireCondition(typeof publishableKey==='string'&&publishableKey.trim().length>0,
       'VALIDATION','Publishable key required.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new PrivateAccountExportError('VALIDATION','A public Supabase API key is required.');
     this.origin=url.origin;this.publishableKey=publishableKey;
     this.accessToken=accessToken;this.http=http;
   }

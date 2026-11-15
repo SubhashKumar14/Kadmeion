@@ -1,4 +1,25 @@
 /** Phase-1 contracts: never treat browser validation as an RLS substitute. */
+/**
+ * Guard public Supabase clients against accidental use of an RLS-bypassing
+ * secret or legacy service_role JWT. This does not verify JWT signatures:
+ * server-side RLS and trusted configuration are still mandatory.
+ */
+export function isSafeSupabaseClientKey(value:unknown):value is string {
+  if(typeof value!=='string'||value.length===0||value.length>4096||
+    value.trim()!==value||/[\s\u0000-\u001f\u007f]/.test(value)||
+    /^sb_(?:secret|service_role)_/i.test(value))return false;
+  if(value.startsWith('eyJ')){
+    const parts=value.split('.');
+    if(parts.length!==3||parts.some(part=>!/^[A-Za-z0-9_-]+$/.test(part)))return false;
+    try{
+      const payload:unknown=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
+      return payload!==null&&typeof payload==='object'&&!Array.isArray(payload)&&
+        (payload as {role?:unknown}).role==='anon';
+    }catch{return false;}
+  }
+  return true;
+}
+
 export const HANDLE_PATTERN = /^[a-z][a-z0-9_]{2,29}$/;
 export const RESERVED_HANDLES = new Set([
   'admin', 'api', 'auth', 'dashboard', 'edit', 'explore', 'help',

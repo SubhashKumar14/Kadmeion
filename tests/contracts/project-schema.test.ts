@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeHandle, normalizeExternalHttpsUrl, ContractError } from '../../packages/contracts/src/index.ts';
+import { normalizeHandle, normalizeExternalHttpsUrl, ContractError, isSafeSupabaseClientKey } from '../../packages/contracts/src/index.ts';
 
 test('handles normalize and reject reserved, malformed and overlong names', () => {
   assert.equal(normalizeHandle('  Dev_123  '), 'dev_123');
@@ -17,4 +17,16 @@ test('external links accept HTTPS and reject credentials or private destinations
     'https://example.com/\nsecret', 'not a url', 1]) {
     assert.throws(() => normalizeExternalHttpsUrl(value), ContractError);
   }
+});
+
+test('public key guard rejects legacy privileged JWT and modern secret keys',()=>{
+ const jwt=(role:string)=>['eyJhbGciOiJIUzI1NiJ9',
+   Buffer.from(JSON.stringify({role})).toString('base64url'),
+   'c2lnbmF0dXJl'].join('.');
+ for(const good of ['sb_publishable_test',jwt('anon')])
+   assert.equal(isSafeSupabaseClientKey(good),true);
+ for(const bad of [
+   jwt('service_role'),jwt('supabase_admin'),'sb_secret_private',
+   'sb_service_role_private','eyJmalformed',' sb_publishable_spaced ',''
+ ])assert.equal(isSafeSupabaseClientKey(bad),false);
 });

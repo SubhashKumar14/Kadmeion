@@ -53,3 +53,18 @@ test('network errors and unauthorized responses are distinct and never reported 
     return error instanceof OnboardingServiceError && error.code==='AUTH_REQUIRED';
   });
 });
+
+test('onboarding rejects privileged keys and embedded endpoint credentials',()=>{
+ const jwt=['eyJhbGciOiJIUzI1NiJ9',
+   Buffer.from(JSON.stringify({role:'service_role'})).toString('base64url'),
+   'c2lnbmF0dXJl'].join('.');
+ for(const publishableKey of ['sb_secret_private',jwt])
+   assert.throws(()=>new SupabasePrivateOnboardingService({
+     supabaseUrl:'https://tenant.supabase.co',publishableKey,
+     token:async()=>null
+   }),{code:'VALIDATION'});
+ assert.throws(()=>new SupabasePrivateOnboardingService({
+   supabaseUrl:'https://user:pass@tenant.supabase.co',
+   publishableKey:'sb_publishable_ok',token:async()=>null
+ }),{code:'VALIDATION'});
+});

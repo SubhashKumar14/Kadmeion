@@ -1,3 +1,4 @@
+import { isSafeSupabaseClientKey } from './project.ts';
 /**
  * WF-045 owner notifications. The authoritative event source is the committed
  * PostgreSQL trigger, not fabricated client-side activity. All reads use
@@ -157,6 +158,8 @@ export class SupabasePrivateNotificationsService {
       typeof publishableKey!=='string'||!publishableKey.trim()||
       publishableKey.startsWith('sb_secret_')||!id(ownerUserId)||
       typeof accessToken!=='function')
+      throw new PrivateNotificationsError('VALIDATION');
+    if(!isSafeSupabaseClientKey(publishableKey))
       throw new PrivateNotificationsError('VALIDATION');
     this.origin=u.origin;this.key=publishableKey;
     this.owner=ownerUserId.toLowerCase();this.token=accessToken;this.http=http;

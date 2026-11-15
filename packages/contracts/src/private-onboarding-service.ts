@@ -1,3 +1,4 @@
+import { isSafeSupabaseClientKey } from './project.ts';
 import type { TokenSupplier } from './project-data-service.ts';
 
 export type OnboardingStep = 'profile' | 'portfolio' | 'connections';
@@ -51,9 +52,11 @@ export class SupabasePrivateOnboardingService {
     try { parsed = new URL(input.supabaseUrl); }
     catch { throw new OnboardingServiceError('VALIDATION','Invalid Supabase URL.'); }
     if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && ['localhost','127.0.0.1'].includes(parsed.hostname))) ||
-        parsed.search || parsed.hash || parsed.pathname !== '/')
+        parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/')
       throw new OnboardingServiceError('VALIDATION','Invalid Supabase API origin.');
     if (!input.publishableKey) throw new OnboardingServiceError('VALIDATION','Missing publishable key.');
+    if(!isSafeSupabaseClientKey(input.publishableKey))
+      throw new OnboardingServiceError('VALIDATION','A public Supabase API key is required.');
     this.origin = parsed.origin;
     this.publishableKey = input.publishableKey;
     this.token = input.token;
