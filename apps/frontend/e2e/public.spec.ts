@@ -50,10 +50,45 @@ test('showcase sample filters do not imply private published account access', as
   await expect(page.getByRole('heading',{name:'No matching concepts'})).toBeVisible();
 });
 
-test('unsupported private route fails visibly rather than rendering a fake auth form', async ({ page }) => {
+test('unconfigured Supabase renders signed-out auth without attempting a provider request', async ({ page }) => {
   await page.goto('/signin');
-  await expect(page.getByRole('heading',{name:/Not available in this frontend preview/})).toBeVisible();
-  await expect(page.getByText(/no sign-in or publication was attempted/)).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Sign in to your account.'})).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Sign in',exact:true})).toBeDisabled();
+  await expect(page.getByRole('button',{name:/Google sign-in not configured/})).toBeDisabled();
+});
+
+test('sign-in and sign-up switch without losing transient form values', async ({ page }) => {
+  await page.goto('/signin');
+  await page.getByRole('textbox',{name:'Email address'}).fill('person@example.org');
+  await page.locator('#signin-password').fill('not-a-real-password');
+  await page.getByRole('link',{name:/Create an account/}).click();
+  await expect(page).toHaveURL(/\/signup$/);
+  await expect(page.getByRole('heading',{name:'Create your account.'})).toBeVisible();
+  await expect(page.getByRole('textbox',{name:'Email address'})).toHaveValue('person@example.org');
+  await page.getByRole('link',{name:/Sign in/}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await expect(page.locator('#signin-password')).toHaveValue('not-a-real-password');
+});
+
+test('OAuth and recovery callbacks scrub tokens and fail closed when backend is unavailable', async ({ page }) => {
+  await page.goto('/auth/callback?code=abcdefgh123456789');
+  await expect(page).toHaveURL(/\/auth\/callback$/);
+  await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
+  await expect(page.getByText(/not configured for this preview/)).toBeVisible();
+  await page.goto('/reset-password#access_token=abc123test&refresh_token=12345abcde&type=recovery');
+  await expect(page).toHaveURL(/\/reset-password$/);
+  await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
+});
+
+test('auth recovery and registration remain disabled until actual sender proof', async ({ page }) => {
+  await page.goto('/signin');
+  await page.getByRole('link',{name:/Forgot password/}).click();
+  await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
+  await expect(page.getByRole('button',{name:/Request recovery link/})).toBeDisabled();
+  await page.goto('/signup');
+  await expect(page.getByRole('button',{name:/Create account/})).toBeDisabled();
+  await expect(page.getByText(/until sender delivery is verified/)).toBeVisible();
 });
 
 test('mobile public pages reflow without page-wide horizontal overflow', async ({ page }) => {

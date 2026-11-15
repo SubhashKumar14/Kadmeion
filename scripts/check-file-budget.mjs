@@ -73,7 +73,11 @@ const justifiedExtra = [
   // Latest stable Playwright 1.65.1 browser integration tests, using the
   // existing runner Chrome and no third-party cloud browser subscription.
   'apps/frontend/playwright.config.ts',
-  'apps/frontend/e2e/public.spec.ts'
+  'apps/frontend/e2e/public.spec.ts',
+  // F1 uses existing secure AuthService/SupabaseBrowserAuthPort in React,
+  // preserving provider gates and no separate business auth backend.
+  'apps/frontend/src/auth.tsx',
+  'apps/frontend/src/auth.css'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
