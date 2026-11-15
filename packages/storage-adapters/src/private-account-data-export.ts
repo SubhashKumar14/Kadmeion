@@ -16,9 +16,10 @@ const TABLES=[
   ['private_platform_links','owner_user_id'],['private_goals','owner_user_id'],
   ['private_goal_progress_events','owner_user_id'],['private_goal_milestones','owner_user_id'],
   ['private_notifications','owner_user_id','id,owner_user_id,event_type,category,priority,target_id,created_at,read_at,dismissed_at'],
-  ['private_notification_preferences','owner_user_id']
+  ['private_notification_preferences','owner_user_id'],
+  ['private_my_component_versions','owner_user_id']
 ] as const;
-const MAX_ROWS=100,MAX_TABLE_BYTES=1024*1024,MAX_ASSETS=8;
+const MAX_ROWS=100,MAX_TABLE_BYTES=6*1024*1024,MAX_ASSETS=8;
 const MAX_ASSET_BYTES=5*1024*1024,MAX_TOTAL_ASSET_BYTES=8*1024*1024;
 const MAX_EXPORT_BYTES=16*1024*1024;
 const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
@@ -73,6 +74,49 @@ function hex(bytes:Uint8Array):string {
 async function sha256(bytes:Uint8Array):Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256',new Uint8Array(bytes))));
 }
+/**
+ * Owner-saved TSX is untrusted source even in a portable account download.
+ * Verify every server-computed digest independently; an edited JSON backup
+ * must never pass as a locally consistent source archive.
+ */
+async function verifyOwnerComponentRows(value:unknown,ownerId:string):Promise<void>{
+  requireCondition(Array.isArray(value)&&value.length<=40,'INTEGRITY',
+    'Private components quota or data structure is invalid.');
+  const seen=new Set<string>();
+  for(const item of value){
+    requireCondition(object(item)&&Object.keys(item).sort().join(',')===
+      'base_component_pin,compatible_slot_kinds,component_key,created_at,display_name,id,owner_user_id,pristine_source,source_code,source_sha256,version'&&
+      isUuid(item.id)&&item.owner_user_id===ownerId&&
+      typeof item.component_key==='string'&&
+      /^[a-z][a-z0-9-]{2,63}$/.test(item.component_key)&&
+      Number.isInteger(item.version)&&item.version>=1&&item.version<=40&&
+      typeof item.display_name==='string'&&item.display_name.trim().length>0&&
+      item.display_name.length<=80&&
+      typeof item.base_component_pin==='string'&&
+      /^[a-z][a-z0-9-]*@[0-9]+(?:\.[0-9]+){0,2}$/.test(item.base_component_pin)&&
+      typeof item.pristine_source==='string'&&
+      encoder.encode(item.pristine_source).byteLength>=1&&
+      encoder.encode(item.pristine_source).byteLength<=32768&&
+      typeof item.source_code==='string'&&
+      encoder.encode(item.source_code).byteLength>=1&&
+      encoder.encode(item.source_code).byteLength<=32768&&
+      typeof item.source_sha256==='string'&&
+      /^[a-f0-9]{64}$/.test(item.source_sha256)&&
+      Array.isArray(item.compatible_slot_kinds)&&
+      item.compatible_slot_kinds.length>=1&&
+      item.compatible_slot_kinds.length<=20&&
+      item.compatible_slot_kinds.every((s:unknown)=>typeof s==='string'&&
+        /^[a-z][a-z0-9]*$/.test(s))&&
+      typeof item.created_at==='string'&&
+      !Number.isNaN(Date.parse(item.created_at))&&
+      !seen.has(item.id),
+    'INTEGRITY','Invalid, duplicate or foreign owned component version.');
+    seen.add(item.id as string);
+    requireCondition(await sha256(encoder.encode(item.source_code as string))===
+      item.source_sha256,'INTEGRITY','Saved component source digest differs from its bytes.');
+  }
+}
+
 function base64(bytes:Uint8Array):string {
   let binary='';
   for(let i=0;i<bytes.length;i+=8192)
@@ -261,13 +305,25 @@ export class SupabasePrivateAccountDataExporter {
   }
   private async rows(table:typeof TABLES[number][0],column:string,ownerId:string,projection='*'):
     Promise<JsonObject[]> {
-    const raw=await this.json('/rest/v1/'+table+'?select='+projection+'&'+column+'=eq.'+
-      encodeURIComponent(ownerId)+'&limit=101',MAX_TABLE_BYTES);
+    // My Component source is never SELECT-granted to browser JWTs.
+    // The list RPC proves a live auth.sessions row, not merely a signed JWT.
+    const response=table==='private_my_component_versions'
+      ?await this.json('/rest/v1/rpc/owner_list_my_component_versions',MAX_TABLE_BYTES,{})
+      :await this.json('/rest/v1/'+table+'?select='+projection+'&'+column+'=eq.'+
+        encodeURIComponent(ownerId)+'&limit=101',MAX_TABLE_BYTES);
+    const raw=table==='private_my_component_versions'
+      ?(object(response)&&response.status==='OWNER_PRIVATE_COMPONENTS'&&
+        response.ownerUserId===ownerId&&response.publicExecutionTrusted===false&&
+        Object.keys(response).sort().join(',')===
+          'items,ownerUserId,publicExecutionTrusted,status'?response.items:null)
+      :response;
     requireCondition(Array.isArray(raw),'INTEGRITY','Invalid private table response.');
     requireCondition(raw.length<=MAX_ROWS,'LIMIT_EXCEEDED','Owner records exceed bounded export limit.');
     for(const row of raw)
       requireCondition(object(row)&&row[column]===ownerId,'INTEGRITY',
         'Export source returned a foreign or malformed owner record.');
+    if(table==='private_my_component_versions')
+      await verifyOwnerComponentRows(raw,ownerId);
     return raw as JsonObject[];
   }
   /** Atomic application data and release history; download separately from Storage evidence. */
@@ -299,6 +355,8 @@ export class SupabasePrivateAccountDataExporter {
       requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&
         rows.every(row=>object(row)&&row[ownerColumn]===owner.id),
       'INTEGRITY','Application metadata returned a foreign owner record.');
+      if(table==='private_my_component_versions')
+        await verifyOwnerComponentRows(rows,owner.id);
     }
     for(const row of envelope.verifiedReleaseHistory){
       requireCondition(object(row)&&isUuid(row.intent_id)&&isUuid(row.portfolio_id)&&isUuid(row.request_id)&&
@@ -488,6 +546,8 @@ export async function verifyBoundedPrivateAccountExport(
     for(const row of rows)
       requireCondition(object(row)&&row[column]===ownerId,
         'INTEGRITY','Partial export contains a foreign account row.');
+    if(table==='private_my_component_versions')
+      await verifyOwnerComponentRows(rows,ownerId);
   }
   const categories=['reviewerGrants','moderationCases','moderationEvents',
     'accountExitRequests','reauthChallenges','inventorySnapshots',

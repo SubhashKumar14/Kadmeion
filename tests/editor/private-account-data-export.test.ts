@@ -66,6 +66,11 @@ function fixture(options:Options={},token:()=>Promise<string|null>=async()=> 'ow
       return json({id:identityCount===2&&options.identity?options.identity:owner,
         email:'owner@example.test',app_metadata:{secret:'not exported'}});
     }
+    if(url.pathname==='/rest/v1/rpc/owner_list_my_component_versions'){
+      return json({status:'OWNER_PRIVATE_COMPONENTS',ownerUserId:owner,
+        items:(options.rows??baseRows).private_my_component_versions??[],
+        publicExecutionTrusted:false});
+    }
     if(url.pathname==='/rest/v1/rpc/owner_export_account_metadata'){
       assert.deepEqual(JSON.parse(String(init?.body)),{p_snapshot_id:snapshot});
       return json(options.metadata??atomicMetadata());
@@ -652,7 +657,7 @@ const ATOMIC_TABLE_NAMES=[
   'project_exposure_intents','portfolios','portfolio_revisions','project_assets',
   'private_release_requests','private_trash_items','private_platform_links','private_goals',
   'private_goal_progress_events','private_goal_milestones','private_notifications',
-  'private_notification_preferences'
+  'private_notification_preferences','private_my_component_versions'
 ];
 function atomicMetadata():Record<string,unknown>{
   return {
@@ -738,4 +743,56 @@ test('B09 bounded audit export and offline recovery reject recursively nested se
     tokenDigestsIncluded:false,sessionsIncluded:false,
     completeAccountExport:false,deletionAllowed:false};
   await assert.rejects(fixture({audit}).service.export(snapshot),{code:'INTEGRITY'});
+});
+
+test('WF-025 owner My Component versions survive bounded and atomic metadata exports',async()=>{
+  const owned={
+    id:'58000000-0000-4000-8000-000000000005',owner_user_id:owner,
+    component_key:'custom-title',version:1,display_name:'My Title',
+    base_component_pin:'title-stacked@1',
+    pristine_source:'export const Heading=1;',
+    source_code:'export const Heading=2;',
+    compatible_slot_kinds:['title'],
+    source_sha256:createHash('sha256').update('export const Heading=2;').digest('hex'),
+    created_at:'2026-11-15T11:00:00.000Z'
+  };
+  const rows={...baseRows,private_my_component_versions:[owned]};
+  const {service,paths}=fixture({rows});
+  const partial=await service.export(snapshot);
+  const saved=JSON.parse(new TextDecoder().decode(partial.bytes));
+  assert.deepEqual(saved.records.private_my_component_versions,[owned]);
+  assert.equal((await verifyBoundedPrivateAccountExport(partial.bytes)).completeAccountExport,false);
+  assert.ok(paths.some(p=>p.includes('/rpc/owner_list_my_component_versions')));
+  assert.ok(!paths.some(p=>p.startsWith('/rest/v1/private_my_component_versions?')),
+    'Direct browser SELECT would bypass the required live Auth session guard');
+  const meta=atomicMetadata();
+  const records=meta.records as Record<string,unknown>;
+  records.private_my_component_versions=[owned];
+  const atomic=await fixture({metadata:meta}).service.exportApplicationMetadata(snapshot);
+  const decoded=JSON.parse(new TextDecoder().decode(atomic.bytes));
+  assert.deepEqual(decoded.records.private_my_component_versions,[owned]);
+});
+
+test('WF-025 private export rejects tampered, foreign and duplicated My Component source',async()=>{
+  const valid={
+    id:'59000000-0000-4000-8000-000000000005',owner_user_id:owner,
+    component_key:'custom-title',version:1,display_name:'My Title',
+    base_component_pin:'title-stacked@1',pristine_source:'const x=1;',
+    source_code:'const x=2;',compatible_slot_kinds:['title'],
+    source_sha256:createHash('sha256').update('const x=2;').digest('hex'),
+    created_at:'2026-11-15T11:00:00.000Z'
+  };
+  for(const records of [
+    [{...valid,owner_user_id:stranger}],
+    [{...valid,source_code:'const x=3;'}],
+    [valid,valid],
+    [{...valid,source_sha256:'0'.repeat(64)}]
+  ]){
+    const rows={...baseRows,private_my_component_versions:records};
+    await assert.rejects(fixture({rows}).service.export(snapshot),{code:'INTEGRITY'});
+    const metadata=atomicMetadata();
+    (metadata.records as Record<string,unknown>).private_my_component_versions=records;
+    await assert.rejects(fixture({metadata}).service.exportApplicationMetadata(snapshot),
+      {code:'INTEGRITY'});
+  }
 });
