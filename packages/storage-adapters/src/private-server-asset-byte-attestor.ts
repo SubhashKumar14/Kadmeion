@@ -6,6 +6,7 @@
  * supply their own hash. No public delivery or account erasure is enabled.
  */
 import {createHash} from 'node:crypto';
+import {isSafeSupabaseClientKey} from '../../contracts/src/project.ts';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MIME=new Set(['image/png','image/jpeg','image/webp','image/avif']);
 const MAX_BYTES=5*1024*1024;
@@ -74,7 +75,7 @@ export class PrivateServerAssetByteAttestor {
       (url.origin==='http://kong:8000'&&localRuntime))&&
       url.pathname==='/'&&!url.username&&!url.password&&!url.search&&!url.hash,
       'VALIDATION');
-    requireValid(typeof publishableKey==='string'&&publishableKey.length>0&&
+    requireValid(isSafeSupabaseClientKey(publishableKey)&&
       typeof serviceKey==='string'&&serviceKey.length>0&&
       publishableKey!==serviceKey,'VALIDATION');
     this.origin=url.origin;this.publishableKey=publishableKey;

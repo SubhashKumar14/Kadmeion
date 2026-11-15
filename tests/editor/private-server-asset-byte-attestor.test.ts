@@ -114,3 +114,13 @@ test('bad credentials and non-local insecure origins are rejected',()=>{
   assert.throws(()=>new PrivateServerAssetByteAttestor('https://example.supabase.co',
     'same','same'),{code:'VALIDATION'});
 });
+
+test('attestation worker cannot use a privileged key for owner-scoped reads',()=>{
+ const jwt=['eyJhbGciOiJIUzI1NiJ9',
+   Buffer.from(JSON.stringify({role:'service_role'})).toString('base64url'),
+   'c2lnbmF0dXJl'].join('.');
+ for(const key of ['sb_secret_private',jwt])
+   assert.throws(()=>new PrivateServerAssetByteAttestor(
+     'https://example.supabase.co',key,'separate-service-key'
+   ),{code:'VALIDATION'});
+});
