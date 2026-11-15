@@ -297,8 +297,8 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByLabel('Simulated visitor portfolio appearance')).toBeVisible();
   await page.getByLabel('Preview device').selectOption('390');
   await expect(page.getByText('Saved revision · No public delivery')).toBeVisible();
-  await page.getByRole('button',{name:'Author preview',exact:true}).click();
-  await expect(page.getByRole('status')).toContainText('Private author preview.');
+  await page.getByRole('button',{name:/^Author preview/}).click();
+  await expect(page.locator('.ws-preview-caution')).toContainText('Private author preview.');
   await page.goto(editorPath);
   await page.getByRole('link', {name: 'Release workspace'}).click();
   await expect(page.getByRole('heading', {name: 'Reviewer staging.'})).toBeVisible();

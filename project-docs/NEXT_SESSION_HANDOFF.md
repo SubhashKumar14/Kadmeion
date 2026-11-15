@@ -888,3 +888,13 @@ Latest brand asset exact-byte source commit `f15781d` caused [frontend CI 437468
 **Evidence boundary:** Full-screen saved author preview is still separate and tested, but should no longer be scored against #26 since the approved reference is different. New #26 screenshot must be downloaded and compared to the exact approved PNG; all test/visual/host gates remain pending. No hosted DB changes, paid providers, main merge, new source file or publication authorization.
 
 **Next:** Read exact SHA frontend/root CI, download #26_BROWSER capture, record SSIM+visual issues against correct reference, fix tests; continue F5/F6 52-screen acceptance without 100% claims.
+
+---
+
+### EDIT-09 verified image comparison and e2e accessible-name fix — 16 November 2026
+
+First correct screenshot pair: owner-authenticated `26_PREVIEW_MODES_BROWSER.png` from [failed isolated DB run 43748541310](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43748541310), paired with exact Library `26_EDIT-09_Preview_Modes_LIGHT.png` at 1600x1000 approved reference. SSIM **0.7241**, MAE **23.96** (resized from 1534x960 Chromium; baseline comparison, **not visual acceptance**). Source comparison also measured #18 editor **0.7031**, #19 inspector **0.6938**, #20 components/sections **0.7035**. Core three-pane preview geometry exists but current saved owner content differs from the illustrative reference; no fake content is inserted or pushed to production.
+
+The code SHA `17b8f10` passed frontend CI [43748536242](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43748536242), root contracts + Supabase migration/tests/lint, and real admin browser test. Its isolated owner browser journey reached Preview Modes and captured #26 but **FAILED** after 150s at `owner.spec.ts:300`: `getByRole('button',{name:'Author preview',exact:true})` did not match the **actual accessible name containing the nested subtitle** in the new left control panel. The button was rendered and visible. The test is corrected to use a beginning-of-name regexp `/^Author preview/`, preserving the visible subtitle and accessibility, and the author state assertion is scoped to `.ws-preview-caution` to avoid multiple status announcements. No production auth, rendering, schema, or guard changed. Exact new SHA CI must be checked before any success claim.
+
+**Next:** Verify new frontend and isolated owner+database workflows; if green, compare screenshots #18–26 and operator #48–50 to approved images using same capture configuration, continue F6 systematic WCAG and UAT. Existing public host/reviewer/asset revocation gates still block 100% claims.
