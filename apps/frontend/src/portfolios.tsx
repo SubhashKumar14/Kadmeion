@@ -372,7 +372,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {!record && !error && <p role="status">Loading portfolio…</p>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
       onClick={() => void initialize()}>Complete draft setup</button>}
-    {head && (preview ? contentPreview : <div className="ws-editor-grid">
+    {head && (preview ? contentPreview : <><div className="ws-editor-grid" hidden={tool==='Source'}>
       <aside className="ws-project-aside">{tool==='Components'?<div className="ws-editor-component-catalog">
         <p className="ws-kicker">COMPATIBLE BUILDING BLOCKS</p>
         <h2>Components</h2>
@@ -464,7 +464,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
         {tool === 'Assets' && <AssetList port={port}/>}
-        {openedSource && <div hidden={tool !== 'Source'}><SourceInspector head={head} slot={slot} apply={apply}/></div>}
+
         {tool === 'History' && record && <RevisionHistory port={port} id={id} revision={record.revision} onRestore={restore}/>}
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
@@ -491,7 +491,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               onClick={() => apply({kind: 'RESTORE_STASH', slotKey: slot})}>Restore last assignment</button>}
         </>}</>}
       </aside>
-    </div>)}
+    </div>{openedSource&&<div hidden={tool!=='Source'}>
+      <SourceInspector head={head} slot={slot} apply={apply} back={()=>setTool('Content')}/>
+    </div>}</>)}
   </section>;
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
-import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
+import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import { savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
@@ -188,35 +188,90 @@ export function ThemeInspector({head, apply, width, resize}: {
   </div>;
 }
 
-export function SourceInspector({head, slot, apply}: {head: EditorHead; slot: string; apply: Apply}) {
-  const [selected, setSelected] = useState('');
-  const [buffers, setBuffers] = useState<Record<string, string>>({});
-  const active = head.snapshot.slots[slot];
-  const files = Object.keys(head.snapshot.files).filter(path => path.endsWith('.json') || path === active?.sourcePath);
-  const path = files.includes(selected) ? selected : files[0] ?? '';
-  const original = head.snapshot.files[path] ?? '';
-  const value = buffers[path] ?? original;
-
-  function applyBuffer() {
-    const intent: EditorIntent = path.endsWith('.json')
-      ? {kind: 'WRITE_MANAGED_FILE', path, source: value}
-      : {kind: 'EDIT_OWNED_SOURCE', slotKey: slot, source: value};
-    if (apply(intent)) setBuffers(current => {
-      const next = {...current}; delete next[path]; return next;
-    });
+export function SourceInspector({head,apply,back}:{
+  head:EditorHead;slot:string;apply:Apply;back:()=>void;
+}) {
+  const [selected,setSelected]=useState('');
+  const [buffers,setBuffers]=useState<Record<string,string>>({});
+  const [notice,setNotice]=useState('');
+  const files=Object.keys(head.snapshot.files).sort((left,right)=>{
+    const a=left.startsWith('slots/'),b=right.startsWith('slots/');
+    return a===b?left.localeCompare(right):a?-1:1;
+  });
+  const path=files.includes(selected)?selected:files[0]??'';
+  const current=head.snapshot.files[path]??'';
+  const buffer=buffers[path]??current;
+  const ownerSource=Object.entries(head.snapshot.slots).find(([,entry])=>
+    (entry.state==='S1'||entry.state==='S2')&&entry.sourcePath===path);
+  const owned=!!ownerSource;
+  const bytes=new TextEncoder().encode(buffer).byteLength;
+  const changed=buffer!==current;
+  const overLimit=bytes>MAX_FILE_BYTES;
+  function applyBuffer(){
+    if(!owned||!ownerSource||!path||!changed||overLimit)return;
+    setNotice('');
+    const ok=apply({kind:'EDIT_OWNED_SOURCE',slotKey:ownerSource[0],source:buffer});
+    if(ok){
+      setBuffers(values=>{const next={...values};delete next[path];return next;});
+      setNotice('Owned source applied to the unsaved private editor revision. The preview does not execute this code.');
+    } else setNotice('Source change was not applied. Your unsaved buffer remains in this editor.');
   }
-
-  return <div className="ws-editor-tool">
-    <h2>Advanced source</h2>
-    <p>Managed JSON and your owned code can be edited here. The author preview renders text without executing custom code.</p>
-    <label>Source file<select value={path} onChange={event => setSelected(event.target.value)}>
-      {files.map(file => <option key={file}>{file}</option>)}
-    </select></label>
-    <label>Source buffer<textarea spellCheck={false} rows={10} value={value} onChange={event => {
-      const source = event.target.value;
-      setBuffers(current => ({...current, [path]: source}));
-    }}/></label>
-    <button type="button" className="ws-secondary" disabled={!path || value === original} onClick={applyBuffer}>Apply source</button>
+  return <div className="ws-source-explorer" aria-label="Advanced source workspace">
+    <aside className="ws-source-tree">
+      <p className="ws-kicker">ADVANCED EDITOR</p>
+      <h2>Source explorer</h2>
+      <p>Generated composition files are read-only. Only personally owned source files can be edited after the trusted customization step.</p>
+      <nav aria-label="Source files">
+        <ul>{files.map(file=>{
+          const owner=Object.values(head.snapshot.slots).some(entry=>
+            (entry.state==='S1'||entry.state==='S2')&&entry.sourcePath===file);
+          const managed=file.endsWith('.json');
+          return <li key={file}><button type="button" aria-pressed={path===file} onClick={()=>{
+            setSelected(file);setNotice('');
+          }}>
+            <span>{file.split('/').at(-1)}</span>
+            <small>{owner?'Owned':managed?'Generated · protected':'Archived · protected'}</small>
+          </button></li>;
+        })}</ul>
+      </nav>
+      {files.length===0&&<p>No project source files in this private draft.</p>}
+      <p className="ws-source-tree-note">Source files are real private snapshot records. No example source is generated or executed here.</p>
+      <button type="button" className="ws-secondary" onClick={back}>Back to editor canvas</button>
+    </aside>
+    <section className="ws-source-editor" aria-label="Selected project source">
+      <header className="ws-source-editor-header">
+        <span>{path||'No source'} · {owned?'Owned editable text':'Protected generated composition'}</span>
+        <span>{changed?'Unsaved source buffer':'Saved local snapshot'}</span>
+      </header>
+      {path?owned?<div className="ws-source-code-window">
+        <label htmlFor="kd-source-editor">Owned source buffer</label>
+        <textarea id="kd-source-editor" spellCheck={false} rows={22} value={buffer}
+          onChange={event=>{const next=event.target.value;setBuffers(current=>({...current,[path]:next}));setNotice('');}}/>
+      </div>:<div className="ws-source-code-window ws-source-preview" aria-label="Readonly generated file">
+        <pre><code>{current}</code></pre>
+      </div>:<p>No source file is available.</p>}
+      <div className="ws-source-footer">
+        <p>{owned?'Owned source can be changed in the private draft, but no code is executed in the author canvas.':
+          'Generated JSON composition and library files are protected from direct editing. Use Content and Sections instead.'}</p>
+        {owned&&<button type="button" className="ws-primary" disabled={!changed||overLimit}
+          onClick={applyBuffer}>Apply owned source to draft</button>}
+      </div>
+      {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
+    </section>
+    <aside className="ws-source-diagnostics">
+      <p className="ws-kicker">SOURCE DIAGNOSTICS</p>
+      <h2>Editor rules</h2>
+      <p>Only a verified editor transaction can modify owner source. Source text is never evaluated on the privileged workspace origin.</p>
+      <dl>
+        <div><dt>Source protection</dt><dd>{owned?'Owner-controlled version':'Read-only generated or archived file'}</dd></div>
+        <div><dt>File size</dt><dd>{bytes.toLocaleString()} / {MAX_FILE_BYTES.toLocaleString()} bytes</dd></div>
+        <div><dt>Draft buffer</dt><dd>{changed?'Unapplied changes':'Matches working revision'}</dd></div>
+        <div><dt>Author preview</dt><dd>Code execution disabled</dd></div>
+        <div><dt>Public custom JavaScript</dt><dd>Blocked pending proven isolation</dd></div>
+      </dl>
+      {overLimit&&<p role="alert">The owned source exceeds the {MAX_FILE_BYTES.toLocaleString()}-byte limit. Your buffer is preserved; it cannot be applied.</p>}
+      <p className="ws-source-diagnostics-note">No compilation, static security analysis, or public preview validation has run on this source. A successful draft save is not a release approval.</p>
+    </aside>
   </div>;
 }
 

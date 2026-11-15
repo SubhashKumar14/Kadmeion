@@ -282,7 +282,8 @@ test('real owner onboarding and project revision are private across browser sess
     buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64')
   });
   await page.getByRole('button',{name:'Upload private image'}).click();
-  await expect(page.getByRole('status')).toContainText('Image uploaded and privately registered.');
+  await expect(page.locator('.ws-asset-manager').getByRole('status'))
+    .toContainText('Image uploaded and privately registered.');
   await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_LIBRARY_BROWSER');
   await page.reload();
@@ -290,8 +291,12 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
 
   await page.getByRole('button', {name: 'Source', exact: true}).click();
-  await expect(page.getByLabel('Source file')).toBeVisible();
+  await expect(page.getByRole('navigation',{name:'Source files'})).toBeVisible();
+  await expect(page.getByLabel('Readonly generated file')).toBeVisible();
+  await expect(page.getByText('Code execution disabled')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Apply owned source to draft'})).toHaveCount(0);
   await capture('24_SOURCE_BROWSER');
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
   await page.getByRole('button', {name: 'Save draft'}).click();
   await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
   await page.reload();
