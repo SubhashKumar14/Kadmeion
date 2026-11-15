@@ -199,9 +199,12 @@ export async function createPrivateImmutableMediaCandidate(
     if(!item||typeof item!=='object'||Array.isArray(item)||
        Object.keys(item).sort().join(',')!=='altText,assetId,expectedSourceSha256')
       throw new ContractError('VALIDATION','Private media plan: invalid field layout.');
-    if(typeof item.assetId!=='string'||!MEDIA_UUID.test(item.assetId)||
-       assetIds.has(item.assetId))
-      throw new ContractError('VALIDATION','Private media plan: invalid asset reference.');
+    if(typeof item.assetId!=='string')
+      throw new ContractError('VALIDATION','Private media plan: asset reference must be text.');
+    if(!MEDIA_UUID.test(item.assetId))
+      throw new ContractError('VALIDATION','Private media plan: asset reference syntax is invalid.');
+    if(assetIds.has(item.assetId))
+      throw new ContractError('VALIDATION','Private media plan: duplicate asset reference.');
     if(typeof item.expectedSourceSha256!=='string'||
        !MEDIA_SHA.test(item.expectedSourceSha256))
       throw new ContractError('VALIDATION','Private media plan: invalid source digest.');
