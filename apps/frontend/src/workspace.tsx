@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon, useTheme } from './landing.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
 type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'verified'; owner: Owner };
-type StartChoice = 'profile' | 'portfolio' | 'connections';
+type SnapshotState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; value: OwnerWorkspaceSnapshot };
+type StartChoice = PrivateStep;
 const NAV = [
   { title: 'Overview', href: '/app', icon: 'layers' },
   { title: 'Welcome', href: '/app/onboarding', icon: 'target' },
@@ -67,9 +69,10 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   </div>;
 }
 
-function Onboarding() {
+function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<boolean> }) {
   const [choice, setChoice] = useState<StartChoice>('portfolio');
   const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Profile editor integration pending' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Template explorer available' },
@@ -94,25 +97,32 @@ function Onboarding() {
             onChange={() => { setChoice(card.key); setNote(''); }}/>
           <span className="ws-choice-index">0{i + 1} / START HERE</span>
           <strong>{card.title}</strong><span>{card.description}</span>
-          <small>{card.state}</small>
+          <small>{steps.find(saved=>saved.step===card.key)?.status === 'skipped' ? 'Skipped in your private account' : steps.find(saved=>saved.step===card.key)?.status === 'completed' ? 'Completed in your private account' : card.state}</small>
         </label>)}
       </div>
     </fieldset>
     {note && <p role="status" className="ws-inline-alert">{note}</p>}
     <div className="ws-actions">
       <button type="button" className="ws-primary" onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
-      <a href="/app" className="ws-secondary">Skip for now — open workspace</a>
+      <button type="button" className="ws-secondary" disabled={saving} onClick={() => {
+        setSaving(true); setNote('');
+        void onSkip(choice).then(saved => {
+          setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
+            'The server did not confirm this skipped step. Nothing was marked saved.');
+        }).finally(()=>setSaving(false));
+      }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
+      <a href="/app" className="ws-secondary">Open workspace without saving</a>
     </div>
-    <p className="ws-footnote">No provider connection is required. Selection is temporary until an owner-scoped onboarding persistence contract is integrated.</p>
+    <p className="ws-footnote">Your selection is temporary; only confirmed step skips are persisted through the owner-scoped Supabase RPC. No provider connection is required.</p>
   </section>;
 }
 
-function Home() {
+function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
   return <section aria-labelledby="ws-title">
     <div className="ws-home-intro">
       <div className="ws-heading"><p className="ws-kicker">YOUR WORKSPACE / OVERVIEW</p>
         <h1 id="ws-title">Make room for<br/><em>what comes next.</em></h1>
-        <p>One private place for portfolios, projects and your development journey. Personal records are not loaded in this initial screen.</p>
+        <p>One private place for portfolios, projects and your development journey. {snapshot.profile?.displayName ? 'Welcome back, ' + snapshot.profile.displayName + '.' : 'Your verified private workspace is ready.'}</p>
       </div>
       <a href="/templates" className="ws-primary">Continue work — explore templates <Icon name="arrow" size={16}/></a>
     </div>
@@ -122,15 +132,17 @@ function Home() {
         <div className="ws-area-icon"><Icon name="layers" size={20}/></div>
         <p className="ws-area-meta">01 / PORTFOLIO STUDIO</p>
         <h3>Shape your portfolio.</h3>
-        <p>Choose a starting design. Private portfolio drafts and releases will appear here when their owner-scoped data integration is complete.</p>
+        <p>{snapshot.portfolios.length ? 'Your latest private portfolio drafts are shown below.' :
+          'No private portfolios were returned by your owner-scoped account query.'}</p>
         <a href="/templates">View templates <Icon name="arrow" size={15}/></a>
       </article>
       <article className="ws-area">
         <div className="ws-area-icon"><Icon name="folder" size={20}/></div>
         <p className="ws-area-meta">02 / PROJECTS</p>
         <h3>Your work, on your terms.</h3>
-        <p>Private projects have not been fetched. No project count, sync result or public status is being inferred.</p>
-        <p className="ws-unavailable">Owner project library integration pending</p>
+        <p>{snapshot.projects.length ? 'Your latest private projects are shown below.' :
+          'No active private projects were returned by your owner-scoped account query.'}</p>
+        <p className="ws-unavailable">Project editing is not connected yet</p>
       </article>
       <article className="ws-area">
         <div className="ws-area-icon"><Icon name="target" size={20}/></div>
@@ -139,6 +151,18 @@ function Home() {
         <p>Growth and analytics are Phase 2 features. No scores or activity have been invented.</p>
         <p className="ws-unavailable">Planned for Phase 2</p>
       </article>
+    </div>
+    <div className="ws-recent-grid" aria-label="Private recent work">
+      <section><h2>Recent private portfolios</h2>
+        {snapshot.portfolios.length ? <ul>{snapshot.portfolios.map(item=><li key={item.id}>
+          <strong>{item.title}</strong><span>Draft · revision {item.revision}</span></li>)}</ul> :
+          <p>No private portfolios found. Template exploration is available without publishing.</p>}
+      </section>
+      <section><h2>Recent private projects</h2>
+        {snapshot.projects.length ? <ul>{snapshot.projects.map(item=><li key={item.id}>
+          <strong>{item.title}</strong><span>Private project</span></li>)}</ul> :
+          <p>No active private projects found. The project editor is still being integrated.</p>}
+      </section>
     </div>
     <div className="ws-bottom-strip">
       <div><p className="ws-kicker">START SIMPLE</p><h2>Prefer a guided start?</h2>
@@ -150,6 +174,7 @@ function Home() {
 
 export function WorkspaceApp() {
   const [gate, setGate] = useState<Gate>({ status: 'checking' });
+  const [snapshot, setSnapshot] = useState<SnapshotState>({status:'loading'});
   const [message, setMessage] = useState('');
   const [signOutPending, setSignOutPending] = useState(false);
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
@@ -177,6 +202,14 @@ export function WorkspaceApp() {
           return;
         }
         setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
+        void port.readOwnerWorkspace().then(read=>{
+          if (cancelled) return;
+          if (read.error || !read.data) {
+            setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
+          } else setSnapshot({status:'ready',value:read.data});
+        }).catch(()=>{
+          if (!cancelled) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
+        });
       }).catch(() => {
         if (!cancelled) setGate({ status: 'locked', message: 'Owner session verification could not be completed. Please sign in again.' });
       });
@@ -185,6 +218,20 @@ export function WorkspaceApp() {
     }
     return () => { cancelled = true; authRef.current = null; };
   }, [route]);
+  async function skipChoice(choice: PrivateStep): Promise<boolean> {
+    const port=authRef.current;
+    if (!port) return false;
+    const result=await port.setPrivateOnboardingStep(choice,'skipped');
+    if (result.error || !result.data || result.data.step !== choice || result.data.status !== 'skipped')
+      return false;
+    setSnapshot(state=>state.status !== 'ready' ? state : {
+      status:'ready',value:{...state.value,onboarding:[
+        ...state.value.onboarding.filter(item=>item.step!==choice),
+        {step:choice,status:'skipped' as PrivateStepStatus}
+      ]}
+    });
+    return true;
+  }
   async function signOut() {
     const port = authRef.current;
     if (!port || signOutPending) return;
@@ -210,6 +257,15 @@ export function WorkspaceApp() {
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
   return <WorkspaceFrame owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
-    {route === '/app/onboarding' ? <Onboarding/> : <Home/>}
+    {snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
+      <p role="status">Loading your private workspace records…</p>
+      <div className="ws-skeleton-heading" aria-hidden="true"/>
+      <div className="ws-skeleton-grid" aria-hidden="true"><span/><span/><span/></div>
+    </section> : snapshot.status === 'error' ? <section className="ws-error">
+      <h1>Private records unavailable.</h1><p role="alert">{snapshot.message}</p>
+      <button type="button" className="ws-secondary" onClick={()=>window.location.reload()}>Retry securely</button>
+    </section> : route === '/app/onboarding' ?
+      <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
+      <Home snapshot={snapshot.value}/>}
   </WorkspaceFrame>;
 }

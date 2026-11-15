@@ -535,3 +535,63 @@ test('B10 password login refuses a successful response for a different email',as
   assert.ok(result.error);
   assert.equal(saved.data.size,0);
 });
+
+test('owner workspace reads authenticated RLS-scoped records and persists only confirmed skips', async () => {
+  const paths:string[]=[];
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    const u=String(url);paths.push(u);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    if(u.includes('/rest/v1/')) {
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer '+tokens.access_token);
+      assert.equal((init?.headers as Record<string,string>).apikey,'sb_publishable_test');
+      assert.equal(init?.credentials,'omit');
+      assert.equal(init?.cache,'no-store');
+      if(u.endsWith('/rpc/set_private_onboarding_step')) {
+        assert.deepEqual(JSON.parse(String(init?.body)),{p_step:'profile',p_status:'skipped'});
+        return json({step:'profile',status:'skipped',revision:1});
+      }
+      assert.ok(u.includes('eq.'+user.id),'owner id must be an explicit query filter');
+      if(u.includes('/profiles?'))return json([{user_id:user.id,display_name:'Developer',handle:null}]);
+      if(u.includes('/projects?'))return json([{id:'11111111-1111-4111-8111-111111111111',owner_user_id:user.id,title:'Private project',slug:'private-project',updated_at:'2026-11-15T00:00:00Z'}]);
+      if(u.includes('/portfolios?'))return json([{id:'22222222-2222-4222-8222-222222222222',owner_user_id:user.id,title:'Private folio',slug:'private-folio',head_revision:2,updated_at:'2026-11-15T00:00:00Z'}]);
+      if(u.includes('/private_onboarding_steps?'))return json([{user_id:user.id,step:'profile',status:'pending'}]);
+    }
+    return json({},404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'test-password'})).error,null);
+  const view=await port.readOwnerWorkspace();
+  assert.equal(view.error,null);
+  assert.equal(view.data.profile?.displayName,'Developer');
+  assert.equal(view.data.projects[0]?.title,'Private project');
+  assert.equal(view.data.portfolios[0]?.revision,2);
+  assert.deepEqual(view.data.onboarding,[{step:'profile',status:'pending'}]);
+  const saved=await port.setPrivateOnboardingStep('profile','skipped');
+  assert.equal(saved.error,null);
+  assert.deepEqual(saved.data,{step:'profile',status:'skipped'});
+  assert.equal(paths.filter(x=>x.includes('/rest/v1/')).length,5);
+});
+
+test('workspace data refuses foreign-owner rows and unverified onboarding RPC results', async () => {
+  const {port}=mock((async(url:string|URL|Request)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    if(u.includes('/profiles?'))return json([{user_id:secondUser.id,display_name:'Not owner',handle:null}]);
+    if(u.includes('/rest/v1/'))return json([]);
+    return json({},404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'password'})).error,null);
+  const result=await port.readOwnerWorkspace();
+  assert.ok(result.error);
+  assert.equal(result.data,null);
+  const {port:rejected}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password'))return json(tokens);
+    if(String(url).endsWith('/auth/v1/user'))return json(user);
+    return json({step:'profile',status:'pending'});
+  }) as typeof fetch);
+  assert.equal((await rejected.signInWithPassword({email:user.email,password:'password'})).error,null);
+  const changed=await rejected.setPrivateOnboardingStep('profile','skipped');
+  assert.ok(changed.error);
+  assert.equal(changed.data,null);
+});

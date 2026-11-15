@@ -4,6 +4,15 @@ import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+export type PrivateStep = 'profile' | 'portfolio' | 'connections';
+export type PrivateStepStatus = 'pending' | 'completed' | 'skipped';
+export type OwnerWorkspaceSnapshot = {
+  profile: { displayName: string; handle: string | null } | null;
+  projects: Array<{ id: string; title: string; slug: string; updatedAt: string }>;
+  portfolios: Array<{ id: string; title: string; slug: string; updatedAt: string; revision: number }>;
+  onboarding: Array<{ step: PrivateStep; status: PrivateStepStatus }>;
+};
+
 const STORAGE_KEY = 'kadmeion.auth.session.v1';
 const OAUTH_PKCE_KEY = 'kadmeion.oauth.google.pkce.v1';
 const OAUTH_TTL_MS = 5*60*1000;
@@ -389,6 +398,117 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       throw new Error('Email link was not verified for the active account.');
     this.storeEmailSession({...session, user:verified});
     return type === 'invite' ? 'invite' : type === 'recovery' ? 'recovery' : 'confirmation';
+  }
+
+
+  /** The only workspace PostgREST surface exposed to this browser port.
+   * Always authenticate with live /auth/v1/user and send an owner filter even
+   * though the database's RLS is the final authorization boundary. */
+  private async ownerSession(): Promise<{ session: StoredSession; userId: string }> {
+    const checked = await this.getUser();
+    if (checked.error || !checked.data?.user?.id)
+      throw new Error('Owner session verification is required.');
+    const session = await this.refreshed();
+    if (!session || session.user.id !== checked.data.user.id || !this.isCurrentSession(session))
+      throw new Error('Owner session changed before the private request.');
+    return { session, userId: session.user.id };
+  }
+
+  private async ownerRest(path: string, bearer: string, method: 'GET' | 'POST' = 'GET', body?: Json): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await this.fetcher(this.origin + '/rest/v1/' + path, {
+        method, headers: {
+          apikey: this.publishableKey,
+          Authorization: 'Bearer ' + bearer,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        cache: 'no-store', credentials: 'omit', redirect: 'error'
+      });
+    } catch { throw new Error('Private workspace service is unavailable.'); }
+    if (!response.ok)
+      throw new Error(response.status === 401 || response.status === 403
+        ? 'Private workspace access was denied.' : 'Private workspace request failed.');
+    try { return await response.json() as unknown; }
+    catch { throw new Error('Private workspace returned an invalid response.'); }
+  }
+
+  async readOwnerWorkspace(): Promise<AuthOutcome<OwnerWorkspaceSnapshot>> {
+    return this.outcome(async () => {
+      const { session, userId } = await this.ownerSession();
+      const owner = encodeURIComponent(userId);
+      const endpoints = [
+        'profiles?select=user_id,display_name,handle&user_id=eq.' + owner + '&limit=1',
+        'projects?select=id,owner_user_id,title,slug,updated_at&owner_user_id=eq.' + owner + '&trashed_at=is.null&order=updated_at.desc&limit=5',
+        'portfolios?select=id,owner_user_id,title,slug,updated_at,head_revision&owner_user_id=eq.' + owner + '&trashed_at=is.null&order=updated_at.desc&limit=5',
+        'private_onboarding_steps?select=user_id,step,status&user_id=eq.' + owner + '&limit=3'
+      ];
+      const all = await Promise.all(endpoints.map(path => this.ownerRest(path,session.access_token)));
+      if (!this.isCurrentSession(session))
+        throw new Error('Owner session changed during private data loading.');
+      const rows = all.map((value,index) => {
+        if (!Array.isArray(value) || value.length > [1,5,5,3][index]!)
+          throw new Error('Private workspace data response was invalid.');
+        return value as Json[];
+      });
+      const [profiles, projects, portfolios, steps] = rows as [Json[],Json[],Json[],Json[]];
+      function isOwner(row: Json, ownerField: 'user_id'|'owner_user_id'): boolean {
+        return row && typeof row === 'object' && row[ownerField] === userId;
+      }
+      if (!profiles.every(row=>isOwner(row,'user_id')) ||
+          !projects.every(row=>isOwner(row,'owner_user_id')) ||
+          !portfolios.every(row=>isOwner(row,'owner_user_id')) ||
+          !steps.every(row=>isOwner(row,'user_id')))
+        throw new Error('Private workspace identity did not match the signed-in owner.');
+      const profile = profiles[0];
+      if (profile && (typeof profile.display_name !== 'string' ||
+          !(profile.handle === null || typeof profile.handle === 'string')))
+        throw new Error('Private profile format was invalid.');
+      const parseItem=(row:Json) => {
+        if (typeof row.id !== 'string' || typeof row.title !== 'string' ||
+          typeof row.slug !== 'string' || typeof row.updated_at !== 'string')
+          throw new Error('Private record format was invalid.');
+        return {id:row.id,title:row.title,slug:row.slug,updatedAt:row.updated_at};
+      };
+      const parsedProjects = projects.map(parseItem);
+      const parsedPortfolios = portfolios.map(row=>{
+        if (typeof row.head_revision !== 'number' || !Number.isSafeInteger(row.head_revision))
+          throw new Error('Portfolio revision format was invalid.');
+        return {...parseItem(row),revision:row.head_revision as number};
+      });
+      const permittedSteps = new Set(['profile','portfolio','connections']);
+      const permittedStatuses = new Set(['pending','completed','skipped']);
+      if (!steps.every(row=>typeof row.step === 'string' && permittedSteps.has(row.step) &&
+          typeof row.status === 'string' && permittedStatuses.has(row.status)) ||
+          new Set(steps.map(row=>row.step)).size !== steps.length)
+        throw new Error('Onboarding status response was invalid.');
+      return {
+        profile: profile ? {displayName:profile.display_name as string,handle:profile.handle as string|null} : null,
+        projects:parsedProjects,portfolios:parsedPortfolios,
+        onboarding:steps.map(row=>({step:row.step as PrivateStep,status:row.status as PrivateStepStatus}))
+      };
+    });
+  }
+
+  /** A choice can be skipped, but no UI may mark an unperformed step completed.
+   * Successful RPC response and the current initiating owner are both required. */
+  async setPrivateOnboardingStep(step: PrivateStep, status: PrivateStepStatus): Promise<AuthOutcome<{ step: PrivateStep; status: PrivateStepStatus }>> {
+    return this.outcome(async () => {
+      if (!['profile','portfolio','connections'].includes(step) ||
+          !['pending','skipped','completed'].includes(status))
+        throw new Error('Invalid onboarding state.');
+      const { session } = await this.ownerSession();
+      const result = await this.ownerRest('rpc/set_private_onboarding_step',session.access_token,'POST',
+        {p_step:step,p_status:status});
+      if (!this.isCurrentSession(session))
+        throw new Error('Owner session changed while saving onboarding.');
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          (result as Json).step !== step || (result as Json).status !== status)
+        throw new Error('Onboarding update was not confirmed by the server.');
+      return {step,status};
+    });
   }
 
   private storeEmailSession(session: StoredSession): void {

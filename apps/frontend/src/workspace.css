@@ -77,3 +77,19 @@
   .ws-bottom-strip{flex-direction:column;align-items:flex-start}.ws-section-head{align-items:flex-start;flex-direction:column}
   .ws-choice-grid{grid-template-columns:1fr}.ws-choice{min-height:0}.ws-heading h1{font-size:38px}}
 @media(prefers-reduced-motion:reduce){.ws-choice{transition:none}}
+
+/* Fetch-only content-footprint placeholders; never used as fake loading delays. */
+.ws-loading{min-height:420px;padding:26px 0}.ws-loading [role="status"]{font-size:13px;color:var(--body)}
+.ws-skeleton-heading{width:min(420px,80%);height:95px;margin:30px 0 25px;border-radius:16px;
+  background:linear-gradient(135deg,var(--surface-soft) 20%,var(--line) 50%,var(--surface-soft) 80%)}
+.ws-skeleton-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.ws-skeleton-grid>span{display:block;height:190px;border-radius:13px;border:1px solid var(--line);background:var(--surface-soft)}
+.ws-error{max-width:650px}.ws-error h1{font-size:36px}.ws-error p{color:var(--body)}
+.ws-recent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;margin-top:30px}
+.ws-recent-grid section{border-top:1px solid var(--line);padding-top:20px;min-width:0}
+.ws-recent-grid h2{font-size:19px}.ws-recent-grid p{color:var(--body);font-size:12px}
+.ws-recent-grid ul{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+.ws-recent-grid li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.ws-recent-grid li strong{font-size:13px;font-weight:700;overflow-wrap:anywhere}
+.ws-recent-grid li span{flex:none;color:var(--muted);font-size:10px}
+@media(max-width:720px){.ws-recent-grid,.ws-skeleton-grid{grid-template-columns:1fr}}
