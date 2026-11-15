@@ -43,7 +43,9 @@ function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
     node.showModal();
     return ()=>{if(node.open)node.close();};
   },[]);
-  return <dialog ref={dialog} className="template-dialog" onClose={onClose}
+  return <dialog ref={dialog} className="template-dialog"
+    // StrictMode's effect cleanup closes the native dialog. That close must
+    // not be interpreted as a user request to dismiss the React preview state.
     onCancel={event=>{event.preventDefault();onClose();}} aria-labelledby="template-dialog-title">
     <div className="template-dialog-top">
       <p className="eyebrow"><span/> Concept preview</p>

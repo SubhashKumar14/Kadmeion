@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test('landing respects approved public path, can switch theme and persists preference', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: /Your Developer Identity/ })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: /^Your Developer Identity/ })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
   const theme=page.getByRole('button', { name: 'Switch to dark theme' });
   await theme.click();
@@ -20,7 +20,7 @@ test('manual carousel, pause and native FAQ are keyboard-operable', async ({ pag
   await expect(page.getByRole('img',{name:/Portfolio Studio illustrative interface concept/})).toBeVisible();
   await page.getByRole('button',{name:'Pause automatic preview'}).click();
   await expect(page.getByRole('button',{name:'Resume automatic preview'})).toHaveAttribute('aria-pressed','true');
-  const question=page.getByText('Is my work private by default?',{exact:true});
+  const question=page.locator('summary').filter({hasText:'Is my work private by default?'});
   await question.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByText(/Draft profiles, projects and portfolio work remain private/)).toBeVisible();
