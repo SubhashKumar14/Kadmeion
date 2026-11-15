@@ -7,6 +7,7 @@
  */
 import {createHash} from 'node:crypto';
 import {isSafeSupabaseClientKey} from '../../contracts/src/project.ts';
+import type {TrustedPrivateMediaReader} from './private-immutable-artifact.ts';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MIME=new Set(['image/png','image/jpeg','image/webp','image/avif']);
 const MAX_BYTES=5*1024*1024;
@@ -121,7 +122,9 @@ export class PrivateServerAssetByteAttestor {
       typeof actualMime==='string'&&actualMime.toLowerCase()===mime,'INTEGRITY');
     return {id:data.id as string,version:data.version as string,modified:modified as string};
   }
-  async attest(assetId:string,ownerJwt:string):Promise<{assetId:string;status:'WRITE_ONCE_ATTESTED'}>{
+  private async attestedBytes(assetId:string,ownerJwt:string):
+    Promise<{assetId:string;ownerId:string;hash:string;mime:string;
+      version:string;bytes:Uint8Array}> {
     requireValid(UUID.test(assetId)&&typeof ownerJwt==='string'&&ownerJwt.length>0,'VALIDATION');
     const {data:user}=await this.get('/auth/v1/user',ownerJwt);
     requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id),'AUTH');
@@ -155,6 +158,46 @@ export class PrivateServerAssetByteAttestor {
     requireValid(obj(receipt)&&receipt.assetId===assetId&&
       receipt.status==='WRITE_ONCE_ATTESTED'&&receipt.providerSigned===false&&
       receipt.deletionAllowed===false,'INTEGRITY');
-    return {assetId,status:'WRITE_ONCE_ATTESTED'};
+    return {assetId,ownerId,hash,mime,version:before.version,
+      bytes:Uint8Array.from(response.raw)};
+  }
+
+  async attest(assetId:string,ownerJwt:string):Promise<{
+    assetId:string;status:'WRITE_ONCE_ATTESTED'
+  }>{
+    const pinned=await this.attestedBytes(assetId,ownerJwt);
+    return {assetId:pinned.assetId,status:'WRITE_ONCE_ATTESTED'};
+  }
+
+  /**
+   * The caller MUST use the same owner JWT for the trusted frozen loader and
+   * this private reader. Owner RLS is checked on both portfolio and asset.
+   * A server-owned media plan must authorize the asset's inclusion in the
+   * selected frozen revision; owning another asset is not publication consent.
+   */
+  forTrustedFrozenMedia(ownerJwt:string):TrustedPrivateMediaReader {
+    requireValid(typeof ownerJwt==='string'&&ownerJwt.length>0,'VALIDATION');
+    return {
+      readFrozenPinnedImage:async query=>{
+        requireValid(!!query&&typeof query==='object'&&
+          UUID.test(query.assetId)&&UUID.test(query.portfolioId)&&
+          Number.isSafeInteger(query.revision)&&query.revision>=1,'VALIDATION');
+        const {data:user}=await this.get('/auth/v1/user',ownerJwt);
+        requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id),'AUTH');
+        // Check target portfolio ownership BEFORE any privileged attestation.
+        const {data:portfolios}=await this.get(
+          '/rest/v1/portfolios?select=id,owner_user_id&id=eq.'+
+          encodeURIComponent(query.portfolioId)+'&limit=2',ownerJwt);
+        requireValid(Array.isArray(portfolios)&&portfolios.length===1&&
+          obj(portfolios[0])&&portfolios[0].id===query.portfolioId&&
+          portfolios[0].owner_user_id===user.id,'AUTH');
+        const pinned=await this.attestedBytes(query.assetId,ownerJwt);
+        requireValid(pinned.ownerId===user.id&&pinned.mime==='image/png','INTEGRITY');
+        return {assetId:pinned.assetId,portfolioId:query.portfolioId,
+          revision:query.revision,sourceSha256:pinned.hash,
+          mimeType:'image/png' as const,storageVersion:pinned.version,
+          bytes:pinned.bytes};
+      }
+    };
   }
 }

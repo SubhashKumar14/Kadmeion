@@ -33,6 +33,8 @@ function setup(overrides:Overrides={}){
       return Response.json({error:'denied'},{status:503});
     if(url.pathname==='/auth/v1/user')
       return Response.json(overrides.user??{id:owner});
+    if(url.pathname==='/rest/v1/portfolios')
+      return Response.json([{id:'40000000-0000-4000-8000-000000000004',owner_user_id:owner}]);
     if(url.pathname==='/rest/v1/project_assets')
       return Response.json([{id:assetId,owner_user_id:owner,object_path:path,
         mime_type:'image/png',byte_size:png.length,...overrides.asset}]);
@@ -123,4 +125,33 @@ test('attestation worker cannot use a privileged key for owner-scoped reads',()=
    assert.throws(()=>new PrivateServerAssetByteAttestor(
      'https://example.supabase.co',key,'separate-service-key'
    ),{code:'VALIDATION'});
+});
+
+test('trusted frozen-media reader verifies owner portfolio, immutable asset pin and bytes',async()=>{
+ const {worker,calls}=setup();
+ const portfolioId='40000000-0000-4000-8000-000000000004';
+ const receipt=await worker.forTrustedFrozenMedia('owner-jwt').readFrozenPinnedImage({
+   assetId,portfolioId,revision:9
+ });
+ assert.equal(receipt.assetId,assetId);
+ assert.equal(receipt.portfolioId,portfolioId);
+ assert.equal(receipt.revision,9);
+ assert.equal(receipt.sourceSha256,digest);
+ assert.equal(receipt.mimeType,'image/png');
+ assert.equal(receipt.storageVersion,'v1');
+ assert.deepEqual(receipt.bytes,png);
+ assert.ok(calls.find(c=>c.path.startsWith('/rest/v1/portfolios?')));
+ assert.equal(calls.filter(c=>c.key==='trusted-service-key').length,1);
+ assert.ok(calls.slice(0,-1).every(c=>c.key==='publishable'));
+});
+test('private media reader refuses wrong portfolio before using service credentials',async()=>{
+ const {worker,calls}=setup();
+ const reader=worker.forTrustedFrozenMedia('owner-jwt');
+ await assert.rejects(reader.readFrozenPinnedImage({
+   assetId,portfolioId:'60000000-0000-4000-8000-000000000006',revision:9
+ }),{code:'AUTH'});
+ assert.ok(calls.every(c=>c.key==='publishable'));
+ await assert.rejects(reader.readFrozenPinnedImage({
+   assetId,portfolioId:'invalid',revision:9
+ }),{code:'VALIDATION'});
 });
