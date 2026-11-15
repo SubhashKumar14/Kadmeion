@@ -117,7 +117,12 @@ export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
     let name:string;
     try{name=decoder.decode(data.subarray(begin,endName));}
     catch{throw new ContractError('VALIDATION','Invalid ZIP filename encoding.');}
-    check(!entries.has(name)&&name.length<160,'Duplicate or invalid ZIP filename.');
+    // Accept only canonical, writer-compatible paths. Opaque ZIP names can
+    // alias the same file differently across extractors and importers.
+    check(!entries.has(name)&&name.length<=160&&
+      /^[a-zA-Z0-9][a-zA-Z0-9_./-]*$/.test(name)&&
+      !name.includes('..')&&!name.includes('//')&&!name.endsWith('/'),
+      'Duplicate or unsafe ZIP filename.');
     const bytes=data.slice(dataStart,dataStart+size);
     check(crc32(bytes)===crc,'ZIP integrity check failed.');
     entries.set(name,{bytes,offset,crc});
@@ -125,6 +130,7 @@ export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
   }
   check(pos===centralOffset&&entries.size===count,'Local ZIP header count mismatch.');
   let cursor=centralOffset;
+  const centralSeen=new Set<string>();
   for(let i=0;i<count;i++){
     check(cursor+46<=end&&view.getUint32(cursor,true)===0x02014b50,'Invalid central ZIP record.');
     const flags=view.getUint16(cursor+8,true),method=view.getUint16(cursor+10,true),
@@ -137,11 +143,14 @@ export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
     try{name=decoder.decode(data.subarray(cursor+46,cursor+46+nameLength));}
     catch{throw new ContractError('VALIDATION','Invalid central filename.');}
     const actual=entries.get(name);
-    check(actual&&actual.crc===crc&&actual.bytes.length===size&&actual.offset===offset,
-      'ZIP central and local entries disagree.');
+    check(actual&&!centralSeen.has(name)&&actual.crc===crc&&
+      actual.bytes.length===size&&actual.offset===offset,
+      'ZIP central and local entries disagree or repeat.');
+    centralSeen.add(name);
     cursor+=46+nameLength+extra+comment;
   }
-  check(cursor===end,'Central ZIP length mismatch.');
+  check(cursor===end&&centralSeen.size===entries.size,
+    'Central ZIP is incomplete or inconsistent.');
   const meta=entries.get(MANIFEST);
   check(meta,'Expected Kadmeion export manifest.');
   let manifest:unknown;
