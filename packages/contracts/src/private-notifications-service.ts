@@ -38,9 +38,11 @@ export interface PrivateNotificationPage {
 export type NotificationErrorCode='VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|
   'PROVIDER_UNAVAILABLE'|'INVALID_ACK'|'LIMIT_EXCEEDED';
 export class PrivateNotificationsError extends Error {
-  constructor(readonly code:NotificationErrorCode){
+  readonly code:NotificationErrorCode;
+  constructor(code:NotificationErrorCode){
     super('Owner notifications unavailable: '+code);
     this.name='PrivateNotificationsError';
+    this.code=code;
   }
 }
 
