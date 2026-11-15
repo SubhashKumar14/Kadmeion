@@ -115,16 +115,21 @@ export async function verifyActivatedUnlistedRelease(
   }
   const route = new URL(publicPath ?? '/api/unlisted', host);
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
-  let actualDigest: string | null;
-  try {
-    actualDigest = await digestHtml(await http(route, {
-      method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error',
-      signal: AbortSignal.timeout(5_000)
-    }), publicPath !== undefined);
-  } catch {
-    actualDigest = null;
-  }
-
+  const checkHost = async(indexable:boolean):Promise<string|null>=>{
+    try {
+      return await digestHtml(await http(route, {
+        method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error',
+        signal: AbortSignal.timeout(5_000)
+      }),indexable);
+    }catch{return null;}
+  };
+  // A newly activated PUBLIC route serves a noindex canary UNTIL the
+  // database records a trusted same-byte host acknowledgment. Verify the
+  // canary as non-indexable; an already acknowledged PUBLIC route must be
+  // indexable and match the same immutable source digest.
+  const publicRoute=publicPath!==undefined;
+  const initialIndexable=publicRoute&&policy==='CHECK_ACKNOWLEDGED_ONLY';
+  const actualDigest=await checkHost(initialIndexable);
   if (actualDigest === htmlSha256) {
     if (policy === 'CHECK_ACKNOWLEDGED_ONLY')
       return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
@@ -132,6 +137,11 @@ export async function verifyActivatedUnlistedRelease(
       p_portfolio_id: portfolioId, p_intent_id: intentId, p_html_sha256: htmlSha256
     });
     if (ack !== true) throw new Error('Release delivery acknowledgment was not confirmed.');
+    // Indexing changes the delivered robots marker; prove the AFTER-ack
+    // response, not merely the preceding private noindex canary. A failure
+    // cannot roll back a now-acknowledged live pointer on this read.
+    if(publicRoute && await checkHost(true)!==htmlSha256)
+      throw new Error('Acknowledged public release failed its indexable HTTP verification.');
     return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
   }
 
