@@ -69,7 +69,11 @@ const justifiedExtra = [
   // F1 public template explorer (screen 03): separate searchable, accessible catalog.
   'apps/frontend/src/templates.tsx',
   // F1 public showcase screen 02 (illustrative until secure public projection).
-  'apps/frontend/src/explore.tsx'
+  'apps/frontend/src/explore.tsx',
+  // Latest stable Playwright 1.65.1 browser integration tests, using the
+  // existing runner Chrome and no third-party cloud browser subscription.
+  'apps/frontend/playwright.config.ts',
+  'apps/frontend/e2e/public.spec.ts'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

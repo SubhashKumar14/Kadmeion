@@ -11,7 +11,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --experimental-strip-types --test src/behavior.test.ts"
+    "test": "node --experimental-strip-types --test src/behavior.test.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "react": "19.3.1",
@@ -23,6 +24,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.3.0",
     "typescript": "7.0.2",
-    "vite": "8.3.8"
+    "vite": "8.3.8",
+    "@playwright/test": "1.65.1"
   }
 }

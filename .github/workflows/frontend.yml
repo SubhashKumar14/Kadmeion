@@ -32,6 +32,10 @@ jobs:
           npm run typecheck --prefix apps/frontend
           npm test --prefix apps/frontend
           npm run build --prefix apps/frontend
+      - name: Exercise real browser interactions in Chrome (latest stable Playwright)
+        run: npm run test:e2e --prefix apps/frontend
+        env:
+          CI: 'true'
       - name: Audit production dependency advisories
         run: npm audit --prefix apps/frontend --omit=dev --audit-level=high
       - name: Capture real Chromium browser screenshots for F1 LIGHT comparison
