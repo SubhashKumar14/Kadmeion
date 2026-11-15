@@ -1,3 +1,4 @@
+import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -292,21 +293,33 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const refresh_token = parameters.get('refresh_token');
     const expires_in = Number(parameters.get('expires_in') ?? '3600');
     const kind = parameters.get('type');
-    if (!access_token || !refresh_token || !Number.isFinite(expires_in) || expires_in <= 0)
-      throw new Error('The invitation link is incomplete or expired.');
+    if (!access_token || !refresh_token || !isEmailAuthType(kind) ||
+        ['access_token', 'refresh_token', 'expires_in', 'type'].some(key => parameters.getAll(key).length > 1) ||
+        !Number.isSafeInteger(expires_in) || expires_in <= 0 || expires_in > 86400)
+      throw new Error('The authentication link is incomplete or expired.');
     const userPayload = await this.request('/user', 'GET', undefined, access_token);
     const user = userFrom(userPayload);
     if (!user) throw new Error('Could not validate the invitation session.');
-    this.store({ access_token, refresh_token, expires_at: Math.floor(Date.now() / 1000) + expires_in, user });
+    this.storeEmailSession({ access_token, refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + expires_in, user });
     return kind === 'invite' ? 'invite' : kind === 'recovery' ? 'recovery' : 'confirmation';
   }
 
   /** Supports server-side rendered emails that use token_hash instead of an implicit fragment. */
   async verifyTokenHash(tokenHash: string, type: string): Promise<'invite' | 'recovery' | 'confirmation'> {
-    if (!/^[a-zA-Z0-9_-]{8,2048}$/.test(tokenHash) || !['invite', 'recovery', 'signup', 'email'].includes(type))
+    if (!/^[a-zA-Z0-9_-]{8,2048}$/.test(tokenHash) || !isEmailAuthType(type))
       throw new Error('Unsupported or invalid verification link.');
     const response = await this.request('/verify', 'POST', { token_hash: tokenHash, type });
-    this.store(this.decodeSession(response));
+    this.storeEmailSession(this.decodeSession(response));
     return type === 'invite' ? 'invite' : type === 'recovery' ? 'recovery' : 'confirmation';
+  }
+
+  private storeEmailSession(session: StoredSession): void {
+    // A link may be opened during a sign-in on this or another browser tab.
+    // Preserve that account and require explicit sign-out before switching.
+    const current = this.readSession() ?? this.session;
+    if (current && current.user.id !== session.user.id)
+      throw new Error('Sign out before opening a link for a different account.');
+    this.store(session);
   }
 }

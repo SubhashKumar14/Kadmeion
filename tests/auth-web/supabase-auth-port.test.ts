@@ -250,3 +250,20 @@ test('local sign-out clears the current browser session and denies later access'
   assert.equal(saved.data.size,0);
   assert.ok((await port.getUser()).error);
 });
+
+
+test('an email callback cannot replace a signed-in account with a different user', async () => {
+  const wrongUser = {...user, id: '2826297f-24b1-42ca-97b0-0cd09d82ea5a'};
+  const {port, saved} = mock(async (url) => {
+    if (String(url).includes('/token?')) return json(tokens);
+    if (String(url).endsWith('/verify')) return json({...tokens, user: wrongUser});
+    return json(wrongUser);
+  });
+  assert.equal((await port.signInWithPassword({email:user.email,password:'pass'})).error, null);
+  const before=[...saved.data.entries()];
+  await assert.rejects(port.verifyTokenHash('a'.repeat(32), 'recovery'), /Sign out/);
+  await assert.rejects(port.acceptTokens(new URLSearchParams({
+    access_token:'b'.repeat(64),refresh_token:'c'.repeat(64),type:'recovery'
+  })), /Sign out/);
+  assert.deepEqual([...saved.data.entries()],before);
+});

@@ -114,6 +114,21 @@ test('local Auth email confirmation and password recovery via Mailpit are real, 
       const session=new URLSearchParams(next.hash.replace(/^#/,''));
       const token=session.get('access_token');
       assert.ok(token?.length>50,'Recovery redirect omitted a usable one-time session');
+      const replay=await fetch(link.toString(),{
+        redirect:'manual',signal:AbortSignal.timeout(15_000)});
+      const replayLocation=replay.headers.get('location');
+      if(replayLocation){
+        const replayUrl=new URL(replayLocation,api.origin);
+        const replayFragment=new URLSearchParams(replayUrl.hash.slice(1));
+        assert.equal(replayFragment.has('access_token'),false,'Reused recovery link minted a second session');
+        assert.equal(replayUrl.searchParams.has('code'),false,'Reused recovery link issued a second code');
+        assert.ok(replay.status>=400||replayFragment.has('error')||replayFragment.has('error_code')||
+          replayUrl.searchParams.has('error')||replayUrl.searchParams.has('error_code'),
+          'GoTrue did not indicate reuse of an already consumed recovery link');
+      }else{
+        assert.ok(replay.status>=400,'GoTrue reused an already consumed recovery link');
+      }
+
       const update=await fetch(api.origin+'/auth/v1/user',{
         method:'PUT',headers:{apikey:key,Authorization:'Bearer '+token,
           'Content-Type':'application/json'},

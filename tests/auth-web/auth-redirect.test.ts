@@ -27,3 +27,20 @@ test('never surfaces provider error descriptions or secret values in a message',
   if (result.kind === 'error') assert.equal(result.message.includes('private_secret'), false);
   assert.deepEqual(parseAuthRedirect('http://localhost:3000/login'), { kind: 'none' });
 });
+
+test('rejects duplicate, mixed, misplaced and incomplete callback credentials', () => {
+  const root = 'https://kadmeion.example';
+  for (const url of [
+    '/auth/callback?code=first&code=second',
+    '/auth/callback?token_hash=first&token_hash=second&type=recovery',
+    '/auth/callback?token_hash=first&type=recovery&type=invite',
+    '/auth/callback?token_hash=first',
+    '/auth/callback?code=first#access_token=first&refresh_token=second&type=invite',
+    '/auth/callback?access_token=first&refresh_token=second',
+    '/auth/callback#access_token=first&type=recovery',
+    '/auth/callback#access_token=first&refresh_token=second&type=other',
+    '/workspace#access_token=first&refresh_token=second&type=recovery',
+    '/reset-password?token_hash=first&type=signup',
+    '/reset-password#error_code=otp_expired'
+  ]) assert.equal(parseAuthRedirect(root + url).kind, 'error', url);
+});

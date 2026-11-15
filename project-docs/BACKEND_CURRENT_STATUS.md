@@ -11,6 +11,10 @@
 
 Pending migration `20261115130002_account_exit_storage_revocation_gate.sql` checks the same exposure predicate before listing uploads for erasure, deleting them via Storage RLS or deleting the active account. Cleanup also checks the live session expiry. This preserves private uploads for an owner whose exit is blocked by unverified release or reviewer withdrawal. The app stores no new deletion proof and keeps provider/backup erasure unverified.
 
+## B10 email callback hardening
+
+The auth proof accepts one unambiguous credential flow on a supported callback path. Duplicate or conflicting values, misplaced credentials and invalid email types are rejected without persisting a session. An email callback for a different account cannot replace the signed-in browser session. Hosted Brevo domain authentication, SMTP secrets and real sender delivery remain separate enablement and acceptance gates.
+
 ## B07 hosted foundation rollout — 15 November 2026
 
 **B07 HOSTED FOUNDATION DEPLOYMENT: COMPLETE.** All 47 migrations, 3 Edge functions and live no-credential deny-by-default smoke verified; downstream production acceptance remains independent.
