@@ -1,5 +1,42 @@
 # Kadmeion — Current Backend Implementation State
 
+## Latest code continuation — 15 November 2026
+
+- **Current feature-branch code:** `feat/b0-backend-foundation` at privacy invalidation commit
+  `adb4d081` (subsequent housekeeping CI SHA may differ). This continuation
+  added curated source-pinned starter assignments with empty owner content
+  (no fabricated project/media data), hardened public route ambiguity and
+  consented SEO projection, and added transactional withdrawal on private
+  identity/case-study content edits.
+- **Security regression proof:** the isolated database job for `adb4d081`
+  passed migrations, pgTAP, PostgREST/Auth/Storage HTTP, Edge Function smoke,
+  Mailpit recovery, restricted worker and moderation race. See
+  [the latest PR checks](https://github.com/SubhashKumar14/Kadmeion/pull/1/checks).
+  The accompanying contracts job passed TypeScript and Node tests but failed
+  solely at source-file budget accounting because the new forward-only
+  privacy migration was not yet on the explicit exception list; the
+  housekeeping commit corrects this and requires its own fresh CI.
+- **Audited count:** **203 authored application/config/test paths** excluding
+  `project-docs`, caches, dependencies and build outputs. **46 SQL migrations**,
+  3 Edge Functions. The originally proposed 200-file limit now has three
+  individually identified security migration exceptions, not blanket approval.
+- **Hosted Supabase read-only:** **14 of 46 migrations applied, 32 pending**;
+  zero project Edge Functions deployed as of the last confirmed handoff.
+  No hosted schema mutation, production deployment, feature-switch promotion
+  or merge into main performed during this continuation.
+- **Brevo account read-only:** free relay enabled, two configured Kadmeion
+  domains both unauthenticated/unverified. No hosted email-delivery proof.
+- **Release correctness:** the external host/canonical and direct-asset
+  revocation gate remains open; B08 scriptless text-only serving does not yet
+  cover safe owner media. B09 account export remains bounded/partial and
+  provider erasure/retention are not proven. Neither should be described as
+  fully complete or production ready.
+
+**Do not enable public publishing or irreversible account deletion on the
+basis of code presence or green ephemeral CI.** Hosted acceptance and explicit
+owner approval of target migrations/host are independent gates.
+
+
 **Repository:** SubhashKumar14/Kadmeion  
 **Feature branch:** `feat/b0-backend-foundation`  
 **Last verified code SHA:** `88dda7ecf0eef28aae95fa6db486b8c2a5aa4134`  
