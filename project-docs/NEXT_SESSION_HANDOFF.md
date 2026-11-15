@@ -1,3 +1,5 @@
+> **Execution prompt update (15 Nov 2026):** Before planning or implementing another backend/frontend slice, read [MASTER_EXECUTION_PROMPT.md](MASTER_EXECUTION_PROMPT.md). Source baseline: CI #696 green on `92e46b1`; 56/56 hosted migrations, 3/3 Edge functions active; the owner approved **all 52 LIGHT design images** (Notion approval register) but the corresponding interactive frontend is not accepted. No DARK image set is authorized. The phase plan and open gates are tracked in the master prompt. Recheck current HEAD and exact CI before asserting readiness.
+
 # Kadmeion — New-Chat Continuation Prompt (Authoritative Handoff v3)
 
 > Copy the section under **BEGIN COPY-READY PROMPT** into a fresh ChatGPT chat. The implementation is *not started* as of this handoff. Any claims about the current GitHub branch or test status must be freshly verified; do not assume a later session retained these facts.
