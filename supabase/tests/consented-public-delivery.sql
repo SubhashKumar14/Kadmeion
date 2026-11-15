@@ -222,5 +222,90 @@ begin
   if not denied then raise exception 'Reserved portfolio route accepted'; end if;
 end $body$;
 select pass('app route is reserved by the database identity constraint');
+-- Source edits must revoke previously published data even if the owner does
+-- not separately flip a visibility toggle. Never serve an obsolete snapshot.
+reset role;
+insert into kadmeion_private.profile_publications
+  (user_id,handle,display_name,headline,bio)
+values('00000000-0000-4000-8000-0000000000d1',
+  'renamed_owner','Release Owner','Published headline','Previously public bio');
+set local role service_role;
+select is(public.service_read_published_profile_projection('renamed_owner')->>'bio',
+  'Previously public bio','public profile projection exists only with explicit publication');
+reset role;
+update public.profiles set bio='Revised private biography'
+  where user_id='00000000-0000-4000-8000-0000000000d1';
+set local role service_role;
+select is(public.service_read_published_profile_projection('renamed_owner'),
+  null::jsonb,'editing a previously shared bio revokes its old public projection');
+reset role;
+
+insert into kadmeion_private.profile_publications
+  (user_id,handle,display_name,headline,bio)
+values('00000000-0000-4000-8000-0000000000d1',
+  'renamed_owner','Release Owner','Published headline','Revised private biography');
+update public.profiles set headline='New private headline'
+  where user_id='00000000-0000-4000-8000-0000000000d1';
+select is((select count(*)::integer from kadmeion_private.profile_publications
+  where user_id='00000000-0000-4000-8000-0000000000d1'),0,
+  'editing a shared headline removes the old publication');
+
+insert into kadmeion_private.profile_publications
+  (user_id,handle,display_name,headline,bio)
+values('00000000-0000-4000-8000-0000000000d1',
+  'renamed_owner','Release Owner','New private headline','Revised private biography');
+update public.profiles set display_name='Different private name'
+  where user_id='00000000-0000-4000-8000-0000000000d1';
+select is((select count(*)::integer from kadmeion_private.profile_publications
+  where user_id='00000000-0000-4000-8000-0000000000d1'),0,
+  'editing a previously shared display name removes the old publication');
+
+-- Case-study exposure is separate from the identity profile. Prove a
+-- currently readable case study becomes unreadable immediately on source edit.
+update public.project_exposure_intents set show_case_study=true
+  where project_id='70000000-0000-4000-8000-0000000000d1';
+insert into kadmeion_private.case_study_publications
+  (project_id,owner_user_id,slug,handle,payload)
+values('70000000-0000-4000-8000-0000000000d1',
+  '00000000-0000-4000-8000-0000000000d1',
+  'project-privacy','renamed_owner',
+  '{"slug":"project-privacy","title":"Privacy Fixture","summary":"Old public summary","sections":[]}'::jsonb);
+set local role service_role;
+select is(public.service_read_published_case_study_projection(
+  'renamed_owner','project-privacy')->>'summary','Old public summary',
+  'consented case-study publication is readable before private edit');
+reset role;
+update public.projects set summary='Revised private project summary'
+  where id='70000000-0000-4000-8000-0000000000d1';
+set local role service_role;
+select is(public.service_read_published_case_study_projection(
+  'renamed_owner','project-privacy'),null::jsonb,
+  'editing public project summary transactionally revokes old case-study bytes');
+reset role;
+
+insert into kadmeion_private.case_study_publications
+  (project_id,owner_user_id,slug,handle,payload)
+values('70000000-0000-4000-8000-0000000000d1',
+  '00000000-0000-4000-8000-0000000000d1',
+  'project-privacy','renamed_owner',
+  '{"slug":"project-privacy","title":"Privacy Fixture","summary":"Revised private project summary","sections":[]}'::jsonb);
+update public.projects set case_study=
+  '{"sections":[{"id":"scope","kind":"challenge","title":"Changed","body":"Private content","visible":true}]}'::jsonb
+  where id='70000000-0000-4000-8000-0000000000d1';
+select is((select count(*)::integer from kadmeion_private.case_study_publications
+  where project_id='70000000-0000-4000-8000-0000000000d1'),0,
+  'editing case-study sections invalidates previously rendered public sections');
+
+insert into kadmeion_private.case_study_publications
+  (project_id,owner_user_id,slug,handle,payload)
+values('70000000-0000-4000-8000-0000000000d1',
+  '00000000-0000-4000-8000-0000000000d1',
+  'project-privacy','renamed_owner',
+  '{"slug":"project-privacy","title":"Privacy Fixture","sections":[]}'::jsonb);
+update public.projects set live_url='https://example.org/updated-project'
+  where id='70000000-0000-4000-8000-0000000000d1';
+select is((select count(*)::integer from kadmeion_private.case_study_publications
+  where project_id='70000000-0000-4000-8000-0000000000d1'),0,
+  'editing a linked published project URL revokes previously published link');
 select * from finish();
 rollback;
