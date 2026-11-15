@@ -34,11 +34,12 @@ jobs:
       - run: npm run check:file-budget
 
   database:
-    # Supabase CLI uses fixed localhost ports; serialize database jobs across
-    # push/PR runs so overlapping runs cannot race for 54321/54322.
+    # Every GitHub-hosted runner is isolated, including localhost ports.
+    # Only the newest PR synchronization needs an ephemeral Supabase proof;
+    # do not queue and spend free Actions minutes on obsolete branch revisions.
     concurrency:
-      group: kadmeion-ephemeral-supabase-database
-      cancel-in-progress: false
+      group: kd-ephemeral-db-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
