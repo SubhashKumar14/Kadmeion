@@ -9,6 +9,7 @@ import { DeveloperProfile } from './profile.tsx';
 import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, PortfolioLibrary, portfolioIdFromRoute } from './portfolios.tsx';
 import { PortfolioRelease, releaseRoute } from './release.tsx';
 import { OwnerSettings, isSettingsRoute } from './settings.tsx';
+import { OperatorConsole, isOperatorRoute } from './operations.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -31,7 +32,7 @@ function projectIdFromRoute(path: string): string | undefined {
 }
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || isOperatorRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -61,7 +62,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     </aside>
     <div className="ws-main-col">
       <header className="ws-topbar">
-        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : route.startsWith('/app/portfolios') ? 'Portfolio Studio' : isSettingsRoute(route) ? 'Settings' : 'Overview'}</span>
+        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : route.startsWith('/app/portfolios') ? 'Portfolio Studio' : isSettingsRoute(route) ? 'Settings' : isOperatorRoute(route) ? 'Restricted operations' : 'Overview'}</span>
         <div className="ws-topbar-actions">
           <button type="button" className="ws-theme" onClick={toggleTheme}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
@@ -217,7 +218,7 @@ export function WorkspaceApp() {
           return;
         }
         setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
-        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') || isSettingsRoute(route)) return;
+        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') || isSettingsRoute(route) || isOperatorRoute(route)) return;
         void port.readOwnerWorkspace().then(read=>{
           if (cancelled) return;
           if (read.error || !read.data) {
@@ -283,6 +284,7 @@ export function WorkspaceApp() {
       route === '/app/portfolios/new' && authRef.current ? <PortfolioChooser port={authRef.current}/> :
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
       isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
+      isOperatorRoute(route) && authRef.current ? <OperatorConsole port={authRef.current} path={route}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div className="ws-skeleton-heading" aria-hidden="true"/>

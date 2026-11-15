@@ -664,3 +664,23 @@ Root cause of missing frontend CI on shared-source corrections: `.github/workflo
 **Unresolved work:** approved LIGHT reference #51 still requires screenshot image-diff and owner acceptance. Screens 48–50 restricted operations and the Phase-2 35–40 screens remain to be reconciled with code and contracts, and the reviewer-only preview #28 is not accepted without secure hosting. Frontend visuals, 53 workflows, 138 UAT checks and WCAG acceptance remain incomplete; hosted auth/provider and independent public route/direct asset revocation gates remain open. Application authored file count is already beyond the proposed 200 cap and the variance is not approved.
 
 **Next exact action:** Recheck the latest PR HEAD and CI at new doc SHA, then inspect restricted admin contracts/OPS-01–03 and implement only with real operator authorization; compare all implemented route screenshots to owner-verified registered PNGs; deliver outstanding F4–F6 integration/security tests without claiming unverified deployment.
+
+---
+
+## Frontend F5 OPS-01–03 implementation — 15 Nov 2026
+
+**Request:** Continue F0–F6 Kadmeion frontend to 100% source/UI quality on the existing feature branch, honoring 52 approved LIGHT references, 12 Canva approved brand pages, light/dark runtime, ₹0 recurring cost and production gates. Fresh read: `FRONTEND_UIUX_BRAND_MASTER_EXECUTION_2026-11-15.md`, `MASTER_EXECUTION_PROMPT.md`, earlier handoff, design/security/workflow/specs, Notion decisions/ledger, Canva pages/Copy, hosted Supabase migration ledger and Edge listings.
+
+**Backend readiness:** Hosted Supabase project `scyooqjitjzjdxgtanso` ACTIVE_HEALTHY, **56 existing source migration versions**, 3 active Edge Functions on read-only checks. Actual restricted operator RPCs include `operator_list_moderation_cases`, `operator_list_portfolio_abuse_reports`, `operator_open_moderation_case`, `operator_review_portfolio_abuse_report`, `operator_close_moderation_case`, `operator_block_private_portfolio` and `operator_lift_private_moderation_hold`. Roles are stored only in non-exposed `kadmeion_private.operator_roles`; server RPCs authorize the caller. No hosted DB changes made. Code start SHA `4db7e4b60cf3a6d172567a21dde793db7c88e30d`, root CI success at that SHA.
+
+**Implementation in current source commit (CI must verify exact new SHA):**
+- `apps/frontend/src/operations.tsx` new role-gated OPS-01/02/03 console: verified operator case list / scoped case opening, abuse report queue with auditable review, case-bound INTERNAL private hold, appeal-pending case resolution, administrator-only INTERNAL hold lift. Bounded fields, explicit operator confirmation, truthfully private receipts, empty/loading/denied/error states; no arbitrary user search, impersonation, private code access or public revocation claims. Unauthorized user receives no case data.
+- `apps/auth-web/src/supabase-auth-port.ts`: adds `operatorModeration()` using live owner session verification and same-identity token callback, passing the existing safe public key to the audited `SupabasePrivateModerationService`; actual role decision remains server-side by RPC.
+- `apps/frontend/src/workspace.tsx` adds guarded routes and skips owner workspace data fetches on operator paths.
+- `apps/frontend/src/workspace.css` adds responsive light/dark operator workspace styles.
+- `apps/frontend/e2e/public.spec.ts` checks anonymous denial on all three operation routes. `apps/frontend/e2e/owner.spec.ts` checks signed-in nonoperator denial with local Supabase fixture.
+- `scripts/check-file-budget.mjs` explicitly counts new source-file cap exception; variance is still pending owner review.
+
+**Evidence boundary:** a source commit is NOT a passed CI or approved 48–50 pixel match. Full audit event timeline and global user search are NOT exposed by existing restricted data contracts. Operator happy-path full UI E2E needs isolated operator fixture; negative browser test runs in current CI. Public host/reviewer URL, direct asset/CDN revocation, owner erasure, Brevo/Google providers and 52-screen visual acceptance remain gated. The planned P2 growth/analytics/connections screens #35–40 are next; missing code features must not be marked complete.
+
+**Next exact action:** Check new SHA frontend/root CI and correct compilation/Playwright failures. Follow with P2 screens using existing private goals/platform links contracts, and visually compare approved 48–50 LIGHT sources once authenticated operator fixture captures exist. Update Notion and GitHub handoff and verify readback before reporting.

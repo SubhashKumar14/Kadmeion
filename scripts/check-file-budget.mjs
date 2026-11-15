@@ -92,6 +92,9 @@ const justifiedExtra = [
   'apps/frontend/src/portfolio-tools.tsx',
   'apps/frontend/src/release.tsx',
   'apps/frontend/src/settings.tsx',
+  // Restricted role-checked operator console for approved OPS-01–03,
+  // a proposed file budget variance, not owner-approved expansion.
+  'apps/frontend/src/operations.tsx',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));

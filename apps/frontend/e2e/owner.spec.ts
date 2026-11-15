@@ -69,6 +69,14 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('heading', {name: /Make room for/})).toBeVisible();
   await capture('11_WORKSPACE_BROWSER');
 
+  for (const restricted of ['/app/operations/users', '/app/operations/moderation', '/app/operations/appeals']) {
+    await page.goto(restricted);
+    await expect(page.getByRole('heading', {name: 'Restricted operations.'})).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Only verified operators');
+    await expect(page.getByRole('navigation', {name: 'Restricted operation areas'})).toHaveCount(0);
+  }
+  await page.goto('/app');
+
   await page.goto('/app/profile');
   await expect(page.getByLabel('Display name', {exact: true})).toBeVisible();
   const stale = await page.context().newPage();

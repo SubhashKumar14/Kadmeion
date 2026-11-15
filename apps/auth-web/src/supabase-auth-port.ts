@@ -700,6 +700,22 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** The caller must subsequently obtain server-RPC operator authorization.
+   * The token alone never grants an operator role. */
+  async operatorModeration() {
+    return this.outcome(async () => {
+      const {userId} = await this.ownerSession();
+      const {SupabasePrivateModerationService} = await import('../../../packages/contracts/src/private-moderation-service.ts');
+      const token = async () => {
+        try {
+          const current = await this.ownerSession();
+          return current.userId === userId ? current.session.access_token : null;
+        } catch { return null; }
+      };
+      return new SupabasePrivateModerationService(this.origin, this.publishableKey, token, this.fetcher);
+    });
+  }
+
   async ownerSettings() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
