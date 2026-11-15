@@ -20,3 +20,7 @@ It does **not** certify 90/90 feature completion. A path means only that the fil
 **Dominant pending mechanisms:** final public media and revocation (D10,D20,D42,D72,D74,D75), safe code sandbox (D11,D16,D34,D39), full export/retention (D67,D80), Brevo SMTP (D79), quotas/hosted signup (D89), and reusable source/editor parity (D90). These are requirements to implement/prove, not deferrals.
 
 The included source and test paths were checked against the feature branch tree on 15 Nov 2026. For the current execution checkpoint, see [Notion B07–B11 execution record](https://app.notion.com/p/419b082297c781db810cd756ec0343eb).
+
+## B08 media implementation update (15 November 2026)
+
+The private server-only `safe-png-publication.ts` implements bounded PNG validation, metadata stripping, scanline inflation and deterministic recompression, with regression tests and no paid dependencies. **It is not integrated into a public host or released media manifest.** Only non-interlaced 8-bit RGB/RGBA PNG is accepted. JPEG/WebP/AVIF, secure released asset addressing, content-hash verification at the public host, and actual revocation proof remain outstanding. D42 remains PARTIAL.

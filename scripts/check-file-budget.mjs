@@ -6,8 +6,9 @@ const app = paths.filter((path) => path !== 'README.md' && !path.startsWith('pro
   !path.startsWith('node_modules/') && !path.startsWith('dist/') &&
   !path.startsWith('coverage/'));
 const planned = 200;
-// Three forward-only migrations plus one owner-notification contract/test pair
-// retain independent security reviews without hiding missing backend mechanisms.
+// Independently reviewed security migrations, owner-notification files and
+// a dependency-free server-only PNG sanitization source/test pair remain
+// separate so privacy safeguards are not hidden inside unrelated modules.
 // They are justified departures from the *proposed* 200-path inventory,
 // NOT evidence that the owner has approved a new design/file budget.
 const justifiedExtra = [
@@ -23,7 +24,7 @@ const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
 console.log(`Kadmeion authored application/config/test files: ${app.length} / originally planned ${planned}`);
 if (app.length > planned) {
-  console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified security migrations require owner review.`);
+  console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified security/privacy files require owner review.`);
 }
 if (nonexceptionCount > planned) {
   console.error('Nonexception source/config/test files exceed the original planned count; review modularity.');
