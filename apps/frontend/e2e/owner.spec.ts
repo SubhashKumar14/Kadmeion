@@ -78,8 +78,15 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Skipped in your private account')).toBeVisible();
 
   await page.goto('/app/projects');
-  await expect(page.getByRole('heading', {name: 'Start your project library.'})).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'Your first project belongs here.'})).toBeVisible();
   await capture('13_PROJECTS_BROWSER');
+  const emptyOpener = page.getByRole('button', {name: 'Add first project', exact: true});
+  await emptyOpener.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(emptyOpener).toBeFocused();
   await page.getByRole('button', {name: 'Add project', exact: true}).click();
   const drawer = page.getByRole('dialog', {name: 'Add a project'});
   await drawer.getByLabel('Project title').fill('Private browser project');

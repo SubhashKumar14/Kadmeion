@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, MouseEvent } from 'react';
 import type { NewPrivateProject, OwnerProject } from '../../auth-web/src/supabase-auth-port.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
@@ -34,6 +34,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [notice,setNotice]=useState('');
   const modal=useRef<HTMLDialogElement>(null);
   const opener=useRef<HTMLButtonElement>(null);
+  const topOpener=useRef<HTMLButtonElement>(null);
   useEffect(()=>{
     let active=true;
     void port.listOwnerProjects().then(reply=>{
@@ -53,9 +54,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       [item.title,item.slug,item.summary].some(value=>value.toLocaleLowerCase('en').includes(term)));
     return sort==='name'?matches.sort((a,b)=>a.title.localeCompare(b.title,'en')):matches;
   },[state,search,sort]);
-  function open() {
+  function open(event: MouseEvent<HTMLButtonElement>) {
+    if (!modal.current || modal.current.open) return;
+    opener.current = event.currentTarget;
     setError('');
-    modal.current?.showModal();
+    modal.current.showModal();
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -81,10 +84,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   return <section className="ws-projects" aria-labelledby="ws-title">
     <div className="ws-project-head">
       <div className="ws-heading"><p className="ws-kicker">WORKSPACE / PROJECT LIBRARY</p>
-        <h1 id="ws-title">Projects worth<br/><em>showing well.</em></h1>
-        <p>Organize your work privately before choosing anything to publish. No repository is required.</p>
+        <h1 id="ws-title">Project library.</h1>
+        <p>Organize your projects and case studies. New project drafts stay private.</p>
       </div>
-      <button type="button" className="ws-primary" ref={opener} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" ref={topOpener} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
     </div>
     <div className="ws-project-controls">
       <label className="ws-project-search">Search private projects
@@ -107,13 +110,24 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     <>
       <p className="ws-project-count">{filtered.length} of {state.items.length} loaded private projects
         {state.items.length===100?' (latest 100 only; older projects are not shown)':''}</p>
-      {filtered.length===0?<div className="ws-project-empty">
-        <div className="ws-area-icon"><Icon name="folder" size={22}/></div>
-        <h2>{search?'No matching projects':'Start your project library.'}</h2>
-        <p>{search?'Try a different search in your private records.':
-          'No active private projects were returned. Create one without needing a GitHub repository.'}</p>
-        {search?<button type="button" className="ws-secondary" onClick={()=>setSearch('')}>Clear search</button>:
-          <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
+      {filtered.length===0?<div className="ws-project-empty-layout">
+        <div className="ws-project-empty">
+          <div className="ws-area-icon"><Icon name="folder" size={22}/></div>
+          <h2>{search?'No matching projects':'Your first project belongs here.'}</h2>
+          <p>{search?'Try a different search in your private records.':
+            'Add a project title and a short description. You can add links later.'}</p>
+          {search?<button type="button" className="ws-secondary" onClick={()=>setSearch('')}>Clear search</button>:
+            <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
+        </div>
+        {!search && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
+          <h2 id="ws-project-guide">Show the work behind your code.</h2>
+          <p>Adding a project gives you a private draft for the details you want to share later.</p>
+          <ul className="ws-project-guide">
+            <li><strong>Link your work.</strong> Add a repository or a live site if you have one.</li>
+            <li><strong>Tell the story.</strong> Describe what you built and what you learned.</li>
+            <li><strong>Choose what to share.</strong> Publishing requires a separate action.</li>
+          </ul>
+        </aside>}
       </div>:<ul className={'ws-project-grid'+(view==='list'?' as-list':'')}>
         {filtered.map(item => {
           const repository = safeProjectLink(item.repositoryUrl);
@@ -133,7 +147,8 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       </ul>}
     </>}
     <dialog ref={modal} className="ws-project-dialog" aria-labelledby="ws-project-modal-heading"
-      onClose={()=>opener.current?.focus()}>
+      onCancel={event => { if (saving) event.preventDefault(); }}
+      onClose={() => (opener.current?.isConnected ? opener.current : topOpener.current)?.focus()}>
       <form onSubmit={event=>void save(event)}>
         <div className="ws-project-modal-heading"><div><p className="ws-kicker">QUICK ADD / PRIVATE</p>
           <h2 id="ws-project-modal-heading">Add a project</h2></div>
