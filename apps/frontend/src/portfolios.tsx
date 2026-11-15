@@ -371,6 +371,17 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     const parent=key.slice(0,pivot),field=key.slice(pivot+1);
     return (head?.snapshot.slots[parent]?.content[field]??'')!==draft;
   });
+  // Browser navigation must not silently discard the owner's private, unsaved
+  // transaction journal or uncommitted secondary fields. This guard never
+  // persists draft text to a public origin or external service.
+  useEffect(()=>{
+    if(!operation&&!pendingFields)return;
+    const warn=(event:BeforeUnloadEvent)=>{
+      event.preventDefault();event.returnValue='';
+    };
+    window.addEventListener('beforeunload',warn);
+    return ()=>window.removeEventListener('beforeunload',warn);
+  },[operation,pendingFields]);
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{

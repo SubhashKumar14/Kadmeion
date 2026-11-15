@@ -310,6 +310,12 @@ test('real owner onboarding and project revision are private across browser sess
     .toContainText('Image uploaded and privately registered.');
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
+  // The portfolio has local revision operations at this point. Saving before
+  // a hard reload is essential; otherwise reload correctly loses unsaved work.
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeEnabled();
+  await page.getByRole('button', {name: 'Save draft'}).click();
+  await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
   await page.reload();
   await page.getByRole('button',{name:'Assets',exact:true}).click();
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
@@ -322,8 +328,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('button',{name:'Apply owned source to draft'})).toHaveCount(0);
   await capture('24_SOURCE_BROWSER');
   await page.getByRole('button',{name:'Back to editor canvas'}).click();
-  await page.getByRole('button', {name: 'Save draft'}).click();
-  await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();
   await page.reload();
   await expect(page.getByRole('button', {name:'Edit L1 title slot in preview'}))
     .toContainText('Portfolio draft title');

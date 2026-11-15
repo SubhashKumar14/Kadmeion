@@ -1019,3 +1019,17 @@ Latest `4d11974` frontend CI [43752842052](https://github.com/SubhashKumar14/Kad
 **Test/acceptance boundary:** New commit's exact SHA TypeScript/build/public Chromium and isolated GoTrue+PostgREST owner Chrome must pass. The browser tests at local isolated Supabase never publish. Content provenance and true public delivery stay blocked by separate host/CDN proofs. Visual screenshot #19 and full WCAG/UAT remain unaccepted, no main merge or new recurring spend.
 
 **Next:** Verify both CI workflows, fix any owner Chrome locator/focus failure, run reference screenshot comparisons, continue F6 keyboard/reflow and save Notion+GitHub checkpoint.
+
+---
+
+## F3/F6 owner draft reload protection and E2E sequencing — 16 Nov 2026
+
+**Latest source SHA before this commit:** `2e89da643f9c01d2546e0bcf700686c03bcdb625` (frontend TypeScript/build/Chromium SUCCESS in [43753552341](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43753552341)). Root isolated owner Chrome at previous `c8f4ebb`, [43752983179](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752983179), **FAILED** after 2.5 minutes attempting to click disabled `Save draft` at owner.spec.ts:314. Cause verified from code and exact E2E sequence: after making unsaved editor section/content/theme changes, the test called `page.reload()` solely to check persisted project image, then attempted to save the now-discarded unsaved portfolio journal. This is a **test fixture bug**, not evidence that Save cannot work; a hard reload deliberately resets uncommitted editor changes. Previous test reports conflated local PNG upload persistence and portfolio save.
+
+**Fix implemented:** `apps/frontend/e2e/owner.spec.ts` now saves the real portfolio revision *before* hard reload, then verifies Storage registration persisted across reload, exercises Advanced Source read-only tree and verifies Save remains correctly disabled for an unchanged saved revision. `apps/frontend/src/portfolios.tsx` adds a native `beforeunload` confirmation for genuinely unsaved revision commands **or uncommitted secondary inspector fields**, preventing accidental loss from an actual browser navigation without inventing auto-save or public storage. The confirmation stops after a verified save. No persistence of owned draft bytes to localStorage, cookies, or external services.
+
+**Existing security improvement:** previous `2e89da6` added recoverable controlled HTTPS-only URL secondary fields in Content inspector, rejecting `javascript:` and credentials before `UPDATE_CONTENT` and guarding Save until valid pending fields are applied; owner browser now checks HTTPS persistence after the correct authenticated save.
+
+**Acceptance boundary:** New SHA frontend & isolated database/owner Chrome CI required; screenshots #18–26 native 1600×1000 and F6 keyboard/reflow acceptance still OPEN, no production gate crossed.
+
+**Next:** verify CI, fix any remaining actual browser issues, compare new native #19/#23/#24 screenshots, update Notion and handoff readback.
