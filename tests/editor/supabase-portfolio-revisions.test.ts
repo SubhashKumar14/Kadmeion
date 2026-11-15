@@ -35,6 +35,29 @@ test('stale cloud head never automatically retries or overwrites local work',asy
   await assert.rejects(unavailable.commit(portfolioId,operationId,0,snapshot),RevisionStorageError);
 });
 
+test('preset initialization writes the documented draft through the existing first-revision transaction',async()=>{
+  const calls:string[]=[];
+  const store=new SupabasePortfolioRevisionStore('https://project.supabase.co','public-only',async()=> 'owner-token',
+    async(url,options)=>{
+      calls.push(options?.method??'GET');
+      assert.equal(options?.redirect,'error');
+      if(calls.length===1){
+        assert.equal(new URL(String(url)).searchParams.get('id'),'eq.'+portfolioId);
+        return Response.json([{id:portfolioId,template_id:'arc'}]);
+      }
+      const payload=JSON.parse(options?.body as string);
+      assert.equal(payload.p_base_revision,0);
+      assert.equal(payload.p_operation_id,operationId);
+      assert.equal(payload.p_snapshot.slots['arc-hero-title'].state,'EMPTY');
+      return Response.json({portfolioId,revision:1,snapshotSha256:sha,alreadyCommitted:false});
+    });
+  assert.equal((await store.initializePreset(portfolioId,operationId,'arc')).revision,1);
+  assert.deepEqual(calls,['GET','POST']);
+  const wrong=new SupabasePortfolioRevisionStore('https://project.supabase.co','public-only',async()=> 'owner-token',
+    async()=>Response.json([{id:portfolioId,template_id:'studio'}]));
+  await assert.rejects(wrong.initializePreset(portfolioId,operationId,'arc'),{code:'VALIDATION'});
+});
+
 test('portable snapshot round-trip preserves private source without sessions',()=>{
   const serialized=exportPortableSnapshot(snapshot);
   assert.deepEqual(importPortableSnapshot(serialized),snapshot);

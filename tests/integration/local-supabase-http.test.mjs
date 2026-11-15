@@ -19,6 +19,7 @@ import {randomBytes} from 'node:crypto';
 import {PrivateServerDeliveryDenialGate} from '../../packages/storage-adapters/src/private-delivery-denial-gate.ts';
 import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapters/src/private-account-data-export.ts';
 import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
+import {SupabasePortfolioRevisionStore} from '../../packages/storage-adapters/src/supabase-portfolio-revisions.ts';
 
 
 function localSupabaseCredentials() {
@@ -91,6 +92,26 @@ const png=Uint8Array.from(Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64'
 ));
 const bucket='kadmeion-private-assets';
+
+test('B3: a private preset initializes a real first revision once under owner RLS',{timeout:60_000},async()=>{
+  const owner=await adminUser('preset-owner');
+  const outsider=await adminUser('preset-outsider');
+  const ownStore=new SupabasePortfolioRevisionStore(cfg.origin,cfg.anon,async()=>owner.token);
+  const otherStore=new SupabasePortfolioRevisionStore(cfg.origin,cfg.anon,async()=>outsider.token);
+  const id=await ownStore.createPrivatePortfolio(owner.id,{
+    slug:'preset-'+randomUUID().slice(0,8),title:'Preset fixture',templateId:'collage'
+  });
+  const operationId=randomUUID();
+  await assert.rejects(otherStore.initializePreset(id,operationId,'collage'),{code:'VALIDATION'});
+  await assert.rejects(ownStore.initializePreset(id,operationId,'arc'),{code:'VALIDATION'});
+  const first=await ownStore.initializePreset(id,operationId,'collage');
+  assert.equal(first.revision,1);
+  assert.equal((await ownStore.initializePreset(id,operationId,'collage')).alreadyCommitted,true);
+  const {revision,snapshot}=await ownStore.loadHead(id);
+  assert.equal(revision,1);
+  assert.equal(JSON.parse(snapshot.files['pages/home.page.json']).header.layout,'header-cta@1');
+  assert.equal(snapshot.slots['collage-hero-imagea'].state,'EMPTY');
+});
 
 test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted writes)',{timeout:120_000},async t=>{
   const owner=await adminUser('owner');

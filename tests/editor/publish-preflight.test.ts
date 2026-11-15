@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {prepareSafeStaticPreview,type SafePreviewInput} from '../../packages/editor-core/src/index.ts';
+import {createPortfolioPresetDraft,prepareSafeStaticPreview,type SafePreviewInput} from '../../packages/editor-core/src/index.ts';
 
 const id='10000000-0000-4000-8000-000000000001',sha='a'.repeat(64);
 const fixture:SafePreviewInput={
@@ -221,4 +221,23 @@ test('each approved section layout resolves from frozen source using server comp
     assert.ok(has(edited,'INVALID_TEMPLATE_GROUPING'));
     assert.equal(edited.previewHtml,null);
   }
+});
+
+test('preset page schemas read the actual saved assignments without duplicating them',()=>{
+  const snapshot=createPortfolioPresetDraft('stairs');
+  snapshot.files['kadmeion.json']=fixture.snapshot.files['kadmeion.json'];
+  const page=JSON.parse(snapshot.files['pages/home.page.json']);
+  snapshot.files['pages/home.page.json']=JSON.stringify({...page,sections:[page.sections[0]]});
+  snapshot.slots['stepped-hero-title']=fixture.snapshot.slots.hero;
+  const plan=[
+    {...fixture.plan[0],slotKey:'stepped-hero-title'},
+    {...fixture.plan[2],slotKey:'stepped-hero-cta'}
+  ];
+  const result=prepareSafeStaticPreview(edit({snapshot,plan}));
+  assert.equal(result.status,'PREVIEW_ONLY');
+  assert.match(result.previewHtml??'',/data-layout="L5"/);
+  assert.match(result.previewHtml??'',/<h1>Hello<\/h1>/);
+  assert.equal(result.publicationReady,false);
+  const unchecked=prepareSafeStaticPreview(edit({snapshot,plan:[{...plan[0],required:false},plan[1]]}));
+  assert.ok(has(unchecked,'INVALID_TEMPLATE_GROUPING'));
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEditorTransaction, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
+import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
 
 const make = (): EditorHead => createEditorHead({
   formatVersion:1,
@@ -11,6 +11,31 @@ const make = (): EditorHead => createEditorHead({
 let step = 0;
 const op = (head:EditorHead,intent: Parameters<typeof applyEditorTransaction>[1]['intent']) => ({
   operationId:'00000000-0000-4000-8000-'+String(++step).padStart(12,'0'),baseRevision:head.revision,intent
+});
+
+test('the five documented presets and Blank initialize valid drafts with independent assignments',()=>{
+  for(const [preset,header,sections] of [
+    ['arc','header-pill','arc-hero project-showcase editorial-bento skills contact'],
+    ['collage','header-cta','collage-hero project-showcase experience contact'],
+    ['editorial','header-menu','editorial-bento project-showcase skills contact'],
+    ['stairs','header-menu','stepped-hero editorial-bento project-showcase contact'],
+    ['studio','header-full','arc-hero project-showcase experience skills contact']
+  ] as const){
+    const first=createEditorHead(createPortfolioPresetDraft(preset));
+    const page=first.snapshot.files['pages/home.page.json'];
+    assert.equal(JSON.parse(page).header.layout,header+'@1');
+    assert.deepEqual(JSON.parse(page).sections.map((section:{layout:string})=>section.layout),
+      sections.split(' ').map(layout=>layout+'@1'));
+    const title=sections.split(' ')[0]+'-title';
+    const next=applyEditorTransaction(first,op(first,{
+      kind:'ASSIGN_COMPONENT',slotKey:title,componentId:'title-stacked@1'
+    }));
+    assert.equal(next.snapshot.slots[title].state,'S0');
+    assert.equal(next.snapshot.files['pages/home.page.json'],page);
+    assert.equal(createPortfolioPresetDraft(preset).slots[title].state,'EMPTY');
+  }
+  assert.deepEqual(createEditorHead(createPortfolioPresetDraft('blank')).snapshot.slots,{});
+  assert.throws(()=>createPortfolioPresetDraft('constructor' as never),{code:'VALIDATION'});
 });
 
 test('clearing a slot preserves content in stash and restore is reversible',()=>{

@@ -1,4 +1,5 @@
 import { ContractError } from '../../contracts/src/project.ts';
+import type { PortfolioSnapshot } from './portfolio-revision-transactions.ts';
 
 export const MAX_FILE_BYTES = 256 * 1024;
 const managedPaths = [
@@ -8,6 +9,54 @@ const managedPaths = [
   /^content\/[a-z0-9_-]{1,64}\.content\.json$/,
   /^theme\/tokens\.json$/
 ];
+
+const PORTFOLIO_LAYOUTS = {
+  'arc-hero@1':{renderId:'L1',slots:['title','text','cta1','cta2','note'],required:['title','text','cta1']},
+  'collage-hero@1':{renderId:'L2',slots:['title','avatar','text','btn1','btn2','imageA','imageB','project'],required:['title','text']},
+  'project-showcase@1':{renderId:'L3',slots:['thumbs','media','image','badge','title','meta','cta'],required:['title','image']},
+  'editorial-bento@1':{renderId:'L4',slots:['title','media','text1','image','card','text2','cta'],required:['title','image']},
+  'stepped-hero@1':{renderId:'L5',slots:['title','cta'],required:['title']},
+  'skills@1':{renderId:'L6',slots:['title','items','note'],required:[]},
+  'experience@1':{renderId:'L7',slots:['title','entries'],required:[]},
+  'contact@1':{renderId:'L8',slots:['title','text','cta1','cta2','links'],required:[]}
+} as const;
+type PortfolioLayoutPin=keyof typeof PORTFOLIO_LAYOUTS;
+export function portfolioLayout(pin:string):{renderId:string;slots:string[];required:string[]}|undefined {
+  if(!Object.hasOwn(PORTFOLIO_LAYOUTS,pin))return undefined;
+  const layout=PORTFOLIO_LAYOUTS[pin as PortfolioLayoutPin];
+  return {renderId:layout.renderId,slots:[...layout.slots],required:[...layout.required]};
+}
+const presets = {
+  arc:{header:'header-pill',sections:['arc-hero@1','project-showcase@1','editorial-bento@1','skills@1','contact@1']},
+  collage:{header:'header-cta',sections:['collage-hero@1','project-showcase@1','experience@1','contact@1']},
+  editorial:{header:'header-menu',sections:['editorial-bento@1','project-showcase@1','skills@1','contact@1']},
+  stairs:{header:'header-menu',sections:['stepped-hero@1','editorial-bento@1','project-showcase@1','contact@1']},
+  studio:{header:'header-full',sections:['arc-hero@1','project-showcase@1','experience@1','skills@1','contact@1']},
+  blank:{header:null,sections:[]}
+} as const satisfies Record<string,{header:string|null;sections:readonly PortfolioLayoutPin[]}>;
+export type PortfolioPresetId=keyof typeof presets;
+
+/** Build an editable draft from the documented layout order and empty owner slots. */
+export function createPortfolioPresetDraft(presetId:PortfolioPresetId):PortfolioSnapshot {
+  if(typeof presetId!=='string'||!Object.hasOwn(presets,presetId))
+    throw new ContractError('VALIDATION','Unknown portfolio preset.');
+  const preset=presets[presetId];
+  const slots:PortfolioSnapshot['slots']={};
+  const sections=preset.sections.map(layout=>{
+    const id=layout.split('@',1)[0];
+    for(const name of PORTFOLIO_LAYOUTS[layout].slots) slots[id+'-'+name.toLowerCase()]={state:'EMPTY',content:{}};
+    // The transaction journal already stores live assignments in snapshot.slots.
+    return {id,layout,slotKeys:PORTFOLIO_LAYOUTS[layout].slots};
+  });
+  return {
+    formatVersion:1,
+    files:{
+      'kadmeion.json':JSON.stringify({formatVersion:1,preset:presetId}),
+      'pages/home.page.json':JSON.stringify({header:preset.header?{layout:preset.header+'@1'}:null,sections})
+    },
+    slots,stashes:{}
+  };
+}
 
 export function assertManagedPath(path: string): void {
   if (typeof path !== 'string' || !managedPaths.some(rule => rule.test(path))) {

@@ -1,5 +1,6 @@
 import { normalizeExternalHttpsUrl } from '../../contracts/src/project.ts';
 import { validateSnapshot, type PortfolioSnapshot } from './portfolio-revision-transactions.ts';
+import {portfolioLayout} from './managed-project-files.ts';
 
 /** Trusted, TEXT-ONLY private preview; not a release renderer or public access proof. */
 export type SafeSlotKind = 'heading'|'paragraph'|'external-link'|'badge'|'metric'|'list'|'project-card';
@@ -48,27 +49,28 @@ const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&
 const diag=(code:string,target:string,message:string):PreflightDiagnostic=>({code,target,message});
 const themeColors=['surface','text','accent'] as const;
 const themeKeys=['mode',...themeColors] as const;
-const layouts=new Map([
-  ['arc-hero@1','L1'],['collage-hero@1','L2'],['project-showcase@1','L3'],
-  ['editorial-bento@1','L4'],['stepped-hero@1','L5'],['skills@1','L6'],
-  ['experience@1','L7'],['contact@1','L8']
-]);
 
 /** Resolve the frozen page's pinned section order against the server-approved slot plan. */
 function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:PortfolioSnapshot):SafeRenderSection[]|null {
   if(!record(page)||!Array.isArray(page.sections)||page.sections.length>16)return null;
   const groups:SafeRenderSection[]=[];
   for(const section of page.sections as unknown[]){
-    if(!record(section)||typeof section.id!=='string'||typeof section.layout!=='string'||
-       !record(section.slots))return null;
-    const layout=layouts.get(section.layout);
+    if(!record(section)||typeof section.id!=='string'||typeof section.layout!=='string')return null;
+    const layout=portfolioLayout(section.layout);
     if(!layout)return null;
     const assignments=new Map<string,unknown>();
-    for(const [name,assignment] of Object.entries(section.slots)){
-      const key=section.id+'-'+name;
-      if(!SLOT.test(name)||!SLOT.test(key))return null;
+    if(Object.hasOwn(section,'slots')===Object.hasOwn(section,'slotKeys'))return null;
+    const entries:readonly (readonly [unknown,unknown])[]=record(section.slots)?Object.entries(section.slots):
+      Array.isArray(section.slotKeys)?section.slotKeys.map(name=>[name,undefined] as const):[];
+    if(entries.length<1||entries.length>12)return null;
+    for(const [name,assignment] of entries){
+      if(typeof name!=='string')return null;
+      const key=section.id+'-'+name.toLowerCase();
+      if(!/^[a-zA-Z0-9_-]{1,64}$/.test(name)||!SLOT.test(key)||assignments.has(key))return null;
       const saved=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
-      if(assignment===null){
+      if(assignment===undefined){
+        if(!saved)return null;
+      }else if(assignment===null){
         if(saved&&saved.state!=='EMPTY')return null;
       }else if(!record(assignment)||typeof assignment.use!=='string'||
         saved?.state!=='S0'||saved.componentId!==assignment.use)return null;
@@ -77,9 +79,15 @@ function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:Portf
     const slots=plan.filter(slot=>assignments.has(slot.slotKey));
     if(slots.length!==assignments.size||slots.some(slot=>{
       const assignment=assignments.get(slot.slotKey);
-      return assignment!==null&&(!record(assignment)||assignment.use!==slot.componentId);
+      return assignment!==undefined&&assignment!==null&&(!record(assignment)||assignment.use!==slot.componentId);
     }))return null;
-    groups.push({id:section.id,layout,slotKeys:slots.map(slot=>slot.slotKey)});
+    const names=section.slotKeys;
+    if(Array.isArray(names)&&(
+      names.length!==layout.slots.length||
+      layout.slots.some(name=>!names.includes(name))||
+      layout.required.some(name=>!slots.some(slot=>slot.required===true&&
+        slot.slotKey===section.id+'-'+name.toLowerCase()))))return null;
+    groups.push({id:section.id,layout:layout.renderId,slotKeys:slots.map(slot=>slot.slotKey)});
   }
   return groupedSections(groups,plan.map(slot=>slot.slotKey));
 }
