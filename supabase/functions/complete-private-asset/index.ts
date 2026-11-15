@@ -160,3 +160,10 @@ export async function handleCompletePrivateAsset(request:Request,deps:Dependenci
   }
 }
 export default {fetch:handleCompletePrivateAsset};
+
+// The deployed Supabase/Deno runtime requires a registered HTTP handler.
+// Node contract tests import this module without a Deno global.
+const denoRuntime=(globalThis as unknown as {
+  Deno?:{serve?:(handler:(request:Request)=>Promise<Response>)=>unknown}
+}).Deno;
+if(denoRuntime?.serve)denoRuntime.serve(handleCompletePrivateAsset);
