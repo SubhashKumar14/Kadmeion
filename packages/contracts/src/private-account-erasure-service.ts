@@ -468,7 +468,8 @@ export class SupabasePrivateAccountErasureService {
   async execute(requestId:string,challengeId:string,confirmation:'DELETE MY ACCOUNT'):Promise<{
     status:'ACTIVE_ACCOUNT_ERASED';
     receiptId:string;
-    accessTerminated:true;
+    /** Auth user/session rows were removed; existing signed JWTs can outlive them. */
+    accessTerminated:false;
     backupErasureVerified:false;
     externalCopiesErased:false;
   }>{
@@ -478,10 +479,10 @@ export class SupabasePrivateAccountErasureService {
       p_request_id:requestId,p_challenge_id:challengeId,p_confirmation:confirmation
     });
     if(!record(raw)||raw.status!=='ACTIVE_ACCOUNT_ERASED'||!uuid(raw.receiptId)||
-       raw.accessTerminated!==true||raw.backupErasureVerified!==false||raw.externalCopiesErased!==false)
+       raw.accessTerminated!==false||raw.backupErasureVerified!==false||raw.externalCopiesErased!==false)
       throw new PrivateAccountErasureError('INVALID_ACK','Account erasure was not confirmed.');
     return {
-      status:'ACTIVE_ACCOUNT_ERASED',receiptId:raw.receiptId,accessTerminated:true,
+      status:'ACTIVE_ACCOUNT_ERASED',receiptId:raw.receiptId,accessTerminated:false,
       backupErasureVerified:false,externalCopiesErased:false
     };
   }
