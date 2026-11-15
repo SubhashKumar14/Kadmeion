@@ -273,7 +273,9 @@ test('real owner onboarding and project revision are private across browser sess
   await capture('22_THEME_INSPECTOR_BROWSER');
   await page.getByLabel('Portfolio theme').selectOption('light');
   await page.getByRole('button', {name: 'Assets', exact: true}).click();
-  await expect(page.getByText('No private project assets are registered.')).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Your asset library is empty.'})).toBeVisible();
+  await capture('23_ASSET_LIBRARY_BROWSER');
+  await page.getByRole('button',{name:'Open private uploader'}).click();
   await expect(page.getByRole('button',{name:'Upload private image'})).toBeDisabled();
   await page.getByLabel('Owner project').selectOption(projectPath.split('/').at(-1)!);
   await page.getByLabel('Image alt text').fill('Tiny private image for an isolated browser test');
@@ -285,7 +287,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.locator('.ws-asset-manager').getByRole('status'))
     .toContainText('Image uploaded and privately registered.');
   await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
-  await capture('23_ASSET_LIBRARY_BROWSER');
+  await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
   await page.reload();
   await page.getByRole('button',{name:'Assets',exact:true}).click();
   await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();

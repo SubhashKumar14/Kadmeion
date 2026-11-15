@@ -658,3 +658,56 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media(max-width:900px){.ws-source-explorer{grid-template-columns:1fr}
 .ws-source-tree,.ws-source-diagnostics{border:0;border-bottom:1px solid var(--line)}
 .ws-source-code-window{min-height:300px}.ws-source-preview pre{max-height:350px}}
+
+/* EDIT-06: approved three-pane asset collection / real records / selection layout. */
+.ws-asset-library{display:grid;grid-template-columns:minmax(190px,23%) minmax(0,1fr) minmax(220px,26%);
+  background:var(--panel);min-height:calc(100dvh - 154px)}
+.ws-asset-library>aside{min-width:0;padding:23px 18px}
+.ws-asset-collections{border-right:1px solid var(--line)}
+.ws-asset-details{border-left:1px solid var(--line)}
+.ws-asset-library h2{font:500 26px/1.18 Georgia,serif;margin:0 0 10px}
+.ws-asset-library>aside p:not(.ws-kicker){color:var(--body);font-size:12px;line-height:1.6}
+.ws-asset-collections nav{margin:20px 0;display:grid;gap:7px}
+.ws-asset-collections nav button{display:flex;justify-content:space-between;gap:8px;align-items:center;
+  min-height:44px;width:100%;text-align:left;border:1px solid var(--line);border-radius:7px;
+  color:var(--ink);background:var(--surface);padding:9px 11px}
+.ws-asset-collections nav button[aria-pressed=true]{border-color:var(--accent-strong);background:var(--surface-soft)}
+.ws-asset-collections nav button span{font-size:12px;font-weight:650;overflow-wrap:anywhere}
+.ws-asset-collections nav button small{font-size:10px;color:var(--body)}
+.ws-asset-protection{border:1px solid var(--line);border-radius:8px;padding:13px;background:var(--surface-soft)}
+.ws-asset-center{min-width:0;padding:0 17px 16px;display:flex;flex-direction:column;background:var(--surface-soft)}
+.ws-asset-toolbar{min-height:49px;display:flex;justify-content:space-between;align-items:center;
+  gap:8px;color:var(--body);font-size:10px}
+.ws-asset-empty{flex:1;min-height:460px;border:1px solid var(--line);
+  background:var(--panel);border-radius:9px;display:flex;align-items:center;
+  justify-content:center;flex-direction:column;text-align:center;padding:35px 28px}
+.ws-asset-empty h2{font:500 30px Georgia,serif;margin:17px 0 11px}
+.ws-asset-empty p{font-size:12px;color:var(--body);line-height:1.8;max-width:370px}
+.ws-asset-empty button{margin-top:16px}
+.ws-asset-empty-glyph{height:74px;width:74px;border:1px solid var(--line);
+  background:var(--surface-soft);border-radius:10px;display:grid;place-items:center}
+.ws-asset-empty-glyph span{height:27px;width:35px;border:3px solid #426d85;border-radius:3px;position:relative}
+.ws-asset-empty-glyph span:after{content:'';position:absolute;left:7px;bottom:1px;
+  width:16px;height:12px;border-top:3px solid #426d85;transform:rotate(-30deg)}
+.ws-asset-gallery{display:grid;list-style:none;padding:0;gap:11px;
+  grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));margin:12px 0}
+.ws-asset-gallery button{display:grid;gap:7px;padding:12px;border:1px solid var(--line);
+  border-radius:9px;background:var(--panel);color:var(--ink);width:100%;text-align:left;min-width:0}
+.ws-asset-gallery button[aria-pressed=true]{border-color:var(--accent-strong)}
+.ws-asset-gallery-icon{height:92px;display:grid;place-items:center;font-size:34px;
+  background:var(--surface-soft);color:#426d85;border-radius:5px}
+.ws-asset-gallery strong{font-size:12px;overflow-wrap:anywhere}
+.ws-asset-gallery small{font-size:10px;color:var(--body)}
+.ws-asset-add{margin:14px 0}
+.ws-asset-center-foot{margin-top:auto;padding:12px 0;color:var(--body);font-size:10px}
+.ws-asset-detail-placeholder{display:grid;place-items:center;height:110px;border:1px dashed var(--line-dark);
+  background:var(--surface-soft);border-radius:8px;font-size:38px;color:#426d85;margin:20px 0}
+.ws-asset-metadata{display:grid;gap:12px;margin:17px 0}
+.ws-asset-metadata>div{display:grid;gap:5px}
+.ws-asset-metadata dt{font-size:11px;font-weight:750;color:var(--body)}
+.ws-asset-metadata dd{margin:0;padding:10px 11px;border:1px solid var(--line);border-radius:7px;
+  background:var(--surface-soft);color:var(--ink);font-size:11px;overflow-wrap:anywhere}
+@media(max-width:1150px){.ws-asset-library{grid-template-columns:170px minmax(0,1fr) 205px}
+  .ws-asset-library>aside{padding:16px 11px}}
+@media(max-width:900px){.ws-asset-library{grid-template-columns:1fr}
+  .ws-asset-library>aside{border:0;border-bottom:1px solid var(--line)}}
