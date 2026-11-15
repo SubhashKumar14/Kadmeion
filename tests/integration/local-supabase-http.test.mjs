@@ -782,7 +782,7 @@ test('account erasure removes active account data only after fresh owner confirm
   assert.equal(await service.removeUploadBatch(), 0);
   const receipt = await service.execute(request.requestId, challenge.challengeId, 'DELETE MY ACCOUNT');
   assert.equal(receipt.status, 'ACTIVE_ACCOUNT_ERASED');
-  assert.equal(receipt.accessTerminated, true);
+  assert.equal(receipt.accessTerminated, false, 'Deletion removes Auth rows but cannot revoke existing JWT signatures immediately');
   assert.equal(receipt.backupErasureVerified, false);
   assert.equal(receipt.externalCopiesErased, false);
   assert.match(receipt.receiptId, /^[0-9a-f-]{36}$/i);
