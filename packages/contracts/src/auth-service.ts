@@ -21,7 +21,7 @@ export interface AuthPort {
   signOut(options?: { scope: 'local' | 'global' | 'others' }):
     Promise<{ error: AuthFailure | null }>;
   signInWithOAuth(options: { provider: OAuthProvider; options: { redirectTo: string } }): Promise<AuthOutcome<{ url: string | null }>>;
-  exchangeCodeForSession(code: string): Promise<AuthOutcome<unknown>>;
+  exchangeCodeForSession(code: string): Promise<AuthOutcome<{ user: AuthUser | null }>>;
 }
 
 export class AuthFlowError extends Error {
@@ -194,10 +194,12 @@ export class AuthService {
     const result = await authProviderCall(
       ()=>this.auth.exchangeCodeForSession(code),
       'OAuth callback provider is temporarily unavailable.');
-    if (result?.error) throw new AuthFlowError('AUTH_FAILED', 'OAuth callback failed.');
+    if (result?.error || !result?.data?.user?.id)
+      throw new AuthFlowError('AUTH_FAILED', 'OAuth callback failed.');
     const current = await authProviderCall(
       ()=>this.auth.getUser(),'OAuth session verification is temporarily unavailable.');
-    if (current?.error || !current?.data?.user?.id)
+    if (current?.error || !current?.data?.user?.id ||
+        current.data.user.id !== result.data.user.id)
       throw new AuthFlowError('AUTH_EXPIRED', 'OAuth session could not be verified.');
     return current.data.user;
   }
