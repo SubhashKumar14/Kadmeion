@@ -196,3 +196,33 @@
 .ws-profile-skills button{min-height:34px;background:var(--surface-soft);border:1px solid var(--line);border-radius:7px;color:var(--ink)}
 .ws-profile-confirm,.ws-profile .ws-profile-check{display:flex;align-items:center;gap:8px}
 .ws-profile .ws-profile-check input{width:20px;min-height:20px}
+
+.ws-case-form{margin-top:20px}
+.ws-case-form fieldset{margin:18px 0;padding:14px;border:1px solid var(--line);border-radius:8px}
+.ws-case-form select{width:100%;min-height:42px;background:var(--panel);color:var(--ink);border:1px solid var(--line-dark);border-radius:7px;padding:6px 10px}
+.ws-case-form .ws-case-check{display:flex;align-items:center;gap:8px}
+.ws-case-form .ws-case-check input{width:20px;min-height:20px}
+
+.ws-studio-device{margin-top:20px}
+.ws-studio-list .ws-project-empty{border:0}
+.ws-studio-search{display:grid;gap:6px}
+.ws-studio-search input{min-height:42px;border:1px solid var(--line-dark);border-radius:8px;padding:8px 12px;background:var(--surface);color:var(--ink)}
+.ws-studio-records,.ws-editor-slots{list-style:none;padding:0}
+.ws-studio-records li{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:16px 0}
+.ws-studio-records h2,.ws-studio-records p{margin:0 0 4px}
+.ws-studio-records h2{font-size:21px}
+.ws-studio-presets{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px}
+.ws-project-fields .ws-studio-preset{display:grid;cursor:pointer;padding:10px;margin:0;border:1px solid var(--line);border-radius:8px}
+.ws-project-fields .ws-studio-preset:has(:checked){border-color:var(--accent);background:var(--surface-soft)}
+.ws-project-fields .ws-studio-preset input{width:18px;min-height:18px}
+.ws-studio-preset small{color:var(--body)}
+.ws-studio-preset .template-graphic{min-height:90px}
+.ws-blank-template{min-height:90px;border:1px solid var(--line);border-radius:8px;display:grid;place-items:center;color:var(--body)}
+.ws-editor-grid{display:grid;grid-template-columns:minmax(155px,1fr) minmax(0,2fr) minmax(155px,1fr);gap:12px;margin-top:20px;align-items:start}
+.ws-studio-canvas{margin:20px 0;padding:clamp(16px,3vw,38px);min-height:310px;border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow-wrap:anywhere}
+.ws-editor-grid .ws-studio-canvas{margin:0}
+.ws-studio-canvas p{white-space:pre-wrap}
+.ws-editor-slots{display:grid;gap:4px;max-height:55vh;overflow:auto}
+.ws-editor-slots button{width:100%;min-height:36px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px;text-align:left;padding:8px}
+.ws-editor-slots button[aria-pressed="true"]{border-color:var(--accent);background:var(--surface-soft)}
+.ws-editor-slots span{display:block;color:var(--body);font-size:10px}

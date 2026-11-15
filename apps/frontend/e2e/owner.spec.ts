@@ -128,6 +128,41 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('SAVED DRAFT · REVISION 1')).toBeVisible();
   await capture('15_PROJECT_DETAIL_BROWSER');
 
+  await page.getByRole('button', {name: 'Case study', exact: true}).click();
+  await page.getByRole('button', {name: 'Add section'}).click();
+  await page.getByLabel('Section title', {exact: true}).fill('Design decisions');
+  await page.getByLabel('Section content', {exact: true}).fill('Private project narrative.');
+  await page.getByRole('button', {name: 'Overview', exact: true}).click();
+  await page.getByRole('button', {name: 'Case study', exact: true}).click();
+  await expect(page.getByLabel('Section title', {exact: true})).toHaveValue('Design decisions');
+  await page.getByRole('button', {name: 'Save sections'}).click();
+  await expect(page.getByRole('status')).toHaveText('Private case study saved.');
+  await page.reload();
+  await page.getByRole('button', {name: 'Case study', exact: true}).click();
+  await expect(page.getByLabel('Section content', {exact: true})).toHaveValue('Private project narrative.');
+
+  await page.goto('/app/portfolios');
+  await expect(page.getByRole('heading', {name: 'No portfolios yet.'})).toBeVisible();
+  await capture('16_PORTFOLIO_LIBRARY_BROWSER');
+  await page.getByRole('link', {name: 'Create portfolio', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Choose your foundation.'})).toBeVisible();
+  await capture('17_PORTFOLIO_CHOOSER_BROWSER');
+  await page.getByLabel('Portfolio name').fill('Browser portfolio');
+  await page.getByRole('button', {name: 'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading', {name: 'Browser portfolio', exact: true, level: 1})).toBeVisible();
+  const editorPath = new URL(page.url()).pathname;
+  await capture('18_PORTFOLIO_EDITOR_BROWSER');
+  await page.getByRole('button', {name: /arc hero title/i}).click();
+  await page.getByLabel('Text content').fill('Portfolio draft title');
+  await page.getByRole('button', {name: 'Apply text'}).click();
+  await capture('19_CONTENT_INSPECTOR_BROWSER');
+  await page.getByRole('button', {name: 'Save draft'}).click();
+  await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
+  await page.reload();
+  await expect(page.getByText('Portfolio draft title', {exact: true})).toBeVisible();
+  await page.setViewportSize({width: 390, height: 844});
+  await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
+
   const foreign = await browser.newContext({baseURL: testInfo.project.use.baseURL});
   try {
     const other = await foreign.newPage();
@@ -136,6 +171,10 @@ test('real owner onboarding and project revision are private across browser sess
     await expect(other.getByRole('alert')).toContainText('Project unavailable');
     await expect(other.getByLabel('Project title')).toHaveCount(0);
     await expect(other.getByText('Private browser project', {exact: true})).toHaveCount(0);
+    await other.setViewportSize({width: 1534, height: 960});
+    await other.goto(editorPath);
+    await expect(other.getByRole('alert')).toContainText('Portfolio unavailable.');
+    await expect(other.getByText('Portfolio draft title', {exact: true})).toHaveCount(0);
   } finally {
     await foreign.close();
   }

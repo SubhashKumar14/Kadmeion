@@ -88,6 +88,7 @@ const justifiedExtra = [
   'apps/frontend/public/brand/kadmeion-wordmark.svg',
   'apps/frontend/e2e/owner.spec.ts',
   'apps/frontend/src/profile.tsx',
+  'apps/frontend/src/portfolios.tsx',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));

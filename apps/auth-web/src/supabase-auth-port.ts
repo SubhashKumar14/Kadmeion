@@ -1,4 +1,6 @@
 import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
+import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packages/contracts/src/private-project-case-studies.ts';
+import type { PortfolioPresetId, PortfolioSnapshot } from '../../../packages/editor-core/src/index.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
@@ -7,6 +9,8 @@ type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
 export type ProfileDraft = { displayName: string; headline: string; bio: string; skills: string[] };
 export type OwnerProfile = ProfileDraft & { handle: string | null };
+
+export type OwnerPortfolio = {id: string; title: string; slug: string; templateId: string; revision: number};
 
 export type OwnerProject = {
   id: string; title: string; slug: string; summary: string; description: string;
@@ -496,6 +500,84 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  private async portfolioStore(session: StoredSession) {
+    const {SupabasePortfolioRevisionStore} = await import('../../../packages/storage-adapters/src/supabase-portfolio-revisions.ts');
+    return new SupabasePortfolioRevisionStore(this.origin, this.publishableKey,
+      async () => this.isCurrentSession(session) ? session.access_token : null, this.fetcher);
+  }
+
+  private parseOwnerPortfolio(row: Json, userId: string): OwnerPortfolio {
+    if (!row || row.owner_user_id !== userId || typeof row.id !== 'string' || !PROJECT_ID_PATTERN.test(row.id) ||
+        typeof row.title !== 'string' || typeof row.slug !== 'string' || typeof row.template_id !== 'string' ||
+        typeof row.head_revision !== 'number' || !Number.isSafeInteger(row.head_revision) || row.head_revision < 0)
+      throw new Error('Private portfolio response could not be verified.');
+    return {id: row.id, title: row.title, slug: row.slug, templateId: row.template_id, revision: row.head_revision};
+  }
+
+  async listOwnerPortfolios(): Promise<AuthOutcome<OwnerPortfolio[]>> {
+    return this.outcome(async () => {
+      const {session, userId} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'id,owner_user_id,title,slug,template_id,head_revision',
+        owner_user_id: 'eq.' + userId, trashed_at: 'is.null', order: 'updated_at.desc,id.asc', limit: '100'});
+      const rows = await this.ownerRest('portfolios?' + params, session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length > 100)
+        throw new Error('Private portfolio library could not be verified.');
+      return rows.map(row => this.parseOwnerPortfolio(row as Json, userId));
+    });
+  }
+
+  async createOwnerPortfolio(title: string, slug: string, templateId: PortfolioPresetId): Promise<AuthOutcome<string>> {
+    return this.outcome(async () => {
+      const {session, userId} = await this.ownerSession();
+      const store = await this.portfolioStore(session);
+      const id = await store.createPrivatePortfolio(userId, {title, slug, templateId});
+      if (!this.isCurrentSession(session) || !PROJECT_ID_PATTERN.test(id))
+        throw new Error('Private portfolio creation could not be verified.');
+      return id;
+    });
+  }
+
+  async initializeOwnerPortfolio(id: string, operation: string, preset: PortfolioPresetId): Promise<AuthOutcome<number>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(id)) throw new Error('Portfolio unavailable.');
+      const {session} = await this.ownerSession();
+      const store = await this.portfolioStore(session);
+      const head = await store.loadHead(id);
+      const revision = head.revision || (await store.initializePreset(id, operation, preset)).revision;
+      if (!this.isCurrentSession(session)) throw new Error('Account changed during portfolio setup.');
+      return revision;
+    });
+  }
+
+  async readOwnerPortfolio(id: string): Promise<AuthOutcome<OwnerPortfolio & {snapshot: PortfolioSnapshot | null}>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(id)) throw new Error('Portfolio unavailable.');
+      const {session, userId} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'id,owner_user_id,title,slug,template_id,head_revision',
+        owner_user_id: 'eq.' + userId, id: 'eq.' + id, trashed_at: 'is.null', limit: '1'});
+      const rows = await this.ownerRest('portfolios?' + params, session.access_token);
+      if (!Array.isArray(rows) || rows.length !== 1) throw new Error('Portfolio unavailable.');
+      const portfolio = this.parseOwnerPortfolio(rows[0] as Json, userId);
+      if (portfolio.id !== id) throw new Error('Portfolio unavailable.');
+      const store = await this.portfolioStore(session);
+      const head = await store.loadHead(id);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while loading the portfolio.');
+      return {...portfolio, ...head};
+    });
+  }
+
+  async saveOwnerPortfolio(id: string, operation: string, revision: number, snapshot: PortfolioSnapshot): Promise<AuthOutcome<number>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(id)) throw new Error('Portfolio unavailable.');
+      const {session} = await this.ownerSession();
+      const store = await this.portfolioStore(session);
+      const result = await store.commit(id, operation, revision, snapshot);
+      if (!this.isCurrentSession(session) || result.revision !== revision + 1)
+        throw new Error('The new portfolio revision could not be confirmed.');
+      return result.revision;
+    });
+  }
+
   async readOwnerWorkspace(): Promise<AuthOutcome<OwnerWorkspaceSnapshot>> {
     return this.outcome(async () => {
       const { session, userId } = await this.ownerSession();
@@ -626,6 +708,37 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const project = this.parsePrivateProject(rows[0], userId);
       if (project.id !== projectId.toLowerCase()) throw new Error('Project is unavailable.');
       return project;
+    });
+  }
+
+  async readOwnerCaseStudy(projectId: string): Promise<AuthOutcome<PrivateCaseStudy & {revision: number}>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(projectId)) throw new Error('Case study is unavailable.');
+      const {session, userId} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'id,owner_user_id,revision,case_study',
+        id: 'eq.' + projectId, owner_user_id: 'eq.' + userId, trashed_at: 'is.null', limit: '1'});
+      const rows = await this.ownerRest('projects?' + params, session.access_token);
+      const row = Array.isArray(rows) && rows.length === 1 ? rows[0] as Json : null;
+      if (!this.isCurrentSession(session) || !row || row.owner_user_id !== userId || row.id !== projectId ||
+          typeof row.revision !== 'number' || !Number.isSafeInteger(row.revision) || row.revision < 0)
+        throw new Error('Private case study response could not be verified.');
+      return {...normalizePrivateCaseStudy(row.case_study), revision: row.revision};
+    });
+  }
+
+  async saveOwnerCaseStudy(projectId: string, revision: number, input: PrivateCaseStudy):
+    Promise<AuthOutcome<PrivateCaseStudy & {revision: number}>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(projectId) || !Number.isSafeInteger(revision) || revision < 0)
+        throw new Error('Invalid case study revision.');
+      const draft = normalizePrivateCaseStudy(input);
+      const {session} = await this.ownerSession();
+      const receipt = await this.ownerRest('rpc/update_private_project_case_study', session.access_token, 'POST', {
+        p_project_id: projectId, p_base_revision: revision, p_case_study: draft
+      }) as Json | null;
+      if (!this.isCurrentSession(session) || receipt?.id !== projectId || receipt.revision !== revision + 1)
+        throw new Error('The server did not confirm the new case study revision.');
+      return {...draft, revision: revision + 1};
     });
   }
 

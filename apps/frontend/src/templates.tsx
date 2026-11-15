@@ -29,7 +29,7 @@ export function filterPresets(items: readonly Preset[],query:string,category:Pre
   });
   return order==='A–Z'?found.sort((a,b)=>a.title.localeCompare(b.title,'en')):found;
 }
-function TemplateGraphic({tone}:{tone:string}){
+export function TemplateGraphic({tone}:{tone:string}){
   return <div className={'template-graphic '+tone} aria-hidden="true">
     <span className="template-faux-nav"/><span className="template-faux-lines"/><span className="template-faux-accent"/>
     <span className="template-faux-geometry"/>

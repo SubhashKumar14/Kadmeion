@@ -4,6 +4,7 @@ import type { NewPrivateProject, OwnerProject } from '../../auth-web/src/supabas
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
 import type { PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
+import type { CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
 import { Icon } from './landing.tsx';
 
 type LoadState = { status:'loading' } | { status:'error'; message:string } |
@@ -192,6 +193,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [feedback, setFeedback] = useState<{error: boolean; text: string} | null>(null);
   const [latest, setLatest] = useState<OwnerProject | null>(null);
   const [checking, setChecking] = useState(false);
+  const [panel, setPanel] = useState<'details' | 'sections'>('details');
+  const [openedSections, setOpenedSections] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -250,9 +253,16 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       <h1 id="project-detail-title">Build the case study.</h1>
       <p>Update your private project details.</p>
     </div>
+    {detail.status === 'ready' && <div className="ws-profile-tabs" role="group" aria-label="Project sections">
+      <button type="button" aria-pressed={panel === 'details'} onClick={() => setPanel('details')}>Overview</button>
+      <button type="button" aria-pressed={panel === 'sections'} onClick={() => {setOpenedSections(true); setPanel('sections');}}>Case study</button>
+    </div>}
     {detail.status === 'loading' && <p role="status">Loading project…</p>}
     {detail.status === 'unavailable' && <p role="alert">Project unavailable. Check your session or return to the project library.</p>}
-    {detail.status === 'ready' && <div className="ws-project-detail">
+    {detail.status === 'ready' && openedSections && <div hidden={panel !== 'sections'}><CaseStudyEditor port={port} projectId={projectId}
+      onSaved={revision => setDetail(current => current.status === 'ready' && revision === current.saved.revision + 1
+        ? {...current, saved: {...current.saved, revision}} : current)}/></div>}
+    {detail.status === 'ready' && panel === 'details' && <div className="ws-project-detail">
       <form className="ws-project-fields" onSubmit={event => void save(event)}>
         <fieldset disabled={saving || checking}>
           <legend>Project details</legend>
@@ -305,4 +315,101 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       </aside>
     </div>}
   </section>;
+}
+
+const CASE_SECTION_KINDS: CaseStudySection['kind'][] = ['challenge', 'approach', 'implementation', 'results', 'media', 'custom'];
+
+function CaseStudyEditor({port, projectId, onSaved}: {
+  port: SupabaseBrowserAuthPort; projectId: string; onSaved: (revision: number) => void;
+}) {
+  const [draft, setDraft] = useState<{sections: CaseStudySection[]; revision: number} | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    void port.readOwnerCaseStudy(projectId).then(result => {
+      if (!active) return;
+      if (result.data) { setDraft(result.data); setError(''); }
+      else setError(result.error?.message ?? 'Case study could not be loaded.');
+    });
+    return () => { active = false; };
+  }, [port, projectId, version]);
+
+  function update(index: number, changes: Partial<CaseStudySection>) {
+    setDraft(current => current && {...current, sections: current.sections.map((section, position) =>
+      index === position ? {...section, ...changes} : section)});
+    setNotice('');
+  }
+
+  function move(index: number, offset: number) {
+    setDraft(current => {
+      if (!current) return current;
+      const sections = [...current.sections];
+      const a = sections[index], b = sections[index + offset];
+      if (!a || !b) return current;
+      sections[index] = b;
+      sections[index + offset] = a;
+      return {...current, sections};
+    });
+    setNotice('');
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft || busy) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await port.saveOwnerCaseStudy(projectId, draft.revision, {sections: draft.sections});
+      if (!result.data) { setError(result.error?.message ?? 'Case study save could not be confirmed.'); return; }
+      setDraft(result.data);
+      onSaved(result.data.revision);
+      setNotice('Private case study saved.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form className="ws-project-fields ws-case-form" onSubmit={event => void save(event)}>
+    <h2>Case study sections</h2>
+    <p>Add and order sections for your draft. Visibility applies to a future release.</p>
+    {error && <p role="alert" className="ws-inline-alert">{error}</p>}
+    {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
+    {!draft && !error && <p role="status">Loading case study…</p>}
+    {error && <button type="button" className="ws-secondary" onClick={() => {
+      setDraft(null); setError(''); setVersion(value => value + 1);
+    }}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
+    {draft && <>
+      {!draft.sections.length && <p>Your case study has no sections yet.</p>}
+      {draft.sections.map((section, index) => <fieldset key={section.id} disabled={busy}>
+        <legend>{section.title || 'Section ' + (index + 1)}</legend>
+        <label>Section type<select value={section.kind} onChange={event => {
+          const kind = CASE_SECTION_KINDS.find(value => value === event.target.value);
+          if (kind) update(index, {kind});
+        }}>{CASE_SECTION_KINDS.map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label>
+        <label>Section title<input value={section.title} maxLength={120} onChange={event => update(index, {title: event.target.value})}/></label>
+        <label>Section content<textarea value={section.body} rows={4} maxLength={12000} onChange={event => update(index, {body: event.target.value})}/></label>
+        <label className="ws-case-check"><input type="checkbox" checked={section.visible}
+          onChange={event => update(index, {visible: event.target.checked})}/> Include in future release</label>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={index === 0} onClick={() => move(index, -1)}>Move up</button>
+          <button type="button" className="ws-secondary" disabled={index === draft.sections.length - 1} onClick={() => move(index, 1)}>Move down</button>
+          <button type="button" className="ws-secondary" onClick={() => {
+            setDraft({...draft, sections: draft.sections.filter(item => item.id !== section.id)}); setNotice('');
+          }}>Remove from draft</button>
+        </div>
+      </fieldset>)}
+      <div className="ws-actions">
+        <button type="button" className="ws-secondary" disabled={busy || draft.sections.length >= 24} onClick={() => {
+          setDraft({...draft, sections: [...draft.sections, {id: crypto.randomUUID(), kind: 'custom', title: '', body: '', visible: false}]});
+          setNotice('');
+        }}>Add section</button>
+        <button type="submit" className="ws-primary" disabled={busy}>{busy ? 'Saving…' : 'Save sections'}</button>
+      </div>
+    </>}
+  </form>;
 }
