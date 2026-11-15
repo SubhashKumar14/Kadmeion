@@ -290,3 +290,123 @@ test('the provider resend and recovery reject redirect query, credentials and fr
     options:{emailRedirectTo:'http://localhost:3000/auth/callback'}})).error,null);
   assert.equal(calls,1);
 });
+
+const secondUser = {id:'2826297f-24b1-42ca-97b0-0cd09d82ea5a',email:'other@example.com'};
+const secondTokens = {...tokens,access_token:'b'.repeat(64),
+  refresh_token:'s'.repeat(64),user:secondUser};
+
+test('B10 getUser rejects a mismatched Auth identity and clears only the initiating session',async()=>{
+  const saved=storage();
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password'))return json(tokens);
+    if(String(url).endsWith('/user'))return json(secondUser);
+    return json({},404);
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'password'})).error,null);
+  const result=await port.getUser();
+  assert.ok(result.error);
+  assert.equal(result.data,null);
+  assert.equal(saved.data.size,0,'Mismatch must not retain the claimed identity');
+});
+
+test('B10 refresh rejects cross-owner credentials and does not authorize a substituted identity',async()=>{
+  const saved=storage();
+  let calls=0;
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=refresh_token')){
+      calls++;return json(secondTokens);
+    }
+    if(String(url).endsWith('/user'))return json(user);
+    throw Error('Unexpected Auth call');
+  }) as typeof fetch,saved);
+  await port.acceptTokens(new URLSearchParams({
+    access_token:tokens.access_token,refresh_token:tokens.refresh_token,
+    expires_in:'1',type:'recovery'
+  }));
+  const refused=await port.getUser();
+  assert.ok(refused.error);
+  assert.equal(refused.data,null);
+  assert.equal(calls,1);
+  assert.equal(saved.data.size,0);
+});
+
+test('B10 late refresh cannot overwrite a new sign-in or clear a new account',async()=>{
+  const saved=storage();
+  let resolveRefresh!:(result:Response)=>void;
+  let started!:()=>void;
+  const waiting=new Promise<Response>(resolve=>{resolveRefresh=resolve;});
+  const began=new Promise<void>(resolve=>{started=resolve;});
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    const u=String(url);
+    if(u.includes('grant_type=refresh_token')){started();return waiting;}
+    if(u.includes('grant_type=password'))return json(secondTokens);
+    if(u.endsWith('/user')){
+      const bearer=(init?.headers as Record<string,string>)?.Authorization;
+      return json(bearer==='Bearer '+tokens.access_token?user:secondUser);
+    }
+    throw Error('Unexpected Auth call');
+  }) as typeof fetch,saved);
+  await port.acceptTokens(new URLSearchParams({
+    access_token:tokens.access_token,refresh_token:tokens.refresh_token,
+    expires_in:'1',type:'recovery'
+  }));
+  const staleCheck=port.getUser();
+  await began;
+  const newLogin=await port.signInWithPassword({email:secondUser.email,password:'another-password'});
+  assert.equal(newLogin.error,null);
+  resolveRefresh(json({...tokens,access_token:'c'.repeat(64),refresh_token:'t'.repeat(64)}));
+  assert.ok((await staleCheck).error,'An obsolete refresh must fail closed');
+  assert.equal((await port.getUser()).data.user?.id,secondUser.id);
+  const stored=[...saved.data.values()].join('');
+  assert.ok(stored.includes(secondTokens.refresh_token));
+  assert.ok(!stored.includes('t'.repeat(64)));
+});
+
+test('B10 password updates reject a foreign account acknowledgement',async()=>{
+  const saved=storage();
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    if(String(url).includes('grant_type=password'))return json(tokens);
+    if(String(url).endsWith('/user')&&init?.method==='PUT')return json(secondUser);
+    return json(user);
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'password'})).error,null);
+  const result=await port.updateUser({password:'new-strong-password'});
+  assert.ok(result.error);
+  assert.equal(result.data,null);
+  assert.equal(saved.data.size,0);
+});
+
+test('B10 a delayed logout cannot clear a newer authenticated account',async()=>{
+  const saved=storage();
+  let finishLogout!:(result:Response)=>void, started!:()=>void;
+  const waiting=new Promise<Response>(resolve=>{finishLogout=resolve;});
+  const began=new Promise<void>(resolve=>{started=resolve;});
+  const {port}=mock((async(url:string|URL|Request)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password')){
+      return json(u.includes('password')&&logins++>0?secondTokens:tokens);
+    }
+    if(u.includes('/logout?scope=global')){started();return waiting;}
+    if(u.endsWith('/user'))return json(secondUser);
+    return json({},404);
+  }) as typeof fetch,saved);
+  let logins=0;
+  assert.equal((await port.signInWithPassword({email:user.email,password:'password'})).error,null);
+  const logout=port.signOut({scope:'global'});
+  await began;
+  assert.equal((await port.signInWithPassword({email:secondUser.email,password:'password'})).error,null);
+  finishLogout(json({}));
+  assert.equal((await logout).error,null);
+  assert.equal((await port.getUser()).data.user?.id,secondUser.id);
+  assert.ok([...saved.data.values()].join('').includes(secondTokens.refresh_token));
+});
+
+test('B10 immediate sign-up rejects a forged or foreign authenticated session',async()=>{
+  const saved=storage();
+  const {port}=mock((async()=>json({...tokens,user:secondUser})) as typeof fetch,saved);
+  const result=await port.signUp({email:user.email,password:'strong-password',
+    options:{data:{display_name:'Dev'}}});
+  assert.ok(result.error);
+  assert.equal(result.data,null);
+  assert.equal(saved.data.size,0);
+});
