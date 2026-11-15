@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { AuthService } from '../../../packages/contracts/src/auth-service.ts';
 import { parseAuthRedirect } from '../../auth-web/src/auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { cleanHandleInput, checkHandleInput, validatePasswordPair } from '../../auth-web/src/form-helpers.ts';
 import { Icon, useTheme } from './landing.tsx';
+import './auth.css';
 
 type Mode = 'signin' | 'signup' | 'forgot-password' | 'set-password' | 'outcome' | 'callback' | 'workspace';
 type Outcome = 'email-requested' | 'registered' | 'password-updated' | 'session-verified';
@@ -93,6 +94,7 @@ export function AuthApp(){
   const [identity,setIdentity]=useState<string|null>(null);
   const heading=useRef<HTMLHeadingElement>(null);
   const redirectStarted=useRef(false);
+  const stillMounted=useRef(true);
   const auth=config.value;
   function setAuthMode(next:Mode,route?:string,clearSecrets=true){
     if(clearSecrets){setPassword('');setConfirm('');}
@@ -129,7 +131,11 @@ export function AuthApp(){
     }[mode]);
   },[mode]);
   useEffect(()=>{
-    if(redirectStarted.current)return;
+    // StrictMode re-runs effects in development. A single-use OAuth or email
+    // grant must never be exchanged twice. Let the initiating request finish
+    // after the simulated cleanup and re-setup, but not after real unmount.
+    stillMounted.current=true;
+    if(redirectStarted.current)return ()=>{stillMounted.current=false;};
     redirectStarted.current=true;
     const redirect=parseAuthRedirect(location.href);
     const privateRoute=location.pathname;
@@ -144,20 +150,19 @@ export function AuthApp(){
     if(!auth){
       setMode('outcome');setError(config.error);return;
     }
-    let active=true;
     void (async()=>{
       setMode('callback');
       try{
         if(redirect.kind==='error')throw new Error(redirect.message);
         if(redirect.kind==='oauth_code'){
           const who=await auth.service.finishOAuth(redirect.code);
-          if(active)await signedIn(who.email??null);return;
+          if(stillMounted.current)await signedIn(who.email??null);return;
         }
         if(redirect.kind==='tokens' || redirect.kind==='token_hash'){
           const kind=redirect.kind==='tokens'
             ? await auth.auth.acceptTokens(redirect.parameters)
             : await auth.auth.verifyTokenHash(redirect.tokenHash,redirect.type);
-          if(!active)return;
+          if(!stillMounted.current)return;
           if(kind==='recovery'||kind==='invite'){
             setMode('set-password');
             setNotice('Your one-time link was verified. Choose a new password.');
@@ -165,21 +170,21 @@ export function AuthApp(){
           }
           const verified=await auth.auth.getUser();
           if(verified.error||!verified.data?.user)throw new Error('Account confirmation session could not be verified.');
-          if(active)await signedIn(verified.data.user.email??null);
+          if(stillMounted.current)await signedIn(verified.data.user.email??null);
           return;
         }
         if(privateRoute==='/workspace'){
           const verified=await auth.auth.getUser();
           if(verified.error||!verified.data?.user)throw new Error('Sign in to access your private workspace.');
-          if(active)await signedIn(verified.data.user.email??null);
+          if(stillMounted.current)await signedIn(verified.data.user.email??null);
           return;
         }
         throw new Error('This callback does not contain a supported one-time verification link.');
       }catch(reason){
-        if(active){setMode('outcome');setError(readError(reason));setNotice('');}
+        if(stillMounted.current){setMode('outcome');setError(readError(reason));setNotice('');}
       }
     })();
-    return ()=>{active=false;};
+    return ()=>{stillMounted.current=false;};
   // Authentication callback must run at most once: auth instance fixed for mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
