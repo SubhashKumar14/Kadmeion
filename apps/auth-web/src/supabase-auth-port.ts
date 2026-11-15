@@ -174,7 +174,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const registered = userFrom(response.user ?? response);
       if (typeof response.access_token === 'string') {
         session = this.decodeSession(response);
-        if (!registered || session.user.id !== registered.id)
+        if (!registered || session.user.id !== registered.id ||
+            typeof registered.email !== 'string' ||
+            registered.email.trim().toLowerCase() !== email.trim().toLowerCase() ||
+            (session.user.email !== undefined &&
+             session.user.email.trim().toLowerCase() !== email.trim().toLowerCase()))
           throw new Error('The registration session identity was inconsistent.');
         this.storeEmailSession(session);
       }
