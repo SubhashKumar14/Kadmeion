@@ -1505,6 +1505,47 @@ test('B4/B6: local real HTTP public release is revoked after owner project priva
     assert.match(await before.text(),/Privacy dependent HTML/);
     assert.equal(before.headers.get('cache-control'),'private, no-store');
 
+    const reporterEvidence='Reporter supplied evidence that must stay private.';
+    const reportOp=randomUUID();
+    const report=(operationId=reportOp,evidence=reporterEvidence)=>fetch(address,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({operationId,reason:'ABUSE',evidence}),
+      redirect:'error',signal:AbortSignal.timeout(5000)
+    });
+    const submitted=await report();
+    assert.equal(submitted.status,202);
+    assert.deepEqual(await submitted.json(),{status:'RECEIVED_FOR_REVIEW'});
+    assert.equal((await report()).status,202);
+    assert.equal((await report(randomUUID())).status,202);
+    assert.equal((await report(reportOp,'Different evidence using the original operation.')).status,409);
+    for(let i=0;i<11;i++)assert.equal((await report(randomUUID(),reporterEvidence+' '+i)).status,202);
+    assert.equal((await report(randomUUID(),'Another report above the per-release intake limit.')).status,429);
+    const operator=await adminUser('abuse-intake-operator');
+    await pg.query("insert into kadmeion_private.operator_roles(user_id,role) values ($1,'moderator')",[operator.id]);
+    const rpc=(actor,name,body)=>send('/rest/v1/rpc/'+name,{...json(actor),method:'POST',body});
+    assert.ok(!(await rpc(owner,'operator_list_portfolio_abuse_reports',{})).ok);
+    assert.ok(!(await send('/rest/v1/rpc/service_submit_portfolio_abuse_report',{
+      ...json(owner),method:'POST',body:{p_handle:handle,p_slug:slug,p_operation_id:randomUUID(),
+        p_reason_code:'ABUSE',p_evidence:reporterEvidence}
+    })).ok,'Client bypassed report gateway');
+    const cases='/rest/v1/private_moderation_cases?select=id,summary';
+    assert.deepEqual(successful(await send(cases,bearer(owner)),'Owner cases before review'),[]);
+    const queue=successful(await rpc(operator,'operator_list_portfolio_abuse_reports',{p_limit:50}),'List abuse queue');
+    const entry=queue.find(item=>item.evidence===reporterEvidence&&item.target_path==='/'+handle+'/'+slug);
+    assert.ok(entry);
+    assert.ok(!Object.hasOwn(entry,'owner_user_id'));
+    const review={p_report_id:entry.id,p_decision:'CASE_OPENED',p_rationale:'Reviewed evidence merits an owner-visible investigation.'};
+    const opened=successful(await rpc(operator,'operator_review_portfolio_abuse_report',review),'Convert report to case');
+    assert.equal(opened.status,'CASE_OPENED');
+    assert.deepEqual(successful(await rpc(operator,'operator_review_portfolio_abuse_report',review),'Review replay'),opened);
+    assert.ok(!(await rpc(operator,'operator_review_portfolio_abuse_report',{
+      ...review,p_decision:'DISMISSED'
+    })).ok);
+    assert.deepEqual(successful(await send(cases,bearer(owner)),'Owner case after review'),[
+      {id:opened.caseId,summary:review.p_rationale}
+    ]);
+    assert.equal((await read()).status,200,'A report or review automatically unpublished the release');
+
     const withdrawal=successful(await send(
       '/rest/v1/project_exposure_intents?project_id=eq.'+project.id+
       '&select=show_case_study',{
@@ -1518,6 +1559,7 @@ test('B4/B6: local real HTTP public release is revoked after owner project priva
     assert.equal(after.status,404,'Withdrawal failed to revoke old immutable HTML');
     assert.equal(await after.text(),'Not found');
     assert.equal(after.headers.get('x-robots-tag'),'noindex');
+    assert.equal((await report(randomUUID())).status,404,'Reports accepted for a withdrawn portfolio');
     const current=successful(await send('/rest/v1/rpc/service_read_public_portfolio',{
       method:'POST',key:cfg.service,bearer:cfg.service,
       headers:{'Content-Type':'application/json'},

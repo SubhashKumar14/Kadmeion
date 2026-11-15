@@ -16,11 +16,11 @@ const html='<!doctype html><html lang="en"><head>'+marker+
   '</head><body><h1>Safe</h1></body></html>';
 const digest=html=>createHash('sha256').update(html).digest('hex');
 const payload=html=>({html,htmlSha256:digest(html)});
-async function invoke(handler,{url=path,data=payload(html),httpResponse,method='GET',config=env}={}) {
+async function invoke(handler,{url=path,data=payload(html),httpResponse,method='GET',config=env,body,requestHeaders}={}) {
   const headers=new Map(), calls=[];
   const res={statusCode:0,body:null,headers,setHeader(k,v){headers.set(k.toLowerCase(),v);},
     end(value){this.body=value;}};
-  await handler({url,method},res,{env:config,http:async(url,options)=>{
+  await handler({url,method,body,headers:requestHeaders},res,{env:config,http:async(url,options)=>{
     calls.push({url:String(url),options});
     return httpResponse??Response.json(data);
   }});
@@ -80,8 +80,32 @@ test('public route rejects malformed paths and methods without privileged calls'
       assert.equal(denied.calls.length,0,'Reserved handle reached privileged delivery');
     }
   }
-  const {res,calls}=await invoke(handlePublicPortfolio,{method:'POST'});
+  const {res,calls}=await invoke(handlePublicPortfolio,{method:'PUT'});
   assert.equal(res.statusCode,405);assert.equal(calls.length,0);
+});
+test('public abuse intake forwards only bounded evidence and returns a generic receipt',async()=>{
+  const operationId='10000000-0000-4000-8000-000000000001';
+  const options={method:'POST',requestHeaders:{'content-type':'application/json'},
+    body:{operationId,reason:'ABUSE',evidence:'A concrete description of the portfolio issue.'}};
+  const {res,calls}=await invoke(handlePublicPortfolio,{...options,data:{status:'RECEIVED_FOR_REVIEW'}});
+  assert.equal(res.statusCode,202);
+  assert.equal(res.headers.get('x-robots-tag'),'noindex');
+  assert.deepEqual(JSON.parse(res.body),{status:'RECEIVED_FOR_REVIEW'});
+  assert.equal(calls.length,1);
+  assert.match(calls[0].url,/\/service_submit_portfolio_abuse_report$/);
+  assert.deepEqual(JSON.parse(calls[0].options.body),{p_handle:'sample_user',p_slug:'sample-site',
+    p_operation_id:operationId,p_reason_code:'ABUSE',p_evidence:options.body.evidence});
+  for(const body of [{...options.body,email:'private'}, {...options.body,evidence:'x'.repeat(501)},null,'{invalid']){
+    const response=await invoke(handlePublicPortfolio,{...options,body});
+    assert.equal(response.res.statusCode,400);
+    assert.deepEqual(response.calls,[]);
+  }
+  const limited=await invoke(handlePublicPortfolio,{...options,
+    httpResponse:Response.json({message:'ABUSE_REPORT_RATE_LIMIT'},{status:500})});
+  assert.equal(limited.res.statusCode,429);
+  const extra=await invoke(handlePublicPortfolio,{...options,data:{status:'RECEIVED_FOR_REVIEW',owner:'secret'}});
+  assert.equal(extra.res.statusCode,503);
+  assert.doesNotMatch(extra.res.body,/secret/);
 });
 test('public release rejects tampered, executable or unexpected response fields',async()=>{
   const cases=[
