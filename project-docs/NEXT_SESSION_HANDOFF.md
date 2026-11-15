@@ -779,3 +779,13 @@ New code:
 - Original K master, 12 approved Canva families and functional light/dark unaffected. All ₹0/public host/auth/editor source gates unchanged.
 
 **Acceptance:** This is a new implementation commit pending its exact SHA CI and screenshot parity check. Do not claim full F3/52 parity; operator positive-role 48–50, public reviewer/authenticated-host 28/31–34, full UAT/WCAG and external release still open. Next: verify frontend/root isolated DB and visually compare updated #18/#19/#22/#26, then fix regressions or carry improvements forward.
+
+---
+
+## F5 role-positive operator UX test fixture — 15 November 2026
+
+At previous code SHA `1dda2a984457191c38ae8b0ac83ffe1f980079eb`, [frontend CI 43745572286](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43745572286) passed TypeScript, build, public Chromium E2E and browser screenshot capture; root isolated DB run 43745577381 still being checked. The F3 editor layer grouping + expressly nonpersisted approved text remains code-only until new #18 screenshot comparison.
+
+New code in `apps/frontend/e2e/owner.spec.ts`: an **isolated local-only** full-browser positive restricted operator fixture. Disposable local GoTrue users created via local service key; a strict PostgreSQL loopback-port/hostname/role allowlist and `KADMEION_LOCAL_BROWSER=1` guard ensures the test writes only one ephemeral role in `kadmeion_private.operator_roles` inside CI, *never hosted Supabase*. Real authenticated React console then exercises OPS-01 audited case creation, server-authorized case reload, OPS-02 report-queue view, OPS-03 appeal case view and asserts no public unpublish/republish promise. Captures `48_ADMIN_USERS_BROWSER.png`, `49_PORTFOLIO_MODERATION_BROWSER.png`, `50_APPEALS_BROWSER.png` to existing one-day CI screenshot artifact (not a new code file). Supabase roles stay private and are not read from user metadata. This fixture must pass exact-SHA CI before it counts as verified operator acceptance; screenshots have not yet been measured against owner-approved LIGHT references.
+
+**Remaining:** Operator report happy-path and appeal-case status need additional isolated fixtures; host/reviewer/public delivery disabled, pixel parity and WCAG/UAT unchecked, zero-spend/production gates unchanged. Next: read exact frontend + root CI, diagnose any fixture or SQL environment errors, compare approved #48–50 light PNGs with Chromium captures, update the Notion and GitHub checkpoint.

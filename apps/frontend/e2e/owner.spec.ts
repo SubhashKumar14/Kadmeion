@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -18,7 +19,32 @@ async function localUser(label: string) {
     signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) throw new Error('Local GoTrue fixture creation failed with HTTP ' + response.status);
-  return {email, password};
+  const decoded:unknown=await response.json();
+  if(!decoded||typeof decoded!=='object'||!('id' in decoded)||
+      typeof decoded.id!=='string'||!/^[0-9a-f-]{36}$/i.test(decoded.id))
+    throw new Error('Local GoTrue fixture did not return an owner identifier.');
+  return {id:decoded.id,email, password};
+}
+
+/** Only isolated CI Postgres on loopback: strictly never the hosted project.
+ * The privileged SQL is test fixture setup; browser calls remain owner JWT. */
+function grantLocalOperatorRole(userId:string){
+  if(process.env.KADMEION_LOCAL_BROWSER!=='1'||process.env.VITE_SUPABASE_URL!==origin||
+     !/^[0-9a-f]{8}-[0-9a-f-]{27,40}$/i.test(userId))
+    throw new Error('Operator fixture is restricted to disposable local Supabase.');
+  const envText=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:15000});
+  const match=/^(?:export )?DB_URL=["']?([^"'\r\n]+)["']?$/m.exec(envText);
+  if(!match?.[1])throw new Error('Local PostgreSQL connection unavailable.');
+  const url=new URL(match[1]);
+  if(url.protocol!=='postgresql:'||!['localhost','127.0.0.1'].includes(url.hostname)||
+     url.port!=='54322'||url.username!=='postgres'||url.pathname!=='/postgres')
+    throw new Error('Refusing any nonlocal PostgreSQL fixture target.');
+  const sql="insert into kadmeion_private.operator_roles(user_id,role) values (:'actor_id'::uuid,'administrator');";
+  execFileSync('psql',['-X','-q','-v','ON_ERROR_STOP=1','-v','actor_id='+userId],{
+    input:sql,encoding:'utf8',timeout:15000,
+    env:{...process.env,PGHOST:url.hostname,PGPORT:url.port,
+      PGDATABASE:'postgres',PGUSER:'postgres',PGPASSWORD:decodeURIComponent(url.password)}
+  });
 }
 
 async function signIn(page: Page, user: {email: string; password: string}) {
@@ -322,4 +348,43 @@ test('real owner onboarding and project revision are private across browser sess
   } finally {
     await foreign.close();
   }
+});
+
+
+test('verified local operator can read case-scoped views without impersonation or public release',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
+    'Privileged operator role is granted only in an ephemeral Supabase CI database.');
+  test.setTimeout(95_000);
+  const operator=await localUser('CI Restricted Moderator');
+  const subject=await localUser('CI Target Account');
+  grantLocalOperatorRole(operator.id);
+  await page.setViewportSize({width:1534,height:960});
+  await signIn(page,operator);
+  await page.goto('/app/operations/users');
+  await expect(page.getByRole('heading',{name:'Admin users',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Scoped case directory'})).toBeVisible();
+  const rationale='This is an isolated test case documenting a simulated serious report.';
+  await page.getByLabel('Exact target user ID').fill(subject.id);
+  await page.getByLabel('Case summary').fill(rationale);
+  await page.getByLabel('I confirm the serious-abuse scope and understand this is audit-only.').check();
+  await page.getByRole('button',{name:'Record private case'}).click();
+  await expect(page.getByRole('status')).toContainText('Private audit case recorded.');
+  await expect(page.getByText('Owner ID '+subject.id)).toBeVisible();
+  const dir=process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  if(dir){await mkdir(dir,{recursive:true});await page.screenshot({
+    path:dir+'/48_ADMIN_USERS_BROWSER.png',animations:'disabled'
+  });}
+  await page.goto('/app/operations/moderation');
+  await expect(page.getByRole('heading',{name:'Portfolio moderation',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Submitted portfolio reports'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Private moderation hold'})).toBeVisible();
+  await expect(page.getByText('No pending abuse reports were returned.')).toBeVisible();
+  if(dir)await page.screenshot({path:dir+'/49_PORTFOLIO_MODERATION_BROWSER.png',animations:'disabled'});
+  await page.goto('/app/operations/appeals');
+  await expect(page.getByRole('heading',{name:'Appeals & case history',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Internal hold release'})).toBeVisible();
+  await expect(page.getByText('No pending appeals were returned.')).toBeVisible();
+  if(dir)await page.screenshot({path:dir+'/50_APPEALS_BROWSER.png',animations:'disabled'});
+  // An administrator's private-case permissions are not public host authority.
+  await expect(page.getByText('This does not republish content.',{exact:false})).toBeVisible();
 });
