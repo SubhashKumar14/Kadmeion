@@ -24,3 +24,8 @@ The included source and test paths were checked against the feature branch tree 
 ## B08 media implementation update (15 November 2026)
 
 The private server-only `safe-png-publication.ts` implements bounded PNG validation, metadata stripping, scanline inflation and deterministic recompression, with regression tests and no paid dependencies. **It is not integrated into a public host or released media manifest.** Only non-interlaced 8-bit RGB/RGBA PNG is accepted. JPEG/WebP/AVIF, secure released asset addressing, content-hash verification at the public host, and actual revocation proof remain outstanding. D42 remains PARTIAL.
+
+## 15 November 2026 B08/B09 progress (separate from hosted acceptance)
+
+Source now implements a trusted owner-scoped private PNG read port, frozen HTML+sanitized image preview candidate, content-addressed media paths, immutable digest manifest, and offline static-media ZIP. The private media source `forTrustedFrozenMedia` checks owner RLS and write-once SHA-256 pins. It is NOT an approved public host, final template renderer or live media revocation. The existing 90-row statuses remain conservative.
+The B09 partial-account export now has a local self-consistency verifier for stored hashes, asset bytes, owner table scoping and explicit incompleteness. It does NOT attest original provider authenticity and cannot authorize deletion.

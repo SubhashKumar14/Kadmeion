@@ -1,5 +1,17 @@
 # Kadmeion — Current Backend Implementation State
 
+## Latest backend continuation — 15 November 2026 (B08/B09)
+
+**Feature branch:** `feat/b0-backend-foundation`. Source checkpoint before this documentation update: `9a5066e4d784df6791a68558eb2c94a6983158f8`. **Do not describe B07–B11 or Phase 1 as 100% implemented.**
+
+- **B08 code:** A frozen, owner-RPC-attested HTML candidate can now be composed with up to eight content-addressed sanitized PNG assets from an owner-RLS checked, Storage-version-checked, write-once SHA-256 attestation reader. Exact candidate and media bytes can be rebuilt and checked. A bounded portable HTML+PNG static preview ZIP contains relative assets, no embedded owner source/private asset IDs, a checksum-only manifest and noindex/scriptless markup. Source-archive imports retain their separate 2 MiB cap.
+- **B08 limits:** This remains a **PRIVATE, NON-DEPLOYABLE** candidate and offline preview; the trust boundary requires an independently vetted server-owned media inclusion plan, not arbitrary owner input. Fully approved reusable media slots, other image formats, actual immutable release storage, canonical/direct-asset public routing, independent host revocation and publication acceptance are not finished. Never activate public delivery based on these local tests alone.
+- **B09 code:** Added an offline verifier for the existing **BOUNDED_PARTIAL_EXPORT** JSON. It checks owner-scoped table structure, excluded audit secrets, non-fabricated limitations and SHA-256 of all embedded private asset bytes. Verification explicitly returns `completeAccountExport:false`, `documentAuthenticityVerified:false` and `deletionAllowed:false`; it cannot prove provider retention, atomic snapshot, completeness or erasure.
+- **Automated tests:** [Full CI at `457cd56`](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43688774285) **PASS** (contracts and ephemeral database). The later B09 `9a5066e` [run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43689060333) had a passing contracts job, with the database job still running at this status snapshot. Verify final HEAD CI separately.
+- **Unchanged hosted blockers:** Last observed hosted Supabase state is 14/46 migrations applied, 32 pending, 0/3 Edge Functions deployed. Brevo live SMTP and sender-domain verification remain unproven. No hosted migration, Edge deployment, public host activation, email/DNS change, paid subscription or merge to `main` occurred in this continuation.
+- **Decision tracing:** `registers/D01_D90_BACKEND_TRACEABILITY.csv` is a conservative 90-row register, not 90 proofs; 115 UI decisions, 53 workflows, 138 acceptance cases and 20 technical gates still require reconciliation.
+
+
 ## Latest code continuation — 15 November 2026
 
 **Additional WF-045 implementation checkpoint:** a typed, owner-JWT-scoped

@@ -1,3 +1,14 @@
+# Implementation progress — 15 November 2026 B08/B09 continuation
+
+- `e60b00d`, `3c3d07b`, `fa3a3af`, `8017c96`, `ff05bad`, `46356a0`: Introduced and corrected private frozen HTML plus sanitized media composition. Several earlier intermediate commits failed CI due a malformed UUID regex; `46356a0` fixes that with a regression test.
+- `c645209`: Owner-RLS checked, write-once attested PNG source reader. Source plan must be trusted and frozen; this does not grant public access.
+- `457cd56`: Offline relative static HTML+PNG ZIP with checksum manifest, no private source; **full CI success** [run 43688774285](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43688774285).
+- `9a5066e`: Offline bounded account-export integrity verifier and negative tests; [CI run 43689060333](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43689060333) was still in progress at this writing (contracts passed).
+- No new authored source/test paths were introduced by these B08/B09 edits; original source-file budget variance and host rollout gates remain documented separately.
+- **Not complete:** public host selection, canonical/direct asset revocation, safe multi-format media renderer, full account export/erasure, Brevo email hosting and hosted migrations/functions are unverified.
+
+---
+
 # Implementation Status (historical)
 
 # Kadmeion · Build · Showcase · Evolve
