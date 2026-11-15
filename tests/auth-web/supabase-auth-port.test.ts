@@ -410,3 +410,79 @@ test('B10 immediate sign-up rejects a forged or foreign authenticated session',a
   assert.equal(result.data,null);
   assert.equal(saved.data.size,0);
 });
+
+test('B10 email token-hash redemption verifies the claimed owner before persisting credentials',async()=>{
+  const saved=storage();
+  let calls=0;
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    calls++;
+    if(String(url).endsWith('/verify')){
+      assert.equal(init?.method,'POST');
+      return json(tokens);
+    }
+    if(String(url).endsWith('/user')){
+      assert.equal((init?.headers as Record<string,string>).Authorization,
+        'Bearer '+tokens.access_token);
+      return json(user);
+    }
+    throw Error('Unexpected email callback endpoint');
+  }) as typeof fetch,saved);
+  assert.equal(await port.verifyTokenHash('a'.repeat(32),'recovery'),'recovery');
+  assert.equal(calls,2,'The token cannot create a session without a second live Auth lookup');
+  assert.equal((await port.getUser()).data.user?.id,user.id);
+  assert.ok([...saved.data.values()].join('').includes(tokens.refresh_token));
+});
+
+test('B10 email token-hash response rejects a foreign verified user without storing tokens',async()=>{
+  for(const wrong of [secondUser,null]){
+    const saved=storage();
+    const {port}=mock((async(url:string|URL|Request)=>{
+      if(String(url).endsWith('/verify'))return json(tokens);
+      if(String(url).endsWith('/user'))return json(wrong);
+      throw Error('Unexpected email callback endpoint');
+    }) as typeof fetch,saved);
+    await assert.rejects(port.verifyTokenHash('a'.repeat(32),'signup'),
+      /Email link was not verified/);
+    assert.equal(saved.data.size,0);
+  }
+});
+
+test('B10 email token-hash rejects unverified Auth responses and preserves active sessions',async()=>{
+  const saved=storage();
+  let verifyCalls=0;
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password'))return json(secondTokens);
+    if(String(url).endsWith('/verify')){verifyCalls++;return json(tokens);}
+    if(String(url).endsWith('/user'))return json(user);
+    throw Error('Unexpected email callback endpoint');
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({
+    email:secondUser.email,password:'pass'
+  })).error,null);
+  const before=[...saved.data.entries()];
+  await assert.rejects(port.verifyTokenHash('a'.repeat(32),'invite'),/Sign out/);
+  assert.equal(verifyCalls,1);
+  assert.deepEqual([...saved.data.entries()],before);
+});
+
+test('B10 other-session revocation refuses success if account switches while the call is pending',async()=>{
+  const saved=storage();
+  let finish!:(value:Response)=>void, began!:()=>void,logins=0;
+  const pending=new Promise<Response>(resolve=>{finish=resolve;});
+  const started=new Promise<void>(resolve=>{began=resolve;});
+  const {port}=mock((async(url:string|URL|Request)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password'))return json(logins++===0?tokens:secondTokens);
+    if(u.includes('/logout?scope=others')){began();return pending;}
+    if(u.endsWith('/user'))return json(secondUser);
+    throw Error('Unexpected endpoint');
+  }) as typeof fetch,saved);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'password'})).error,null);
+  const revoke=port.signOut({scope:'others'});
+  await started;
+  assert.equal((await port.signInWithPassword({email:secondUser.email,password:'password'})).error,null);
+  finish(json({}));
+  const result=await revoke;
+  assert.ok(result.error,'Old-account revocation cannot be attributed to the newly signed-in owner');
+  assert.equal((await port.getUser()).data.user?.id,secondUser.id);
+});

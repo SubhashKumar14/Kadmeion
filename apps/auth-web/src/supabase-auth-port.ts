@@ -261,6 +261,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         // rejection cannot be reported as successful remote revocation.
         if(!current)throw new Error('Sign in again to revoke other sessions.');
         await this.request('/logout?scope=others','POST',{},current.access_token);
+        if (!this.isCurrentSession(current))
+          throw new Error('Account changed while revoking other sessions.');
         return {};
       }
       try {
@@ -355,7 +357,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if (!/^[a-zA-Z0-9_-]{8,2048}$/.test(tokenHash) || !isEmailAuthType(type))
       throw new Error('Unsupported or invalid verification link.');
     const response = await this.request('/verify', 'POST', { token_hash: tokenHash, type });
-    this.storeEmailSession(this.decodeSession(response));
+    const session = this.decodeSession(response);
+    // A redeemed token hash is not sufficient proof of the callback owner:
+    // independently check the returned JWT through the live Auth /user API,
+    // exactly as for implicit callback tokens, before browser persistence.
+    const result = await this.request('/user', 'GET', undefined, session.access_token);
+    const verified = userFrom(result);
+    if (!verified || verified.id !== session.user.id)
+      throw new Error('Email link was not verified for the active account.');
+    this.storeEmailSession({...session, user:verified});
     return type === 'invite' ? 'invite' : type === 'recovery' ? 'recovery' : 'confirmation';
   }
 
