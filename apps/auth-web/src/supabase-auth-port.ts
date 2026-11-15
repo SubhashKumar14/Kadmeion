@@ -1,3 +1,4 @@
+import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
@@ -20,6 +21,8 @@ export type OwnerWorkspaceSnapshot = {
   onboarding: Array<{ step: PrivateStep; status: PrivateStepStatus }>;
 };
 
+const OWNER_PROJECT_FIELDS = 'id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
+const PROJECT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STORAGE_KEY = 'kadmeion.auth.session.v1';
 const OAUTH_PKCE_KEY = 'kadmeion.oauth.google.pkce.v1';
 const OAUTH_TTL_MS = 5*60*1000;
@@ -436,6 +439,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         cache: 'no-store', credentials: 'omit', redirect: 'error'
       });
     } catch { throw new Error('Private workspace service is unavailable.'); }
+    if (!response.ok && path === 'rpc/update_private_project') {
+      const payload: unknown = await response.json().catch(() => null);
+      if (payload && typeof payload === 'object' && 'code' in payload && payload.code === '40001')
+        throw new Error('This project changed while you were editing. Load the latest revision before saving again.');
+    }
     if (!response.ok)
       throw new Error(response.status === 401 || response.status === 403
         ? 'Private workspace access was denied.' : response.status === 409
@@ -528,7 +536,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       throw new Error('Invalid private project response.');
     const row=value as Json;
     if (row.owner_user_id!==ownerId ||
-      typeof row.id!=='string' || !/^[0-9a-f-]{36}$/i.test(row.id) ||
+      typeof row.id!=='string' || !PROJECT_ID_PATTERN.test(row.id) ||
       typeof row.title!=='string' || row.title.trim().length===0 || row.title.length>120 ||
       typeof row.slug!=='string' || row.slug.length<3 || row.slug.length>64 ||
       !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(row.slug) ||
@@ -550,8 +558,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   async listOwnerProjects():Promise<AuthOutcome<OwnerProject[]>> {
     return this.outcome(async()=>{
       const {session,userId}=await this.ownerSession();
-      const fields='id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
-      const result=await this.ownerRest('projects?select='+fields+
+      const result=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS+
         '&owner_user_id=eq.'+encodeURIComponent(userId)+
         '&trashed_at=is.null&order=updated_at.desc&limit=100',session.access_token);
       if (!this.isCurrentSession(session))throw new Error('Owner session changed during project loading.');
@@ -560,6 +567,43 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if (new Set(items.map(item=>item.id)).size!==items.length)
         throw new Error('Duplicate private projects were rejected.');
       return items;
+    });
+  }
+
+  async readOwnerProject(projectId: string): Promise<AuthOutcome<OwnerProject>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(projectId)) throw new Error('Project is unavailable.');
+      const {session, userId} = await this.ownerSession();
+      const rows = await this.ownerRest('projects?select=' + OWNER_PROJECT_FIELDS +
+        '&id=eq.' + projectId + '&owner_user_id=eq.' + encodeURIComponent(userId) +
+        '&trashed_at=is.null&limit=1', session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
+        throw new Error('Project is unavailable.');
+      const project = this.parsePrivateProject(rows[0], userId);
+      if (project.id !== projectId.toLowerCase()) throw new Error('Project is unavailable.');
+      return project;
+    });
+  }
+
+  async saveOwnerProject(projectId: string, revision: number, input: PrivateProjectDraft):
+    Promise<AuthOutcome<Pick<OwnerProject, 'id' | 'revision' | 'updatedAt'> & PrivateProjectDraft>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(projectId) || !Number.isSafeInteger(revision) || revision < 0)
+        throw new Error('Invalid project revision.');
+      const draft = normalizeProjectDraft(input);
+      const {session} = await this.ownerSession();
+      const receipt = await this.ownerRest('rpc/update_private_project', session.access_token, 'POST', {
+        p_project_id: projectId, p_base_revision: revision, p_title: draft.title,
+        p_summary: draft.summary, p_description: draft.description,
+        p_repository_url: draft.repositoryUrl, p_live_url: draft.liveUrl
+      });
+      if (!this.isCurrentSession(session) || !receipt || typeof receipt !== 'object' ||
+          !('id' in receipt) || receipt.id !== projectId.toLowerCase() ||
+          !('revision' in receipt) || !Number.isSafeInteger(receipt.revision) || receipt.revision !== revision + 1 ||
+          !('updated_at' in receipt) || typeof receipt.updated_at !== 'string' ||
+          !Number.isFinite(Date.parse(receipt.updated_at)))
+        throw new Error('The server did not confirm the new project revision.');
+      return {...draft, id: projectId, revision: receipt.revision, updatedAt: receipt.updated_at};
     });
   }
 
@@ -586,8 +630,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       }
       const repositoryUrl=urlOption(input.repositoryUrl),liveUrl=urlOption(input.liveUrl);
       const {session,userId}=await this.ownerSession();
-      const fields='id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
-      const data=await this.ownerRest('projects?select='+fields,session.access_token,'POST',{
+      const data=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS,session.access_token,'POST',{
         owner_user_id:userId,title,slug,summary,description:'',
         repository_url:repositoryUrl,live_url:liveUrl
       },true);

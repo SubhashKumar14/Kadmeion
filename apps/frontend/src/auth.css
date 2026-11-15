@@ -1,5 +1,5 @@
 /* Source-informed AUTH-01..AUTH-06 LIGHT references, runtime dark tokens inherited
-   from theme. Production K/vector master is still pending original Canva export. */
+   from theme. */
 .auth-page{width:min(1452px,calc(100% - 70px));min-height:calc(100dvh - 74px);margin:36px auto;position:relative;
   display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:22px;
   box-shadow:0 17px 60px #10263832;overflow:hidden;background:var(--panel);isolation:isolate}

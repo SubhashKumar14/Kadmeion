@@ -659,3 +659,49 @@ test('WORK-04 rejects cross-owner private project rows, hostile URLs and forged 
   assert.ok(rejected.error,'foreign record cannot confirm a private create');
   assert.equal(writes,1);
 });
+
+test('WORK-06 owner project detail and save enforce identity and the exact base revision', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const project = {
+    id, owner_user_id: user.id, title: 'Private draft', slug: 'private-draft',
+    summary: '', description: '', repository_url: null, live_url: null,
+    revision: 2, updated_at: '2026-11-15T12:00:00Z'
+  };
+  let foreign = false;
+  let saves = 0;
+  const {port} = mock((async (url: string | URL | Request, init?: RequestInit) => {
+    const request = String(url);
+    if (request.includes('grant_type=password')) return json(tokens);
+    if (request.endsWith('/auth/v1/user')) return json(user);
+    const path = new URL(request);
+    assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer ' + tokens.access_token);
+    if (path.pathname.endsWith('/projects')) {
+      assert.equal(path.searchParams.get('owner_user_id'), 'eq.' + user.id);
+      assert.equal(path.searchParams.get('id'), 'eq.' + id);
+      assert.equal(path.searchParams.get('trashed_at'), 'is.null');
+      return json([{...project, owner_user_id: foreign ? secondUser.id : user.id}]);
+    }
+    assert.ok(path.pathname.endsWith('/rpc/update_private_project'));
+    assert.equal(init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      p_project_id: id, p_base_revision: 2, p_title: 'Updated draft',
+      p_summary: 'Scope', p_description: '', p_repository_url: null, p_live_url: null
+    });
+    saves++;
+    if (saves === 2) return json({code: '40001', message: 'REVISION_CONFLICT'}, 500);
+    return json({id, revision: 3, updated_at: '2026-11-15T12:01:00Z'});
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email: user.email, password: 'correct'})).error, null);
+  const opened = await port.readOwnerProject(id);
+  assert.equal(opened.data?.revision, 2);
+  foreign = true;
+  assert.equal((await port.readOwnerProject(id)).data, null);
+  assert.equal((await port.readOwnerProject(id + '&select=*')).data, null);
+  const draft = {title: 'Updated draft', slug: 'private-draft', summary: 'Scope',
+    description: '', repositoryUrl: null, liveUrl: null};
+  assert.equal((await port.saveOwnerProject(id, 2, draft)).data?.revision, 3);
+  const stale = await port.saveOwnerProject(id, 2, draft);
+  assert.equal(stale.data, null);
+  assert.match(stale.error?.message ?? '', /changed while you were editing/);
+  assert.equal(saves, 2);
+});

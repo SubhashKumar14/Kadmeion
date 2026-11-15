@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { NewPrivateProject, OwnerProject } from '../../auth-web/src/supabase-auth-port.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
+import type { PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
 import { Icon } from './landing.tsx';
 
 type LoadState = { status:'loading' } | { status:'error'; message:string } |
@@ -15,6 +17,11 @@ function suggestSlug(title:string):string {
     .slice(0,64).replace(/-+$/g,'');
   return derived.length>=3 ? derived : 'project-'+(derived||'untitled');
 }
+function safeProjectLink(value: string | null): string | undefined {
+  try { return value ? normalizeExternalHttpsUrl(value) : undefined; }
+  catch { return undefined; }
+}
+
 export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [state,setState]=useState<LoadState>({status:'loading'});
   const [search,setSearch]=useState('');
@@ -108,17 +115,21 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         {search?<button type="button" className="ws-secondary" onClick={()=>setSearch('')}>Clear search</button>:
           <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
       </div>:<ul className={'ws-project-grid'+(view==='list'?' as-list':'')}>
-        {filtered.map(item=><li key={item.id}><article className="ws-project-card">
+        {filtered.map(item => {
+          const repository = safeProjectLink(item.repositoryUrl);
+          const liveSite = safeProjectLink(item.liveUrl);
+          return <li key={item.id}><article className="ws-project-card">
           <div className="ws-project-mark" aria-hidden="true"><Icon name="folder" size={21}/></div>
-          <div className="ws-project-card-body"><p className="ws-area-meta">PRIVATE PROJECT</p><h2>{item.title}</h2>
+          <div className="ws-project-card-body"><p className="ws-area-meta">PRIVATE PROJECT</p><h2><a href={'/app/projects/' + item.id}>{item.title}</a></h2>
             <p>{item.summary||'No project summary yet.'}</p>
             <span>Updated {new Date(item.updatedAt).toLocaleDateString()} · Revision {item.revision}</span>
-            {(item.repositoryUrl||item.liveUrl)&&<div className="ws-project-links">
-              {item.repositoryUrl&&<a href={item.repositoryUrl} target="_blank" rel="noopener noreferrer">Repository</a>}
-              {item.liveUrl&&<a href={item.liveUrl} target="_blank" rel="noopener noreferrer">Live site</a>}
+            {(repository || liveSite) && <div className="ws-project-links">
+              {repository && <a href={repository} target="_blank" rel="noopener noreferrer">Repository</a>}
+              {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live site</a>}
             </div>}
           </div>
-        </article></li>)}
+        </article></li>;
+        })}
       </ul>}
     </>}
     <dialog ref={modal} className="ws-project-dialog" aria-labelledby="ws-project-modal-heading"
@@ -152,5 +163,131 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         </div>
       </form>
     </dialog>
+  </section>;
+}
+
+type DetailState =
+  | {status: 'loading'}
+  | {status: 'unavailable'}
+  | {status: 'ready'; saved: OwnerProject; draft: PrivateProjectDraft};
+
+export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAuthPort; projectId: string}) {
+  const [detail, setDetail] = useState<DetailState>({status: 'loading'});
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<{error: boolean; text: string} | null>(null);
+  const [latest, setLatest] = useState<OwnerProject | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void port.readOwnerProject(projectId).then(result => {
+      if (!active) return;
+      setDetail(result.data
+        ? {status: 'ready', saved: result.data, draft: result.data}
+        : {status: 'unavailable'});
+    });
+    return () => { active = false; };
+  }, [port, projectId]);
+
+  function edit(field: keyof PrivateProjectDraft, value: string) {
+    setDetail(current => current.status === 'ready'
+      ? {...current, draft: {...current.draft, [field]: value}}
+      : current);
+  }
+
+  async function compareLatest(baseRevision: number) {
+    setChecking(true);
+    setFeedback(null);
+    try {
+      const {data} = await port.readOwnerProject(projectId);
+      setLatest(data && data.revision !== baseRevision ? data : null);
+      if (!data) setFeedback({error: true, text: 'Could not check the latest revision. Your edits are still here.'});
+      else if (data.revision === baseRevision) setFeedback({error: false, text: 'You have the latest saved revision.'});
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (detail.status !== 'ready' || saving || checking || latest) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const result = await port.saveOwnerProject(projectId, detail.saved.revision, detail.draft);
+      if (!result.data) {
+        setFeedback({error: true, text: result.error?.message ?? 'Save could not be confirmed.'});
+        return;
+      }
+      setDetail({status: 'ready', saved: result.data, draft: result.data});
+      setFeedback({error: false, text: 'Private draft saved.'});
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const repository = detail.status === 'ready' ? safeProjectLink(detail.saved.repositoryUrl) : undefined;
+  const liveSite = detail.status === 'ready' ? safeProjectLink(detail.saved.liveUrl) : undefined;
+
+  return <section aria-labelledby="project-detail-title">
+    <div className="ws-heading">
+      <a href="/app/projects">Back to project library</a>
+      <h1 id="project-detail-title">Build the case study.</h1>
+      <p>Update your private project details.</p>
+    </div>
+    {detail.status === 'loading' && <p role="status">Loading project…</p>}
+    {detail.status === 'unavailable' && <p role="alert">Project unavailable. Check your session or return to the project library.</p>}
+    {detail.status === 'ready' && <div className="ws-project-detail">
+      <form className="ws-project-fields" onSubmit={event => void save(event)}>
+        <fieldset disabled={saving || checking}>
+          <legend>Project details</legend>
+          <label>Project title
+            <input maxLength={120} required value={detail.draft.title} onChange={e => edit('title', e.target.value)}/>
+          </label>
+          <label>Short description
+            <textarea rows={2} maxLength={360} value={detail.draft.summary} onChange={e => edit('summary', e.target.value)}/>
+          </label>
+          <label>Project description
+            <textarea rows={6} maxLength={12000} value={detail.draft.description} onChange={e => edit('description', e.target.value)}/>
+          </label>
+          <label>Repository URL (optional)
+            <input type="url" maxLength={2048} value={detail.draft.repositoryUrl ?? ''} onChange={e => edit('repositoryUrl', e.target.value)}/>
+          </label>
+          <label>Live website URL (optional)
+            <input type="url" maxLength={2048} value={detail.draft.liveUrl ?? ''} onChange={e => edit('liveUrl', e.target.value)}/>
+          </label>
+        </fieldset>
+        {feedback && <p role={feedback.error ? 'alert' : 'status'} className="ws-inline-alert">{feedback.text}</p>}
+        <div className="ws-actions">
+          <button type="submit" className="ws-primary" disabled={saving || checking || !!latest}>{saving ? 'Saving…' : 'Save changes'}</button>
+          <button type="button" className="ws-secondary" disabled={saving || checking}
+            onClick={() => void compareLatest(detail.saved.revision)}>{checking ? 'Checking…' : 'Check latest revision'}</button>
+        </div>
+      </form>
+      <aside className="ws-project-aside" aria-label="Saved project preview">
+        <p className="ws-kicker">SAVED DRAFT · REVISION {detail.saved.revision}</p>
+        <h2>{detail.saved.title}</h2>
+        {detail.saved.summary && <p>{detail.saved.summary}</p>}
+        {repository &&
+          <p><a href={repository} target="_blank" rel="noopener noreferrer">Repository</a></p>}
+        {liveSite &&
+          <p><a href={liveSite} target="_blank" rel="noopener noreferrer">Live website</a></p>}
+        {latest && <div className="ws-project-conflict">
+          <h3>Saved revision {latest.revision} is newer</h3>
+          <dl>
+            <dt>Title</dt><dd>{latest.title}</dd>
+            <dt>Short description</dt><dd>{latest.summary || '—'}</dd>
+            <dt>Project description</dt><dd>{latest.description || '—'}</dd>
+            <dt>Repository URL</dt><dd>{latest.repositoryUrl || '—'}</dd>
+            <dt>Live website URL</dt><dd>{latest.liveUrl || '—'}</dd>
+          </dl>
+          <button type="button" className="ws-secondary" onClick={() => {
+            setDetail({status: 'ready', saved: latest, draft: latest});
+            setLatest(null);
+            setFeedback({error: false, text: 'Loaded the latest saved draft.'});
+          }}>Discard my edits and load saved draft</button>
+        </div>}
+      </aside>
+    </div>}
   </section>;
 }

@@ -4,7 +4,7 @@ import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../../auth-web/src/supabase-auth-port.ts';
 import { BrandMark, Icon, useTheme } from './landing.tsx';
-import { PrivateProjects } from './projects.tsx';
+import { PrivateProjectDetail, PrivateProjects } from './projects.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -19,8 +19,12 @@ const NAV = [
   { title: 'Explore', href: '/explore', icon: 'activity' }
 ] as const;
 
+function projectIdFromRoute(path: string): string | undefined {
+  return /^\/app\/projects\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(path)?.[1]?.toLowerCase();
+}
+
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding' || path === '/app/projects';
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || !!projectIdFromRoute(path);
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -37,7 +41,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       <p className="ws-rail-label">YOUR WORKSPACE</p>
       <nav aria-label="Workspace navigation">
         {NAV.map(item => <a key={item.href} href={item.href}
-          aria-current={route === item.href ? 'page' : undefined}>
+          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) ? 'page' : undefined}>
           <Icon name={item.icon} size={18}/><span>{item.title}</span>
         </a>)}
       </nav>
@@ -50,7 +54,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     </aside>
     <div className="ws-main-col">
       <header className="ws-topbar">
-        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route === '/app/projects' ? 'Projects' : 'Overview'}</span>
+        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : 'Overview'}</span>
         <div className="ws-topbar-actions">
           <button type="button" className="ws-theme" onClick={toggleTheme}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
@@ -181,6 +185,7 @@ export function WorkspaceApp() {
   const [signOutPending, setSignOutPending] = useState(false);
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
+  const projectId = projectIdFromRoute(route);
   useEffect(() => {
     document.title = 'Kadmeion — ' + (route === '/app/onboarding' ? 'Welcome' : 'Workspace');
     let cancelled = false;
@@ -204,6 +209,7 @@ export function WorkspaceApp() {
           return;
         }
         setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
+        if (route.startsWith('/app/projects')) return;
         void port.readOwnerWorkspace().then(read=>{
           if (cancelled) return;
           if (read.error || !read.data) {
@@ -259,7 +265,9 @@ export function WorkspaceApp() {
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
   return <WorkspaceFrame owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
-    {snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
+    {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
+      route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
+      snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div className="ws-skeleton-heading" aria-hidden="true"/>
       <div className="ws-skeleton-grid" aria-hidden="true"><span/><span/><span/></div>
@@ -268,7 +276,6 @@ export function WorkspaceApp() {
       <button type="button" className="ws-secondary" onClick={()=>window.location.reload()}>Retry securely</button>
     </section> : route === '/app/onboarding' ?
       <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
-      route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       <Home snapshot={snapshot.value}/>}
   </WorkspaceFrame>;
 }

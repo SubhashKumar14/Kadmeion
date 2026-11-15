@@ -149,3 +149,17 @@
 @media(max-width:1050px){.ws-project-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:720px){.ws-project-head{flex-direction:column;align-items:start}
   .ws-project-grid{grid-template-columns:1fr}.ws-project-state,.ws-project-empty{padding:23px}}
+
+.ws-project-detail{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);align-items:start;gap:16px;margin-top:24px}
+.ws-project-fields,.ws-project-aside{min-width:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:20px}
+.ws-project-fields fieldset{min-width:0;border:0;padding:0;margin:0}
+.ws-project-fields legend{font-weight:750;margin-bottom:16px}
+.ws-project-fields label{display:grid;gap:6px;margin-bottom:14px;font-size:13px;font-weight:650}
+.ws-project-fields :is(input,textarea){width:100%;min-height:42px;padding:9px 12px;border:1px solid var(--line-dark);
+  border-radius:7px;background:var(--panel);color:var(--ink);font:inherit}
+.ws-project-fields textarea{resize:vertical}
+.ws-project-aside{overflow-wrap:anywhere}
+.ws-project-aside a,.ws-project-card h2 a:hover{text-decoration:underline;text-underline-offset:3px}
+.ws-project-conflict{border-top:1px solid var(--line);margin-top:18px;padding-top:16px}
+.ws-project-conflict dt{font-weight:700}.ws-project-conflict dd{white-space:pre-wrap;margin:0 0 10px}
+@media(max-width:850px){.ws-project-detail{grid-template-columns:1fr}}
