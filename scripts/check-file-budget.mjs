@@ -27,7 +27,11 @@ const justifiedExtra = [
   'supabase/migrations/20261115130005_account_exit_scoped_host_receipts.sql',
   'packages/editor-core/src/isolated-owned-preview.ts',
   'supabase/migrations/20261115130006_guarded_public_portfolio_rollback.sql',
-  'supabase/migrations/20261115130007_atomic_account_metadata_export.sql'
+  'supabase/migrations/20261115130007_atomic_account_metadata_export.sql',
+  // Account-erasure JWT truthfulness needs an independently replayable
+  // forward-only migration and an explicit SQL authorization regression.
+  'supabase/migrations/20261115133000_account_erasure_jwt_truthful_receipt.sql',
+  'supabase/tests/account-erasure-jwt-receipt.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
