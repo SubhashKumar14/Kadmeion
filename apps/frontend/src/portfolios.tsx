@@ -95,7 +95,7 @@ const authoringQuery = '(min-width: 900px)';
 type PortfolioRecord = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['readOwnerPortfolio']>>['data']>;
 
 export function portfolioIdFromRoute(path: string): string | undefined {
-  return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:edit|preview\/fullscreen)$/i.exec(path)?.[1]?.toLowerCase();
+  return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:edit|preview(?:\/fullscreen)?)$/i.exec(path)?.[1]?.toLowerCase();
 }
 
 function useAuthoringViewport() {
@@ -350,6 +350,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     </div>{head && <div className="ws-actions">
       <button type="button" className="ws-secondary" onClick={() => setPreview(current => !current)}>{preview ? 'Back to editor' : 'Author preview'}</button>
       {record && !operation && <>
+        <a className="ws-secondary" href={STUDIO + '/' + id + '/preview'}>Preview modes</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'} target="_blank" rel="noopener">Fullscreen saved preview</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/staging'}>Release workspace</a>
       </>}
@@ -455,6 +456,75 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   </section>;
 }
 
+
+
+/** EDIT-09: an owner-only visual simulation. This route cannot activate
+ * publishing, obtain reviewer grants or create consented public projections. */
+export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
+  const [record,setRecord]=useState<PortfolioRecord|null>(null);
+  const [error,setError]=useState('');
+  const [view,setView]=useState<'author'|'visitor'>('author');
+  const [device,setDevice]=useState<0|390|768>(0);
+  const [attempt,setAttempt]=useState(0);
+  useEffect(()=>{
+    let active=true;
+    setRecord(null);setError('');
+    void port.readOwnerPortfolio(id).then(reply=>{
+      if(!active)return;
+      if(reply.data?.snapshot){setRecord(reply.data);return;}
+      setError(reply.error?.message??'A saved private portfolio revision is not available.');
+    }).catch(()=>{
+      if(active)setError('The saved private revision could not be verified.');
+    });
+    return ()=>{active=false;};
+  },[port,id,attempt]);
+  return <section className="ws-portfolio-preview" aria-labelledby="ws-preview-title">
+    <div className="ws-heading">
+      <a href={STUDIO+'/'+id+'/edit'}>Back to portfolio editor</a>
+      <p className="ws-kicker">PORTFOLIO PREVIEW</p>
+      <h1 id="ws-preview-title">Author preview modes.</h1>
+      <p>View the saved private revision. Changes still require an explicit editor save.</p>
+    </div>
+    {error&&<div className="ws-inline-alert" role="alert">
+      {error}
+      <button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button>
+    </div>}
+    {!record&&!error&&<p role="status">Loading your saved, owner-scoped preview…</p>}
+    {record&&<>
+      <div className="ws-preview-controls">
+        <div className="ws-preview-mode-set" role="group" aria-label="Appearance mode">
+          <button type="button" className="ws-secondary" aria-pressed={view==='author'}
+            onClick={()=>setView('author')}>Author preview</button>
+          <button type="button" className="ws-secondary" aria-pressed={view==='visitor'}
+            onClick={()=>setView('visitor')}>Visitor appearance (simulation)</button>
+        </div>
+        <label>Preview device
+          <select value={device} onChange={event=>{
+            const next=Number(event.target.value);
+            setDevice(next===390?390:next===768?768:0);
+          }}>
+            <option value={0}>Desktop · fit</option>
+            <option value={768}>Tablet · 768 px</option>
+            <option value={390}>Phone · 390 px</option>
+          </select>
+        </label>
+      </div>
+      <p className="ws-preview-caution" role="status">{view==='visitor'
+        ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
+        : 'Private author preview. Empty slots may be indicated; no draft is published from this page.'}</p>
+      <div className="ws-preview-stage">
+        <PortfolioCanvas snapshot={record.snapshot} title={record.title}
+          simulation={view==='visitor'} width={device||undefined}/>
+      </div>
+      <div className="ws-actions">
+        <span>Saved revision {record.revision} · No public delivery</span>
+        <a className="ws-secondary" href={STUDIO+'/'+id+'/preview/fullscreen'}>
+          Fullscreen saved author preview</a>
+        <a className="ws-primary" href={STUDIO+'/'+id+'/staging'}>Private reviewer staging</a>
+      </div>
+    </>}
+  </section>;
+}
 
 export function FullscreenPortfolioPreview({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
   const [record, setRecord] = useState<PortfolioRecord | null>(null);

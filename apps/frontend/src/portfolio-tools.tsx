@@ -71,8 +71,9 @@ function slotDisplay(slot:PortfolioSnapshot['slots'][string]|undefined):string {
   return '';
 }
 
-export function PortfolioCanvas({snapshot, title, standalone, width, selectedSlot, onSelectSlot}: {
-  snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean; width?: number;
+export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot}: {
+  snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean;
+  simulation?:boolean; width?: number;
   selectedSlot?:string; onSelectSlot?:(key:string)=>void;
 }) {
   const theme=readTheme(snapshot);
@@ -81,7 +82,7 @@ export function PortfolioCanvas({snapshot, title, standalone, width, selectedSlo
     borderTopColor:theme.accent,maxWidth:width
   };
   const sections=canvasSections(snapshot);
-  const editing=typeof onSelectSlot==='function'&&!standalone;
+  const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
   const Slot=({section,name,kind='copy'}:{
     section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';
   })=>{
@@ -102,11 +103,12 @@ export function PortfolioCanvas({snapshot, title, standalone, width, selectedSlo
       )}
     </button>;
     return text?<span className={className}>{text}</span>:
-      standalone?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
+      (standalone||simulation)?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
   };
   const Tag=standalone?'main':'div';
   return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
-    style={style} aria-label={standalone?'Saved private portfolio author preview':'Private authoring canvas'}>
+    style={style} aria-label={standalone?'Saved private portfolio author preview':
+      simulation?'Simulated visitor portfolio appearance':'Private authoring canvas'}>
     {!standalone&&<div className="pv-editor-caption">
       <span>AUTHOR CANVAS / {theme.mode.toUpperCase()}</span>
       <span>Illustrative empty-slot copy · Never saved or published</span>

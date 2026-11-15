@@ -255,7 +255,8 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByLabel('Text content')).toBeVisible();
   await page.getByLabel('Text content').fill('Reach out privately');
   await page.getByRole('button', {name:'Apply text'}).click();
-  await expect(page.getByRole('button',{name:'Edit L8 title slot in preview'})).toContainText('Reach out privately');
+  await expect(page.getByRole('button',{name:'Edit L8 title slot in preview'})
+    .filter({hasText:'Reach out privately'})).toBeVisible();
   await capture('20_SECTIONS_BROWSER');
   await page.getByRole('button', {name: 'My Components', exact: true}).click();
   await expect(page.getByText('You haven’t saved any component versions.')).toBeVisible();
@@ -286,6 +287,16 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Portfolio draft title', {exact: true})).toBeVisible();
   await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
   await capture('26_FULLSCREEN_BROWSER');
+  await page.goto(editorPath);
+  await page.getByRole('link',{name:'Preview modes'}).click();
+  await expect(page.getByRole('heading',{name:'Author preview modes.'})).toBeVisible();
+  await page.getByRole('button',{name:'Visitor appearance (simulation)'}).click();
+  await expect(page.getByRole('status')).toContainText('not a published or visitor-accessible URL');
+  await expect(page.getByLabel('Simulated visitor portfolio appearance')).toBeVisible();
+  await page.getByLabel('Preview device').selectOption('390');
+  await expect(page.getByText('Saved revision 2')).toBeVisible();
+  await page.getByRole('button',{name:'Author preview',exact:true}).click();
+  await expect(page.getByRole('status')).toContainText('Private author preview.');
   await page.goto(editorPath);
   await page.getByRole('link', {name: 'Release workspace'}).click();
   await expect(page.getByRole('heading', {name: 'Reviewer staging.'})).toBeVisible();

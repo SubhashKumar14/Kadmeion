@@ -6,7 +6,7 @@ import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../
 import { BrandMark, Icon, useTheme } from './landing.tsx';
 import { PrivateProjectDetail, PrivateProjects } from './projects.tsx';
 import { DeveloperProfile } from './profile.tsx';
-import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, PortfolioLibrary, portfolioIdFromRoute } from './portfolios.tsx';
+import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, PortfolioLibrary, PortfolioPreviewModes, portfolioIdFromRoute } from './portfolios.tsx';
 import { PortfolioRelease, releaseRoute } from './release.tsx';
 import { OwnerSettings, isSettingsRoute } from './settings.tsx';
 import { OperatorConsole, isOperatorRoute } from './operations.tsx';
@@ -283,6 +283,8 @@ export function WorkspaceApp() {
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       route === '/app/profile' && authRef.current ? <DeveloperProfile port={authRef.current}/> :
       release && authRef.current ? <PortfolioRelease port={authRef.current} id={release.id} mode={release.mode}/> :
+      portfolioId && route.endsWith('/preview') && authRef.current
+        ? <PortfolioPreviewModes port={authRef.current} id={portfolioId}/> :
       portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId}/> :
       route === '/app/portfolios/new' && authRef.current ? <PortfolioChooser port={authRef.current}/> :
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
