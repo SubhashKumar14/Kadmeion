@@ -22,6 +22,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Audit installed production dependency tree for high-severity advisories
+        run: npm audit --omit=dev --audit-level=high
+      - name: Reject syntax errors in public delivery adapters
+        run: node --check api/public-portfolio.mjs && node --check api/reviewer.mjs && node --check api/unlisted.mjs && node --check api/published-identity.mjs
       - run: npm run typecheck
       - run: npm run build:auth
       - run: npm run smoke:auth
