@@ -1,7 +1,7 @@
 name: Frontend React 19 + Vite 8 verification
 on:
   push:
-    branches: ['feat/b0-backend-foundation']
+    branches: [main, 'feat/b0-backend-foundation']
     paths:
       - 'apps/frontend/**'
       - 'apps/auth-web/**'
@@ -9,6 +9,7 @@ on:
       - 'packages/editor-core/**'
       - 'packages/storage-adapters/**'
       - '.github/workflows/frontend.yml'
+      - 'vercel.json'
   workflow_dispatch:
 
 permissions:
