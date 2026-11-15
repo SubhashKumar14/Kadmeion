@@ -595,3 +595,67 @@ test('workspace data refuses foreign-owner rows and unverified onboarding RPC re
   assert.ok(changed.error);
   assert.equal(changed.data,null);
 });
+
+test('WORK-04 private project list and quick-add insert require owner JWT, exact payload, and server receipt',async()=>{
+  const project={id:'11111111-1111-4111-8111-111111111111',
+    owner_user_id:user.id,title:'Private Demo',slug:'private-demo',summary:'Locally owned',
+    description:'',repository_url:null,live_url:null,revision:0,updated_at:'2026-11-15T12:00:00Z'};
+  const requests:string[]=[];
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    const u=String(url);requests.push(u);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    if(u.includes('/rest/v1/projects?')) {
+      const headers=init?.headers as Record<string,string>;
+      assert.equal(headers.Authorization,'Bearer '+tokens.access_token);
+      assert.equal(headers.apikey,'sb_publishable_test');
+      assert.equal(init?.credentials,'omit');
+      assert.equal(init?.cache,'no-store');
+      if(init?.method==='POST') {
+        assert.equal(headers.Prefer,'return=representation');
+        assert.deepEqual(JSON.parse(String(init.body)),{
+          owner_user_id:user.id,title:'Private Demo',slug:'private-demo',
+          summary:'Locally owned',description:'',repository_url:null,live_url:null
+        });
+        return json([project],201);
+      }
+      assert.ok(u.includes('owner_user_id=eq.'+user.id));
+      assert.ok(u.includes('trashed_at=is.null'));
+      return json([project]);
+    }
+    return json({},404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'correct'})).error,null);
+  const listed=await port.listOwnerProjects();
+  assert.equal(listed.error,null);assert.equal(listed.data[0]?.slug,'private-demo');
+  const inserted=await port.createPrivateProject({
+    title:' Private Demo ',slug:'private-demo',summary:'Locally owned',
+    repositoryUrl:null,liveUrl:null
+  });
+  assert.equal(inserted.error,null);assert.equal(inserted.data.id,project.id);
+  assert.equal(requests.filter(x=>x.includes('/rest/v1/projects?')).length,2);
+});
+
+test('WORK-04 rejects cross-owner private project rows, hostile URLs and forged inserts',async()=>{
+  const base={id:'11111111-1111-4111-8111-111111111111',
+    owner_user_id:secondUser.id,title:'Private Demo',slug:'private-demo',summary:'',
+    description:'',repository_url:null,live_url:null,revision:0,updated_at:'2026-11-15T12:00:00Z'};
+  let writes=0;
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    if(init?.method==='POST'){writes++;return json([base],201);}
+    return json([base]);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'correct'})).error,null);
+  assert.ok((await port.listOwnerProjects()).error);
+  const input={title:'Private Demo',slug:'private-demo',summary:'',repositoryUrl:null,liveUrl:null};
+  assert.ok((await port.createPrivateProject({...input,repositoryUrl:'http://untrusted.example'})).error);
+  assert.ok((await port.createPrivateProject({...input,repositoryUrl:'https://user:secret@example.org/'})).error);
+  assert.ok((await port.createPrivateProject({...input,slug:'../../escape'})).error);
+  assert.equal(writes,0,'invalid writes must fail before network');
+  const rejected=await port.createPrivateProject(input);
+  assert.ok(rejected.error,'foreign record cannot confirm a private create');
+  assert.equal(writes,1);
+});

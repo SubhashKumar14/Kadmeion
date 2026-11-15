@@ -4,6 +4,13 @@ import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+export type OwnerProject = {
+  id: string; title: string; slug: string; summary: string; description: string;
+  repositoryUrl: string | null; liveUrl: string | null; revision: number; updatedAt: string;
+};
+export type NewPrivateProject = {
+  title: string; slug: string; summary: string; repositoryUrl: string | null; liveUrl: string | null;
+};
 export type PrivateStep = 'profile' | 'portfolio' | 'connections';
 export type PrivateStepStatus = 'pending' | 'completed' | 'skipped';
 export type OwnerWorkspaceSnapshot = {
@@ -414,7 +421,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     return { session, userId: session.user.id };
   }
 
-  private async ownerRest(path: string, bearer: string, method: 'GET' | 'POST' = 'GET', body?: Json): Promise<unknown> {
+  private async ownerRest(path: string, bearer: string, method: 'GET' | 'POST' = 'GET', body?: Json, representation = false): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetcher(this.origin + '/rest/v1/' + path, {
@@ -422,7 +429,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           apikey: this.publishableKey,
           Authorization: 'Bearer ' + bearer,
           Accept: 'application/json',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(representation ? {Prefer:'return=representation'} : {})
         },
         body: body ? JSON.stringify(body) : undefined,
         cache: 'no-store', credentials: 'omit', redirect: 'error'
@@ -430,7 +438,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     } catch { throw new Error('Private workspace service is unavailable.'); }
     if (!response.ok)
       throw new Error(response.status === 401 || response.status === 403
-        ? 'Private workspace access was denied.' : 'Private workspace request failed.');
+        ? 'Private workspace access was denied.' : response.status === 409
+        ? 'Project conflicts with an existing owner record. Choose a different slug.' : 'Private workspace request failed.');
     try { return await response.json() as unknown; }
     catch { throw new Error('Private workspace returned an invalid response.'); }
   }
@@ -508,6 +517,89 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           (result as Json).step !== step || (result as Json).status !== status)
         throw new Error('Onboarding update was not confirmed by the server.');
       return {step,status};
+    });
+  }
+
+
+  /** Every row must originate from the verified current owner, even when the
+   * PostgREST projection or a proxy is incorrectly configured. */
+  private parsePrivateProject(value:unknown,ownerId:string):OwnerProject {
+    if (!value || typeof value!=='object' || Array.isArray(value))
+      throw new Error('Invalid private project response.');
+    const row=value as Json;
+    if (row.owner_user_id!==ownerId ||
+      typeof row.id!=='string' || !/^[0-9a-f-]{36}$/i.test(row.id) ||
+      typeof row.title!=='string' || row.title.trim().length===0 || row.title.length>120 ||
+      typeof row.slug!=='string' || row.slug.length<3 || row.slug.length>64 ||
+      !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(row.slug) ||
+      typeof row.summary!=='string' || row.summary.length>360 ||
+      typeof row.description!=='string' || row.description.length>12000 ||
+      typeof row.updated_at!=='string' || !Number.isFinite(Date.parse(row.updated_at)) ||
+      typeof row.revision!=='number' || !Number.isSafeInteger(row.revision) || row.revision<0 ||
+      !(row.repository_url===null||typeof row.repository_url==='string') ||
+      !(row.live_url===null||typeof row.live_url==='string'))
+      throw new Error('Private project response failed ownership or schema validation.');
+    return {
+      id:row.id,title:row.title,slug:row.slug,summary:row.summary,
+      description:row.description,updatedAt:row.updated_at,revision:row.revision,
+      repositoryUrl:row.repository_url,liveUrl:row.live_url
+    };
+  }
+
+  /** Bounded initial owner-private library. 100 is a page size, not a total. */
+  async listOwnerProjects():Promise<AuthOutcome<OwnerProject[]>> {
+    return this.outcome(async()=>{
+      const {session,userId}=await this.ownerSession();
+      const fields='id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
+      const result=await this.ownerRest('projects?select='+fields+
+        '&owner_user_id=eq.'+encodeURIComponent(userId)+
+        '&trashed_at=is.null&order=updated_at.desc&limit=100',session.access_token);
+      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project loading.');
+      if (!Array.isArray(result)||result.length>100)throw new Error('Invalid owner project list response.');
+      const items=result.map(row=>this.parsePrivateProject(row,userId));
+      if (new Set(items.map(item=>item.id)).size!==items.length)
+        throw new Error('Duplicate private projects were rejected.');
+      return items;
+    });
+  }
+
+  /** Creates an owner-private draft, never a shared or published project. */
+  async createPrivateProject(input:NewPrivateProject):Promise<AuthOutcome<OwnerProject>> {
+    return this.outcome(async()=>{
+      if (!input || typeof input.title!=='string' ||
+        typeof input.slug!=='string' || typeof input.summary!=='string')
+        throw new Error('Invalid project data.');
+      const title=input.title.trim(),slug=input.slug.trim(),summary=input.summary.trim();
+      if (!title||title.length>120||summary.length>360||slug.length<3||slug.length>64||
+          !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+        throw new Error('Invalid project title, summary or slug.');
+      function urlOption(value:unknown):string|null {
+        if (value===null || value==='')return null;
+        if(typeof value!=='string'||value.length>2048||/\s/.test(value))
+          throw new Error('A project link must be a valid HTTPS URL.');
+        try {
+          const u=new URL(value);
+          if(u.protocol!=='https:'||!u.hostname.includes('.')||u.username||u.password||u.hash)
+            throw new Error('Invalid HTTPS link.');
+          return u.href;
+        } catch {throw new Error('A project link must be a valid HTTPS URL.');}
+      }
+      const repositoryUrl=urlOption(input.repositoryUrl),liveUrl=urlOption(input.liveUrl);
+      const {session,userId}=await this.ownerSession();
+      const fields='id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
+      const data=await this.ownerRest('projects?select='+fields,session.access_token,'POST',{
+        owner_user_id:userId,title,slug,summary,description:'',
+        repository_url:repositoryUrl,live_url:liveUrl
+      },true);
+      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
+      if(!Array.isArray(data)||data.length!==1)
+        throw new Error('The private insert was not confirmed.');
+      const created=this.parsePrivateProject(data[0],userId);
+      if(created.title!==title||created.slug!==slug||created.summary!==summary||
+        created.repositoryUrl!==repositoryUrl||created.liveUrl!==liveUrl||
+        created.revision!==0)
+        throw new Error('Saved project did not match the private request.');
+      return created;
     });
   }
 
