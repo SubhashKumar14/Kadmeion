@@ -11,6 +11,12 @@ const html='<!doctype html><html><head>'+marker+
   '</head><body><main><h1>Trusted static release</h1></main></body></html>';
 const publicHtml=html.replace(marker,'<meta name="robots" content="index,follow">');
 const sha=createHash('sha256').update(html).digest('hex');
+const releaseHeaders={
+  'Content-Type':'text/html; charset=utf-8',
+  'Cache-Control':'private, no-store',
+  'X-Robots-Tag':'index, follow',
+  'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'"
+};
 const base={portfolioId,htmlSha256:sha,releaseGeneration:7,
   publicServingEnabled:false,publicUrl:null,
   publicHandle:'release_owner',publicSlug:'release-fixture'};
@@ -45,8 +51,7 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
     assert.equal(options?.redirect,'error');
     return response??new Response(unlisted?html:publicHtml,{
       status:200,headers:{
-        'Content-Type':'text/html; charset=utf-8',
-        'Cache-Control':'private, no-store',
+        ...releaseHeaders,
         'X-Robots-Tag':unlisted?'noindex, nofollow':'index, follow'
       }
     });
@@ -88,6 +93,22 @@ test('newly activated publication must get a fresh host digest then database ack
   assert.deepEqual(f.calls.map(x=>x.op),[
     'service_prepare_unlisted_release','service_acknowledge_unlisted_release'
   ]);
+});
+test('a matching digest cannot acknowledge unsafe cache, search or script headers',async()=>{
+  for(const extra of [
+    {'CDN-Cache-Control':'public, s-maxage=60'},
+    {'Cache-Control':'no-store, max-age=30'},
+    {'X-Robots-Tag':'index, noindex'},
+    {'Content-Security-Policy':"default-src 'none'; script-src 'self'"},
+    {'Content-Security-Policy':"default-src 'none'; worker-src 'self'"},
+    {'Content-Security-Policy':''},
+    {'Location':'/other'}
+  ] as Record<string,string>[]){
+    const response=new Response(publicHtml,{headers:{...releaseHeaders,...extra}});
+    const f=fixture('AWAITING_VERIFICATION',{response});
+    assert.deepEqual(await publishConsentedUnlistedRelease(id,f.ports),{status:'DELIVERY_REVOKED'});
+    assert.equal(f.calls.at(-1)?.op,'service_recover_failed_unlisted_release');
+  }
 });
 test('unverified new host delivery is revoked, not acknowledged',async()=>{
   const bad=new Response('fail',{status:503});
@@ -131,7 +152,7 @@ test('unlisted delivery verifies private robots and refuses indexable content',a
   assert.equal(wrong.calls.length,1);
 });
 test('invalid owner-consent routes and invalid transport origin never activate',async()=>{
-  for(const prepare of [{publicHandle:'BAD'},{publicSlug:'../admin'}]){
+  for(const prepare of [{publicHandle:'BAD'},{publicHandle:'workspace'},{publicSlug:'../admin'},{publicSlug:'a'}]){
     const f=fixture('PROBE_PENDING',{prepare});
     await assert.rejects(publishConsentedUnlistedRelease(id,f.ports));
     assert.equal(f.calls.length,1);

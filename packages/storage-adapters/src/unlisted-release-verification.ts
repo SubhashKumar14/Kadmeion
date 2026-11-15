@@ -1,8 +1,10 @@
 import {createHash} from 'node:crypto';
+import {HANDLE_PATTERN,RESERVED_HANDLES} from '../../contracts/src/project.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_HTML_BYTES = 750_000;
+const PORTFOLIO_SLUG = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 type VerificationOperation = 'service_acknowledge_unlisted_release' |
   'service_recover_failed_unlisted_release';
@@ -27,12 +29,40 @@ export type DeliveryVerification =
   | {status: 'DELIVERY_REVOKED'}
   | {status: 'PRIOR_RELEASE_RESTORED'; releaseGeneration: number};
 
+function validPortfolioRoute(handle:unknown,slug:unknown):boolean {
+  return typeof handle==='string'&&HANDLE_PATTERN.test(handle)&&!RESERVED_HANDLES.has(handle)&&
+    typeof slug==='string'&&PORTFOLIO_SLUG.test(slug);
+}
+
+function safeDeliveryHeaders(headers:Headers,indexable:boolean):boolean {
+  const cacheHeaders=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control'];
+  for(const name of cacheHeaders){
+    const value=headers.get(name);
+    if(value===null&&name!=='cache-control')continue;
+    const directives=(value??'').toLowerCase().split(',').map(part=>part.trim());
+    if(!directives.includes('no-store')||directives.includes('public')||
+       directives.some(part=>/^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*"?\d*[1-9]/.test(part)))
+      return false;
+  }
+  const robots=(headers.get('x-robots-tag')??'').toLowerCase().split(',').map(part=>part.trim());
+  if(!robots.includes(indexable?'index':'noindex')||robots.includes(indexable?'noindex':'index')||
+     robots.includes('none')||robots.some(part=>part.includes(':')))
+    return false;
+  return !headers.has('location')&&(headers.get('content-security-policy')??'')
+    .toLowerCase().split(',').some(policy=>{
+      const csp=policy.split(';').map(directive=>directive.trim().split(/\s+/));
+      const defaults=csp.filter(([name])=>name==='default-src');
+      const overrides=csp.filter(([name])=>
+        ['script-src','script-src-elem','script-src-attr','child-src','worker-src'].includes(name));
+      return defaults.length===1&&[...defaults,...overrides].every(directive=>
+        directive.length===2&&directive[1]==="'none'");
+    });
+}
+
 async function digestHtml(response: Response, indexable: boolean): Promise<string | null> {
   if (response.status !== 200 || !response.body ||
       !/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '') ||
-      !/(?:^|,)\s*no-store\s*(?:,|$)/i.test(response.headers.get('cache-control') ?? '') ||
-      !(indexable ? /(?:^|,)\s*index\s*(?:,|$)/i : /(?:^|,)\s*noindex\s*(?:,|$)/i).test(
-        response.headers.get('x-robots-tag') ?? '')) {
+      !safeDeliveryHeaders(response.headers,indexable)) {
     await response.body?.cancel();
     return null;
   }
@@ -78,8 +108,10 @@ export async function verifyActivatedUnlistedRelease(
     throw new Error('Invalid trusted release verification input.');
   }
 
-  if (publicPath !== undefined && !/^\/[a-z][a-z0-9_]{2,29}\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(publicPath)) {
-    throw new Error('Invalid public portfolio path.');
+  if (publicPath !== undefined) {
+    const [root,handle,slug,...rest]=publicPath.split('/');
+    if(root!==''||rest.length!==0||!validPortfolioRoute(handle,slug))
+      throw new Error('Invalid public portfolio path.');
   }
   const route = new URL(publicPath ?? '/api/unlisted', host);
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
@@ -157,8 +189,7 @@ export async function publishConsentedUnlistedRelease(
   const {portfolioId, htmlSha256, releaseGeneration, publicHandle, publicSlug} = prepared;
   let publicPath: string | undefined;
   if (publicHandle != null || publicSlug != null) {
-    if (typeof publicHandle !== 'string' || !/^[a-z][a-z0-9_]{2,29}$/.test(publicHandle) ||
-        typeof publicSlug !== 'string' || !/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(publicSlug)) {
+    if (!validPortfolioRoute(publicHandle,publicSlug)) {
       throw new Error('Invalid public portfolio route.');
     }
     publicPath = '/' + publicHandle + '/' + publicSlug;
