@@ -48,7 +48,7 @@ async function reportBody(req) {
 }
 
 export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch} = {}) {
-  function reply(status, body, type) {
+  function reply(status, body, type, indexable = false) {
     res.statusCode = status;
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
@@ -59,7 +59,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
     res.setHeader('Content-Type', type ?? (status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8'));
-    res.setHeader('X-Robots-Tag', status === 200 ? 'index, follow' : 'noindex');
+    res.setHeader('X-Robots-Tag', status === 200 && indexable ? 'index, follow' : 'noindex, nofollow, noarchive');
     res.end(req.method === 'HEAD' ? '' : body);
   }
   const reporting = req.method === 'POST';
@@ -114,7 +114,8 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     const release = await readBoundedRpcJson(upstream);
     if (release === null) return reply(404, 'Not found');
     if (!release || typeof release !== 'object' || Array.isArray(release) ||
-        Object.keys(release).sort().join(',') !== 'html,htmlSha256')
+        Object.keys(release).sort().join(',') !== 'html,htmlSha256,indexable' ||
+        typeof release.indexable !== 'boolean')
       return reply(503, 'Temporarily unavailable');
     const html = release.html;
     if (typeof html !== 'string' || Buffer.byteLength(html) > 750000 ||
@@ -124,10 +125,12 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
         createHash('sha256').update(html).digest('hex') !== release.htmlSha256) {
       return reply(503, 'Temporarily unavailable');
     }
-    const published = html.replace(stagedRobots, publicRobots);
+    // Before the host acknowledges the exact release, allow only a noindex canary.
+    // A successful database read is not independently verified publication.
+    const published = release.indexable ? html.replace(stagedRobots, publicRobots) : html;
     res.setHeader('X-Kadmeion-Served-SHA256',
       createHash('sha256').update(published).digest('hex'));
-    return reply(200, published);
+    return reply(200, published, undefined, release.indexable);
   } catch {
     return reply(503, 'Temporarily unavailable');
   }
