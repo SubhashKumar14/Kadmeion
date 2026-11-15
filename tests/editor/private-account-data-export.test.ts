@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {
-  SupabasePrivateAccountDataExporter,verifyBoundedPrivateAccountExport
+  SupabasePrivateAccountDataExporter,verifyBoundedPrivateAccountExport,
+  recoverPortfolioSourceZipFromPartialAccountExport
 } from '../../packages/storage-adapters/src/private-account-data-export.ts';
+import {importPortfolioSourceZip} from '../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const owner='10000000-0000-4000-8000-000000000001';
 const stranger='20000000-0000-4000-8000-000000000002';
@@ -458,4 +460,75 @@ test('offline account export verification refuses modified bytes and false reten
   });
   await assert.rejects(verifyBoundedPrivateAccountExport(
     new Uint8Array(16*1024*1024+1)),{code:'VALIDATION'});
+});
+
+
+test('B09 owner can recover one exact validated authored portfolio revision as portable source ZIP',async()=>{
+  const portfolioId='60000000-0000-4000-8000-000000000006';
+  const snapshot={
+    formatVersion:1,
+    files:{
+      'kadmeion.json':'{"formatVersion":1}',
+      'pages/home.page.json':'{"sections":[]}',
+      'slots/hero/index.tsx':'export const title = "actual owner code";'
+    },
+    slots:{
+      hero:{state:'S2',componentId:'heading@1',content:{title:'My work'},
+        sourcePath:'slots/hero/index.tsx',originalSource:'pristine library source'}
+    },stashes:{}
+  };
+  const rows={...baseRows,
+    portfolios:[{id:portfolioId,owner_user_id:owner,title:'Real portfolio'}],
+    portfolio_revisions:[{portfolio_id:portfolioId,owner_user_id:owner,
+      revision:7,snapshot}]
+  };
+  const artifact=await fixture({rows}).service.export(snapshotIdForTest());
+  const result=await recoverPortfolioSourceZipFromPartialAccountExport(
+    artifact.bytes,portfolioId,7);
+  assert.deepEqual(importPortfolioSourceZip(result.zip),snapshot);
+  assert.equal(result.sha256,createHash('sha256').update(result.zip).digest('hex'));
+  assert.match(result.filename,/kadmeion-portfolio-60000000/);
+  assert.equal(result.privateMediaIncluded,false);
+  assert.equal(result.completeAccountExport,false);
+  assert.equal(result.sourceAuthenticityVerified,false);
+  assert.equal(result.deletionAllowed,false);
+  assert.deepEqual(result.zip,(await recoverPortfolioSourceZipFromPartialAccountExport(
+    artifact.bytes,portfolioId,7)).zip);
+});
+function snapshotIdForTest():string {return snapshot;}
+
+test('B09 source archive extraction fails closed for wrong owner, duplicate revision, and unsafe source paths',async()=>{
+  const portfolioId='60000000-0000-4000-8000-000000000006';
+  const valid={formatVersion:1,files:{'kadmeion.json':'{"formatVersion":1}'},
+    slots:{},stashes:{}};
+  const row={portfolio_id:portfolioId,owner_user_id:owner,
+    revision:3,snapshot:valid};
+  const rows={...baseRows,
+    portfolios:[{id:portfolioId,owner_user_id:owner}],
+    portfolio_revisions:[row]};
+  const {bytes}=await fixture({rows}).service.export(snapshot);
+  for(const [id,rev] of [
+    [portfolioId,4],['70000000-0000-4000-8000-000000000007',3]
+  ] as const){
+    await assert.rejects(
+      recoverPortfolioSourceZipFromPartialAccountExport(bytes,id,rev),
+      {code:'INTEGRITY'}
+    );
+  }
+  await assert.rejects(
+    recoverPortfolioSourceZipFromPartialAccountExport(bytes,portfolioId,-1),
+    {code:'VALIDATION'});
+  const mutate=(change:(v:any)=>void)=>{
+    const v=JSON.parse(new TextDecoder().decode(bytes));change(v);
+    return new TextEncoder().encode(JSON.stringify(v));
+  };
+  await assert.rejects(recoverPortfolioSourceZipFromPartialAccountExport(
+    mutate(v=>v.records.portfolio_revisions.push(row)),portfolioId,3),
+    {code:'INTEGRITY'});
+  await assert.rejects(recoverPortfolioSourceZipFromPartialAccountExport(
+    mutate(v=>v.records.portfolio_revisions[0].snapshot.files['../leak.tsx']='secret'),
+    portfolioId,3),{code:'INTEGRITY'});
+  await assert.rejects(recoverPortfolioSourceZipFromPartialAccountExport(
+    mutate(v=>v.records.portfolio_revisions[0].owner_user_id=stranger),
+    portfolioId,3),{code:'INTEGRITY'});
 });

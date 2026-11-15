@@ -521,3 +521,65 @@ export async function verifyBoundedPrivateAccountExport(
     deletionAllowed:false
   };
 }
+
+
+/**
+ * B09 user-controlled source recovery from an already-downloaded partial
+ * account export. Produces the existing portable editor-source ZIP for one
+ * exact portfolio and revision. This DOES NOT include private Storage media,
+ * provider histories, or proof that the JSON originated at Supabase; the user
+ * must retain the original partial account export separately for its assets.
+ * No network calls, release pointer changes or deletion authorization occur.
+ */
+export interface RecoveredPortfolioSourceArchive {
+  filename:string;
+  zip:Uint8Array;
+  sha256:string;
+  portfolioId:string;
+  revision:number;
+  status:'SOURCE_RECOVERED_FROM_PARTIAL_ACCOUNT_EXPORT';
+  sourceAuthenticityVerified:false;
+  privateMediaIncluded:false;
+  completeAccountExport:false;
+  deletionAllowed:false;
+}
+export async function recoverPortfolioSourceZipFromPartialAccountExport(
+  exportBytes:Uint8Array,portfolioId:string,revision:number
+):Promise<RecoveredPortfolioSourceArchive>{
+  requireCondition(isUuid(portfolioId)&&Number.isSafeInteger(revision)&&revision>=1,
+    'VALIDATION','A valid portfolio and positive revision are required.');
+  // This includes bounded owner-category checks, restricted audit exclusions,
+  // asset coverage and SHA-256 verification of embedded private image bytes.
+  const inspected=await verifyBoundedPrivateAccountExport(exportBytes);
+  let raw:JsonObject;
+  try{raw=JSON.parse(decoder.decode(exportBytes)) as JsonObject;}
+  catch{throw new PrivateAccountExportError('INTEGRITY','Unreadable private export.');}
+  const records=raw.records;
+  requireCondition(object(records),'INTEGRITY','Private source categories are missing.');
+  const portfolios=records.portfolios,history=records.portfolio_revisions;
+  requireCondition(Array.isArray(portfolios)&&Array.isArray(history)&&
+    portfolios.some(item=>object(item)&&item.id===portfolioId&&
+      item.owner_user_id===inspected.ownerId),
+    'INTEGRITY','Selected portfolio is not present in this owner export.');
+  const matches=history.filter(row=>object(row)&&row.portfolio_id===portfolioId&&
+    row.revision===revision&&row.owner_user_id===inspected.ownerId);
+  requireCondition(matches.length===1&&object(matches[0])&&
+    object(matches[0].snapshot),
+    'INTEGRITY','Selected source revision is missing, ambiguous or invalid.');
+  let zip:Uint8Array;
+  try{
+    const {exportPortfolioSourceZip}=await import('./portable-source-archive.ts');
+    zip=exportPortfolioSourceZip(matches[0].snapshot as
+      import('../../editor-core/src/portfolio-revision-transactions.ts').PortfolioSnapshot);
+  }catch{
+    throw new PrivateAccountExportError('INTEGRITY',
+      'Selected portfolio source is not portable under the current format.');
+  }
+  return {
+    filename:'kadmeion-portfolio-'+portfolioId+'-revision-'+revision+'.zip',
+    zip,sha256:await sha256(zip),portfolioId,revision,
+    status:'SOURCE_RECOVERED_FROM_PARTIAL_ACCOUNT_EXPORT',
+    sourceAuthenticityVerified:false,privateMediaIncluded:false,
+    completeAccountExport:false,deletionAllowed:false
+  };
+}
