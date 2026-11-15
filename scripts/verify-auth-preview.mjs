@@ -19,11 +19,14 @@ assert.ok(config.publishableKey.startsWith('sb_publishable_') || config.publisha
 assert.equal(typeof config.emailDeliveryVerified, 'boolean');
 assert.equal(typeof config.googleOAuthEnabled, 'boolean');
 const vercel = JSON.parse(await readFile(resolve('vercel.json'), 'utf8'));
-assert.equal(vercel.outputDirectory, 'apps/auth-web/vercel-dist');
+// The legacy B1 auth proof remains tested locally; Vercel now serves the guarded React screen frontend.
+assert.equal(vercel.outputDirectory, 'apps/frontend/dist');
+assert.match(vercel.buildCommand, /npm ci --prefix apps\/frontend .*&& npm run build --prefix apps\/frontend/);
 for (const route of ['/signin', '/signup', '/login', '/register', '/auth/callback', '/reset-password', '/workspace'])
   assert.ok(vercel.rewrites.some(row => row.source === route && row.destination === '/index.html'));
 assert.ok(vercel.headers[0].headers.some(row => row.key === 'Content-Security-Policy'));
-console.log('Vercel auth preview bundle: 10 assertions passed.');
+assert.ok(vercel.headers[0].headers.some(row => row.key === 'X-Robots-Tag' && row.value.includes('noindex')));
+console.log('Isolated B1 auth proof and React Vercel routing assertions passed.');
 
 const audit=await auditPublicBundle(target);
 assert.equal(audit.status,'PUBLIC_ARTIFACT_SCANNED');
