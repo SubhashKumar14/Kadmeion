@@ -84,7 +84,7 @@ const RESERVED_PUBLIC_HANDLES = new Set([
 function isPublicPortfolioPath(value:unknown):value is string {
   if(typeof value!=='string'||!PUBLIC_PATH.test(value))return false;
   const [,handle,slug]=value.split('/');
-  return !RESERVED_PUBLIC_HANDLES.has(handle)&&slug.length>=3&&slug.length<=64;
+  return !!handle && !!slug && !RESERVED_PUBLIC_HANDLES.has(handle)&&slug.length>=3&&slug.length<=64;
 }
 const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION','OPERATOR_HOLD_LIFT'] as const;
 const isRecord = (value: unknown): value is Record<string,unknown> =>

@@ -684,3 +684,9 @@ Root cause of missing frontend CI on shared-source corrections: `.github/workflo
 **Evidence boundary:** a source commit is NOT a passed CI or approved 48–50 pixel match. Full audit event timeline and global user search are NOT exposed by existing restricted data contracts. Operator happy-path full UI E2E needs isolated operator fixture; negative browser test runs in current CI. Public host/reviewer URL, direct asset/CDN revocation, owner erasure, Brevo/Google providers and 52-screen visual acceptance remain gated. The planned P2 growth/analytics/connections screens #35–40 are next; missing code features must not be marked complete.
 
 **Next exact action:** Check new SHA frontend/root CI and correct compilation/Playwright failures. Follow with P2 screens using existing private goals/platform links contracts, and visually compare approved 48–50 LIGHT sources once authenticated operator fixture captures exist. Update Notion and GitHub handoff and verify readback before reporting.
+
+---
+
+### F5 OPS-01–03 compile correction — 15 Nov 2026
+
+[Frontend run 43741447170](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43741447170) FAILED during TypeScript 7 `noUncheckedIndexedAccess` due to pre-existing `private-moderation-service.ts:87` using destructured `handle` and `slug` without an explicit guard. Fixed the parser to reject absent segments before reserved-handle and length checks. The strict public-route check remains fail-closed, unchanged for valid paths. The new correction requires its own frontend and root CI. Draft PR and existing production gates remain untouched.
