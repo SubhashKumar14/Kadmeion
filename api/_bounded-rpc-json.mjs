@@ -121,15 +121,19 @@ export async function readFrozenPng(response, expectedSha) {
 
 /** The private HTML itself must carry robots metadata, not just a header or
  * an incidental mention of "noindex" in visible text. */
-export function hasPrivateNoindexMeta(html) {
+export function hasPrivateNoindexMeta(html, expectedTag) {
   if (typeof html !== 'string') return false;
-  const head=/<head(?:\s[^>]*)?>([\s\S]*?)<\/head>/i.exec(html);
+  const head = /^<!doctype html>\s*<html(?:\s[^>]*)?>\s*<head(?:\s[^>]*)?>([\s\S]*?)<\/head>/i.exec(html);
   if (!head || /<!--|-->/.test(head[1])) return false;
-  // Duplicate or crawler-specific directives can override noindex, including
-  // an unquoted `name=robots`. The approved renderer emits exactly one.
-  const robotName=/\bname\s*=\s*(?:"(?:robots|googlebot|bingbot)"|'(?:robots|googlebot|bingbot)'|(?:robots|googlebot|bingbot)(?=[\s/>]))/i;
-  const tags=[...head[1].matchAll(/<meta\b[^>]*>/gi)].map(item=>item[0]);
-  const robotTags=tags.filter(tag=>robotName.test(tag));
-  return robotTags.length===1 &&
-    /^<meta\s+name="robots"\s+content="noindex(?:,nofollow(?:,noarchive)?)?"\s*\/?>$/i.test(robotTags[0]);
+  // Generated releases use only metadata, a title, and inline styles in the
+  // head. Title and style text cannot contribute a real robots directive.
+  const metadata = head[1].replace(/<(title|style)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/gi, '');
+  const metaTag = /<meta\s[^>]*>/gi;
+  if (metadata.replace(metaTag, '').trim()) return false;
+  const robotName = /\bname\s*=\s*(?:"(?:robots|googlebot|bingbot)"|'(?:robots|googlebot|bingbot)'|(?:robots|googlebot|bingbot)(?=[\s/>]))/i;
+  const robotTags = (metadata.match(metaTag) ?? []).filter(tag => robotName.test(tag));
+  if (robotTags.length !== 1) return false;
+  return expectedTag === undefined
+    ? /^<meta\s+name="robots"\s+content="noindex(?:,nofollow(?:,noarchive)?)?"\s*\/?>$/i.test(robotTags[0])
+    : robotTags[0] === expectedTag;
 }

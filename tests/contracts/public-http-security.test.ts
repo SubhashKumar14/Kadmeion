@@ -80,6 +80,30 @@ test('unacknowledged public canary stays noindex until the same trusted release 
     assert.equal(invalid.res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   }
 });
+test('GET and HEAD reject a missing or conflicting robots directive in the release head', async () => {
+  const invalidHtml = [
+    html.replace(marker, '').replace('</body>', marker + '</body>'),
+    html.replace(marker, '<template>' + marker + '</template>'),
+    html.replace(marker, '<title>' + marker + '</title>'),
+    html.replace(marker, marker + '<meta name="googlebot" content="index,follow">'),
+    html.replace(marker, '<meta name="robots" content="NOINDEX">')
+      .replace('</body>', marker + '</body>')
+  ];
+  for (const invalid of invalidHtml) {
+    for (const method of ['GET', 'HEAD']) {
+      for (const indexable of [true, false]) {
+        const {res} = await invoke(handlePublicPortfolio, {
+          method, data: {...payload(invalid), indexable}
+        });
+        assert.equal(res.statusCode, 503, invalid);
+        assert.equal(res.body, method === 'HEAD' ? '' : 'Temporarily unavailable');
+        assert.equal(res.headers.get('x-robots-tag'), 'noindex, nofollow, noarchive');
+        assert.equal(res.headers.get('cache-control'), 'private, no-store');
+        assert.equal(res.headers.has('x-kadmeion-served-sha256'), false);
+      }
+    }
+  }
+});
 test('public HEAD produces no content and still checks publication',async()=>{
   const {res,calls}=await invoke(handlePublicPortfolio,{method:'HEAD'});
   assert.equal(res.statusCode,200);assert.equal(res.body,'');assert.equal(calls.length,1);

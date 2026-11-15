@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -133,7 +133,8 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       return reply(503, 'Temporarily unavailable');
     const html = release.html;
     if (typeof html !== 'string' || Buffer.byteLength(html) > 750000 ||
-        !html.startsWith('<!doctype html>') || html.split(stagedRobots).length !== 2) {
+        !html.startsWith('<!doctype html>') || !hasPrivateNoindexMeta(html, stagedRobots) ||
+        html.split(stagedRobots).length !== 2) {
       return reply(503, 'Temporarily unavailable');
     }
     // Before the host acknowledges the exact release, allow only a noindex canary.
