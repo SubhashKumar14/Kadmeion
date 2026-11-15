@@ -11,7 +11,7 @@ import './auth.css';
 type Mode = 'signin' | 'signup' | 'forgot-password' | 'set-password' | 'outcome' | 'callback' | 'workspace';
 type Outcome = 'email-requested' | 'registered' | 'password-updated' | 'session-verified';
 type AuthState = { auth: SupabaseBrowserAuthPort; service: AuthService; allowGoogle: boolean; emailAvailable: boolean };
-const authRoutes = new Set(['/signin','/signup','/forgot-password','/reset-password','/set-password','/auth/callback','/workspace','/auth/outcome']);
+const authRoutes = new Set(['/signin','/signup','/forgot-password','/reset-password','/set-password','/auth/callback','/workspace','/auth/outcome','/auth/recovery-status']);
 export function isAuthRoute(path: string): boolean { return authRoutes.has(path); }
 function initialMode(path: string): Mode {
   if (path==='/signup') return 'signup';
@@ -19,7 +19,7 @@ function initialMode(path: string): Mode {
   if (path==='/set-password'||path==='/reset-password') return 'set-password';
   if (path==='/auth/callback') return 'callback';
   if (path==='/workspace') return 'workspace';
-  if (path==='/auth/outcome') return 'outcome';
+  if (path==='/auth/outcome'||path==='/auth/recovery-status') return 'outcome';
   return 'signin';
 }
 function createAuth(): { value: AuthState | null; error: string } {
@@ -50,18 +50,35 @@ function readError(error:unknown): string {
   // Provider errors are normalized by AuthService/port and must not expose tokens.
   return error instanceof Error ? error.message : 'Authentication could not be completed.';
 }
+const authStories: Partial<Record<Mode, readonly [string, string, string]>> = {
+  signup: ['A place to build,', 'showcase, and grow.', 'Create your Kadmeion account to build portfolios, organize projects, and grow your developer identity on your terms.'],
+  'forgot-password': ['A clear way back', 'to your work.', 'Your projects and portfolio drafts stay connected to your account.'],
+  'set-password': ['Keep your identity', 'under your control.', 'Your account protects work-in-progress portfolios, private projects, and your decisions about what goes public.'],
+  outcome: ['Your work stays', 'yours.', 'Your private projects and portfolio drafts stay protected during account recovery.']
+};
+
 function AuthBrand({ mode }: { mode: Mode }) {
+  const story = authStories[mode];
   return <aside className="auth-brand-panel" aria-label="Kadmeion identity">
     <div className="auth-brand-rings" aria-hidden="true"><span/><span/><span/></div>
-    <div className="auth-brand-content">
+    {story ? <div className="auth-brand-story">
+      <div className="auth-story-signature">
+        <BrandMark label="Kadmeion"/>
+        <span className="auth-brand-role">DEVELOPER IDENTITY PLATFORM</span>
+      </div>
+      <div className="auth-story-message">
+        <p className="auth-story-tagline">BUILD · SHOWCASE · EVOLVE</p>
+        <p className="auth-story-title">{story[0]} <em>{story[1]}</em></p>
+        <p className="auth-story-copy">{story[2]}</p>
+      </div>
+    </div> : <div className="auth-brand-content">
       <div className="auth-brand-signature">
         <BrandMark stacked label="Kadmeion"/>
         <span className="auth-brand-role">DEVELOPER IDENTITY PLATFORM</span>
       </div>
       <span className="auth-brand-rule" aria-hidden="true"/>
       <p className="auth-brand-tagline"><em>Build</em> · <em>Showcase</em> · <em>Evolve</em></p>
-      <p className="auth-brand-caption">{mode==='signup'?'Begin with your own work.': 'One place for projects, portfolios and the work ahead.'}</p>
-    </div>
+    </div>}
   </aside>;
 }
 function AuthInput({id,label,children}:{id:string;label:string;children:ReactNode}){
@@ -189,13 +206,12 @@ export function AuthApp(){
   // Authentication callback must run at most once: auth instance fixed for mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
-  const isSignup=mode==='signup';
   return <>
     <a className="skip-link" href="#auth-main">Skip to account form</a>
-    <main className="auth-page" id="auth-main" data-mode={isSignup?'signup':'signin'}>
+    <main className="auth-page" id="auth-main" data-mode={mode} data-panel={authStories[mode] ? 'left' : 'right'}>
       <section className="auth-form-panel" aria-label="Account access">
         <div className="auth-header">
-          <a href="/" className="auth-home" aria-label="Kadmeion home">KADMEION</a>
+          <a href="/" className="auth-home" aria-label="Kadmeion home"><BrandMark/></a>
           <button type="button" onClick={toggleTheme} className="theme-button"
             aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'} aria-pressed={theme==='dark'}>
             <Icon name={theme==='light'?'moon':'sun'} size={16}/><span>{theme==='light'?'Dark':'Light'}</span>
@@ -297,7 +313,7 @@ export function AuthApp(){
           {mode==='outcome' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Account update</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>
               {error?'Action not completed':outcome==='password-updated'?'Password updated':
-                outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Request submitted':'Session verified'}
+                outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Request submitted':outcome==='session-verified'?'Session verified':'Account recovery status'}
             </h1>
             <p className="auth-description" role={error?'alert':undefined}>{notice||error||'Check your account details before continuing.'}</p>
             {identity&&<p className="auth-identity">Verified account email: {identity}</p>}

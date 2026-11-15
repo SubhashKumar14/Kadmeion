@@ -99,6 +99,14 @@ test('OAuth and recovery callbacks scrub tokens and fail closed when backend is 
   await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
 });
 
+test('direct recovery status never implies a verified session', async ({ page }) => {
+  await page.goto('/auth/recovery-status');
+  await expect(page.getByRole('heading', { name: 'Account recovery status' })).toBeVisible();
+  await expect(page.getByText('Session verified', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Open private workspace' })).toHaveCount(0);
+  await expect(page.locator('.auth-page')).toHaveAttribute('data-panel', 'left');
+});
+
 test('auth recovery and registration remain disabled until actual sender proof', async ({ page }) => {
   await page.goto('/signin');
   await page.getByRole('link',{name:/Forgot password/}).click();
