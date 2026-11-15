@@ -206,12 +206,17 @@ export function AuthApp(){
   // Authentication callback must run at most once: auth instance fixed for mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
+  const storyPanel = !!authStories[mode];
   return <>
     <a className="skip-link" href="#auth-main">Skip to account form</a>
-    <main className="auth-page" id="auth-main" data-mode={mode} data-panel={authStories[mode] ? 'left' : 'right'}>
+    <main className="auth-page" id="auth-main" data-mode={mode} data-panel={storyPanel ? 'left' : 'right'}>
       <section className="auth-form-panel" aria-label="Account access">
         <div className="auth-header">
-          <a href="/" className="auth-home" aria-label="Kadmeion home"><BrandMark/></a>
+          {storyPanel ? <a href="/signin" className="auth-home" onClick={event => {
+            event.preventDefault();
+            if (mode === 'signup') swapMode('signin');
+            else setAuthMode('signin', '/signin');
+          }}>Back to sign in</a> : <a href="/" className="auth-home" aria-label="Kadmeion home"><BrandMark/></a>}
           <button type="button" onClick={toggleTheme} className="theme-button"
             aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'} aria-pressed={theme==='dark'}>
             <Icon name={theme==='light'?'moon':'sun'} size={16}/><span>{theme==='light'?'Dark':'Light'}</span>

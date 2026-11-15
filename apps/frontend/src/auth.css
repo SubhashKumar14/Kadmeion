@@ -1,16 +1,21 @@
 /* Source-informed AUTH-01..AUTH-06 LIGHT references, runtime dark tokens inherited
    from theme. */
 .auth-page{width:min(1452px,calc(100% - 70px));min-height:calc(100dvh - 74px);margin:36px auto;position:relative;
-  display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:22px;
-  box-shadow:0 17px 60px #10263832;overflow:hidden;background:var(--panel);isolation:isolate}
+  display:grid;grid-template-columns:50% 50%;border:1px solid var(--line);border-radius:22px;
+  box-shadow:0 17px 60px #10263832;overflow:hidden;background:var(--panel);isolation:isolate;
+  transition:grid-template-columns 300ms cubic-bezier(.22,.75,.22,1)}
 .auth-form-panel,.auth-brand-panel{min-width:0;grid-row:1;min-height:850px;transition:transform 300ms cubic-bezier(.22,.75,.22,1)}
 .auth-form-panel{grid-column:1;display:flex;flex-direction:column;background:var(--panel);position:relative;z-index:2}
 .auth-brand-panel{grid-column:2;position:relative;display:flex;align-items:center;justify-content:center;background:#10283b;
   color:#f5f7f7;overflow:hidden}
-.auth-page[data-panel="left"] .auth-form-panel{transform:translateX(100%)}
-.auth-page[data-panel="left"] .auth-brand-panel{transform:translateX(-100%)}
+@media(min-width:1001px){
+  .auth-page[data-panel="left"]{grid-template-columns:58% 42%}
+  /* The tracks retain their DOM order while the two panels reverse. */
+  .auth-page[data-panel="left"] .auth-form-panel{transform:translateX(calc(100% * 42 / 58))}
+  .auth-page[data-panel="left"] .auth-brand-panel{transform:translateX(calc(-100% * 58 / 42))}
+}
 .auth-header{display:flex;justify-content:space-between;align-items:center;padding:29px 40px 8px}
-.auth-home{display:inline-flex;align-items:center;min-height:40px}
+.auth-home{display:inline-flex;align-items:center;min-height:40px;font-size:12px;font-weight:650}
 .auth-header .theme-button{min-height:38px}
 .auth-form-content{flex:1;display:flex;flex-direction:column;justify-content:center;padding:25px clamp(30px,6.2vw,99px) 32px}
 .auth-form-content section{animation:auth-reveal 250ms ease both}
@@ -52,6 +57,7 @@
 .auth-advisory{margin-top:29px;padding:15px 18px;border-radius:10px;border:1px solid var(--line);background:var(--surface-soft);
   color:var(--body);font-size:12px;line-height:1.5}
 .auth-field-hint{font-size:12px;line-height:1.45;color:var(--body);margin:-12px 0 2px}
+.auth-fields+.auth-field-hint{margin:10px 0 4px}
 .auth-error,.auth-notice{padding:13px 16px;margin-bottom:16px;border-radius:10px;font-size:13px;line-height:1.5}
 .auth-error{background:color-mix(in srgb,#ab3440 14%,var(--panel));color:var(--ink);border:1px solid #a54459}
 .auth-notice{background:var(--surface-soft);color:var(--ink);border:1px solid var(--line-dark)}
@@ -75,7 +81,7 @@
 .auth-story-signature .auth-brand-role{padding-inline-start:53px;font-size:8px;color:#c9d6dc}
 .auth-story-message{margin-block-start:clamp(55px,14dvh,145px);max-width:400px}
 .auth-story-tagline{color:#f2af87;font-size:10px;letter-spacing:.18em;font-weight:700}
-.auth-story-title{font-family:Georgia,serif;font-size:clamp(32px,4vw,56px);line-height:1.08;margin:16px 0}
+.auth-story-title{font-family:Georgia,serif;font-size:clamp(32px,3.3vw,49px);line-height:1.08;margin:16px 0}
 .auth-story-title em{color:#f2af87}
 .auth-story-copy{color:#cbdae3;font-size:14px;line-height:1.65;max-width:32ch}
 .auth-brand-rings{position:absolute;inset:0;background-image:linear-gradient(90deg,#c5d8f11a 1px,transparent 1px);
@@ -116,7 +122,7 @@
   .auth-advisory{margin-top:20px}
   .auth-footer{padding-inline:22px}
 }
-@media(prefers-reduced-motion:reduce){.auth-form-panel,.auth-brand-panel{transition:none!important}
+@media(prefers-reduced-motion:reduce){.auth-page,.auth-form-panel,.auth-brand-panel{transition:none!important}
   .auth-form-content section{animation:none!important}}
 
 /* Registration has more fields than sign-in. Keep the delivery warning below
@@ -127,7 +133,6 @@
 .auth-page[data-mode="signup"] .auth-fields{gap:11px}
 .auth-page[data-mode="signup"] .auth-field{gap:6px}
 .auth-page[data-mode="signup"] .auth-field input{height:46px}
-.auth-page[data-mode="signup"] .auth-fields+.auth-field-hint{margin:10px 0 4px}
 .auth-page[data-mode="signup"] .auth-switch{margin-top:14px}
 @media(max-width:520px){
   .auth-page[data-mode="signup"] .auth-form-content{padding-top:25px}

@@ -111,7 +111,13 @@ test('auth recovery and registration remain disabled until actual sender proof',
   await page.goto('/signin');
   await page.getByRole('link',{name:/Forgot password/}).click();
   await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
-  await expect(page.getByRole('button',{name:/Request recovery link/})).toBeDisabled();
+  const recoveryButton = page.getByRole('button',{name:/Request recovery link/});
+  await expect(recoveryButton).toBeDisabled();
+  const recoveryBounds = await recoveryButton.boundingBox();
+  const recoveryNotice = await page.getByText(/Email recovery is not available/).boundingBox();
+  expect(recoveryBounds).not.toBeNull();
+  expect(recoveryNotice).not.toBeNull();
+  expect(recoveryNotice!.y).toBeGreaterThanOrEqual(recoveryBounds!.y + recoveryBounds!.height);
   await page.goto('/signup');
   await expect(page.getByRole('button',{name:/Create account/})).toBeDisabled();
   await expect(page.getByText(/until sender delivery is verified/)).toBeVisible();

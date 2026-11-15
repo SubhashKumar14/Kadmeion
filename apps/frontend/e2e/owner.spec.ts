@@ -25,8 +25,29 @@ async function signIn(page: Page, user: {email: string; password: string}) {
   await page.goto('/signin');
   await page.getByLabel('Email address').fill(user.email);
   await page.locator('#signin-password').fill(user.password);
-  await page.getByRole('button', {name: 'Sign in', exact: true}).click();
-  await expect(page.getByRole('heading', {name: 'Session verified'})).toBeVisible();
+  const requestResults: string[] = [];
+  function onResponse(response: import('@playwright/test').Response) {
+    const url = new URL(response.url());
+    if (url.origin === origin) requestResults.push(url.pathname + ' HTTP ' + response.status());
+  }
+  function onRequestFailed(request: import('@playwright/test').Request) {
+    const url = new URL(request.url());
+    if (url.origin === origin) requestResults.push(url.pathname + ' failed: ' + request.failure()?.errorText);
+  }
+  page.on('response', onResponse);
+  page.on('requestfailed', onRequestFailed);
+  try {
+    await page.getByRole('button', {name: 'Sign in', exact: true}).click();
+    await expect(page.getByRole('heading', {name: 'Session verified'})).toBeVisible();
+  } catch {
+    const mode = await page.locator('.auth-page').getAttribute('data-mode').catch(() => 'unavailable');
+    const hasAlert = await page.getByRole('alert').count() > 0;
+    throw new Error('Local browser sign-in did not complete. Mode=' + mode +
+      ', alert=' + hasAlert + ', requests=' + requestResults.join(', '));
+  } finally {
+    page.off('response', onResponse);
+    page.off('requestfailed', onRequestFailed);
+  }
 }
 
 test('real owner onboarding and project revision are private across browser sessions', async ({page, browser}, testInfo) => {
