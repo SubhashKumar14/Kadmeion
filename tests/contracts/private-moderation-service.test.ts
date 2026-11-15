@@ -240,3 +240,80 @@ test('owner moderation events accept reasoned hold release but no arbitrary even
   await assert.rejects(client(async()=>ok([{...data,event_type:'PUBLISH'}]))
     .listOwnerEvents(),{code:'INVALID_ACK'});
 });
+
+test('private operator abuse queue validates source records and never leaks arbitrary properties',async()=>{
+  const report={id:operationId,target_path:'/release_owner/release-fixture',
+    reason_code:'SECURITY',evidence:summary,created_at:time};
+  const service=client(async(url,init)=>{
+    assert.equal(String(url),origin+'/rest/v1/rpc/operator_list_portfolio_abuse_reports');
+    assert.equal(init?.method,'POST');
+    assert.equal(init?.credentials,'omit');
+    assert.equal(init?.cache,'no-store');
+    assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer signed-in-jwt');
+    assert.deepEqual(JSON.parse(init?.body as string),{p_after:null,p_limit:25});
+    return ok([report]);
+  });
+  assert.deepEqual(await service.listAbuseReports(),[report]);
+  const withCursor=client(async(url,init)=>{
+    assert.deepEqual(JSON.parse(init?.body as string),{p_after:caseId,p_limit:1});
+    return ok([]);
+  });
+  assert.deepEqual(await withCursor.listAbuseReports(caseId,1),[]);
+  const faulty=[
+    [{...report,owner_email:'private@testing.invalid'}],
+    [{...report,id:'not-a-uuid'}],
+    [{...report,evidence:'too short'}],
+    [{...report,target_path:'/api/unapproved'}],
+    [report,report]
+  ];
+  for(const entries of faulty)
+    await assert.rejects(client(async()=>ok(entries)).listAbuseReports(),
+      {code:'INVALID_ACK'});
+});
+
+test('operator abuse review requires an audited decision with a scoped case receipt',async()=>{
+  const reviewed=client(async(url,init)=>{
+    assert.equal(String(url),origin+'/rest/v1/rpc/operator_review_portfolio_abuse_report');
+    assert.deepEqual(JSON.parse(init?.body as string),{
+      p_report_id:operationId,p_decision:'CASE_OPENED',p_rationale:summary
+    });
+    return ok({reportId:operationId,status:'CASE_OPENED',caseId});
+  });
+  assert.deepEqual(await reviewed.reviewAbuseReport(operationId,'CASE_OPENED',summary),{
+    reportId:operationId,status:'CASE_OPENED',caseId
+  });
+  const dismissed=client(async()=>ok({
+    reportId:operationId,status:'DISMISSED',caseId:null
+  }));
+  assert.deepEqual(await dismissed.reviewAbuseReport(operationId,'DISMISSED',summary),{
+    reportId:operationId,status:'DISMISSED',caseId:null
+  });
+  for(const raw of [
+    {reportId:operationId,status:'CASE_OPENED',caseId:null},
+    {reportId:operationId,status:'CASE_OPENED',caseId:ownerId,publicEnforced:true},
+    {reportId:ownerId,status:'CASE_OPENED',caseId},
+    {reportId:operationId,status:'DISMISSED',caseId}
+  ]){
+    const mode=raw.status as 'CASE_OPENED'|'DISMISSED';
+    await assert.rejects(client(async()=>ok(raw)).reviewAbuseReport(
+      operationId,mode,summary),{code:'INVALID_ACK'});
+  }
+});
+
+test('abuse report operations reject invalid input and unsigned requests before network',async()=>{
+  let calls=0;
+  const noCalls=client(async()=>{calls++;throw Error('not reached');});
+  await assert.rejects(noCalls.listAbuseReports('not-uuid'),{code:'VALIDATION'});
+  await assert.rejects(noCalls.listAbuseReports(null,51),{code:'VALIDATION'});
+  await assert.rejects(noCalls.reviewAbuseReport('invalid','CASE_OPENED',summary),{code:'VALIDATION'});
+  await assert.rejects(noCalls.reviewAbuseReport(operationId,'APPROVED' as 'CASE_OPENED',summary),
+    {code:'VALIDATION'});
+  await assert.rejects(noCalls.reviewAbuseReport(operationId,'DISMISSED','too short'),
+    {code:'VALIDATION'});
+  assert.equal(calls,0);
+  await assert.rejects(client(async()=>{throw Error('not reached');},null)
+    .listAbuseReports(),{code:'AUTH_EXPIRED'});
+  await assert.rejects(client(async()=>Response.json(
+    {message:'ABUSE_REPORT_ALREADY_REVIEWED'},{status:409}))
+    .reviewAbuseReport(operationId,'DISMISSED',summary),{code:'CONFLICT'});
+});
