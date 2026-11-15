@@ -1,5 +1,12 @@
 # Kadmeion — Current Backend Implementation State
 
+## B08 frozen image slots and private PostgreSQL persistence
+
+- GitHub PR #1 continues on `feat/b0-backend-foundation`. The B07 hosted baseline is 47 applied migration versions and three deployed Edge Functions. Migration `20261115130001_private_frozen_media_candidates.sql` is a forward-only source change that has not been applied to the hosted project.
+- The private PNG renderer binds image slots and accessible text alternatives to the attested revision, re-encodes and deduplicates the verified bytes, and preserves section layout in the static ZIP. The trusted SQL writer rebuilds from frozen slots and stores exact HTML and PNG bytes in one write-once, current-generation transaction. Each portfolio can retain up to five candidates, and candidate records cascade with their release request.
+- The host withdrawal verifier checks the exact currently served media when a trusted manifest supplies the PNG paths, then checks canonical and every scoped direct path for GET/HEAD denial and cache-safety. A negative-only path does not count as previously served media.
+- This private storage layer does not activate public routes, publish custom JavaScript, make historical objects directly public, or establish hosted release and reviewer revocation. A media-aware host adapter, provider acceptance and end-to-end publishing/rollback/withdrawal proof remain required.
+
 ## B07 hosted foundation rollout — 15 November 2026
 
 **B07 HOSTED FOUNDATION DEPLOYMENT: COMPLETE.** All 47 migrations, 3 Edge functions and live no-credential deny-by-default smoke verified; downstream production acceptance remains independent.

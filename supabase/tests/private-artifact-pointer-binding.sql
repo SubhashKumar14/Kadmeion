@@ -293,5 +293,57 @@ select ok(has_function_privilege('service_role',
 select ok(not has_function_privilege('authenticated',
   'public.service_acknowledge_unlisted_release(uuid,uuid,text)','EXECUTE'),
   'owners cannot acknowledge external verification');
+-- Frozen media stays isolated from the existing text-only publication and reviewer routes.
+select ok((select relrowsecurity from pg_class
+  where oid='kadmeion_private.frozen_media_candidates'::regclass),
+  'frozen media registry has RLS');
+select ok(not has_table_privilege('service_role','kadmeion_private.frozen_media_candidates','INSERT'),
+  'service role must use the checks inside the media store function');
+select ok(not has_function_privilege('authenticated',
+  'kadmeion_private.store_frozen_media_candidate(uuid,bigint,text,bytea[])','EXECUTE'),
+  'authenticated owner cannot submit media candidate bytes directly');
+select ok(not has_function_privilege('anon',
+  'kadmeion_private.store_frozen_media_candidate(uuid,bigint,text,bytea[])','EXECUTE'),
+  'anonymous users cannot submit media candidate bytes');
+select set_config('kd.media.png','89504e470d0a1a0a',true);
+select set_config('kd.media.manifest',jsonb_build_object(
+  'kind','kadmeion-private-media-artifact-candidate','formatVersion',1,
+  'source',current_setting('kd.bind.manifest')::jsonb->'source',
+  'files',(current_setting('kd.bind.manifest')::jsonb->'files')||jsonb_build_array(jsonb_build_object(
+    'path','assets/'||encode(sha256(decode(current_setting('kd.media.png'),'hex')),'hex')||'.png',
+    'byteLength',octet_length(decode(current_setting('kd.media.png'),'hex')),
+    'sha256',encode(sha256(decode(current_setting('kd.media.png'),'hex')),'hex'))),
+  'media',jsonb_build_array(jsonb_build_object(
+    'path','assets/'||encode(sha256(decode(current_setting('kd.media.png'),'hex')),'hex')||'.png')),
+  'deployable',false,'publicUrl',null)::text,true);
+update public.private_release_visibility_pointers
+  set status='PREPARED_PRIVATE',generation=3,
+    candidate_request_id='30000000-0000-4000-8000-0000000000c1',
+    candidate_manifest_sha256=encode(sha256(convert_to(current_setting('kd.media.manifest'),'UTF8')),'hex')
+  where portfolio_id='10000000-0000-4000-8000-0000000000c1';
+set local role service_role;
+select is(kadmeion_private.store_frozen_media_candidate(
+  '30000000-0000-4000-8000-0000000000c1',3,current_setting('kd.media.manifest'),
+  array[convert_to(current_setting('kd.bind.html'),'UTF8'),decode(current_setting('kd.media.png'),'hex')]
+)->>'alreadyStored','false','exact private media and HTML bytes are stored in one transaction');
+select is(kadmeion_private.store_frozen_media_candidate(
+  '30000000-0000-4000-8000-0000000000c1',3,current_setting('kd.media.manifest'),
+  array[convert_to(current_setting('kd.bind.html'),'UTF8'),decode(current_setting('kd.media.png'),'hex')]
+)->>'alreadyStored','true','retry does not create a second candidate');
+select throws_ok($query$
+  select kadmeion_private.store_frozen_media_candidate(
+    '30000000-0000-4000-8000-0000000000c1',3,current_setting('kd.media.manifest'),
+    array[convert_to('tampered','UTF8'),decode(current_setting('kd.media.png'),'hex')])
+$query$,'22023','FROZEN_MEDIA_MANIFEST_INVALID','tampered HTML is rejected against the pinned file manifest');
+select throws_ok($query$
+  select kadmeion_private.store_frozen_media_candidate(
+    '30000000-0000-4000-8000-0000000000c1',2,current_setting('kd.media.manifest'),
+    array[convert_to(current_setting('kd.bind.html'),'UTF8'),decode(current_setting('kd.media.png'),'hex')])
+$query$,'40001','FROZEN_MEDIA_POINTER_CONFLICT','stale generation cannot write');
+select ok(public.service_read_unlisted_release('10000000-0000-4000-8000-0000000000c1') is null,
+  'private media persistence leaves existing public release unavailable');
+reset role;
+select is((select count(*) from kadmeion_private.frozen_media_candidates),1::bigint,
+  'the candidate, including all of its files, is one immutable row');
 select * from finish();
 rollback;

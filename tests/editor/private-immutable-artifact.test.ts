@@ -5,6 +5,7 @@ import {
   createPrivateImmutableArtifact,verifyPrivateImmutableArtifact
 } from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 import type {SafePreviewInput} from '../../packages/editor-core/src/publish-preflight.ts';
+import {storeAttestedFrozenMediaCandidate} from '../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts';
 import {SupabasePrivateFrozenRevisionLoader} from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {createPrivateImmutableMediaCandidate,createPrivateImmutableMediaCandidateFromFrozenSlots,verifyPrivateImmutableMediaCandidate,exportPrivateStandaloneMediaPreview} from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 
@@ -261,6 +262,22 @@ test('B08 joins verified frozen HTML to sanitized, relative content-addressed PN
   assert.equal((await exportPrivateStandaloneMediaPreview(pinnedSlots,undefined,reader)).htmlSha256,
     slotted.manifest.files[0].sha256);
   await assert.rejects(createPrivateImmutableArtifact(pinnedSlots),{code:'VALIDATION'});
+
+  const receipt={status:'STORED_PRIVATE',manifestSha256:slotted.manifestSha256,
+    generation:11,alreadyStored:false,publicServingEnabled:false};
+  const stageRequest={requestId,expectedGeneration:11,input:pinnedSlots};
+  assert.deepEqual(await storeAttestedFrozenMediaCandidate({
+    async query(sql,params){
+      assert.match(sql,/kadmeion_private\.store_frozen_media_candidate/);
+      assert.deepEqual(params,[requestId,11,JSON.stringify(slotted.manifest),
+        slotted.files.map(file=>Buffer.from(file.bytes))]);
+      return {rows:[{receipt}]};
+    }
+  },stageRequest,reader),receipt);
+  await assert.rejects(storeAttestedFrozenMediaCandidate({
+    async query(){return {rows:[{receipt:{...receipt,publicServingEnabled:true}}]};}
+  },stageRequest,reader),{code:'INVALID_SQL_RECEIPT'});
+
 
   for(const invalid of [
     {asset_id:assetId,source_sha256:sourceSha},

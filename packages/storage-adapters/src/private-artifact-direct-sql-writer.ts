@@ -13,6 +13,9 @@
  */
 import type { TrustedPrivateBindingRequest, TrustedPrivateBindingWriter }
   from './private-artifact-pointer-binding.ts';
+import type {SafePreviewInput} from '../../editor-core/src/publish-preflight.ts';
+import {createPrivateImmutableMediaCandidateFromFrozenSlots,type TrustedPrivateMediaReader}
+  from './private-immutable-artifact.ts';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SQL=`select kadmeion_private.bind_private_artifact_candidate(
@@ -71,4 +74,44 @@ export class DirectSqlPrivateArtifactBindingWriter implements TrustedPrivateBind
     // 11 fields against its independently rebuilt artifact and pointer.
     return (result.rows[0] as {receipt:unknown}).receipt;
   }
+}
+
+/**
+ * Rebuild a private media candidate against the attested source, then submit
+ * the bounded byte set to the write-once PostgreSQL transaction. The caller
+ * prepares the private pointer with the same manifest SHA before invoking
+ * this operation. The SQL port must use a trusted role granted the new RPC.
+ */
+export async function storeAttestedFrozenMediaCandidate(
+  db:PrivatePgQueryPort,
+  request:{requestId:string;expectedGeneration:number;input:SafePreviewInput},
+  reader:TrustedPrivateMediaReader
+):Promise<{status:'STORED_PRIVATE';manifestSha256:string;generation:number;
+  alreadyStored:boolean;publicServingEnabled:false}>{
+  const {requestId,expectedGeneration}=request;
+  if(typeof requestId!=='string'||!UUID.test(requestId)||
+     !Number.isSafeInteger(expectedGeneration)||expectedGeneration<1)
+    throw new PrivateArtifactSqlBindingError('INVALID_INPUT');
+  const candidate=await createPrivateImmutableMediaCandidateFromFrozenSlots(request.input,reader);
+  let rows:unknown[];
+  try{
+    const result=await db.query(
+      'select kadmeion_private.store_frozen_media_candidate($1::uuid,$2::bigint,$3::text,$4::bytea[]) as receipt',
+      [requestId,expectedGeneration,JSON.stringify(candidate.manifest),
+        candidate.files.map(file=>Buffer.from(file.bytes))]
+    );
+    rows=result.rows;
+  }catch{
+    throw new PrivateArtifactSqlBindingError('SQL_UNCONFIRMED');
+  }
+  const value=(rows?.[0] as {receipt?:unknown}|null)?.receipt;
+  if(!Array.isArray(rows)||rows.length!==1||!value||typeof value!=='object'||Array.isArray(value))
+    throw new PrivateArtifactSqlBindingError('INVALID_SQL_RECEIPT');
+  const receipt=value as Record<string,unknown>;
+  if(Object.keys(receipt).length!==5||receipt.status!=='STORED_PRIVATE'||
+     receipt.manifestSha256!==candidate.manifestSha256||receipt.generation!==expectedGeneration||
+     typeof receipt.alreadyStored!=='boolean'||receipt.publicServingEnabled!==false)
+    throw new PrivateArtifactSqlBindingError('INVALID_SQL_RECEIPT');
+  return {status:'STORED_PRIVATE',manifestSha256:candidate.manifestSha256,
+    generation:expectedGeneration,alreadyStored:receipt.alreadyStored,publicServingEnabled:false};
 }
