@@ -876,3 +876,15 @@ Latest brand asset exact-byte source commit `f15781d` caused [frontend CI 437468
 **Limits:** This is a visual owner simulation, NOT the real authenticated reviewer/public/static serving pipeline. No host/CDN revocation or visitor URL verification is inferred. Exact-SHA CI and approved LIGHT screen comparison still required. `main` and hosted Supabase remain unchanged.
 
 **Next exact action:** Run frontend TypeScript/build/Chromium and isolated database owner E2E at this exact SHA; fix failures. Continue screen-by-screen visual acceptance of approved 52 LIGHT PNGs and proof-gated reviewer/public paths, maintaining ₹0 spend and auth privacy.
+
+---
+
+## EDIT-09 exact-reference three-pane preview composition — 16 November 2026
+
+**Approved source inspected:** 26_EDIT-09_Preview_Modes_LIGHT.png, 1600×1000, from exact verified Library ZIP `Kadmeion_LIGHT_Batch06_17-26.zip`. This screen is an approved **Preview Modes three-pane workbench**, NOT the older fullscreen portfolio capture. The initial owner preview route implementation (`da18f7b`) passed frontend CI [43748054567](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43748054567); isolated DB suite passed its browser stage while remaining Edges/integration were still processing at last check.
+
+**Actual changes:** `apps/frontend/src/portfolios.tsx` rebuilds `PortfolioPreviewModes` into approved three-pane composition: compact actual portfolio title, left author/visitor mode and read-only device controls, central canvas, right honest release checklist and staging/preflight navigation. The right checklist does NOT fabricate publication/asset revocation/verified link status. Default mode is visitor **appearance-only** to match screenshot state but cannot serve the public, run scripts or expose unsaved slots. `apps/frontend/src/workspace.tsx` scopes existing compact approved glyph/icon rail to `/preview` as well as `/edit`. `apps/frontend/src/workspace.css` adds responsive light/dark three-pane preview layout without generating any dark reference image. `apps/frontend/e2e/owner.spec.ts` changes the #26 screenshot to a **true 26_PREVIEW_MODES_BROWSER** capture, verifies the distinct preview checklist and simulates phone review without permitting mobile editing.
+
+**Evidence boundary:** Full-screen saved author preview is still separate and tested, but should no longer be scored against #26 since the approved reference is different. New #26 screenshot must be downloaded and compared to the exact approved PNG; all test/visual/host gates remain pending. No hosted DB changes, paid providers, main merge, new source file or publication authorization.
+
+**Next:** Read exact SHA frontend/root CI, download #26_BROWSER capture, record SSIM+visual issues against correct reference, fix tests; continue F5/F6 52-screen acceptance without 100% claims.

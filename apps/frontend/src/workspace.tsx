@@ -42,7 +42,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
 }) {
   const [theme, toggleTheme] = useTheme();
   const route = window.location.pathname.replace(/\/$/, '') || '/';
-  const editorOnly=!!portfolioIdFromRoute(route)&&route.endsWith('/edit');
+  const editorOnly=!!portfolioIdFromRoute(route)&&(route.endsWith('/edit')||route.endsWith('/preview'));
   return <div className={'ws-shell'+(editorOnly?' ws-editor-shell':'')}>
     <a className="skip-link" href="#ws-content">Skip to workspace content</a>
     <aside className="ws-rail" aria-label="Workspace sidebar">

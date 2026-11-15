@@ -463,7 +463,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
   const [record,setRecord]=useState<PortfolioRecord|null>(null);
   const [error,setError]=useState('');
-  const [view,setView]=useState<'author'|'visitor'>('author');
+  const [view,setView]=useState<'author'|'visitor'>('visitor');
   const [device,setDevice]=useState<0|390|768>(0);
   const [attempt,setAttempt]=useState(0);
   useEffect(()=>{
@@ -479,27 +479,39 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
     return ()=>{active=false;};
   },[port,id,attempt]);
   return <section className="ws-portfolio-preview" aria-labelledby="ws-preview-title">
-    <div className="ws-heading">
-      <a href={STUDIO+'/'+id+'/edit'}>Back to portfolio editor</a>
-      <p className="ws-kicker">PORTFOLIO PREVIEW</p>
-      <h1 id="ws-preview-title">Author preview modes.</h1>
-      <p>View the saved private revision. Changes still require an explicit editor save.</p>
-    </div>
+    <header className="ws-project-head ws-preview-header">
+      <div className="ws-heading">
+        <a href={STUDIO+'/'+id+'/edit'}>Back to portfolio editor</a>
+        <p className="ws-kicker">PORTFOLIO STUDIO / PREVIEW</p>
+        <h1 id="ws-preview-title">{record?.title??'Portfolio preview'}</h1>
+        <p>{record?'Saved owner-private revision '+record.revision:'Checking private draft'}</p>
+      </div>
+      {record&&<div className="ws-preview-header-status">
+        <span>Private preview</span>
+        <span>{device===390?'Phone':device===768?'Tablet':'Desktop'}</span>
+      </div>}
+    </header>
     {error&&<div className="ws-inline-alert" role="alert">
       {error}
       <button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button>
     </div>}
-    {!record&&!error&&<p role="status">Loading your saved, owner-scoped preview…</p>}
-    {record&&<>
-      <div className="ws-preview-controls">
+    {!record&&!error&&<p role="status" className="ws-preview-loading">Loading your saved, owner-scoped preview…</p>}
+    {record&&<div className="ws-preview-workbench">
+      <aside className="ws-preview-sidebar" aria-label="Preview controls">
+        <p className="ws-kicker">REVIEW BEFORE PUBLISHING</p>
+        <h2>Preview modes</h2>
+        <p>Switch between the author view and a simulation of visitor appearance.</p>
         <div className="ws-preview-mode-set" role="group" aria-label="Appearance mode">
           <button type="button" className="ws-secondary" aria-pressed={view==='author'}
-            onClick={()=>setView('author')}>Author preview</button>
+            onClick={()=>setView('author')}>Author preview
+            <small>Private authoring content</small></button>
           <button type="button" className="ws-secondary" aria-pressed={view==='visitor'}
-            onClick={()=>setView('visitor')}>Visitor appearance (simulation)</button>
+            onClick={()=>setView('visitor')}>Visitor appearance (simulation)
+            <small>Only saved portfolio content</small></button>
         </div>
-        <label>Preview device
-          <select value={device} onChange={event=>{
+        <div className="ws-preview-device-group">
+          <label htmlFor="preview-device">Preview device</label>
+          <select id="preview-device" value={device} onChange={event=>{
             const next=Number(event.target.value);
             setDevice(next===390?390:next===768?768:0);
           }}>
@@ -507,22 +519,41 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
             <option value={768}>Tablet · 768 px</option>
             <option value={390}>Phone · 390 px</option>
           </select>
-        </label>
+        </div>
+        <p className="ws-preview-readonly">Phone preview is read-only. Editing on a phone remains unavailable.</p>
+        <a className="ws-secondary" href={STUDIO+'/'+id+'/edit'}>Back to editor</a>
+      </aside>
+      <div className="ws-preview-center">
+        <div className="ws-preview-canvas-heading">
+          <span>CANVAS / {device===390?'PHONE':device===768?'TABLET':'DESKTOP'}</span>
+          <span>Saved revision · No public delivery</span>
+        </div>
+        <div className="ws-preview-stage">
+          <PortfolioCanvas snapshot={record.snapshot} title={record.title}
+            simulation={view==='visitor'} width={device||undefined}/>
+        </div>
+        <p className="ws-preview-caution" role="status">{view==='visitor'
+          ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
+          : 'Private author preview. Empty slots may be indicated; no draft is published from this page.'}</p>
       </div>
-      <p className="ws-preview-caution" role="status">{view==='visitor'
-        ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
-        : 'Private author preview. Empty slots may be indicated; no draft is published from this page.'}</p>
-      <div className="ws-preview-stage">
-        <PortfolioCanvas snapshot={record.snapshot} title={record.title}
-          simulation={view==='visitor'} width={device||undefined}/>
-      </div>
-      <div className="ws-actions">
-        <span>Saved revision {record.revision} · No public delivery</span>
-        <a className="ws-secondary" href={STUDIO+'/'+id+'/preview/fullscreen'}>
-          Fullscreen saved author preview</a>
-        <a className="ws-primary" href={STUDIO+'/'+id+'/staging'}>Private reviewer staging</a>
-      </div>
-    </>}
+      <aside className="ws-preview-checklist" aria-label="Private release checklist">
+        <p className="ws-kicker">PREVIEW CHECKLIST</p>
+        <h2>Public projection</h2>
+        <p>This screen cannot certify the live release or what a visitor could access.</p>
+        <dl>
+          <div><dt>Portfolio visibility</dt><dd>Private preview</dd></div>
+          <div><dt>Private project records</dt><dd>Not separately read</dd></div>
+          <div><dt>Owned source code</dt><dd>Not executed</dd></div>
+          <div><dt>Release preflight</dt><dd>Not run here</dd></div>
+          <div><dt>Reviewer link</dt><dd>Not checked</dd></div>
+        </dl>
+        <p className="ws-preview-protection">Preview does not establish static-host publication or asset revocation. Run a private preflight before any further release decision.</p>
+        <div className="ws-preview-checklist-actions">
+          <a className="ws-secondary" href={STUDIO+'/'+id+'/staging'}>Private staging</a>
+          <a className="ws-primary" href={STUDIO+'/'+id+'/publish'}>Run preflight</a>
+        </div>
+      </aside>
+    </div>}
   </section>;
 }
 
