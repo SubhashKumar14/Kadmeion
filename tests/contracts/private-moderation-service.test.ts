@@ -317,3 +317,20 @@ test('abuse report operations reject invalid input and unsigned requests before 
     {message:'ABUSE_REPORT_ALREADY_REVIEWED'},{status:409}))
     .reviewAbuseReport(operationId,'DISMISSED',summary),{code:'CONFLICT'});
 });
+
+test('moderation provider responses are size-bounded, typed and checked before JSON allocation',async()=>{
+  for(const response of [
+    new Response('{}',{headers:{'content-type':'text/html'}}),
+    new Response('{}',{headers:{'content-type':'application/json','content-length':'262145'}}),
+    new Response('{}',{headers:{'content-type':'application/json','content-length':'3'}}),
+    new Response('x'.repeat(262145),{headers:{'content-type':'application/json'}}),
+    new Response('{invalid',{headers:{'content-type':'application/json'}})
+  ]){
+    await assert.rejects(client(async()=>response).listAbuseReports(),{code:'INVALID_ACK'});
+  }
+  const healthy=client(async()=>ok([]));
+  assert.deepEqual(await healthy.listAbuseReports(),[]);
+  const failure=client(async()=>Response.json({message:'MODERATION_CASE_QUOTA_REACHED'},
+    {status:400}));
+  await assert.rejects(failure.listOperatorCases(),{code:'QUOTA_EXCEEDED'});
+});
