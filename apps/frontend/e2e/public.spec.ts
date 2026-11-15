@@ -34,7 +34,7 @@ test('template filters and preview dialog are functional and escape restores foc
   const previewButton=page.getByRole('button',{name:'Preview'});
   await previewButton.click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByRole('heading',{name:'Stepped Minimal'})).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('heading',{name:'Stepped Minimal'})).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(previewButton).toBeFocused();
