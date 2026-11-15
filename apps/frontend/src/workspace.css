@@ -1,10 +1,9 @@
-/* WORK-01/WORK-02 screen shells. Reference screenshot comparison and original
-   Canva primary-vector export remain unaccepted F0/F1 gates. Uses semantic light/dark tokens. */
+/* Private workspace shell using semantic light/dark tokens. */
 .ws-shell{width:min(1500px,100%);min-height:100dvh;margin:auto;display:grid;grid-template-columns:245px minmax(0,1fr);
   background:var(--surface);border-inline:1px solid var(--line)}
 .ws-rail{background:#102639;color:#f7f8f6;display:flex;flex-direction:column;padding:32px 19px;min-width:0}
 .ws-brand{display:flex;flex-direction:column;gap:6px;padding:4px 12px 46px;letter-spacing:.21em}
-.ws-brand strong{font-size:16px;line-height:1.2}.ws-brand small{font-size:8px;letter-spacing:.13em;color:#afc3d0}
+.ws-brand .brand-mark{--brand-foreground:#f7f5ef;--brand-letters-width:108px}.ws-brand small{font-size:8px;letter-spacing:.13em;color:#afc3d0}
 .ws-rail-label{margin:0 12px 17px;font-size:10px;letter-spacing:.13em;color:#9cb2c2;font-weight:700}
 .ws-rail nav{display:grid;gap:5px}.ws-rail nav a{min-height:45px;display:flex;align-items:center;gap:14px;
   padding:10px 13px;border-radius:9px;color:#d1e0e9;font-size:13px}

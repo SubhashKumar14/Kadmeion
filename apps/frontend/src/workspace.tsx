@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../../auth-web/src/supabase-auth-port.ts';
-import { Icon, useTheme } from './landing.tsx';
+import { BrandMark, Icon, useTheme } from './landing.tsx';
 import { PrivateProjects } from './projects.tsx';
 import './workspace.css';
 
@@ -32,7 +32,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     <a className="skip-link" href="#ws-content">Skip to workspace content</a>
     <aside className="ws-rail" aria-label="Workspace sidebar">
       <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home">
-        <strong>KADMEION</strong><small>BUILD · SHOWCASE · EVOLVE</small>
+        <BrandMark/><small>BUILD · SHOWCASE · EVOLVE</small>
       </a>
       <p className="ws-rail-label">YOUR WORKSPACE</p>
       <nav aria-label="Workspace navigation">

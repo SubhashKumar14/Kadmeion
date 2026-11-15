@@ -13,6 +13,23 @@ test('landing respects approved public path, can switch theme and persists prefe
   await expect(page.locator('html')).toHaveAttribute('data-theme','light');
 });
 
+test('approved vector identity is visible and named in both runtime themes', async ({ page }) => {
+  await page.goto('/');
+  const home = page.getByRole('link', { name: 'Kadmeion home', exact: true });
+  const symbol = home.locator('.brand-symbol');
+  const letters = home.locator('.brand-letters');
+  await expect(home).toBeVisible();
+  await expect(symbol).toHaveJSProperty('naturalWidth', 110);
+  await expect(letters).toBeVisible();
+  await expect(letters).toHaveCSS('mask-image', /kadmeion-wordmark\.svg/);
+  expect((await page.request.get('/brand/kadmeion-wordmark.svg')).headers()['content-type']).toContain('image/svg+xml');
+  await expect(letters).toHaveCSS('background-color', 'rgb(11, 26, 33)');
+  await page.getByRole('button', { name: 'Switch to dark theme' }).click();
+  await expect(letters).toHaveCSS('background-color', 'rgb(244, 243, 238)');
+  await page.goto('/signin');
+  await expect(page.getByRole('img', { name: 'Kadmeion', exact: true })).toBeVisible();
+});
+
 test('manual carousel, pause and native FAQ are keyboard-operable', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('img', { name: /Workspace illustrative interface concept/ })).toBeVisible();

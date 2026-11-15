@@ -5,7 +5,7 @@ import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project
 import { parseAuthRedirect } from '../../auth-web/src/auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { cleanHandleInput, checkHandleInput, validatePasswordPair } from '../../auth-web/src/form-helpers.ts';
-import { Icon, useTheme } from './landing.tsx';
+import { BrandMark, Icon, useTheme } from './landing.tsx';
 import './auth.css';
 
 type Mode = 'signin' | 'signup' | 'forgot-password' | 'set-password' | 'outcome' | 'callback' | 'workspace';
@@ -55,9 +55,7 @@ function AuthBrand({ mode }: { mode: Mode }) {
     <div className="auth-brand-rings" aria-hidden="true"><span/><span/><span/></div>
     <div className="auth-brand-content">
       <div className="auth-brand-signature">
-        {/* Exact approved K and outlined wordmark export is a separate F0 gate.
-            Use a transparent text fallback rather than falsely reconstructing the mark. */}
-        <span className="auth-brand-wordmark">KADMEION</span>
+        <BrandMark stacked label="Kadmeion"/>
         <span className="auth-brand-role">DEVELOPER IDENTITY PLATFORM</span>
       </div>
       <span className="auth-brand-rule" aria-hidden="true"/>

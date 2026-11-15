@@ -1,6 +1,5 @@
 /* Kadmeion F1 source-informed LIGHT styling.
-   Canva page 10 lists supporting theme values as provisional. Original K master
-   and outlined wordmark require vector export before visual acceptance. */
+   Canva page 10 lists supporting theme values as provisional. */
 :root {
   font-family: Inter, "Helvetica Neue", Arial, system-ui, sans-serif;
   font-synthesis: none;
@@ -60,7 +59,13 @@ p{line-height:1.55}
 .site-header{height:63px;padding:0 34px 0 49px;display:flex;align-items:center;justify-content:space-between;gap:20px;
   border-bottom:1px solid var(--line);position:relative;z-index:3}
 .brand{display:inline-flex;flex-direction:column;gap:3px;flex-shrink:0;white-space:nowrap}
-.brand-name{font-size:17px;font-weight:850;letter-spacing:.27em;line-height:1;color:var(--ink)}
+.brand-mark{display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;min-width:0;
+  --brand-symbol-size:30px;--brand-letters-width:104px;--brand-foreground:var(--ink)}
+.brand-mark-stacked{flex-direction:column;justify-content:center;gap:10px}
+.brand-symbol{display:block;flex:none;width:var(--brand-symbol-size);height:var(--brand-symbol-size)}
+.brand-letters{display:block;width:var(--brand-letters-width);max-width:100%;aspect-ratio:856/88;
+  background:var(--brand-foreground);mask:url("/brand/kadmeion-wordmark.svg") center/contain no-repeat}
+@media(forced-colors:active){.brand-letters{background:CanvasText;forced-color-adjust:none}}
 .brand-subtitle{font-size:7px;font-weight:800;letter-spacing:.18em;color:var(--body)}
 .site-navigation{height:100%;display:flex;align-items:center;gap:39px;margin-left:auto;margin-right:auto}
 .site-navigation a{height:100%;display:inline-flex;align-items:center;position:relative;color:var(--ink);font-size:12px;font-weight:570}
@@ -231,7 +236,7 @@ p{line-height:1.55}
 }
 @media(max-width:580px){
   .site-header{padding:18px 19px 0}
-  .brand-name{font-size:15px}.brand-subtitle{font-size:6px}
+  .brand .brand-mark{--brand-symbol-size:24px;--brand-letters-width:88px}.brand-subtitle{font-size:6px}
   .header-actions{gap:6px}.header-signin{min-width:74px;padding:0 10px}
   .theme-button{padding:0 8px}.theme-button span{display:none}
   .site-navigation{gap:22px;overflow-x:auto;justify-content:flex-start;white-space:nowrap;padding-bottom:4px}

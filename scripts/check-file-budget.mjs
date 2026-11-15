@@ -82,7 +82,10 @@ const justifiedExtra = [
   'apps/frontend/src/workspace.tsx',
   'apps/frontend/src/workspace.css',
   // F2 owner-only project gallery/quick-add; above proposed 200-file cap pending owner review.
-  'apps/frontend/src/projects.tsx'
+  'apps/frontend/src/projects.tsx',
+  // Approved vector identity assets shared by public and private shells.
+  'apps/frontend/public/brand/kadmeion-mark.svg',
+  'apps/frontend/public/brand/kadmeion-wordmark.svg'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
@@ -94,3 +97,4 @@ if (nonexceptionCount > planned) {
   console.error('Nonexception source/config/test files exceed the original planned count; review modularity.');
   process.exitCode = 1;
 }
+

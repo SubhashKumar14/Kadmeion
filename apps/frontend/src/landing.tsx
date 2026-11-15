@@ -25,11 +25,17 @@ const iconPaths: Record<IconName, ReactNode> = {
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{iconPaths[name]}</svg>;
 }
+export function BrandMark({ stacked = false, label }: { stacked?: boolean; label?: string }) {
+  return <span className={stacked ? 'brand-mark brand-mark-stacked' : 'brand-mark'}
+    role={label ? 'img' : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
+    <img className="brand-symbol" src="/brand/kadmeion-mark.svg" alt="" width="110" height="110"/>
+    <span className="brand-letters"/>
+  </span>;
+}
+
 export function Brand({ tagline = true }: { tagline?: boolean }) {
-  // Primary vector logo/outlined wordmark master still requires original export.
-  // Text-only fallback is intentional: no fabricated logo geometry.
   return <a className="brand" href="/" aria-label="Kadmeion home">
-    <span className="brand-name">KADMEION</span>
+    <BrandMark/>
     {tagline && <span className="brand-subtitle">DEVELOPER IDENTITY PLATFORM</span>}
   </a>;
 }
