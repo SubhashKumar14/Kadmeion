@@ -180,10 +180,27 @@ test('B5: actual local Deno Trash scheduler refuses unauthenticated calls and st
     assert.equal(typeof body.purged,'number');
     assert.equal(typeof body.pending,'number');
     assert.ok(body.purged>=0&&body.purged<=10);
-    const denied=await request('Bearer wrong-secret');
+    // The local CLI can briefly restart its shared Edge gateway between
+    // isolates. Retry only connection-level failures on the two denial probes;
+    // never retry a returned wrong status or an authorized purge acknowledgement.
+    const deniedRequest=async authorization=>{
+      let transportError;
+      for(let attempt=0;attempt<5;attempt++){
+        if(child.exitCode!==null)break;
+        try{return await request(authorization);}
+        catch(error){
+          transportError=error;
+          await delay(350);
+        }
+      }
+      throw Error('Local Edge deny probe transport unavailable: '+
+        (transportError instanceof Error?transportError.name:'unknown')+
+        '; startup='+diagnostics.join(' | '));
+    };
+    const denied=await deniedRequest('Bearer wrong-secret');
     assert.equal(denied.status,401,'Invalid scheduler secret must never trigger a purge');
     await denied.body?.cancel();
-    const missing=await request('');
+    const missing=await deniedRequest('');
     assert.equal(missing.status,401,'Anonymous scheduler must never trigger a purge');
     await missing.body?.cancel();
   }finally {
