@@ -28,12 +28,15 @@ export function PortfolioCanvas({snapshot, title, standalone, width}: {
   const style: CSSProperties = {
     background: theme.surface, color: theme.text, colorScheme: theme.mode, borderTopColor: theme.accent, maxWidth: width
   };
-  const slots = Object.entries(snapshot?.slots ?? {});
+  const output = Object.entries(snapshot?.slots ?? {}).flatMap(([key, entry]) => {
+    const text = entry.content.title || entry.content.text || entry.content.label;
+    return text ? [{key, text}] : [];
+  });
   const Tag = standalone ? 'main' : 'div';
   return <Tag className={standalone ? 'portfolio-only-preview' : 'ws-studio-canvas'} style={style}>
     {standalone ? <h1>{title}</h1> : <h2>{title}</h2>}
-    {slots.filter(([, entry]) => entry.content.text).map(([key, entry]) => <p key={key}>{entry.content.text}</p>)}
-    {!standalone && !slots.some(([, entry]) => entry.content.text) && <p>This draft has no authored text yet.</p>}
+    {output.map(({key, text}) => <p key={key}>{text}</p>)}
+    {!standalone && output.length === 0 && <p>This draft has no authored text yet.</p>}
   </Tag>;
 }
 

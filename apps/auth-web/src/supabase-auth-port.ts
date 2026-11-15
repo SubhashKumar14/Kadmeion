@@ -3,6 +3,9 @@ import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packa
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
+import type { FrozenVisibilityIntent, PrivateFrozenRequest } from '../../../packages/contracts/src/private-release-service.ts';
+import type { PrivatePointerSnapshot } from '../../../packages/contracts/src/private-release-visibility-service.ts';
+import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
@@ -577,6 +580,43 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if (!this.isCurrentSession(session) || result.revision !== revision + 1)
         throw new Error('The new portfolio revision could not be confirmed.');
       return result.revision;
+    });
+  }
+
+  async freezeOwnerRelease(id: string, operation: string, revision: number, visibility: FrozenVisibilityIntent):
+    Promise<AuthOutcome<PrivateFrozenRequest>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabasePrivateReleaseService} = await import('../../../packages/contracts/src/private-release-service.ts');
+      const service = new SupabasePrivateReleaseService(this.origin, this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null, this.fetcher);
+      const receipt = await service.freeze(id, operation, revision, visibility);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while freezing the draft.');
+      return receipt;
+    });
+  }
+
+  async loadOwnerFrozenRelease(requestId: string): Promise<AuthOutcome<LoadedPrivateFrozenRevision>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabasePrivateFrozenRevisionLoader} = await import('../../../packages/storage-adapters/src/private-frozen-revision-loader.ts');
+      const loader = new SupabasePrivateFrozenRevisionLoader(this.origin, this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null, this.fetcher);
+      const result = await loader.load(requestId);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed during preflight.');
+      return result;
+    });
+  }
+
+  async readOwnerRelease(id: string): Promise<AuthOutcome<PrivatePointerSnapshot>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabasePrivateReleasePointerService} = await import('../../../packages/contracts/src/private-release-visibility-service.ts');
+      const service = new SupabasePrivateReleasePointerService(this.origin, this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null, this.fetcher);
+      const result = await service.read(id);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while loading release status.');
+      return result;
     });
   }
 

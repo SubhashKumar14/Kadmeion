@@ -190,6 +190,21 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
   await capture('26_FULLSCREEN_BROWSER');
   await page.goto(editorPath);
+  await page.getByRole('link', {name: 'Release workspace'}).click();
+  await expect(page.getByRole('heading', {name: 'Reviewer staging.'})).toBeVisible();
+  await page.getByRole('button', {name: 'Freeze private revision'}).click();
+  await expect(page.getByRole('status')).toHaveText('Private revision 2 frozen.');
+  await capture('27_STAGING_BROWSER');
+  await page.getByRole('link', {name: 'Publish preflight', exact: true}).click();
+  await page.getByRole('button', {name: 'Run private preflight'}).click();
+  await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();
+  await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toBeVisible();
+  await capture('29_PREFLIGHT_BROWSER');
+  await page.getByRole('link', {name: 'Releases & rollback'}).click();
+  await expect(page.getByRole('heading', {name: 'Release status'})).toBeVisible();
+  await expect(page.getByText('Awaiting verification', {exact: true})).toBeVisible();
+  await capture('30_RELEASES_BROWSER');
+  await page.goto(editorPath);
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
 

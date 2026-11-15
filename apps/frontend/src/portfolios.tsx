@@ -25,6 +25,22 @@ const sectionLayouts = [
   ['stepped-hero@1', 'Stepped hero'], ['skills@1', 'Skills'], ['experience@1', 'Experience'], ['contact@1', 'Contact']
 ] as const;
 
+const contentFields = {
+  'title-stacked@1': ['title', 'subtitle'],
+  'body-copy@1': ['text'],
+  'external-link@1': ['label', 'url'],
+  'project-card@1': ['title', 'summary', 'url'],
+  'skills-list@1': ['items'],
+  'experience-list@1': ['items'],
+  'technology-tag@1': ['text'],
+  'author-metric@1': ['label', 'value']
+} as const satisfies Record<string, readonly string[]>;
+
+function primaryField(component?: string): string {
+  return component && Object.hasOwn(contentFields, component)
+    ? contentFields[component as keyof typeof contentFields][0] : 'text';
+}
+
 const STUDIO = '/app/portfolios';
 const editorPath = (id: string) => STUDIO + '/' + id + '/edit';
 const authoringQuery = '(min-width: 900px)';
@@ -214,7 +230,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     try {
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
       setHead(next);
-      setValue(next.snapshot.slots[slot]?.content.text ?? '');
+      const selected = next.snapshot.slots[slot];
+      setValue(selected?.content[primaryField(selected.componentId)] ?? '');
       setOperation(crypto.randomUUID()); setError(''); setNotice('Unsaved changes');
       return true;
     } catch (failure) {
@@ -270,8 +287,10 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       <p>{record ? 'Private draft · revision ' + record.revision : 'Open a private portfolio draft.'}</p>
     </div>{head && <div className="ws-actions">
       <button type="button" className="ws-secondary" onClick={() => setPreview(current => !current)}>{preview ? 'Back to editor' : 'Author preview'}</button>
-      {record && !operation && <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'}
-        target="_blank" rel="noopener">Fullscreen saved preview</a>}
+      {record && !operation && <>
+        <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'} target="_blank" rel="noopener">Fullscreen saved preview</a>
+        <a className="ws-secondary" href={STUDIO + '/' + id + '/staging'}>Release workspace</a>
+      </>}
       <button type="button" className="ws-primary" disabled={!operation || saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
@@ -296,7 +315,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         </div>}
         <ul className="ws-editor-slots">{assigned.map(([key, item]) => <li key={key}>
           <button type="button" aria-pressed={slot === key} onClick={() => {
-            setSlot(key); setValue(item.content.text ?? '');
+            setSlot(key); setValue(item.content[primaryField(item.componentId)] ?? '');
           }}>{key.replace(/^section-[0-9a-f-]{36}-/, 'New section: ').replaceAll('-', ' ')} <span>{item.state}</span></button>
         </li>)}</ul>
         <div className="ws-actions">
@@ -324,8 +343,14 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             ? <button type="button" className="ws-secondary" disabled={saving}
                 onClick={() => apply({kind: 'ASSIGN_COMPONENT', slotKey: slot, componentId: 'body-copy@1'})}>Assign text component</button>
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value} onChange={event => setValue(event.target.value)}/></label>
-              <button type="button" className="ws-secondary" disabled={saving || value === (active.content.text ?? '')}
-                onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {text: value}})}>Apply text</button>
+              <button type="button" className="ws-secondary" disabled={saving || value === (active.content[primaryField(active.componentId)] ?? '')}
+                onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})}>Apply text</button>
+              {active.componentId && Object.hasOwn(contentFields, active.componentId) &&
+                contentFields[active.componentId as keyof typeof contentFields].slice(1).map(field =>
+                  <label key={field}>{field}<input defaultValue={active.content[field] ?? ''} key={slot + ':' + field + ':' + (active.content[field] ?? '')}
+                    onBlur={event => {if ((active.content[field] ?? '') !== event.target.value)
+                      apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[field]: event.target.value}});
+                    }}/></label>)}
               <button type="button" className="ws-secondary" disabled={saving}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&

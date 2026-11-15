@@ -7,6 +7,7 @@ import { BrandMark, Icon, useTheme } from './landing.tsx';
 import { PrivateProjectDetail, PrivateProjects } from './projects.tsx';
 import { DeveloperProfile } from './profile.tsx';
 import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, PortfolioLibrary, portfolioIdFromRoute } from './portfolios.tsx';
+import { PortfolioRelease, releaseRoute } from './release.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -28,7 +29,7 @@ function projectIdFromRoute(path: string): string | undefined {
 }
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -190,6 +191,7 @@ export function WorkspaceApp() {
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
+  const release = releaseRoute(route);
   useEffect(() => {
     document.title = 'Kadmeion — ' + (route === '/app/onboarding' ? 'Welcome' : 'Workspace');
     let cancelled = false;
@@ -274,6 +276,7 @@ export function WorkspaceApp() {
     {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       route === '/app/profile' && authRef.current ? <DeveloperProfile port={authRef.current}/> :
+      release && authRef.current ? <PortfolioRelease port={authRef.current} id={release.id} mode={release.mode}/> :
       portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId}/> :
       route === '/app/portfolios/new' && authRef.current ? <PortfolioChooser port={authRef.current}/> :
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
