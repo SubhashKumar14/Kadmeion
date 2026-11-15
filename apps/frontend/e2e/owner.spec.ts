@@ -242,6 +242,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(previewSlot).toContainText('Portfolio draft title');
   await previewSlot.focus();
   await page.keyboard.press('Enter');
+  await expect(previewSlot).toBeFocused();
   await expect(page.getByLabel('Text content')).toHaveValue('Portfolio draft title');
   await capture('19_CONTENT_INSPECTOR_BROWSER');
   await page.getByRole('button', {name: 'Sections', exact: true}).click();

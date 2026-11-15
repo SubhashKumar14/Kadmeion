@@ -910,3 +910,8 @@ At previous exact code SHA `121445f5e23a529ad44c640835c8b893b09a2275`, [frontend
 **Status:** This source SHA awaits independent TypeScript, build, public Chrome and isolated DB/owner Chrome CI, then exact new screenshot parity comparison. No new source file or recurring expense, no production deployment, no main merge. Further remaining: all 52 pixel/WCAG/UAT acceptance, safe image/asset UX, author source workflows, reviewer/public host/CDN revocation proof and manual Brevo/Google provider checks.
 
 **Next exact action:** Inspect both workflows on this SHA, correct failures, measure #20 SSIM against approved `20_EDIT-03_Components_Sections_LIGHT.png`; then continue approved F3/F6.
+
+
+### 16 Nov 2026 — stable canvas focus component
+
+From fa941d9: hoisted the formerly nested React canvas `Slot` to module-scoped `PortfolioSlot` (same escaped content/empty and visitor privacy rules) so selection does not remount a focused editor button. Added authenticated Chrome focus-retention check in `apps/frontend/e2e/owner.spec.ts`. `apps/frontend/src/portfolio-tools.tsx` and this handoff changed. The prior `fa941d9` frontend/root DB CI passed; screenshot #20 SSIM 0.6844 vs approved, visual parity still OPEN. This source SHA needs new CI. Next: verify exact SHA TypeScript/Chromium/isolated database, compare screenshot, continue WCAG/UAT and source-safe editor.

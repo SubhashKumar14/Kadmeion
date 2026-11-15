@@ -71,6 +71,29 @@ function slotDisplay(slot:PortfolioSnapshot['slots'][string]|undefined):string {
   return '';
 }
 
+const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing}:{
+    section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';snapshot:PortfolioSnapshot|null|undefined;editing:boolean;selectedSlot?:string;onSelectSlot?:(key:string)=>void;showMissing:boolean;
+  })=>{
+    const key=section.id+'-'+name.toLowerCase();
+    const assignment=snapshot?.slots[key];
+    const text=slotDisplay(assignment);
+    const label=SLOT_TITLES[name.toLowerCase()]??name;
+    const example=editing&&!text?layoutExample(section.renderId,name):null;
+    const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
+      (selectedSlot===key?' pv-selected':'');
+    if(editing)return <button className={className} type="button"
+      aria-label={'Edit '+section.renderId+' '+name+' slot in preview'}
+      aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
+      {text||(
+        kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
+        example?<span className="pv-placeholder pv-layout-example">{example}</span>:
+        <span className="pv-placeholder">Add {label}</span>
+      )}
+    </button>;
+    return text?<span className={className}>{text}</span>:
+      !showMissing?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
+  };
+
 export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot}: {
   snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean;
   simulation?:boolean; width?: number;
@@ -83,28 +106,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   };
   const sections=canvasSections(snapshot);
   const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
-  const Slot=({section,name,kind='copy'}:{
-    section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';
-  })=>{
-    const key=section.id+'-'+name.toLowerCase();
-    const assignment=snapshot?.slots[key];
-    const text=slotDisplay(assignment);
-    const label=SLOT_TITLES[name.toLowerCase()]??name;
-    const example=editing&&!text?layoutExample(section.renderId,name):null;
-    const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
-      (selectedSlot===key?' pv-selected':'');
-    if(editing)return <button className={className} type="button"
-      aria-label={'Edit '+section.renderId+' '+name+' slot in preview'}
-      aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot(key)}>
-      {text||(
-        kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
-        example?<span className="pv-placeholder pv-layout-example">{example}</span>:
-        <span className="pv-placeholder">Add {label}</span>
-      )}
-    </button>;
-    return text?<span className={className}>{text}</span>:
-      (standalone||simulation)?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
-  };
+  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation};
   const Tag=standalone?'main':'div';
   return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
     style={style} aria-label={standalone?'Saved private portfolio author preview':
@@ -131,29 +133,29 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
           {hero?<div className="pv-hero-grid">
             <div className="pv-hero-copy">
               <span className="pv-eyebrow">{section.renderId==='L5'?'YOUR STORY':'PORTFOLIO / INTRODUCTION'}</span>
-              {headline&&<h2><Slot section={section} name="title" kind="title"/></h2>}
-              {textSlot&&<div className="pv-summary"><Slot section={section} name={textSlot}/></div>}
+              {headline&&<h2><PortfolioSlot {...slotProps} section={section} name="title" kind="title"/></h2>}
+              {textSlot&&<div className="pv-summary"><PortfolioSlot {...slotProps} section={section} name={textSlot}/></div>}
               <div className="pv-actions">{buttons.map(name=>
-                <Slot section={section} key={name} name={name} kind="action"/>)}</div>
-              {section.slots.includes('note')&&<div className="pv-hero-note"><Slot section={section} name="note" kind="tag"/></div>}
+                <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="action"/>)}</div>
+              {section.slots.includes('note')&&<div className="pv-hero-note"><PortfolioSlot {...slotProps} section={section} name="note" kind="tag"/></div>}
             </div>
             <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>
           </div>:<>
             <div className="pv-section-heading">
-              {headline&&<h2><Slot section={section} name="title" kind="title"/></h2>}
+              {headline&&<h2><PortfolioSlot {...slotProps} section={section} name="title" kind="title"/></h2>}
               <span className="pv-section-index">{String(index+1).padStart(2,'0')}</span>
             </div>
-            {textSlot&&<div className="pv-summary"><Slot section={section} name={textSlot}/></div>}
+            {textSlot&&<div className="pv-summary"><PortfolioSlot {...slotProps} section={section} name={textSlot}/></div>}
             <div className={'pv-section-slots pv-section-slots-'+section.renderId}>
               {others.filter(name=>name!==textSlot).map(name=>{
                 const media=/^(image|imageA|imageB|media|avatar|thumbs)$/i.test(name);
                 return <div className={'pv-slot-cell'+(media?' pv-media-cell':'')} key={name}>
-                  <Slot section={section} name={name} kind={media?'media':'copy'}/>
+                  <PortfolioSlot {...slotProps} section={section} name={name} kind={media?'media':'copy'}/>
                 </div>;
               })}
             </div>
             {buttons.length>0&&<div className="pv-actions pv-section-actions">{buttons.map(name=>
-              <Slot section={section} key={name} name={name} kind="action"/>)}</div>}
+              <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="action"/>)}</div>}
           </>}
         </section>;
       })}
