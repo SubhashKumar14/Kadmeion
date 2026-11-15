@@ -148,3 +148,21 @@ test('local Edge container resolves the internal Kong origin only when explicitl
     env:{...local,KADMEION_LOCAL_INTEGRATION:'0'},http});
   assert.equal(blocked.status,404);
 });
+
+test('Trash client rejects secret keys and non-root or credential-bearing API URLs',()=>{
+ for(const endpoint of [
+   'https://user:pass@example.supabase.co',
+   'https://example.supabase.co/foreign',
+   'https://example.supabase.co?redirect=unsafe',
+   'https://example.supabase.co/#internal'
+ ]) assert.throws(()=>new SupabasePrivateTrashService(
+   endpoint,'publishable-key',async()=>null
+ ),{code:'VALIDATION'});
+ const jwt=['eyJhbGciOiJIUzI1NiJ9',
+   Buffer.from(JSON.stringify({role:'service_role'})).toString('base64url'),
+   'c2lnbmF0dXJl'].join('.');
+ for(const key of ['sb_secret_private',jwt])
+   assert.throws(()=>new SupabasePrivateTrashService(
+     base,key,async()=>null
+   ),{code:'VALIDATION'});
+});

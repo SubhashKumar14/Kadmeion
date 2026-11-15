@@ -1,4 +1,4 @@
-import { ContractError } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey } from './project.ts';
 
 export type FrozenVisibilityIntent = 'PUBLIC' | 'UNLISTED';
 export interface PrivateFrozenRequest {
@@ -43,6 +43,8 @@ export class SupabasePrivateReleaseService {
       throw new ContractError('VALIDATION', 'Use a trusted Supabase API origin.');
     if (typeof publishableKey !== 'string' || !publishableKey.trim())
       throw new ContractError('VALIDATION', 'Publishable key is missing.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.endpoint = parsed.origin;
     this.key = publishableKey;
     this.token = accessToken;

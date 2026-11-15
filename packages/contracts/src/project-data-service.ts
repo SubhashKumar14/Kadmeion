@@ -1,5 +1,5 @@
 import { normalizePrivateCaseStudy, type PrivateCaseStudy } from './private-project-case-studies.ts';
-import { ContractError } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey } from './project.ts';
 import { normalizeProjectDraft, type PrivateProjectDraft } from './projects.ts';
 
 type JsonRecord = Record<string, unknown>;
@@ -33,6 +33,8 @@ export class SupabasePrivateProjectService {
       throw new ContractError('VALIDATION', 'Trusted Supabase project origin required.');
     if (typeof publishableKey!=='string' || !publishableKey.trim())
       throw new ContractError('VALIDATION', 'Publishable key is required.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.supabaseUrl=url.origin; this.publishableKey=publishableKey;
     this.token=token; this.fetcher=fetcher;
   }

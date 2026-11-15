@@ -1,4 +1,4 @@
-import { normalizeHandle, ContractError } from './project.ts';
+import { normalizeHandle, ContractError, isSafeSupabaseClientKey } from './project.ts';
 import { normalizeIdentityDraft, type SharingPreferences } from './identity.ts';
 import type { TokenSupplier } from './project-data-service.ts';
 
@@ -87,6 +87,8 @@ export class SupabasePrivateIdentityService {
       throw new PrivateIdentityError('VALIDATION','Invalid Supabase API origin.');
     if (typeof publishableKey!=='string'||!publishableKey.trim())
       throw new PrivateIdentityError('VALIDATION','Publishable key is missing.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new PrivateIdentityError('VALIDATION','A public Supabase API key is required.');
     this.baseUrl=u.origin;
     this.publishableKey=publishableKey;
     this.tokenSupplier=tokenSupplier;

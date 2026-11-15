@@ -1,4 +1,4 @@
-import { ContractError } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey } from './project.ts';
 
 export type PrivateTrashKind = 'project' | 'portfolio';
 export type PrivateTrashResponse = {
@@ -57,6 +57,8 @@ export class SupabasePrivateTrashService {
     accessToken: () => Promise<string | null>,
     fetcher: typeof fetch = fetch
   ) {
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.publishableKey = publishableKey;
     this.accessToken = accessToken;
     this.fetcher = fetcher;
@@ -64,8 +66,9 @@ export class SupabasePrivateTrashService {
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' &&
         (url.hostname === 'localhost' || url.hostname === '127.0.0.1')))
       throw new ContractError('VALIDATION', 'Supabase endpoint must use HTTPS.');
-    if (!publishableKey) throw new ContractError('VALIDATION', 'Publishable key is required.');
-    this.base = endpoint.replace(/\/$/, '');
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash)
+      throw new ContractError('VALIDATION', 'A trusted Supabase API origin is required.');
+    this.base = url.origin;
   }
 
   private async send(path: string, method: 'GET' | 'POST', input?: unknown): Promise<unknown> {

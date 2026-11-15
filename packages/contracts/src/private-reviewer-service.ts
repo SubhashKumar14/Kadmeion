@@ -1,4 +1,4 @@
-import { ContractError } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey } from './project.ts';
 
 export interface PrivateReviewerGrant {
   grantId:string; requestId:string; rawToken:string|null;
@@ -41,6 +41,8 @@ export class SupabasePrivateReviewerService {
       throw new ContractError('VALIDATION','Use a trusted Supabase API origin.');
     if(typeof key!=='string'||!key.trim())
       throw new ContractError('VALIDATION','Publishable key is required.');
+    if(!isSafeSupabaseClientKey(key))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.origin=url.origin;this.key=key;this.token=token;this.fetcher=fetcher;
   }
   private async rpc(name:string,payload:Record<string,unknown>):Promise<unknown>{

@@ -1,4 +1,4 @@
-import { ContractError } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey } from './project.ts';
 
 export type ModerationReason = 'ABUSE' | 'SECURITY' | 'LEGAL' | 'SPAM';
 export type ModerationCaseStatus = 'OPEN' | 'APPEAL_PENDING' | 'CLOSED';
@@ -176,6 +176,8 @@ export class SupabasePrivateModerationService {
       throw new ContractError('VALIDATION','A trusted Supabase API origin is required.');
     if (!publishableKey || typeof publishableKey !== 'string')
       throw new ContractError('VALIDATION','Publishable key is required.');
+    if(!isSafeSupabaseClientKey(publishableKey))
+      throw new ContractError('VALIDATION','A public Supabase API key is required.');
     this.origin = url.origin;
     this.key = publishableKey;
     this.token = accessToken;
