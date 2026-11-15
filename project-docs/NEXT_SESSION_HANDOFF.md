@@ -642,3 +642,11 @@ Read-only hosted comparison verified 56/56 source migration versions, latest `20
 The first new-head frontend run [43737803306](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43737803306) FAILED at TypeScript 7 strict checks before browser tests. Errors were in pre-existing cross-package code used by the latest frontend settings/export wiring: unsafe `result[0]` access, response content-type index, ZIP CRC lookup, and possibly absent `project_assets` projection. This was not a successful frontend run. Source changes correct the type checks without weakening privacy: optional response indexing still denies malformed receipts, MIME fallback remains invalid, CRC lookup is within precomputed 256-entry table, and missing asset projection now throws a typed integrity error rather than interpreting absent data as an empty export. Modified `packages/contracts/src/project-data-service.ts`, `packages/storage-adapters/src/portable-source-archive.ts`, `packages/storage-adapters/src/private-account-data-export.ts`.
 
 **Next exact action:** Verify the new corrective commit's TypeScript/Vite/Chromium and application/database CI on the exact SHA, investigate any other failures and capture a genuine SYS-01 browser screenshot against approved LIGHT reference #51. Retain all release and cost gates.
+
+---
+
+### Frontend workflow coverage repair — 15 Nov 2026
+
+Root cause of missing frontend CI on shared-source corrections: `.github/workflows/frontend.yml` previously triggered only on `apps/frontend/**` and its own YAML; changes in imported `apps/auth-web/**`, `packages/contracts/**`, `packages/editor-core/**` or `packages/storage-adapters/**` could silently break the frontend TypeScript build without triggering a new frontend run. This commit expands push path filters to cover actual cross-package dependencies and adds a headless Chrome 1534×960 `51_UNAVAILABLE` capture to the existing F1 screenshot workflow. Browser screenshots are implementation evidence, NOT pixel acceptance against approved reference #51; the authentic reference comparison remains open.
+
+**Next:** Inspect the exact new commit's frontend build/test/audit run, fixing any issues; inspect root CI. Both workflows must be green on the newest code SHA before claiming acceptance. No hosted merge/deployment or paid dependency.

@@ -4,6 +4,10 @@ on:
     branches: ['feat/b0-backend-foundation']
     paths:
       - 'apps/frontend/**'
+      - 'apps/auth-web/**'
+      - 'packages/contracts/**'
+      - 'packages/editor-core/**'
+      - 'packages/storage-adapters/**'
       - '.github/workflows/frontend.yml'
   workflow_dispatch:
 
@@ -62,6 +66,7 @@ jobs:
           07_RECOVERY /forgot-password
           08_RESET /reset-password
           09_RECOVERY_STATUS /auth/recovery-status
+          51_UNAVAILABLE /missing-public-page
           ROUTES
       - uses: actions/upload-artifact@v7.0.2
         if: always()
