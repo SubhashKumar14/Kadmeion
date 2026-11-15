@@ -1,3 +1,11 @@
+# B09 source archive recovery — 15 November 2026
+
+- [`1ba1670`](https://github.com/SubhashKumar14/Kadmeion/commit/1ba167015ca848ef2f2f3817549040f732ec76f8): initial owner-only offline portfolio ZIP recovery from verified partial-account JSON. Its first CI failed TypeScript compilation; do not cite that SHA as green.
+- [`f820637`](https://github.com/SubhashKumar14/Kadmeion/commit/f82063716452f72d57bbc1b33c6d9cde48417e51): explicit unsafe-shape runtime validation through the ZIP exporter and regression cleanup. [CI run 43690853795](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43690853795) **PASS**, 418 Node tests passed and local database job passed.
+- Output is source-only, private, deterministic; it is not a complete user account download or an erasure receipt.
+
+---
+
 # B08 byte-boundary continuation — 15 November 2026
 
 - [`eba9e00`](https://github.com/SubhashKumar14/Kadmeion/commit/eba9e002e813f6c40d4bd7605f0ed143ca59663b): host-neutral private immutable-blob verifier with first pointer read, cryptographic integrity and second pointer read, never a public grant.

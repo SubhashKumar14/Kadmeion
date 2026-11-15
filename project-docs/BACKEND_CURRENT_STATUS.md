@@ -1,5 +1,14 @@
 # Kadmeion — Current Backend Implementation State
 
+## B09 owner source recovery from bounded account export — 15 November 2026
+
+- **Latest code commit:** `f82063716452f72d57bbc1b33c6d9cde48417e51` (B09 source-recovery fix) on `feat/b0-backend-foundation`.
+- **Verified CI:** [run 43690853795](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43690853795): **418/418 Node tests passed**, database job passed.
+- **Implemented:** `recoverPortfolioSourceZipFromPartialAccountExport` in `packages/storage-adapters/src/private-account-data-export.ts`, which uses an already downloaded bounded partial-account JSON, validates owner-scoped data and embedded private image hashes, selects an exact existing owner portfolio/revision pair, validates its source snapshot through the existing editor ZIP rules and returns the portable source ZIP with a checksum. No network calls or hosted changes occur during source recovery. Invalid paths, missing/duplicated history and foreign owner records fail closed.
+- **Explicit limits:** The ZIP contains the selected revision's authored source and managed files, **not** private Storage media or complete account/provider histories. It cannot prove the partial JSON originated from Supabase. The result retains `sourceAuthenticityVerified:false`, `privateMediaIncluded:false`, `completeAccountExport:false` and `deletionAllowed:false`. Handle exported user-authored source as private because owners may have included credentials.
+- **Still blocked:** Hosted Supabase migrations (14/46 last observed) and three Edge Function rollouts; B08 public host/revocation; B09 complete account exit/export provider retention; B10 verified Brevo; B11 full acceptance. No main-branch merge, public delivery activation or paid service.
+
+
 ## B08 immutable-delivery byte verification — 15 November 2026
 
 - **Latest source commit:** `89dff68ef39045244c41fc8833ac0d16bc2e255f` on `feat/b0-backend-foundation`.
