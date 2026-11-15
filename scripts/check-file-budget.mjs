@@ -67,7 +67,9 @@ const justifiedExtra = [
   'apps/frontend/src/landing.tsx',
   'apps/frontend/src/styles.css',
   // F1 public template explorer (screen 03): separate searchable, accessible catalog.
-  'apps/frontend/src/templates.tsx'
+  'apps/frontend/src/templates.tsx',
+  // F1 public showcase screen 02 (illustrative until secure public projection).
+  'apps/frontend/src/explore.tsx'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
