@@ -228,7 +228,9 @@ test('B08 joins verified frozen HTML to sanitized, relative content-addressed PN
   await assert.rejects(verifyPrivateImmutableMediaCandidate({
     ...candidate,deployable:true
   },source,plan,reader),{code:'VALIDATION'});
-  const wrong=await attested();
+  const altered=make();
+  altered.snapshot.slots.hero.content.title='Different verified work';
+  const wrong=await attested(altered);
   await assert.rejects(verifyPrivateImmutableMediaCandidate(candidate,wrong,plan,reader),{
     code:'VALIDATION'
   });

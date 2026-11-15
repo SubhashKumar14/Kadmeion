@@ -1,4 +1,4 @@
-import { sanitizePngForPrivatePublicationCandidate, type SanitizedPublicationPng } from './safe-png-publication.ts';
+import type { SanitizedPublicationPng } from './safe-png-publication.ts';
 import { ContractError } from '../../contracts/src/project.ts';
 import { prepareSafeStaticPreview, type SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
 import { assertAttestedPrivateFrozenRevision } from './private-frozen-revision-loader.ts';
@@ -184,6 +184,8 @@ export async function createPrivateImmutableMediaCandidate(
   // Even a correctly copied snapshot and matching digest are not sufficient:
   // this call first performs the original loader WeakMap attestation check.
   const original=await createPrivateImmutableArtifact(input);
+  // Delay loading Node-only raster codec until this server-only method executes.
+  const {sanitizePngForPrivatePublicationCandidate}=await import('./safe-png-publication.ts');
   if(!Array.isArray(plan)||plan.length===0||plan.length>8||
      !reader||typeof reader.readFrozenPinnedImage!=='function')
     throw new ContractError('VALIDATION','Trusted private media plan is required.');
