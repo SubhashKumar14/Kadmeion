@@ -34,6 +34,30 @@ jobs:
           npm run build --prefix apps/frontend
       - name: Audit production dependency advisories
         run: npm audit --prefix apps/frontend --omit=dev --audit-level=high
+      - name: Capture real Chromium browser screenshots for F1 LIGHT comparison
+        run: |
+          npm run preview --prefix apps/frontend -- --host 127.0.0.1 > /tmp/kadmeion-preview.log 2>&1 &
+          for n in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:4173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:4173/ > /dev/null
+          BROWSER="$(command -v google-chrome || command -v chromium)"
+          test -n "$BROWSER"
+          mkdir -p /tmp/kadmeion-f1-browser
+          "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 \
+            --screenshot=/tmp/kadmeion-f1-browser/01_LANDING_BROWSER.png http://127.0.0.1:4173/
+          "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 \
+            --screenshot=/tmp/kadmeion-f1-browser/02_EXPLORE_BROWSER.png http://127.0.0.1:4173/explore
+          "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 \
+            --screenshot=/tmp/kadmeion-f1-browser/03_TEMPLATES_BROWSER.png http://127.0.0.1:4173/templates
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: kadmeion-f1-browser-captures
+          path: /tmp/kadmeion-f1-browser/*.png
+          if-no-files-found: warn
+          retention-days: 1
       - name: Commit reproducible frontend lockfile only after green checks
         if: github.ref == 'refs/heads/feat/b0-backend-foundation'
         run: |
