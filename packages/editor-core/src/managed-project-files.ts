@@ -36,6 +36,24 @@ const presets = {
 } as const satisfies Record<string,{header:string|null;sections:readonly PortfolioLayoutPin[]}>;
 export type PortfolioPresetId=keyof typeof presets;
 
+/**
+ * The starter components are pinned library selections, not fictional author
+ * content. Layout-only fields (avatars, screenshots, media and thumbnails)
+ * stay EMPTY until the owner provides separately validated assets. Blank is
+ * intentionally empty. Every selected S0 component still needs real content
+ * before preflight can render or publish it.
+ */
+const CURATED_SLOT_COMPONENTS: Readonly<Record<string,string>> = Object.freeze({
+  title:'title-stacked@1',
+  text:'body-copy@1',text1:'body-copy@1',text2:'body-copy@1',
+  note:'body-copy@1',
+  cta:'external-link@1',cta1:'external-link@1',cta2:'external-link@1',
+  btn1:'external-link@1',btn2:'external-link@1',
+  project:'project-card@1',card:'project-card@1',
+  items:'skills-list@1',entries:'skills-list@1',
+  badge:'technology-tag@1',meta:'author-metric@1'
+});
+
 /** Build an editable draft from the documented layout order and empty owner slots. */
 export function createPortfolioPresetDraft(presetId:PortfolioPresetId):PortfolioSnapshot {
   if(typeof presetId!=='string'||!Object.hasOwn(presets,presetId))
@@ -44,7 +62,12 @@ export function createPortfolioPresetDraft(presetId:PortfolioPresetId):Portfolio
   const slots:PortfolioSnapshot['slots']={};
   const sections=preset.sections.map(layout=>{
     const id=layout.split('@',1)[0];
-    for(const name of PORTFOLIO_LAYOUTS[layout].slots) slots[id+'-'+name.toLowerCase()]={state:'EMPTY',content:{}};
+    for(const name of PORTFOLIO_LAYOUTS[layout].slots) {
+      const componentId=CURATED_SLOT_COMPONENTS[name];
+      slots[id+'-'+name.toLowerCase()]=componentId
+        ?{state:'S0',componentId,content:{}}
+        :{state:'EMPTY',content:{}};
+    }
     // The transaction journal already stores live assignments in snapshot.slots.
     return {id,layout,slotKeys:PORTFOLIO_LAYOUTS[layout].slots};
   });

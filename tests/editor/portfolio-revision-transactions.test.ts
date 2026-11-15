@@ -32,10 +32,41 @@ test('the five documented presets and Blank initialize valid drafts with indepen
     }));
     assert.equal(next.snapshot.slots[title].state,'S0');
     assert.equal(next.snapshot.files['pages/home.page.json'],page);
-    assert.equal(createPortfolioPresetDraft(preset).slots[title].state,'EMPTY');
+    assert.equal(createPortfolioPresetDraft(preset).slots[title].state,'S0');
+    assert.equal(createPortfolioPresetDraft(preset).slots[title].componentId,'title-stacked@1');
+    assert.deepEqual(first.snapshot.slots[title].content,{});
+    assert.deepEqual(next.snapshot.stashes[title][0].content,{});
   }
   assert.deepEqual(createEditorHead(createPortfolioPresetDraft('blank')).snapshot.slots,{});
   assert.throws(()=>createPortfolioPresetDraft('constructor' as never),{code:'VALIDATION'});
+});
+
+test('curated presets pin safe starters without invented content or automatic media exposure',()=>{
+  for(const preset of ['arc','collage','editorial','stairs','studio'] as const){
+    const draft=createPortfolioPresetDraft(preset);
+    const validated=createEditorHead(draft);
+    const assigned=Object.entries(validated.snapshot.slots).filter(([,slot])=>slot.state==='S0');
+    assert.ok(assigned.length>0);
+    for(const [key,slot] of Object.entries(validated.snapshot.slots)){
+      assert.deepEqual(slot.content,{},key+' must never fabricate the author profile or project');
+      if (/(?:-avatar|-thumbs|-media|-image|-imagea|-imageb)$/.test(key)){
+        assert.equal(slot.state,'EMPTY',key+' requires real, separately validated media');
+        assert.equal(slot.componentId,undefined);
+      }
+      if(slot.state==='S0'){
+        assert.match(slot.componentId??'',/^[a-z][a-z0-9-]*@1$/);
+        assert.equal(slot.sourcePath,undefined);
+      }
+    }
+    const changed=createPortfolioPresetDraft(preset);
+    const firstKey=Object.keys(changed.slots)[0];
+    changed.slots[firstKey].content.title='Only this draft';
+    assert.deepEqual(createPortfolioPresetDraft(preset).slots[firstKey].content,{},
+      'Preset construction must not share mutable user data');
+  }
+  const blank=createPortfolioPresetDraft('blank');
+  assert.deepEqual(blank.slots,{});
+  assert.deepEqual(JSON.parse(blank.files['pages/home.page.json']).sections,[]);
 });
 
 test('clearing a slot preserves content in stash and restore is reversible',()=>{
