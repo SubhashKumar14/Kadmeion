@@ -15,7 +15,9 @@ const justifiedExtra = [
   'supabase/migrations/20261115121000_public_release_indexing_ack_gate.sql',
   'supabase/migrations/20261115122000_public_projection_content_privacy_invalidation.sql',
   'packages/contracts/src/private-notifications-service.ts',
-  'tests/contracts/private-notifications-service.test.ts'
+  'tests/contracts/private-notifications-service.test.ts',
+  'packages/storage-adapters/src/safe-png-publication.ts',
+  'tests/editor/safe-png-publication.test.ts'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
