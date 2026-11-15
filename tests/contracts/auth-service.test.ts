@@ -38,3 +38,35 @@ test('post-auth redirect returns only internal allowlisted routes', () => {
   for (const input of ['https://evil.example','//evil.example','/admin','/workspace\\evil','/workspace%2f%2fevil'])
     assert.equal(safeAfterAuthPath(input),'/workspace');
 });
+
+test('auth recovery and OAuth use only a normalized, trusted application origin',async()=>{
+ const redirects:string[]=[];
+ const port=mockPort();
+ port.resetPasswordForEmail=async(_email,options)=>{
+   redirects.push(options.redirectTo);return {data:{},error:null};
+ };
+ port.signInWithOAuth=async request=>{
+   redirects.push(request.options.redirectTo);
+   return {data:{url:'https://accounts.google.com/authorize'},error:null};
+ };
+ const svc=new AuthService(port,{
+   siteOrigin:'https://app.example:443/',emailDeliveryVerified:true,googleOAuthConfigured:true
+ });
+ await svc.requestPasswordReset('dev@example.com');
+ await svc.googleLogin();
+ assert.deepEqual(redirects,[
+   'https://app.example/reset-password','https://app.example/auth/callback'
+ ]);
+ for(const unsafe of [
+   'http://remote.example','https://user:pass@app.example',
+   'https://app.example/foreign','https://app.example?next=evil',
+   'https://app.example#fragment','https://app.example\\@attacker.example',
+   'https://app.example\n'
+ ])assert.throws(()=>new AuthService(mockPort(),{
+   siteOrigin:unsafe,emailDeliveryVerified:true,googleOAuthConfigured:true
+ }),{code:'VALIDATION'});
+ const local=new AuthService(mockPort(),{
+   siteOrigin:'http://127.0.0.1:5173',emailDeliveryVerified:false,googleOAuthConfigured:false
+ });
+ assert.ok(local);
+});

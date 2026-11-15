@@ -57,9 +57,18 @@ export class AuthService {
   private readonly auth: AuthPort;
   private readonly config: { siteOrigin:string; emailDeliveryVerified:boolean; googleOAuthConfigured:boolean };
   constructor(auth: AuthPort, config: {siteOrigin:string;emailDeliveryVerified:boolean;googleOAuthConfigured:boolean}) {
-    this.auth=auth; this.config=config;
-    if (!/^https?:\/\/[^/]+$/.test(config.siteOrigin))
-      throw new AuthFlowError('VALIDATION', 'Invalid application origin.');
+    let url:URL;
+    try{url=new URL(config.siteOrigin);}
+    catch{throw new AuthFlowError('VALIDATION','Invalid application origin.');}
+    const local=url.protocol==='http:'&&
+      ['localhost','127.0.0.1'].includes(url.hostname);
+    if(typeof config.siteOrigin!=='string'||
+       config.siteOrigin.trim()!==config.siteOrigin||
+       /[\s\u0000-\u001f\u007f]/.test(config.siteOrigin)||
+       (url.protocol!=='https:'&&!local)||url.username||url.password||
+       url.pathname!=='/'||url.search||url.hash)
+      throw new AuthFlowError('VALIDATION','Invalid application origin.');
+    this.auth=auth;this.config={...config,siteOrigin:url.origin};
   }
 
   async register(input: { email: string; password: string; displayName: string; handle: string }) {
