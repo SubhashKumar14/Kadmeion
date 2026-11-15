@@ -38,6 +38,14 @@ export interface OperatorModerationCase {
   status: ModerationCaseStatus;
   createdAt: string;
 }
+/** Operator-only private intake. Evidence is untrusted plain text; never render as HTML. */
+export interface OperatorPortfolioAbuseReport {
+  id:string;target_path:string;reason_code:ModerationReason;
+  evidence:string;created_at:string;
+}
+export interface OperatorAbuseReviewReceipt {
+  reportId:string;status:'CASE_OPENED'|'DISMISSED';caseId:string|null;
+}
 export interface OwnerModerationCase {
   id: string;
   reason_code: ModerationReason;
@@ -66,6 +74,8 @@ export class PrivateModerationError extends Error {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REASONS = ['ABUSE','SECURITY','LEGAL','SPAM'] as const;
 const STATUSES = ['OPEN','APPEAL_PENDING','CLOSED'] as const;
+const PUBLIC_PATH = /^\/[a-z][a-z0-9_]{2,29}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const encoder = new TextEncoder();
 const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION','OPERATOR_HOLD_LIFT'] as const;
 const isRecord = (value: unknown): value is Record<string,unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -147,7 +157,8 @@ export class SupabasePrivateModerationService {
         throw new PrivateModerationError('QUOTA_EXCEEDED','Operator case quota reached.');
       if (typeof message === 'string' &&
           ['INVALID_MODERATION_CASE','INVALID_APPEAL','INVALID_MODERATION_DECISION',
-           'INVALID_MODERATION_LIMIT','INVALID_OPERATOR_BLOCK','INVALID_HOLD_LIFT'].includes(message))
+           'INVALID_MODERATION_LIMIT','INVALID_OPERATOR_BLOCK','INVALID_HOLD_LIFT',
+           'INVALID_ABUSE_REPORT_LIMIT','INVALID_ABUSE_REVIEW'].includes(message))
         throw new PrivateModerationError('VALIDATION','Moderation request rejected.');
       if (response.status === 409 || (typeof message === 'string' &&
           ['MODERATION_OPERATION_ID_REUSED','APPEAL_OPERATION_ID_REUSED',
@@ -156,7 +167,7 @@ export class SupabasePrivateModerationService {
            'MODERATION_CASE_NOT_OPEN','MODERATION_HOLD_STATE_CONFLICT',
            'MODERATION_CASE_NOT_RESOLVED','HOLD_CASE_SCOPE_MISMATCH',
            'HOLD_LIFT_OPERATION_REUSED','HOLD_LIFT_STATE_CHANGED',
-           'HOLD_LIFT_POINTER_CONFLICT'].includes(message)))
+           'HOLD_LIFT_POINTER_CONFLICT','ABUSE_REPORT_ALREADY_REVIEWED'].includes(message)))
         throw new PrivateModerationError('CONFLICT','Operation ID or case state conflicts.');
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation operation was not acknowledged.');
     }
@@ -229,6 +240,53 @@ export class SupabasePrivateModerationService {
       status:'RELEASED_PRIVATE',alreadyRecorded:raw.alreadyRecorded,
       publicServingEnabled:false,publicUrl:null,hostRevocationVerified:false};
   }
+  /** Private operator queue; reports alone never restrict or republish a portfolio. */
+  async listAbuseReports(after:string|null=null,max=25):Promise<OperatorPortfolioAbuseReport[]> {
+    if(after!==null)requireUUID(after);
+    if(!Number.isSafeInteger(max)||max<1||max>50)
+      throw new ContractError('VALIDATION','Invalid abuse report page size.');
+    const raw=await this.request('rpc/operator_list_portfolio_abuse_reports',{
+      p_after:after,p_limit:max
+    });
+    if(!Array.isArray(raw)||raw.length>max)
+      throw new PrivateModerationError('INVALID_ACK','Invalid abuse queue response.');
+    const seen=new Set<string>();
+    return raw.map((entry:unknown):OperatorPortfolioAbuseReport=>{
+      if(!isRecord(entry)||Object.keys(entry).sort().join(',')!==
+        'created_at,evidence,id,reason_code,target_path'||
+        !isUUID(entry.id)||seen.has(entry.id)||
+        typeof entry.target_path!=='string'||!PUBLIC_PATH.test(entry.target_path)||
+        !isEnum(entry.reason_code,REASONS)||
+        typeof entry.evidence!=='string'||
+        [...entry.evidence].length<20||[...entry.evidence].length>500||
+        encoder.encode(entry.evidence).byteLength>2000||
+        /[\u0000-\u001f\u007f]/.test(entry.evidence)||!isDate(entry.created_at))
+        throw new PrivateModerationError('INVALID_ACK','Untrusted abuse queue data.');
+      seen.add(entry.id);
+      return {id:entry.id,target_path:entry.target_path,reason_code:entry.reason_code,
+        evidence:entry.evidence,created_at:entry.created_at};
+    });
+  }
+
+  /** A report becomes owner-visible only through the audited operator case RPC. */
+  async reviewAbuseReport(reportId:string,decision:'CASE_OPENED'|'DISMISSED',
+      rationale:string):Promise<OperatorAbuseReviewReceipt> {
+    requireUUID(reportId);
+    if(decision!=='CASE_OPENED'&&decision!=='DISMISSED')
+      throw new ContractError('VALIDATION','Invalid abuse report decision.');
+    const reason=boundedText(rationale,20,500);
+    if(encoder.encode(reason).byteLength>2000)
+      throw new ContractError('VALIDATION','Abuse review rationale exceeds byte limit.');
+    const raw=await this.request('rpc/operator_review_portfolio_abuse_report',{
+      p_report_id:reportId,p_decision:decision,p_rationale:reason
+    });
+    if(!isRecord(raw)||Object.keys(raw).sort().join(',')!=='caseId,reportId,status'||
+      raw.reportId!==reportId||raw.status!==decision||
+      (decision==='CASE_OPENED'?!isUUID(raw.caseId):raw.caseId!==null))
+      throw new PrivateModerationError('INVALID_ACK','Abuse review was not confirmed.');
+    return {reportId,status:decision,caseId:raw.caseId as string|null};
+  }
+
   async listOperatorCases(max = 25): Promise<OperatorModerationCase[]> {
     if (!Number.isSafeInteger(max) || max < 1 || max > 50)
       throw new ContractError('VALIDATION','Invalid moderation page size.');
