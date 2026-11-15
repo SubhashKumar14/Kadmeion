@@ -402,3 +402,22 @@ test('upload removal cannot be acknowledged by a foreign or malformed verificati
     assert.deepEqual(methods,['POST','DELETE','POST']);
   }
 });
+
+test('a full verification page needs an exact Storage deletion receipt',async()=>{
+  const oldPath=`${operationId}/exit/old.png`;
+  const fullPage=Array.from({length:100},(_,i)=>`${operationId}/exit/new-${i}.png`);
+  for(const [receipt,confirmed] of [
+    [[],false],[[{name:oldPath+'.wrong'}],false],[[{name:oldPath}],true]
+  ] as const){
+    let calls=0;
+    const service=client(async()=>{
+      calls++;
+      if(calls===1)return ok([oldPath]);
+      if(calls===2)return ok(receipt);
+      return ok(fullPage);
+    });
+    if(confirmed)assert.equal(await service.removeUploadBatch(),1);
+    else await assert.rejects(service.removeUploadBatch(),{code:'PROVIDER_UNAVAILABLE'});
+    assert.equal(calls,3);
+  }
+});

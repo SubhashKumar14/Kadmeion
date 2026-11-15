@@ -136,6 +136,29 @@ function uploadPaths(raw:unknown):string[] {
   }
   return raw;
 }
+async function confirmedRemoval(response:Response,paths:readonly string[]):Promise<boolean>{
+  const reader=response.body?.getReader();
+  if(!reader)return false;
+  const decoder=new TextDecoder('utf-8',{fatal:true});
+  let bytes=0,body='';
+  try{
+    for(;;){
+      const chunk=await reader.read();
+      if(chunk.done)break;
+      bytes+=chunk.value.byteLength;
+      if(bytes>256*1024)return false;
+      body+=decoder.decode(chunk.value,{stream:true});
+    }
+    const raw:unknown=JSON.parse(body+decoder.decode());
+    if(!Array.isArray(raw)||raw.length!==paths.length)return false;
+    const remaining=new Set(paths);
+    return raw.every(entry=>record(entry)&&typeof entry.name==='string'&&remaining.delete(entry.name));
+  }catch{return false;}
+  finally{
+    await reader.cancel().catch(()=>{});
+    reader.releaseLock();
+  }
+}
 function inventoryReceipt(raw:unknown,expectedId?:string):AccountExitInventoryReceipt {
   const names=[
     'projects','portfolios','portfolioRevisions','projectExposureIntents',
@@ -394,14 +417,18 @@ export class SupabasePrivateAccountErasureService {
     }catch{
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
     }
-    await response.body?.cancel().catch(()=>{});
-    if(!response.ok)
-      throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
-    const remaining=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
-    if(remaining.some(path=>path.split('/')[0]!==paths[0].split('/')[0])||
-      paths.some(path=>remaining.includes(path)))
-      throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
-    return paths.length;
+    try{
+      if(!response.ok)
+        throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
+      const remaining=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
+      if(remaining.some(path=>path.split('/')[0]!==paths[0].split('/')[0])||
+        paths.some(path=>remaining.includes(path)))
+        throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
+      // A full first page could hide an undeleted path after a concurrent upload.
+      if(remaining.length===100&&!(await confirmedRemoval(response,paths)))
+        throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Storage could not confirm this batch. Retry cleanup.');
+      return paths.length;
+    }finally{await response.body?.cancel().catch(()=>{});}
   }
   async execute(requestId:string,challengeId:string,confirmation:'DELETE MY ACCOUNT'):Promise<{
     status:'ACTIVE_ACCOUNT_ERASED';
