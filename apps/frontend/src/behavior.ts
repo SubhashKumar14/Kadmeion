@@ -6,7 +6,7 @@ export type DemoView = typeof DEMO_VIEWS[number];
 
 export function parseTheme(value: unknown): Theme { return value === 'dark' ? 'dark' : 'light'; }
 export function invertTheme(theme: Theme): Theme { return theme === 'light' ? 'dark' : 'light'; }
-export function nextPreviewIndex(index: number, step: -1 | 1, length = DEMO_VIEWS.length): number {
+export function nextPreviewIndex(index: number, step: -1 | 1, length: number = DEMO_VIEWS.length): number {
   if (!Number.isSafeInteger(length) || length < 1 || !Number.isSafeInteger(index) || index < 0 || index >= length)
     throw new RangeError('Invalid product-demo index or length.');
   return (index + step + length) % length;
