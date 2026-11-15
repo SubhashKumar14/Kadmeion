@@ -65,6 +65,7 @@ test('sign-in and sign-up switch without losing transient form values', async ({
   await page.getByRole('link',{name:/Create an account/}).click();
   await expect(page).toHaveURL(/\/signup$/);
   await expect(page.getByRole('heading',{name:'Create your account.'})).toBeVisible();
+  await expect(page.locator('.auth-page')).toHaveAttribute('data-mode','signup');
   await expect(page.getByRole('textbox',{name:'Email address'})).toHaveValue('person@example.org');
   await page.getByRole('link',{name:/Sign in/}).click();
   await expect(page).toHaveURL(/\/signin$/);
