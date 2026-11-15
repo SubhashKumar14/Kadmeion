@@ -164,3 +164,11 @@ test('reviewer refuses executable markup even when attacker supplies a matching 
     assert.equal(res.body,'Temporarily unavailable');
   }
 });
+
+test('reviewer requires a real noindex meta in head, not a body text mention',async()=>{
+  const forged=html.replace('<meta name="robots" content="noindex">','<title>noindex</title>');
+  const data={...receipt,html:forged,htmlSha256:createHash('sha256').update(forged).digest('hex')};
+  const {res}=await run({data});
+  assert.equal(res.statusCode,503);
+  assert.equal(res.body,'Temporarily unavailable');
+});

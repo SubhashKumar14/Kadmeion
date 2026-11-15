@@ -118,3 +118,11 @@ export async function readFrozenPng(response, expectedSha) {
      createHash('sha256').update(png).digest('hex')!==expectedSha) throw Error('Invalid PNG receipt');
   return png;
 }
+
+/** The private HTML itself must carry robots metadata, not just a header or
+ * an incidental mention of "noindex" in visible text. */
+export function hasPrivateNoindexMeta(html) {
+  if (typeof html !== 'string') return false;
+  const head=/<head(?:\s[^>]*)?>([\s\S]*?)<\/head>/i.exec(html);
+  return Boolean(head && /<meta\s+name="robots"\s+content="noindex(?:,nofollow(?:,noarchive)?)?"\s*\/?>/i.test(head[1]));
+}

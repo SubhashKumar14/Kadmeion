@@ -113,3 +113,11 @@ test('unlisted refuses executable markup even when attacker supplies a matching 
     assert.equal(response.body,'Temporarily unavailable');
   }
 });
+
+test('unlisted requires actual head robots metadata, not an incidental noindex string',async()=>{
+  const forged=html.replace('<meta name="robots" content="noindex">','<title>noindex</title>');
+  const data={...receipt,html:forged,htmlSha256:createHash('sha256').update(forged).digest('hex')};
+  const {response}=await run({body:data});
+  assert.equal(response.statusCode,503);
+  assert.equal(response.body,'Temporarily unavailable');
+});

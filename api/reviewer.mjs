@@ -1,4 +1,4 @@
-import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 /**
  * Candidate Vercel Node function for PRIVATE reviewer staging, NOT publication.
  * Deliberately disabled unless the operator explicitly proves the host, sets
@@ -63,7 +63,7 @@ function validHtml(receipt){
   const html=receipt.html,bytes=Buffer.byteLength(html,'utf8');
   if(bytes<70||bytes>MAX_HTML_BYTES||
      !html.toLowerCase().startsWith('<!doctype html>')||
-     !html.toLowerCase().includes('noindex'))
+     !hasPrivateNoindexMeta(html))
     return false;
   return true;
 }

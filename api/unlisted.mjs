@@ -1,4 +1,4 @@
-import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 /**
  * Disabled-by-default UNLISTED scriptless text-only release HTTP candidate.
  * Business state remains in Supabase; this Vercel/Node adapter only serves
@@ -50,7 +50,7 @@ function verified(raw){
   const html=raw.html;
   if(Buffer.byteLength(html,'utf8')<70||Buffer.byteLength(html,'utf8')>750000||
      !html.toLowerCase().startsWith('<!doctype html>')||
-     !html.toLowerCase().includes('noindex'))
+     !hasPrivateNoindexMeta(html))
     return false;
   return true;
 }
