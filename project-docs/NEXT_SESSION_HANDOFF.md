@@ -815,3 +815,11 @@ At [code SHA `ddd033d`](https://github.com/SubhashKumar14/Kadmeion/commit/ddd033
 ### Exact Open Folio source-byte verification correction — 15 Nov 2026
 
 The source ZIP `Kadmeion_Canva_Logo_Family_2026.zip`, member `vectors/03_pictorial_folio.svg`, is **exactly 2,354 UTF-8 bytes** with SHA-256 `572efe3f979830cb09443afcf74d4f354003a2fa48f2368a2f54ae8d417d9514`. The initial public asset file had one extra trailing linefeed (2,355 bytes), so this commit removes that linefeed. Original vector path/paint geometry was never changed, and now bytes match export exactly. Recheck GitHub `apps/frontend/public/brand/kadmeion-open-folio.svg` readback and exact SHA in CI. Previous `7ab7cfc` CI statuses must not be assumed for this correction SHA. No separate brand mockups or source-geometry redraws generated.
+
+---
+
+### Strict TypeScript 7 nullability regression correction — 15 Nov 2026
+
+Latest brand asset exact-byte source commit `f15781d` caused [frontend CI 43746845196](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43746845196) to fail at `apps/frontend/src/portfolios.tsx:255`, TS2345: the verified `readOwnerPortfolio()` type allows a `null` snapshot, but `orderedLayerGroups` accepted only `undefined`. The helper already guards falsy snapshots before parsing. This commit corrects its static parameter type to `PortfolioSnapshot | null | undefined` while keeping the same null-safe fail-closed implementation. Earlier error came from F3 code, not logo SVG rendering. The new SHA must be re-verified through both CI suites before success is claimed.
+
+**Next:** Check TS7/build/Chromium and local DB on correction SHA, measure actual #16 Folio empty-state snapshot and final #18 editor screenshot, log exact evidence to Notion.

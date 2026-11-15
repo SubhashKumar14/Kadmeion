@@ -43,7 +43,7 @@ function primaryField(component?: string): string {
 
 /** The JSONB slot map is unordered. Navigation must follow saved page section
  * order and each pinned layout's declared slot order, never object key sort. */
-function orderedLayerGroups(snapshot:PortfolioSnapshot | undefined):Array<{
+function orderedLayerGroups(snapshot:PortfolioSnapshot | null | undefined):Array<{
   id:string;title:string;slots:Array<{key:string;name:string;state:string;componentId?:string}>;
 }> {
   const source=snapshot?.files['pages/home.page.json'];
