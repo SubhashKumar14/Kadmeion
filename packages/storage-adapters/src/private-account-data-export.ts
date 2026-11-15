@@ -569,7 +569,7 @@ export async function recoverPortfolioSourceZipFromPartialAccountExport(
   let zip:Uint8Array;
   try{
     const {exportPortfolioSourceZip}=await import('./portable-source-archive.ts');
-    zip=exportPortfolioSourceZip(matches[0].snapshot as
+    zip=exportPortfolioSourceZip(matches[0].snapshot as unknown as
       import('../../editor-core/src/portfolio-revision-transactions.ts').PortfolioSnapshot);
   }catch{
     throw new PrivateAccountExportError('INTEGRITY',

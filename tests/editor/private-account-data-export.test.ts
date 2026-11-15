@@ -465,7 +465,7 @@ test('offline account export verification refuses modified bytes and false reten
 
 test('B09 owner can recover one exact validated authored portfolio revision as portable source ZIP',async()=>{
   const portfolioId='60000000-0000-4000-8000-000000000006';
-  const snapshot={
+  const ownedSnapshot={
     formatVersion:1,
     files:{
       'kadmeion.json':'{"formatVersion":1}',
@@ -480,12 +480,12 @@ test('B09 owner can recover one exact validated authored portfolio revision as p
   const rows={...baseRows,
     portfolios:[{id:portfolioId,owner_user_id:owner,title:'Real portfolio'}],
     portfolio_revisions:[{portfolio_id:portfolioId,owner_user_id:owner,
-      revision:7,snapshot}]
+      revision:7,snapshot:ownedSnapshot}]
   };
-  const artifact=await fixture({rows}).service.export(snapshotIdForTest());
+  const artifact=await fixture({rows}).service.export(snapshot);
   const result=await recoverPortfolioSourceZipFromPartialAccountExport(
     artifact.bytes,portfolioId,7);
-  assert.deepEqual(importPortfolioSourceZip(result.zip),snapshot);
+  assert.deepEqual(importPortfolioSourceZip(result.zip),ownedSnapshot);
   assert.equal(result.sha256,createHash('sha256').update(result.zip).digest('hex'));
   assert.match(result.filename,/kadmeion-portfolio-60000000/);
   assert.equal(result.privateMediaIncluded,false);
@@ -495,8 +495,6 @@ test('B09 owner can recover one exact validated authored portfolio revision as p
   assert.deepEqual(result.zip,(await recoverPortfolioSourceZipFromPartialAccountExport(
     artifact.bytes,portfolioId,7)).zip);
 });
-function snapshotIdForTest():string {return snapshot;}
-
 test('B09 source archive extraction fails closed for wrong owner, duplicate revision, and unsafe source paths',async()=>{
   const portfolioId='60000000-0000-4000-8000-000000000006';
   const valid={formatVersion:1,files:{'kadmeion.json':'{"formatVersion":1}'},
