@@ -51,3 +51,14 @@
 - **Status:** Phase 1 backend code NOT YET proven 100%; hosted backend NOT fully verified; ready for full frontend acceptance NOT YET. Never substitute file count or 444 green Node tests for these gates.
 
 This document records actual completed work and exact remaining host/manual dependencies; it does not authorize a merge, protected configuration changes or public production launch.
+
+
+## Additional B10 acceptance and B11 traceability — latest verified 15 Nov continuation
+
+- [GitHub CI run #679](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43706476790) **SUCCESS** on code commit `c14a0ef7f4304b0c42bd26c021390cdbe1a9d178`; contracts and isolated database jobs both passed. This supersedes the older #666 verification checkpoint for the newly modified code.
+- Recent B10 source changes bind delayed refresh, sign-in/sign-up, OAuth and email-link responses to the initiating account; password and logout network races cannot overwrite a newer session. Auth token-hash redemption independently rechecks `/auth/v1/user`. Parallel sign-in attempts cannot silently replace the last-started login. CI tests include the intended success paths and negative races.
+- B07 read-only live policy inventory: 40 tables with RLS; no anonymous SELECT; 45 policies without an unguarded permissive `true` or an authenticated UPDATE missing its `WITH CHECK`. Security advisor's 42 authenticated SECURITY DEFINER warnings are not silently dismissed: these are intentional RPC grants requiring per-function proof, and leaked-password-protection remains a provider setting.
+- `registers/TEST_CASES_BACKEND_EVIDENCE_2026-11-15.csv` tracks all 138 original acceptance scenarios as candidate backend proof or explicit frontend/hosted/deferred gates **without changing their original NOT_RUN statuses**.
+- `registers/TECHNICAL_PROOFS_BACKEND_EVIDENCE_2026-11-15.csv` tracks all 20 technical proofs with actual code and unresolved evidence; not a single full proof gate has been falsely changed to PASS.
+- No merge to `main`, hosted public-release switch, Trash-scheduler activation, Brevo sender action, or new paid service was performed. Remaining external acceptance cannot be completed by merely pushing implementation source.
+

@@ -15,6 +15,12 @@
 ---
 
 
+## Follow-up after the verified 2026-11-15 handoff
+
+- Backend Auth concurrency/identity hardening was implemented in commits `035cae43`, `c10b3590`, `00576c0f` and `c14a0ef7`. Latest verified code CI #679 passed both jobs.
+- Original 138-case and 20-proof registers are preserved as NOT_RUN/NOT_PROVEN, with new supplemental backend evidence CSVs; no case is accepted by association with a broad passing test suite.
+- The many historical 14/46 migrations, 0/3 Edge and earlier B07/B08 pending statements **below** are dated archival logs, superseded by the opening 55/55 migration and 3/3 deployed Edge summary. Do not use historical counts as current status.
+
 ## B08–B11 backend continuation
 
 The existing release host now serves scoped PNGs for canonical public pages, unlisted releases and token-scoped reviewer previews. The PostgreSQL media write enters the existing immutable stage atomically. Publication probes verify the normalized frozen HTML and exact same-origin media before acknowledgement. Public rollback requires explicit owner consent, a verified target at the same canonical address and a fresh host acknowledgement. Reviewer responses, direct assets and denials carry no-store.
