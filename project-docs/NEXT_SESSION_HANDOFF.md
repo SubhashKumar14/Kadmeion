@@ -809,3 +809,9 @@ At [code SHA `ddd033d`](https://github.com/SubhashKumar14/Kadmeion/commit/ddd033
 **Code:** `apps/frontend/public/brand/kadmeion-open-folio.svg` stores the original pictorial SVG; `apps/frontend/src/portfolios.tsx` uses it as a single deliberately decorative `alt=""` owned portfolio-library empty-state illustration beside real explanatory text (approved screen #16), not as an account achievement, repository verification, or navigation icon. `apps/frontend/src/workspace.css` uses responsive palette-neutral sizing without altering SVG colors. `apps/frontend/e2e/owner.spec.ts` verifies the actual asset route exists in real authenticated browser, `scripts/check-file-budget.mjs` explicitly accounts for a new owner-approval-pending original asset exception.
 
 **Gates:** This code commit's actual TS/Vite/Chromium and isolated DB workflow must be checked; page #16 screenshot pixel match requires recalculation. Do not opportunistically place mascot/lettermark/emblem on unrelated controls. All identity sources/authorizations and ₹0 restrictions remain unchanged. Next: verify CI, measure #16 against approved, add other approved logo families ONLY where visual reference and relevant semantic application support placement.
+
+---
+
+### Exact Open Folio source-byte verification correction — 15 Nov 2026
+
+The source ZIP `Kadmeion_Canva_Logo_Family_2026.zip`, member `vectors/03_pictorial_folio.svg`, is **exactly 2,354 UTF-8 bytes** with SHA-256 `572efe3f979830cb09443afcf74d4f354003a2fa48f2368a2f54ae8d417d9514`. The initial public asset file had one extra trailing linefeed (2,355 bytes), so this commit removes that linefeed. Original vector path/paint geometry was never changed, and now bytes match export exactly. Recheck GitHub `apps/frontend/public/brand/kadmeion-open-folio.svg` readback and exact SHA in CI. Previous `7ab7cfc` CI statuses must not be assumed for this correction SHA. No separate brand mockups or source-geometry redraws generated.
