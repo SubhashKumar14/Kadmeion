@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ActionLink, Brand, Icon, useTheme } from './landing.tsx';
+import { ActionLink, Brand, Icon, useTheme, getAuthHref } from './landing.tsx';
 
 type PresetCategory = 'All categories' | 'Showcase' | 'Editorial' | 'Minimal';
 type LayoutFilter = 'All layouts' | 'Single page' | 'Project focused' | 'Modular';
@@ -53,7 +53,7 @@ function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
     <p>{preset.description} This is a visual concept, not an exported or published website.</p>
     <TemplateGraphic tone={preset.tone}/>
     <div className="template-dialog-actions"><button type="button" onClick={onClose} className="outline-small">Back to templates</button>
-      <ActionLink href="/signin">Sign in to begin</ActionLink></div>
+      <ActionLink href={getAuthHref()}>Sign in to begin</ActionLink></div>
   </dialog>;
 }
 export function TemplateExplorer(){
@@ -86,7 +86,7 @@ export function TemplateExplorer(){
             aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'}>
             <Icon name={theme==='light'?'moon':'sun'} size={16}/><span>{theme==='light'?'Dark':'Light'}</span>
           </button>
-          <a className="header-signin" href="/signin">Sign in <Icon name="arrow" size={15}/></a>
+          <a className="header-signin" href={getAuthHref()}>Sign in <Icon name="arrow" size={15}/></a>
         </div>
       </header>
       <main id="templates-main" className="templates-main">
@@ -132,14 +132,14 @@ export function TemplateExplorer(){
             </div>
             <div className="template-card-actions">
               <button type="button" className="outline-small" onClick={event=>{previewOpener.current=event.currentTarget;setPreview(item);}}>Preview</button>
-              <a className="header-signin" href="/signin">Use Template <Icon name="arrow" size={16}/></a>
+              <a className="header-signin" href={getAuthHref()}>Use Template <Icon name="arrow" size={16}/></a>
             </div>
           </article>)}</div>}
         <section className="template-signin-note" aria-labelledby="template-note-title">
           <span className="strip-icon"><Icon name="user" size={24}/></span><div>
             <h2 id="template-note-title">Explore templates, then sign in to author.</h2>
             <p>You can preview concepts publicly; creating, editing and publishing require an authenticated account and verified backend workflow.</p></div>
-          <ActionLink href="/signin">Sign in to get started</ActionLink>
+          <ActionLink href={getAuthHref()}>Sign in to get started</ActionLink>
         </section>
       </main>
     </div>

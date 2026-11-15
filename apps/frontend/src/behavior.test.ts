@@ -43,3 +43,14 @@ test('public concept searching and category filters do not mutate backing record
   assert.equal(items[0]?.title,'BidHub');
   assert.equal(filterShowcaseConcepts(items,'unknown','All','Featured').length,0);
 });
+
+test('auth routing never trusts credentials, non-root paths or insecure remote origins', async () => {
+  const { authHref } = await import('./behavior.ts');
+  assert.equal(authHref(undefined),'/signin');
+  assert.equal(authHref('https://login.example.com/'),'https://login.example.com/signin');
+  assert.equal(authHref('http://127.0.0.1:3000/','/signup'),'http://127.0.0.1:3000/signup');
+  assert.equal(authHref('https://evil.example/password'),'/signin');
+  assert.equal(authHref('https://alice:secret@valid.example/'),'/signin');
+  assert.equal(authHref('http://untrusted.example/'),'/signin');
+  assert.equal(authHref('https://valid.example/?redirect=evil'),'/signin');
+});

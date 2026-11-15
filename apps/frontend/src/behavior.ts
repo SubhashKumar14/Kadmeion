@@ -32,3 +32,17 @@ export function filterShowcaseConcepts<T extends { title: string; description: s
     (!term||[item.title,item.description,item.field,...item.tags].some(text=>text.toLocaleLowerCase('en').includes(term))));
   return sort==='Name A–Z' ? result.sort((a,b)=>a.title.localeCompare(b.title,'en')) : result;
 }
+
+/** Resolve an operator-configured auth origin without accepting URL credentials,
+ * path rewriting, downgrade to remote HTTP, queries or fragments. No user input
+ * ever enters this value. The in-app fallback deliberately remains explicit. */
+export function authHref(configuredOrigin: unknown, route: '/signin' | '/signup' = '/signin'): string {
+  if (typeof configuredOrigin !== 'string' || !configuredOrigin.trim()) return route;
+  try {
+    const url = new URL(configuredOrigin);
+    const isLoopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback))) return route;
+    return url.origin + route;
+  } catch { return route; }
+}

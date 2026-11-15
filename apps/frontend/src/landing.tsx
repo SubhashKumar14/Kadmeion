@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   canAutoAdvance, DEMO_VIEWS, invertTheme, nextPreviewIndex,
-  readTheme, writeTheme, type DemoView, type Theme
+  readTheme, writeTheme, authHref, type DemoView, type Theme
 } from './behavior.ts';
 
 type IconName = 'arrow' | 'user' | 'layers' | 'folder' | 'target' | 'code' | 'sun' | 'moon' | 'chevron' | 'rocket' | 'activity' | 'pause' | 'play' | 'spark';
@@ -32,6 +32,9 @@ export function Brand({ tagline = true }: { tagline?: boolean }) {
     <span className="brand-name">KADMEION</span>
     {tagline && <span className="brand-subtitle">DEVELOPER IDENTITY PLATFORM</span>}
   </a>;
+}
+export function getAuthHref(route: '/signin' | '/signup' = '/signin'): string {
+  return authHref(import.meta.env.VITE_KADMEION_AUTH_ORIGIN, route);
 }
 function getTheme(): Theme {
   try { return readTheme(window.localStorage); } catch { return 'light'; }
@@ -147,7 +150,7 @@ export function Landing() {
             aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'} aria-pressed={theme==='dark'}>
             <Icon name={theme==='light'?'moon':'sun'} size={16}/><span>{theme==='light'?'Dark':'Light'}</span>
           </button>
-          <a className="header-signin" href="/signin"><Icon name="user" size={15}/> Sign in</a>
+          <a className="header-signin" href={getAuthHref()}><Icon name="user" size={15}/> Sign in</a>
         </div>
       </header>
 
@@ -159,7 +162,7 @@ export function Landing() {
             <h1 id="hero-title">Your Developer Identity,<br/><em>Crafted with Purpose.</em></h1>
             <p>Create a distinct portfolio, showcase real work, and build your developer presence with intention.</p>
             <div className="hero-actions">
-              <ActionLink href="/signin">Create Your Portfolio</ActionLink>
+              <ActionLink href={getAuthHref()}>Create Your Portfolio</ActionLink>
               <ActionLink href="#showcase" kind="outline">Explore Portfolios</ActionLink>
             </div>
           </div>
@@ -200,7 +203,7 @@ export function Landing() {
           <div className="template-thumbnails" aria-label="Illustrative template arrangements">
             <span className="mini-template one" aria-hidden="true"/><span className="mini-template two" aria-hidden="true"/><span className="mini-template three" aria-hidden="true"/>
           </div>
-          <a className="outline-small" href="/signin">Create your portfolio <Icon name="arrow" size={16}/></a>
+          <a className="outline-small" href={getAuthHref()}>Create your portfolio <Icon name="arrow" size={16}/></a>
         </section>
 
         <section className="steps section" aria-labelledby="steps-heading">
@@ -227,7 +230,7 @@ export function Landing() {
         <section className="closing-cta" aria-labelledby="closing-heading">
           <div><h2 id="closing-heading">Build Your Developer Identity Today.</h2>
             <p>Create a portfolio that represents your work, your growth, and what you build next.</p></div>
-          <ActionLink href="/signin" kind="outline">Create Your Portfolio</ActionLink>
+          <ActionLink href={getAuthHref()} kind="outline">Create Your Portfolio</ActionLink>
           <div className="closing-pattern" aria-hidden="true"/>
         </section>
       </main>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ActionLink, Brand, Icon, useTheme } from './landing.tsx';
+import { ActionLink, Brand, Icon, useTheme, getAuthHref } from './landing.tsx';
 import { filterShowcaseConcepts } from './behavior.ts';
 
 type ConceptCategory = 'All'|'Full-Stack'|'Frontend'|'AI / ML'|'Product';
@@ -36,7 +36,7 @@ export function ExplorePortfolios(){
             aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'}>
             <Icon name={theme==='light'?'moon':'sun'} size={16}/><span>{theme==='light'?'Dark':'Light'}</span>
           </button>
-          <a className="header-signin" href="/signin"><Icon name="user" size={15}/> Sign in</a>
+          <a className="header-signin" href={getAuthHref()}><Icon name="user" size={15}/> Sign in</a>
         </div>
       </header>
       <main id="explore-main" className="explore-main">
@@ -46,7 +46,7 @@ export function ExplorePortfolios(){
             <h1 id="explore-title">Explore developer<br/><em>portfolios.</em></h1>
             <p>Discover how real work and thoughtful developer identities could be showcased on Kadmeion.</p>
             <div className="hero-actions"><ActionLink href="/templates">Explore Templates</ActionLink>
-              <ActionLink href="/signin" kind="outline">Create Your Portfolio</ActionLink></div>
+              <ActionLink href={getAuthHref()} kind="outline">Create Your Portfolio</ActionLink></div>
           </div>
           <div className="explore-featured">
             <div className="explore-featured-art" aria-hidden="true"><span/><span/><span/></div>
@@ -101,7 +101,7 @@ export function ExplorePortfolios(){
         <section className="explore-footer-note" aria-labelledby="explore-footer-title">
           <div><h2 id="explore-footer-title">Ready to show your own work?</h2>
             <p>Sign in to author privately. Public portfolios appear only when genuine publication and revocation checks pass.</p></div>
-          <ActionLink href="/signin">Create Your Portfolio</ActionLink>
+          <ActionLink href={getAuthHref()}>Create Your Portfolio</ActionLink>
         </section>
       </main>
     </div>
