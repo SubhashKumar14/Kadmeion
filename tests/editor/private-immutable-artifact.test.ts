@@ -6,7 +6,7 @@ import {
 } from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 import type {SafePreviewInput} from '../../packages/editor-core/src/publish-preflight.ts';
 import {SupabasePrivateFrozenRevisionLoader} from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
-import {createPrivateImmutableMediaCandidate,verifyPrivateImmutableMediaCandidate,exportPrivateStandaloneMediaPreview} from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
+import {createPrivateImmutableMediaCandidate,createPrivateImmutableMediaCandidateFromFrozenSlots,verifyPrivateImmutableMediaCandidate,exportPrivateStandaloneMediaPreview} from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 
 const id='10000000-0000-4000-8000-000000000001';
 const requestId='20000000-0000-4000-8000-000000000002';
@@ -222,6 +222,57 @@ test('B08 joins verified frozen HTML to sanitized, relative content-addressed PN
   const offline=await exportPrivateStandaloneMediaPreview(source,plan,reader);
   assert.equal(offline.previewOnly,true);assert.equal(offline.publicUrl,null);
   assert.equal(offline.htmlSha256,candidate.manifest.files[0].sha256);
+
+  const slotSource=make();
+  slotSource.snapshot.files['pages/home.page.json']=JSON.stringify({
+    sections:[{id:'display',layout:'project-showcase@1',
+      slotKeys:['thumbs','media','image','badge','title','meta','cta']}]
+  });
+  const imageContent={asset_id:assetId,source_sha256:sourceSha,alt_text:plan[0].altText};
+  slotSource.snapshot.slots={
+    'display-title':slotSource.snapshot.slots.hero,
+    'display-image':{state:'S0',componentId:'image@1',content:imageContent},
+    'display-media':{state:'S0',componentId:'image@1',
+      content:{asset_id:assetId,source_sha256:sourceSha,decorative:'true'}},
+    'display-thumbs':{state:'EMPTY',content:{}},
+    'display-badge':{state:'EMPTY',content:{}},
+    'display-meta':{state:'EMPTY',content:{}},
+    'display-cta':{state:'EMPTY',content:{}}
+  };
+  slotSource.plan=[
+    {slotKey:'display-title',componentId:'title-stacked@1',kind:'heading',required:true},
+    {slotKey:'display-image',componentId:'image@1',kind:'image',required:true},
+    {slotKey:'display-media',componentId:'image@1',kind:'image',required:false},
+    {slotKey:'display-thumbs',componentId:'image@1',kind:'image',required:false},
+    {slotKey:'display-badge',componentId:'technology-tag@1',kind:'badge',required:false},
+    {slotKey:'display-meta',componentId:'author-metric@1',kind:'metric',required:false},
+    {slotKey:'display-cta',componentId:'external-link@1',kind:'external-link',required:false}
+  ];
+  const pinnedSlots=await attested(slotSource);
+  const readsBefore=readCount;
+  const slotted=await createPrivateImmutableMediaCandidateFromFrozenSlots(pinnedSlots,reader);
+  assert.equal(readCount,readsBefore+1,'multiple image slots reuse the verified asset read');
+  assert.equal(slotted.files.length,2,'identical images have a single asset entry');
+  const slottedHtml=new TextDecoder().decode(slotted.files[0].bytes);
+  assert.match(slottedHtml,/<section class="k-layout k-l3"[^>]*>.*<figure class="k-image">/s);
+  assert.match(slottedHtml,/alt="Image &lt;safe&gt; &amp; &quot;real&quot;"/);
+  assert.match(slottedHtml,/alt=""/);
+  assert.ok(!slottedHtml.includes(assetId));
+  assert.equal((await exportPrivateStandaloneMediaPreview(pinnedSlots,undefined,reader)).htmlSha256,
+    slotted.manifest.files[0].sha256);
+  await assert.rejects(createPrivateImmutableArtifact(pinnedSlots),{code:'VALIDATION'});
+
+  for(const invalid of [
+    {asset_id:assetId,source_sha256:sourceSha},
+    {...imageContent,decorative:'true'},
+    {...imageContent,url:'https://foreign.example/image.png'}
+  ]){
+    slotSource.snapshot.slots['display-image'].content=invalid;
+    await assert.rejects(createPrivateImmutableMediaCandidateFromFrozenSlots(
+      await attested(slotSource),{readFrozenPinnedImage:async()=>assert.fail('invalid slot reached Storage')}),
+    {code:'VALIDATION'});
+  }
+
   const zipBytes=offline.zip,view=new DataView(zipBytes.buffer,
     zipBytes.byteOffset,zipBytes.byteLength);
   const archiveFiles=new Map<string,Uint8Array>();

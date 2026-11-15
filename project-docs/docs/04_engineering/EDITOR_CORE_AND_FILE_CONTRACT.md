@@ -60,6 +60,12 @@ flowchart TD
 - Change layout → side-by-side previews, slot-to-slot mapping, unmatched stash before confirmation, keyboard and drag ordering equivalents.
 - Replace media → update asset ID, alt and focal metadata, preserving historic referenced assets until revision and backup retention allow removal.
 
+### Frozen PNG preview and static export
+
+The private renderer recognizes the pinned S0 component `image@1` in an image-compatible layout slot. Slot content contains string fields `asset_id` and `source_sha256`, plus nonblank `alt_text` or `decorative: "true"` with an empty text alternative. The trusted server render plan assigns kind `image`. The source digest comes from the registered private asset attestation. Each image is re-read through the owner-scoped reader, verified against the frozen digest and re-encoded before rendering. Shared images reuse one manifested PNG while each placement retains its own text alternative.
+
+`createPrivateImmutableMediaCandidateFromFrozenSlots` returns an integrity-pinned candidate. Pass an undefined media plan to `exportPrivateStandaloneMediaPreview` to export those same frozen placements. The preview uses relative hashed PNG paths, carries noindex and forbids scripts. Public delivery still requires controlled immutable storage, fresh visibility checks and an independent host revocation test.
+
 ## 5. Custom code and theme token contract
 
 `Customize` detaches a vetted library usage into a user-owned file. The original library stays read-only. The source editor may edit opaque user files; the visual composition editor does **not** parse arbitrary JS/TSX back into editable slots. Custom code can voluntarily consume `--k-*` tokens and typed props. Scoped theme overrides are emitted as clean CSS custom properties; no automatic rewrite of arbitrary source. Code may compile only in validated restricted preview contexts and cannot publish active user JavaScript until independent hostile-origin proof passes.

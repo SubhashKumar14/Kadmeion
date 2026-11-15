@@ -3,7 +3,7 @@ import { validateSnapshot, type PortfolioSnapshot } from './portfolio-revision-t
 import {portfolioLayout} from './managed-project-files.ts';
 
 /** Trusted, TEXT-ONLY private preview; not a release renderer or public access proof. */
-export type SafeSlotKind = 'heading'|'paragraph'|'external-link'|'badge'|'metric'|'list'|'project-card';
+export type SafeSlotKind = 'heading'|'paragraph'|'external-link'|'badge'|'metric'|'list'|'project-card'|'image';
 export interface SafeSlotPlan {
   slotKey:string; componentId:string; kind:SafeSlotKind; required:boolean;
 }
@@ -50,6 +50,32 @@ const diag=(code:string,target:string,message:string):PreflightDiagnostic=>({cod
 const themeColors=['surface','text','accent'] as const;
 const themeKeys=['mode',...themeColors] as const;
 
+export const SAFE_IMAGE_COMPONENT='image@1';
+const IMAGE_LAYOUT_SLOTS=new Set(['avatar','image','imagea','imageb','media','thumbs']);
+const SAFE_PNG_PATH=/^assets\/[a-f0-9]{64}\.png$/;
+export interface SafeStaticImage {
+  path:string;
+  width:number;
+  height:number;
+}
+
+/** Only a frozen S0 image can supply data for the trusted raster renderer. */
+export function readSafeImageSlotContent(content:Record<string,string>):
+  {assetId:string;expectedSourceSha256:string;altText:string}|null {
+  const {asset_id:assetId,source_sha256:sourceSha256,alt_text:altText,decorative}=content;
+  if(Object.keys(content).some(key=>!['asset_id','source_sha256','alt_text','decorative'].includes(key))||
+     typeof assetId!=='string'||!UUID.test(assetId)||
+     typeof sourceSha256!=='string'||!SHA.test(sourceSha256)||
+     (decorative!==undefined&&decorative!=='true'&&decorative!=='false'))
+    return null;
+  if(decorative==='true')
+    return altText===undefined||altText===''?{assetId,expectedSourceSha256:sourceSha256,altText:''}:null;
+  const label=stringField(altText,300);
+  return label&&!/[\x00-\x1f\x7f]/.test(label)
+    ?{assetId,expectedSourceSha256:sourceSha256,altText:label}:null;
+}
+
+
 /** Resolve the frozen page's pinned section order against the server-approved slot plan. */
 function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:PortfolioSnapshot):SafeRenderSection[]|null {
   if(!record(page)||!Array.isArray(page.sections)||page.sections.length>16)return null;
@@ -58,6 +84,7 @@ function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:Portf
     if(!record(section)||typeof section.id!=='string'||typeof section.layout!=='string')return null;
     const layout=portfolioLayout(section.layout);
     if(!layout)return null;
+    const slotPrefix=section.id+'-';
     const assignments=new Map<string,unknown>();
     if(Object.hasOwn(section,'slots')===Object.hasOwn(section,'slotKeys'))return null;
     const entries:readonly (readonly [unknown,unknown])[]=record(section.slots)?Object.entries(section.slots):
@@ -65,7 +92,7 @@ function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:Portf
     if(entries.length<1||entries.length>12)return null;
     for(const [name,assignment] of entries){
       if(typeof name!=='string')return null;
-      const key=section.id+'-'+name.toLowerCase();
+      const key=slotPrefix+name.toLowerCase();
       if(!/^[a-zA-Z0-9_-]{1,64}$/.test(name)||!SLOT.test(key)||assignments.has(key))return null;
       const saved=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
       if(assignment===undefined){
@@ -78,6 +105,8 @@ function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:Portf
     }
     const slots=plan.filter(slot=>assignments.has(slot.slotKey));
     if(slots.length!==assignments.size||slots.some(slot=>{
+      if(slot.kind==='image'&&!IMAGE_LAYOUT_SLOTS.has(slot.slotKey.slice(slotPrefix.length)))
+        return true;
       const assignment=assignments.get(slot.slotKey);
       return assignment!==undefined&&assignment!==null&&(!record(assignment)||assignment.use!==slot.componentId);
     }))return null;
@@ -117,9 +146,11 @@ function groupedSections(input:unknown,slotOrder:readonly string[]):SafeRenderSe
 /**
  * B4 preflight is deliberately fail-closed: the host/resolver/revocation proof
  * is not available, so publicationReady is always false, including for
- * renderable content. Output bytes have no scripts, media or source files.
+ * renderable content. Output omits scripts and source files. Images require verified raster bytes.
  */
-export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResult {
+export function prepareSafeStaticPreview(
+  input:SafePreviewInput,verifiedImages?:ReadonlyMap<string,SafeStaticImage>
+):SafePreviewResult {
   const blockers:PreflightDiagnostic[]=[],warnings:PreflightDiagnostic[]=[],passed:PreflightDiagnostic[]=[];
   const block=(code:string,target:string,message:string)=>blockers.push(diag(code,target,message));
   const warn=(code:string,target:string,message:string)=>warnings.push(diag(code,target,message));
@@ -139,12 +170,12 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
     block('INVALID_RENDER_PLAN','plan','A bounded, trusted render plan is required.');
   const seen=new Set<string>(),body:string[]=[];
   const rendered=new Map<string,string>();
-  let headings=0;
+  let headings=0,images=0;
   if(valid&&Array.isArray(input.plan)&&input.plan.length>0&&input.plan.length<=32){
     for(const spec of input.plan){
       if(!record(spec)||typeof spec.slotKey!=='string'||!SLOT.test(spec.slotKey)||
          typeof spec.componentId!=='string'||!PIN.test(spec.componentId)||
-         !['heading','paragraph','external-link','badge','metric','list','project-card'].includes(String(spec.kind))||
+         !['heading','paragraph','external-link','badge','metric','list','project-card','image'].includes(String(spec.kind))||
          typeof spec.required!=='boolean'||seen.has(spec.slotKey)){
         block('INVALID_RENDER_PLAN','plan','Invalid or duplicate slot mapping.');continue;
       }
@@ -165,7 +196,23 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
       const c=slot.content;
       const slotKey=spec.slotKey;
       const emit=(html:string):void=>{body.push(html);rendered.set(slotKey,html);};
-      if(spec.kind==='heading'){
+      if(spec.kind==='image'){
+        const source=spec.componentId===SAFE_IMAGE_COMPONENT?readSafeImageSlotContent(c):null;
+        if(!source){
+          block('INVALID_IMAGE_REFERENCE',slotKey,'Select a pinned image and provide a description or mark it decorative.');
+          continue;
+        }
+        const image=verifiedImages?.get(slotKey);
+        if(!image||!SAFE_PNG_PATH.test(image.path)||
+           !Number.isSafeInteger(image.width)||image.width<1||image.width>4096||
+           !Number.isSafeInteger(image.height)||image.height<1||image.height>4096){
+          block('IMAGE_BYTES_UNVERIFIED',slotKey,'Pinned image bytes must be verified before rendering.');
+          continue;
+        }
+        images++;
+        emit('<figure class="k-image"><img loading="lazy" decoding="async" src="./'+image.path+
+          '" alt="'+escapeHtml(source.altText)+'" width="'+image.width+'" height="'+image.height+'"></figure>');
+      }else if(spec.kind==='heading'){
         if(Object.keys(c).some(k=>!['title','subtitle'].includes(k))){
           block('UNKNOWN_PUBLIC_FIELD',spec.slotKey,'Unexpected fields are not released.');continue;
         }
@@ -234,7 +281,7 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
         emit('<nav aria-label="External link"><a rel="nofollow noopener noreferrer" href="'+
           escapeHtml(url)+'">'+escapeHtml(label)+'</a></nav>');
       }
-      pass('DATA_ONLY_SLOT',spec.slotKey,'Projected only explicitly selected text.');
+      pass('DATA_ONLY_SLOT',spec.slotKey,'Projected only approved content.');
     }
     for(const [key,slot] of Object.entries(input.snapshot.slots)){
       if(slot.state!=='EMPTY'&&!seen.has(key))
@@ -307,7 +354,7 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
   if(blockers.some(x=>x.code!=='PUBLIC_DELIVERY_UNVERIFIED')||!seoTitle||!seoDescription)
     return {status:'BLOCKED',blockers,warnings,passed,previewHtml:null,publicationReady:false};
 
-  const csp="default-src 'none'; script-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'";
+  const csp="default-src 'none'; script-src 'none'; img-src "+(images?"'self'":"'none'")+"; object-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'";
   const html='<!doctype html><html lang="en"><head><meta charset="utf-8">'+
     '<meta name="viewport" content="width=device-width,initial-scale=1">'+
     '<meta name="robots" content="noindex,nofollow,noarchive">'+
@@ -318,6 +365,7 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
     ';color-scheme:'+(theme?.mode??'light')+'}body{max-width:'+
     (sections?'80rem':'70ch')+';margin:2rem auto;padding:0 1rem}section{margin:2rem 0}p{white-space:pre-line}a:focus-visible{outline:3px solid currentColor}.k-badge{display:inline-block;border:1px solid currentColor;border-radius:.3rem;padding:.15rem .55rem}.k-project-card{border:1px solid currentColor;border-radius:.65rem;padding:1rem}dt{font-size:.85rem}dd{margin:0;font-size:1.5rem;font-weight:650}'+
     (sections?'main{display:grid;gap:clamp(1rem,3vw,2.5rem)}.k-layout{min-width:0;padding:clamp(1rem,3vw,2rem);border-block-start:2px solid '+(theme?.accent??'#737373')+'}.k-l1,.k-l5{min-height:20rem;display:grid;align-content:center}.k-l2,.k-l4{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.k-l2>section:first-child,.k-l4>section:first-child{grid-column:1/-1}.k-l3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.k-l3>section:first-child{grid-column:1/-1}.k-l8{border-block-end:2px solid currentColor}@media(max-width:48rem){.k-l2,.k-l3,.k-l4{grid-template-columns:1fr}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}':'')+
+    (images?'.k-image{margin:0}.k-image img{display:block;max-width:100%;height:auto}':'')+
     '</style>'+
     '</head><body><main id="content">'+renderedContent+'</main></body></html>';
   if(encoder.encode(html).byteLength>750000){

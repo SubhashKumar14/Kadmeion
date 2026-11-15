@@ -1,7 +1,8 @@
 import type { SanitizedPublicationPng } from './safe-png-publication.ts';
 import {writeStoredZip} from './portable-source-archive.ts';
 import { ContractError } from '../../contracts/src/project.ts';
-import { prepareSafeStaticPreview, type SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
+import { prepareSafeStaticPreview, readSafeImageSlotContent, SAFE_IMAGE_COMPONENT,
+  type SafePreviewInput, type SafeStaticImage } from '../../editor-core/src/publish-preflight.ts';
 import { assertAttestedPrivateFrozenRevision } from './private-frozen-revision-loader.ts';
 
 const encoder = new TextEncoder();
@@ -182,21 +183,59 @@ export async function createPrivateImmutableMediaCandidate(
   plan:readonly ServerPinnedPrivateMediaPlanItem[],
   reader:TrustedPrivateMediaReader
 ):Promise<PrivateImmutableMediaCandidate>{
-  // Even a correctly copied snapshot and matching digest are not sufficient:
-  // this call first performs the original loader WeakMap attestation check.
   const original=await createPrivateImmutableArtifact(input);
+  return buildPrivateMediaCandidate(input,plan,reader,{html:new TextDecoder('utf-8',{fatal:true})
+    .decode(original.files[0].bytes)});
+}
+
+/** Resolve only image assignments in the exact attested snapshot and trusted layout plan. */
+export async function createPrivateImmutableMediaCandidateFromFrozenSlots(
+  input:SafePreviewInput,
+  reader:TrustedPrivateMediaReader
+):Promise<PrivateImmutableMediaCandidate>{
+  assertAttestedPrivateFrozenRevision(input);
+  // Pin the server-supplied plan before asynchronous Storage reads.
+  input={...input,frozen:{...input.frozen},plan:input.plan.map(slot=>({...slot})),
+    renderSections:input.renderSections?.map(section=>({...section,slotKeys:[...section.slotKeys]})),
+    portfolioTheme:input.portfolioTheme&&{...input.portfolioTheme}};
+  // The normal preflight already checks section membership, pinned layout,
+  // component IDs and every active slot. Accept only missing verified bytes.
+  const preview=prepareSafeStaticPreview(input);
+  if(preview.blockers.some(({code})=>code!=='IMAGE_BYTES_UNVERIFIED'&&code!=='PUBLIC_DELIVERY_UNVERIFIED'))
+    throw new ContractError('VALIDATION','Frozen image slot preflight failed.');
+  const plan:ServerPinnedPrivateMediaPlanItem[]=[];
+  const slotKeys:string[]=[];
+  for(const spec of input.plan){
+    if(spec.kind!=='image'||spec.componentId!==SAFE_IMAGE_COMPONENT)continue;
+    const slot=input.snapshot.slots[spec.slotKey];
+    if(slot?.state!=='S0')continue;
+    const media=readSafeImageSlotContent(slot.content);
+    if(!media)throw new ContractError('VALIDATION','Frozen image slot reference is invalid.');
+    plan.push(media);
+    slotKeys.push(spec.slotKey);
+  }
+  return buildPrivateMediaCandidate(input,plan,reader,{slotKeys});
+}
+
+async function buildPrivateMediaCandidate(
+  input:SafePreviewInput,plan:readonly ServerPinnedPrivateMediaPlanItem[],
+  reader:TrustedPrivateMediaReader,placement:{html:string}|{slotKeys:readonly string[]}
+):Promise<PrivateImmutableMediaCandidate>{
+  const {portfolioId,revision,snapshotSha256,visibilityIntent}=input.frozen;
   // Delay loading Node-only raster codec until this server-only method executes.
   const {sanitizePngForPrivatePublicationCandidate}=await import('./safe-png-publication.ts');
   if(!Array.isArray(plan)||plan.length===0||plan.length>8||
      !reader||typeof reader.readFrozenPinnedImage!=='function')
     throw new ContractError('VALIDATION','Trusted private media plan is required.');
-  const assetIds=new Set<string>(),paths=new Set<string>(),files:{
+  const fetched=new Map<string,{sourceSha:string;sanitized:SanitizedPublicationPng}>();
+  const resolvedSlots=new Map<string,SafeStaticImage>();
+  const paths=new Set<string>(),files:{
     path:string;bytes:Uint8Array
   }[]=[];
   const media:PrivateImmutableMediaCandidate['manifest']['media'][number][]=[];
   const fragments:string[]=[];
   let total=0;
-  for(const item of plan){
+  for(const [index,item] of plan.entries()){
     if(!item||typeof item!=='object'||Array.isArray(item)||
        Object.keys(item).sort().join(',')!=='altText,assetId,expectedSourceSha256')
       throw new ContractError('VALIDATION','Private media plan: invalid field layout.');
@@ -204,43 +243,41 @@ export async function createPrivateImmutableMediaCandidate(
       throw new ContractError('VALIDATION','Private media plan: asset reference must be text.');
     if(!MEDIA_UUID.test(item.assetId))
       throw new ContractError('VALIDATION','Private media plan: asset reference syntax is invalid.');
-    if(assetIds.has(item.assetId))
-      throw new ContractError('VALIDATION','Private media plan: duplicate asset reference.');
     if(typeof item.expectedSourceSha256!=='string'||
        !MEDIA_SHA.test(item.expectedSourceSha256))
       throw new ContractError('VALIDATION','Private media plan: invalid source digest.');
     if(typeof item.altText!=='string'||item.altText.length>300||
        MEDIA_ALT_BAD.test(item.altText))
       throw new ContractError('VALIDATION','Private media plan: invalid text alternative.');
-    assetIds.add(item.assetId);
-    let evidence:unknown;
-    try{
-      evidence=await reader.readFrozenPinnedImage({
-        assetId:item.assetId,
-        portfolioId:input.frozen.portfolioId,
-        revision:input.frozen.revision
-      });
-    }catch{
-      throw new ContractError('VALIDATION','Private media authorization or Storage read failed.');
+    const {assetId,expectedSourceSha256,altText}=item;
+    let result=fetched.get(assetId);
+    if(result&&('html' in placement||result.sourceSha!==expectedSourceSha256))
+      throw new ContractError('VALIDATION','Private media plan: duplicate or conflicting asset reference.');
+    if(!result){
+      let evidence:unknown;
+      try{
+        evidence=await reader.readFrozenPinnedImage({assetId,portfolioId,revision});
+      }catch{
+        throw new ContractError('VALIDATION','Private media authorization or Storage read failed.');
+      }
+      if(!record(evidence)||Object.keys(evidence).sort().join(',')!==
+         'assetId,bytes,mimeType,portfolioId,revision,sourceSha256,storageVersion'||
+         evidence.assetId!==assetId||evidence.portfolioId!==portfolioId||evidence.revision!==revision||
+         evidence.mimeType!=='image/png'||evidence.sourceSha256!==expectedSourceSha256||
+         typeof evidence.storageVersion!=='string'||
+         !/^[A-Za-z0-9_-]{1,128}$/.test(evidence.storageVersion)||
+         !(evidence.bytes instanceof Uint8Array)||
+         evidence.bytes.byteLength===0||evidence.bytes.byteLength>5*1024*1024)
+        throw new ContractError('VALIDATION','Pinned media evidence does not match this frozen release.');
+      const sourceBytes=Uint8Array.from(evidence.bytes);
+      const sourceSha=await sha256(sourceBytes);
+      if(sourceSha!==expectedSourceSha256)
+        throw new ContractError('VALIDATION','Private media bytes disagree with the immutable source pin.');
+      try{result={sourceSha,sanitized:sanitizePngForPrivatePublicationCandidate(sourceBytes)};}
+      catch{throw new ContractError('VALIDATION','Private media failed strict raster validation.');}
+      fetched.set(assetId,result);
     }
-    if(!record(evidence)||Object.keys(evidence).sort().join(',')!==
-       'assetId,bytes,mimeType,portfolioId,revision,sourceSha256,storageVersion'||
-       evidence.assetId!==item.assetId||
-       evidence.portfolioId!==input.frozen.portfolioId||
-       evidence.revision!==input.frozen.revision||
-       evidence.mimeType!=='image/png'||
-       evidence.sourceSha256!==item.expectedSourceSha256||
-       typeof evidence.storageVersion!=='string'||
-       !/^[A-Za-z0-9_-]{1,128}$/.test(evidence.storageVersion)||
-       !(evidence.bytes instanceof Uint8Array)||
-       evidence.bytes.byteLength===0||evidence.bytes.byteLength>5*1024*1024)
-      throw new ContractError('VALIDATION','Pinned media evidence does not match this frozen release.');
-    const sourceSha=await sha256(evidence.bytes);
-    if(sourceSha!==item.expectedSourceSha256)
-      throw new ContractError('VALIDATION','Private media bytes disagree with the immutable source pin.');
-    let sanitized:SanitizedPublicationPng;
-    try{sanitized=sanitizePngForPrivatePublicationCandidate(evidence.bytes);}
-    catch{throw new ContractError('VALIDATION','Private media failed strict raster validation.');}
+    const {sourceSha,sanitized}=result;
     const path='assets/'+sanitized.sha256+'.png';
     if(!paths.has(path)){
       total+=sanitized.bytes.byteLength;
@@ -249,13 +286,41 @@ export async function createPrivateImmutableMediaCandidate(
       paths.add(path);
       files.push({path,bytes:sanitized.bytes});
     }
-    media.push({assetId:item.assetId,originalSha256:sourceSha,path,
-      width:sanitized.width,height:sanitized.height,altText:item.altText});
-    fragments.push('<figure><img loading="lazy" decoding="async" src="./'+path+
-      '" alt="'+escapeMediaAlt(item.altText)+'" width="'+sanitized.width+
+    media.push({assetId,originalSha256:sourceSha,path,
+      width:sanitized.width,height:sanitized.height,altText});
+    if('slotKeys' in placement)
+      resolvedSlots.set(placement.slotKeys[index],{path,width:sanitized.width,height:sanitized.height});
+    else fragments.push('<figure><img loading="lazy" decoding="async" src="./'+path+
+      '" alt="'+escapeMediaAlt(altText)+'" width="'+sanitized.width+
       '" height="'+sanitized.height+'"></figure>');
   }
-  const originalHtml=new TextDecoder('utf-8',{fatal:true}).decode(original.files[0].bytes);
+  let html:string;
+  if('slotKeys' in placement){
+    assertAttestedPrivateFrozenRevision(input);
+    const preview=prepareSafeStaticPreview(input,resolvedSlots);
+    if(preview.status!=='PREVIEW_ONLY'||preview.blockers.length!==1||!preview.previewHtml)
+      throw new ContractError('VALIDATION','Frozen image slot could not be rendered.');
+    html=preview.previewHtml;
+  }else{
+    html=addPrivatePreviewGallery(placement.html,fragments);
+  }
+  const htmlBytes=encoder.encode(html);
+  if(htmlBytes.length>750000)
+    throw new ContractError('VALIDATION','Private media HTML exceeds release preview limits.');
+  const orderedFiles=[{path:'index.html',bytes:htmlBytes},...files];
+  const manifest:PrivateImmutableMediaCandidate['manifest']={
+    kind:'kadmeion-private-media-artifact-candidate',formatVersion:1,
+    source:{portfolioId,revision,snapshotSha256,visibilityIntent},
+    files:await Promise.all(orderedFiles.map(async file=>({
+      path:file.path,byteLength:file.bytes.byteLength,sha256:await sha256(file.bytes)
+    }))),
+    media,deployable:false,publicUrl:null
+  };
+  const manifestSha256=await sha256(encoder.encode(JSON.stringify(manifest)));
+  return {manifest,manifestSha256,files:orderedFiles,deployable:false,publicUrl:null};
+}
+
+function addPrivatePreviewGallery(originalHtml:string,fragments:readonly string[]):string {
   const blockedCsp="img-src &#39;none&#39;";
   const endMain='</main>';
   if(originalHtml.split(blockedCsp).length!==2||
@@ -264,25 +329,12 @@ export async function createPrivateImmutableMediaCandidate(
     throw new ContractError('VALIDATION','Private static preview markup cannot be extended safely.');
   const gallery='<section class="k-media-gallery" aria-label="Project images">'+
     fragments.join('')+'</section>';
-  const html=originalHtml.replace(blockedCsp,"img-src &#39;self&#39;")
+  return originalHtml.replace(blockedCsp,"img-src &#39;self&#39;")
     .replace('</style>',
       '.k-media-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem}.k-media-gallery figure{margin:0}.k-media-gallery img{display:block;max-width:100%;height:auto}'+
       '</style>')
     .replace(endMain,gallery+endMain);
-  const htmlBytes=encoder.encode(html);
-  if(htmlBytes.length>750000)
-    throw new ContractError('VALIDATION','Private media HTML exceeds release preview limits.');
-  const orderedFiles=[{path:'index.html',bytes:htmlBytes},...files];
-  const manifest:PrivateImmutableMediaCandidate['manifest']={
-    kind:'kadmeion-private-media-artifact-candidate',formatVersion:1,
-    source:original.manifest.source,
-    files:await Promise.all(orderedFiles.map(async file=>({
-      path:file.path,byteLength:file.bytes.byteLength,sha256:await sha256(file.bytes)
-    }))),
-    media,deployable:false,publicUrl:null
-  };
-  const manifestSha256=await sha256(encoder.encode(JSON.stringify(manifest)));
-  return {manifest,manifestSha256,files:orderedFiles,deployable:false,publicUrl:null};
+
 }
 
 /** Re-read and rebuild the entire private candidate before accepting its bytes. */
@@ -322,10 +374,12 @@ export async function verifyPrivateImmutableMediaCandidate(
  */
 export async function exportPrivateStandaloneMediaPreview(
   input:SafePreviewInput,
-  mediaPlan:readonly ServerPinnedPrivateMediaPlanItem[],
+  mediaPlan:readonly ServerPinnedPrivateMediaPlanItem[]|undefined,
   reader:TrustedPrivateMediaReader
 ):Promise<{zip:Uint8Array;htmlSha256:string;previewOnly:true;publicUrl:null}>{
-  const candidate=await createPrivateImmutableMediaCandidate(input,mediaPlan,reader);
+  const candidate=mediaPlan===undefined
+    ?await createPrivateImmutableMediaCandidateFromFrozenSlots(input,reader)
+    :await createPrivateImmutableMediaCandidate(input,mediaPlan,reader);
   const exposedManifest={
     kind:'kadmeion-standalone-media-preview',
     formatVersion:1,
