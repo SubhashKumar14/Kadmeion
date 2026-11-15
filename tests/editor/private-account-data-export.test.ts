@@ -4,7 +4,8 @@ import {createHash} from 'node:crypto';
 import {
   SupabasePrivateAccountDataExporter,verifyBoundedPrivateAccountExport,
   recoverPortfolioSourceZipFromPartialAccountExport,
-  createBoundedPrivateAccountRecoveryBundle
+  createBoundedPrivateAccountRecoveryBundle,
+  restoreBoundedPrivateAccountJsonFromRecoveryBundle
 } from '../../packages/storage-adapters/src/private-account-data-export.ts';
 import {importPortfolioSourceZip} from '../../packages/storage-adapters/src/portable-source-archive.ts';
 
@@ -607,4 +608,36 @@ test('B09 recovery ZIP fails closed on tampered assets and foreign record owners
   }
   await assert.rejects(createBoundedPrivateAccountRecoveryBundle(
     new Uint8Array(16*1024*1024+1)),{code:'VALIDATION'});
+});
+
+
+test('B09 private ZIP offline restore round-trips to the exact original bounded export bytes',async()=>{
+  const original=(await fixture().service.export(snapshot)).bytes;
+  const zipped=await createBoundedPrivateAccountRecoveryBundle(original);
+  const restored=await restoreBoundedPrivateAccountJsonFromRecoveryBundle(zipped.zip);
+  assert.deepEqual(restored.bytes,original);
+  assert.equal(restored.sha256,zipped.originalExportSha256);
+  assert.equal(restored.providerAuthenticityVerified,false);
+  assert.equal(restored.completeAccountExport,false);
+  assert.equal(restored.deletionAllowed,false);
+});
+
+test('B09 recovery ZIP rejects central-directory and checksum tampering',async()=>{
+  const original=(await fixture().service.export(snapshot)).bytes;
+  const {zip}=await createBoundedPrivateAccountRecoveryBundle(original);
+  const changed=Uint8Array.from(zip);
+  const needle=new TextEncoder().encode('kadmeion-private-account-recovery-bundle');
+  let at=-1;
+  for(let i=0;i+needle.length<changed.length;i++){
+    if(needle.every((b,k)=>changed[i+k]===b)){at=i;break;}
+  }
+  assert.ok(at>0);
+  changed[at+1]^=1;
+  await assert.rejects(restoreBoundedPrivateAccountJsonFromRecoveryBundle(changed),{
+    code:'INTEGRITY'
+  });
+  await assert.rejects(restoreBoundedPrivateAccountJsonFromRecoveryBundle(
+    zip.slice(0,-10)),{code:'INTEGRITY'});
+  await assert.rejects(restoreBoundedPrivateAccountJsonFromRecoveryBundle(
+    new Uint8Array(10*1024*1024+1)),{code:'INTEGRITY'});
 });

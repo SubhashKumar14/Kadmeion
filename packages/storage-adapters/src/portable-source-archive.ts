@@ -177,3 +177,90 @@ export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
   validateSnapshot(snapshot);
   return snapshot;
 }
+
+
+/**
+ * Strict reader for bounded ZIP-STORE artifacts (including private recovery
+ * bundles). Unlike the editor SOURCE importer, this accepts larger media
+ * entries but never compression, encryption, extra fields, traversal aliases,
+ * duplicate central references or unbounded inflation. It provides bytes,
+ * not document provenance or permission to publish them.
+ */
+export function readStrictStoredZip(
+  input:Uint8Array,limits:StoredZipLimits
+):Map<string,Uint8Array>{
+  check(input instanceof Uint8Array&&
+    Number.isSafeInteger(limits.maxBytes)&&limits.maxBytes>22&&
+    limits.maxBytes<=10*1024*1024&&
+    Number.isSafeInteger(limits.maxEntries)&&limits.maxEntries>=1&&
+    limits.maxEntries<=101&&Number.isSafeInteger(limits.maxEntryBytes)&&
+    limits.maxEntryBytes>0&&limits.maxEntryBytes<=limits.maxBytes&&
+    input.byteLength>=22&&input.byteLength<=limits.maxBytes,
+    'Invalid ZIP size or resource limits.');
+  const bytes=Uint8Array.from(input),view=new DataView(bytes.buffer);
+  const end=bytes.length-22;
+  check(view.getUint32(end,true)===0x06054b50&&
+    view.getUint16(end+4,true)===0&&view.getUint16(end+6,true)===0&&
+    view.getUint16(end+20,true)===0,'Missing or noncanonical ZIP footer.');
+  const count=view.getUint16(end+10,true);
+  const centralOffset=view.getUint32(end+16,true);
+  const centralSize=view.getUint32(end+12,true);
+  check(count>0&&count<=limits.maxEntries&&
+    count===view.getUint16(end+8,true)&&centralOffset>=0&&
+    centralOffset+centralSize===end,'Invalid ZIP directory bounds.');
+  const local=new Map<string,{data:Uint8Array;crc:number;offset:number}>();
+  let pos=0;
+  while(pos<centralOffset){
+    check(pos+30<=centralOffset&&view.getUint32(pos,true)===0x04034b50,
+      'Invalid ZIP local record.');
+    const flags=view.getUint16(pos+6,true),method=view.getUint16(pos+8,true),
+      entryCrc=view.getUint32(pos+14,true),size=view.getUint32(pos+18,true),
+      rawSize=view.getUint32(pos+22,true),nameLength=view.getUint16(pos+26,true),
+      extra=view.getUint16(pos+28,true);
+    check(view.getUint16(pos+4,true)===20&&flags===0x800&&method===0&&
+      view.getUint16(pos+10,true)===0&&view.getUint16(pos+12,true)===0&&
+      size===rawSize&&size<=limits.maxEntryBytes&&nameLength>0&&
+      extra===0&&pos+30+nameLength+size<=centralOffset,
+      'Unsupported or oversized ZIP local record.');
+    const offset=pos,begin=pos+30,dataStart=begin+nameLength;
+    let name:string;
+    try{name=decoder.decode(bytes.subarray(begin,dataStart));}
+    catch{throw new ContractError('VALIDATION','Invalid ZIP name encoding.');}
+    check(name.length<=160&&
+      /^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(name)&&
+      !name.includes('..')&&!name.includes('//')&&!name.endsWith('/')&&
+      !name.split('/').includes('.')&&!local.has(name),
+      'Unsafe or duplicate ZIP name.');
+    const data=bytes.slice(dataStart,dataStart+size);
+    check(crc32(data)===entryCrc,'ZIP file checksum disagrees with bytes.');
+    local.set(name,{data,crc:entryCrc,offset});
+    pos=dataStart+size;
+  }
+  check(pos===centralOffset&&local.size===count,'ZIP local header count mismatch.');
+  const seen=new Set<string>();
+  let cursor=centralOffset;
+  for(let i=0;i<count;i++){
+    check(cursor+46<=end&&view.getUint32(cursor,true)===0x02014b50&&
+      view.getUint16(cursor+4,true)===20&&view.getUint16(cursor+6,true)===20&&
+      view.getUint16(cursor+8,true)===0x800&&view.getUint16(cursor+10,true)===0&&
+      view.getUint16(cursor+12,true)===0&&view.getUint16(cursor+14,true)===0&&
+      view.getUint16(cursor+30,true)===0&&view.getUint16(cursor+32,true)===0,
+      'Unsupported ZIP directory record.');
+    const length=view.getUint16(cursor+28,true);
+    check(length>0&&cursor+46+length<=end,'ZIP directory record exceeds file.');
+    let name:string;
+    try{name=decoder.decode(bytes.subarray(cursor+46,cursor+46+length));}
+    catch{throw new ContractError('VALIDATION','Invalid central ZIP filename.');}
+    const actual=local.get(name);
+    check(actual&&!seen.has(name)&&
+      actual.crc===view.getUint32(cursor+16,true)&&
+      actual.data.length===view.getUint32(cursor+20,true)&&
+      actual.data.length===view.getUint32(cursor+24,true)&&
+      actual.offset===view.getUint32(cursor+42,true),
+      'ZIP local and central records disagree.');
+    seen.add(name);
+    cursor+=46+length;
+  }
+  check(cursor===end&&seen.size===local.size,'Incomplete ZIP central directory.');
+  return new Map([...local].map(([name,entry])=>[name,entry.data]));
+}

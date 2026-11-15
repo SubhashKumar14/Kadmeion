@@ -700,3 +700,115 @@ export async function createBoundedPrivateAccountRecoveryBundle(
     providerAuthenticityVerified:false,deletionAllowed:false
   };
 }
+
+
+/**
+ * Reconstruct the original bounded private-account JSON from an inspected
+ * recovery ZIP. This works offline and never confers a provider-authenticated
+ * identity. It rejects any extra/archive-only file, checksum drift, media
+ * path substitution, untruthful completeness flags or broken owner scope.
+ */
+export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
+  bundle:Uint8Array
+):Promise<{bytes:Uint8Array;sha256:string;status:'VERIFIED_OFFLINE_PARTIAL_RECOVERY';
+  providerAuthenticityVerified:false;completeAccountExport:false;
+  deletionAllowed:false}>{
+  const {readStrictStoredZip}=await import('./portable-source-archive.ts');
+  let archive:Map<string,Uint8Array>;
+  try{
+    archive=readStrictStoredZip(bundle,{
+      maxEntries:12,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024
+    });
+  }catch{
+    throw new PrivateAccountExportError('INTEGRITY','Malformed or oversized private recovery ZIP.');
+  }
+  const recordsBytes=archive.get('account/records.json'),
+    manifestBytes=archive.get('kadmeion-partial-bundle.json'),
+    readme=archive.get('README.txt');
+  requireCondition(recordsBytes&&manifestBytes&&readme&&
+    new TextDecoder().decode(readme).startsWith('KADMEION PRIVATE PARTIAL'),
+    'INTEGRITY','The recovery archive is incomplete.');
+  let records:unknown,manifest:unknown;
+  try{
+    records=JSON.parse(decoder.decode(recordsBytes));
+    manifest=JSON.parse(decoder.decode(manifestBytes));
+  }catch{throw new PrivateAccountExportError('INTEGRITY','Invalid private recovery metadata.');}
+  requireCondition(object(records)&&object(manifest)&&
+    manifest.kind==='kadmeion-private-account-recovery-bundle'&&
+    manifest.formatVersion===1&&
+    manifest.privateData===true&&manifest.completeAccountExport===false&&
+    manifest.providerAuthenticityVerified===false&&
+    manifest.deletionAllowed===false&&
+    isUuid(manifest.ownerId)&&isUuid(manifest.inventorySnapshotId)&&
+    manifest.recordsPath==='account/records.json'&&
+    typeof manifest.recordsSha256==='string'&&
+    manifest.recordsSha256===await sha256(recordsBytes)&&
+    typeof manifest.sourceExportSha256==='string'&&
+    /^[0-9a-f]{64}$/.test(manifest.sourceExportSha256)&&
+    records.kind==='kadmeion-bounded-account-bundle-records'&&
+    Array.isArray(records.assets)&&records.assets.length<=MAX_ASSETS&&
+    Array.isArray(manifest.files)&&
+    Array.isArray(manifest.assetReferences)&&
+    manifest.assetReferences.length===records.assets.length,
+    'INTEGRITY','Invalid private recovery metadata or completeness claims.');
+  const suffix:Record<string,string>={
+    'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/avif':'avif'
+  };
+  const actualFiles=new Map<string,{sha256:string;byteLength:number}>();
+  const embedded:JsonObject[]=[];
+  for(let i=0;i<records.assets.length;i++){
+    const entry:unknown=records.assets[i];
+    const ref:unknown=manifest.assetReferences[i];
+    requireCondition(object(entry)&&object(ref)&&
+      typeof entry.expectedSha256==='string'&&
+      /^[0-9a-f]{64}$/.test(entry.expectedSha256)&&
+      typeof entry.mimeType==='string'&&
+      typeof entry.path==='string'&&
+      typeof entry.archivePath==='string'&&
+      entry.archivePath==='assets/'+entry.expectedSha256+'.'+suffix[entry.mimeType]&&
+      ref.archivePath===entry.archivePath&&
+      ref.sha256===entry.expectedSha256&&
+      ref.originalPath===entry.path&&
+      !Object.hasOwn(entry,'base64'),
+      'INTEGRITY','Private recovery media reference is ambiguous.');
+    const blob=archive.get(entry.archivePath as string);
+    requireCondition(blob!==undefined&&blob.byteLength===entry.byteSize&&
+      await sha256(blob)===entry.expectedSha256,
+      'INTEGRITY','Private recovery media bytes failed digest verification.');
+    actualFiles.set(entry.archivePath as string,{
+      sha256:entry.expectedSha256 as string,byteLength:blob.byteLength
+    });
+    const {archivePath:unused,...rest}=entry;
+    void unused;
+    // Original account exporter writes base64 as the final media field,
+    // so reconstructing with it at the end preserves JSON source order.
+    embedded.push({...rest,base64:base64(blob)});
+  }
+  requireCondition(manifest.files.length===actualFiles.size&&
+    archive.size===actualFiles.size+3,
+    'INTEGRITY','Recovery archive has unexpected, omitted or duplicate files.');
+  for(const f of manifest.files){
+    requireCondition(object(f)&&Object.keys(f).sort().join(',')===
+      'byteLength,path,sha256'&&typeof f.path==='string'&&
+      actualFiles.has(f.path)&&
+      f.sha256===actualFiles.get(f.path)?.sha256&&
+      f.byteLength===actualFiles.get(f.path)?.byteLength,
+      'INTEGRITY','Recovery manifest differs from stored media.');
+  }
+  const restored={
+    ...records,kind:'kadmeion-bounded-private-account-export',
+    assets:embedded
+  };
+  const bytes=encoder.encode(JSON.stringify(restored));
+  const inspection=await verifyBoundedPrivateAccountExport(bytes);
+  requireCondition(inspection.sha256===manifest.sourceExportSha256&&
+    inspection.ownerId===manifest.ownerId&&
+    inspection.inventorySnapshotId===manifest.inventorySnapshotId,
+    'INTEGRITY','Reconstructed export does not match its original digest.');
+  return {
+    bytes,sha256:inspection.sha256,
+    status:'VERIFIED_OFFLINE_PARTIAL_RECOVERY',
+    providerAuthenticityVerified:false,completeAccountExport:false,
+    deletionAllowed:false
+  };
+}
