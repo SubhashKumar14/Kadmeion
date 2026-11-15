@@ -27,6 +27,7 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
 }={}) {
   const calls:{op:string;body:Record<string,string|number>}[]=[];
   const visits:string[]=[];
+  let acknowledged=state==='ACKNOWLEDGED';
   const object={...base,status:state,...(unlisted?{
     publicHandle:null,publicSlug:null}:{}),...prepare};
   const rpc=async(op:string,body:Record<string,string|number>):Promise<unknown>=>{
@@ -39,7 +40,7 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
       return activation??{status:'ACTIVATED_NEEDS_EXTERNAL_HTTP_VERIFICATION',
         portfolioId,releaseGeneration:7,htmlSha256:sha,publicUrl:null,
         hostRevocationVerified:false};
-    if(op==='service_acknowledge_unlisted_release')return true;
+    if(op==='service_acknowledge_unlisted_release'){acknowledged=true;return true;}
     if(op==='service_recover_failed_unlisted_release')
       return recovery??{portfolioId,status:'REVOKED',releaseGeneration:null};
     throw Error('Unsupported trusted RPC');
@@ -49,10 +50,10 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
     assert.equal(options?.method,'GET');
     assert.equal(options?.credentials,'omit');
     assert.equal(options?.redirect,'error');
-    return response??new Response(unlisted?html:publicHtml,{
+    return response??new Response(unlisted||!acknowledged?html:publicHtml,{
       status:200,headers:{
         ...releaseHeaders,
-        'X-Robots-Tag':unlisted?'noindex, nofollow':'index, follow'
+        'X-Robots-Tag':unlisted||!acknowledged?'noindex, nofollow, noarchive':'index, follow'
       }
     });
   };
@@ -93,6 +94,7 @@ test('newly activated publication must get a fresh host digest then database ack
   assert.deepEqual(f.calls.map(x=>x.op),[
     'service_prepare_unlisted_release','service_acknowledge_unlisted_release'
   ]);
+  assert.equal(f.visits.length,2,'Verify private canary and post-ack indexable delivery');
 });
 test('a matching digest cannot acknowledge unsafe cache, search or script headers',async()=>{
   for(const extra of [
@@ -104,12 +106,32 @@ test('a matching digest cannot acknowledge unsafe cache, search or script header
     {'Content-Security-Policy':''},
     {'Location':'/other'}
   ] as Record<string,string>[]){
-    const response=new Response(publicHtml,{headers:{...releaseHeaders,...extra}});
+    const response=new Response(html,{headers:{
+      ...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive',...extra
+    }});
     const f=fixture('AWAITING_VERIFICATION',{response});
     assert.deepEqual(await publishConsentedUnlistedRelease(id,f.ports),{status:'DELIVERY_REVOKED'});
     assert.equal(f.calls.at(-1)?.op,'service_recover_failed_unlisted_release');
   }
 });
+test('public release cannot claim success if the host stays noindex after the DB acknowledgment',async()=>{
+  const calls:string[]=[];
+  const initial=fixture('AWAITING_VERIFICATION');
+  const http=async(_input:RequestInfo|URL):Promise<Response>=>new Response(html,{
+    status:200,headers:{...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'}
+  });
+  const rpc=async(op:Parameters<typeof initial.ports.rpc>[0],body:Record<string,string|number>)=>{
+    calls.push(op);
+    return initial.ports.rpc(op,body);
+  };
+  await assert.rejects(publishConsentedUnlistedRelease(id,{
+    ...initial.ports,http:http as typeof fetch,rpc
+  }),/indexable HTTP verification/);
+  assert.deepEqual(calls,[
+    'service_prepare_unlisted_release','service_acknowledge_unlisted_release'
+  ],'Do not report success or issue a destructive rollback after the DB acknowledgment');
+});
+
 test('unverified new host delivery is revoked, not acknowledged',async()=>{
   const bad=new Response('fail',{status:503});
   const f=fixture('AWAITING_VERIFICATION',{response:bad});
@@ -127,7 +149,7 @@ test('private probe requires pinned HTML digest before activation and visitor fe
     'service_prepare_unlisted_release','service_probe_unlisted_release',
     'service_activate_unlisted_release','service_acknowledge_unlisted_release'
   ]);
-  assert.equal(f.visits.length,1);
+  assert.equal(f.visits.length,2);
 });
 test('probe byte tampering fails before activation or visitor exposure',async()=>{
   const f=fixture('PROBE_PENDING',{probe:{status:'PROBE_PENDING',
