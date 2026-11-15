@@ -447,3 +447,19 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-shell .ws-project-head{align-items:flex-start;gap:12px}
 .ws-editor-shell .ws-project-head .ws-actions{justify-content:flex-end}
 }
+
+/* Authoritative page-order layer tree: preserved even when DB JSONB sorts
+   slot object keys alphabetically, and safe for full keyboard operation. */
+.ws-editor-layers{padding:0;margin:16px 0;list-style:none;display:grid;gap:13px;max-height:57vh;overflow:auto}
+.ws-editor-layers>li>h3{margin:0 0 7px;font-size:12px;font-weight:750;letter-spacing:.04em;color:var(--body)}
+.ws-editor-layers .ws-editor-slots{margin:0;max-height:none;display:grid;gap:3px}
+.ws-editor-layers .ws-editor-slots button{display:flex;align-items:center;justify-content:space-between;
+  gap:7px;overflow-wrap:anywhere;min-height:37px}
+.ws-editor-layer-name{text-transform:capitalize;font-size:11px;color:var(--ink)!important}
+.ws-editor-layer-state{font-size:10px!important;white-space:nowrap;color:var(--body)!important}
+.ws-editor-layers .ws-editor-slots button[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-strong)}
+.pv-layout-example{font:inherit;font-style:normal;opacity:.92}
+.pv-slot-title .pv-layout-example{font-family:Georgia,serif;font-size:inherit;line-height:1.15}
+.pv-slot-action .pv-layout-example{font-family:Arial,sans-serif;font-size:12px;font-weight:650;color:inherit;opacity:1}
+.pv-media-blank{display:block;width:100%;min-height:85px}
+@media(max-width:950px){.ws-editor-layers{max-height:45vh}}

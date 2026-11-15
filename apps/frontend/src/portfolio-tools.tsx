@@ -25,6 +25,15 @@ function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioThe
 
 type CanvasSection={id:string;layout:string;renderId:string;slots:string[]};
 const TEXT_FIELDS=['title','text','label','description','value','items','note'] as const;
+/** Layout illustration only, not a saved author value and never emitted by fullscreen
+ * preview or any delivery adapter. Actual user content always takes precedence. */
+function layoutExample(renderId:string,name:string):string|null {
+  if(renderId==='L1'&&name==='title')return 'Build things that make a difference.';
+  if(renderId==='L1'&&name==='text')return 'Selected work, practical skills and project stories.';
+  if(renderId==='L1'&&name==='cta1')return 'Explore projects';
+  if(renderId==='L3'&&name==='title')return 'Selected projects';
+  return null;
+}
 const SLOT_TITLES:Readonly<Record<string,string>>={
   title:'headline',text:'introduction',cta:'call to action',cta1:'primary action',
   cta2:'secondary action',btn1:'primary action',btn2:'secondary action',
@@ -80,12 +89,17 @@ export function PortfolioCanvas({snapshot, title, standalone, width, selectedSlo
     const assignment=snapshot?.slots[key];
     const text=slotDisplay(assignment);
     const label=SLOT_TITLES[name.toLowerCase()]??name;
+    const example=editing&&!text?layoutExample(section.renderId,name):null;
     const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
     if(editing)return <button className={className} type="button"
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot(key)}>
-      {text||<span className="pv-placeholder">Add {label}</span>}
+      {text||(
+        kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
+        example?<span className="pv-placeholder pv-layout-example">{example}</span>:
+        <span className="pv-placeholder">Add {label}</span>
+      )}
     </button>;
     return text?<span className={className}>{text}</span>:
       standalone?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
@@ -95,7 +109,7 @@ export function PortfolioCanvas({snapshot, title, standalone, width, selectedSlo
     style={style} aria-label={standalone?'Saved private portfolio author preview':'Private authoring canvas'}>
     {!standalone&&<div className="pv-editor-caption">
       <span>AUTHOR CANVAS / {theme.mode.toUpperCase()}</span>
-      <span>Private draft · Not a live website</span>
+      <span>Illustrative empty-slot copy · Never saved or published</span>
     </div>}
     <div className="pv-site">
       <header className="pv-site-head"><strong>{title}</strong>

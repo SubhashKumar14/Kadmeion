@@ -765,3 +765,17 @@ Code checkpoint following `28dce0b`: `apps/frontend/src/workspace.tsx` attaches 
 **Evidence:** prior `890afc2` screenshot #18 SSIM declined 0.705→0.677 despite functional improvement, so this is a direct geometry correction, NOT proof of approved pixel parity. Current change requires exact-SHA Chromium capture, compare and both frontend/DB CI. Previous `28dce0b` browser test fixed wrong port; isolated database retried local Docker port conflict with project-specific ephemeral cleanup. No paid hosting, provider activation, production DB mutations or main merge.
 
 **Next:** verify both CI workflows for this commit, download new #18 screenshot and compare to exact approved PNG, adjust editor copy/slots further, then continue P1 and operator-positive tests.
+
+---
+
+## F3 editor layout hierarchy / honest mock placeholder correction — 15 November 2026
+
+Starting SHA `8c2405be93ccf52e1a51dd25f8a7d02301b07493`. Both [frontend CI 43744686156](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43744686156) and [application/database CI 43744691224](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43744691224) **SUCCESS**, verified by inspecting the actual job conclusions. Downloaded the exact authenticated #18–26 Chromium screenshots and compared to original approved LIGHT PNGs. Compact editor markedly improved SSIM #18 `0.6770→0.7302`, #19 `0.6471→0.6983`, #20 `0.6587→0.7045`, #22 `0.5804→0.7260`; fullscreen #26 `0.8638` unchanged, below earlier `0.8869`. Scores are pixel similarity, NOT acceptance, not code completion percent. Side-by-side screenshot inspection confirmed remaining mismatches: unordered slot list, empty title "Add headline" instead of approved illustrative design, missing Section grouping.
+
+New code:
+- `apps/frontend/src/portfolios.tsx` constructs a validated, existing-layout-backed ordered layer tree from `pages/home.page.json` and `portfolioLayout`, avoiding alphabetic JSONB key reorder. Group headings show original section labels; accessible selected slot controls still use the single versioned editor engine; no snapshot/data migrations.
+- `apps/frontend/src/portfolio-tools.tsx` uses a **strictly editor-only unsaved** L1/L3 reference illustration for unfilled hero title/introduction/first CTA and project section heading. Real owner text always overrides examples. The standalone fullscreen preview and all public serving continue to show ONLY actual saved content; no fake work or AI assets are persisted. Explicit visible disclaimer confirms examples are unsaved/unpublished.
+- `apps/frontend/src/workspace.css` provides group list and sample typography; `apps/frontend/e2e/owner.spec.ts` checks sample/disclaimer and accessible keyboard select.
+- Original K master, 12 approved Canva families and functional light/dark unaffected. All ₹0/public host/auth/editor source gates unchanged.
+
+**Acceptance:** This is a new implementation commit pending its exact SHA CI and screenshot parity check. Do not claim full F3/52 parity; operator positive-role 48–50, public reviewer/authenticated-host 28/31–34, full UAT/WCAG and external release still open. Next: verify frontend/root isolated DB and visually compare updated #18/#19/#22/#26, then fix regressions or carry improvements forward.

@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import {
   applyEditorTransaction, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
-import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import { portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
@@ -39,6 +39,36 @@ const contentFields = {
 function primaryField(component?: string): string {
   return component && Object.hasOwn(contentFields, component)
     ? contentFields[component as keyof typeof contentFields][0] : 'text';
+}
+
+/** The JSONB slot map is unordered. Navigation must follow saved page section
+ * order and each pinned layout's declared slot order, never object key sort. */
+function orderedLayerGroups(snapshot:PortfolioSnapshot | undefined):Array<{
+  id:string;title:string;slots:Array<{key:string;name:string;state:string;componentId?:string}>;
+}> {
+  const source=snapshot?.files['pages/home.page.json'];
+  if(!source||!snapshot)return [];
+  try {
+    const page:unknown=JSON.parse(source);
+    if(!page||typeof page!=='object'||Array.isArray(page)||!('sections' in page)||
+      !Array.isArray(page.sections))return [];
+    return page.sections.slice(0,32).flatMap((section:unknown)=>{
+      if(!section||typeof section!=='object'||Array.isArray(section)||
+        !('id' in section)||typeof section.id!=='string'||
+        !('layout' in section)||typeof section.layout!=='string')return [];
+      const layout=portfolioLayout(section.layout);
+      if(!layout)return [];
+      const title=section.id.startsWith('section-')
+        ? 'New section: '+section.layout.split('@')[0]?.replaceAll('-',' ')
+        : (sectionLayouts.find(([pin])=>pin===section.layout)?.[1]??section.id.replaceAll('-',' '));
+      const slots=layout.slots.flatMap(name=>{
+        const key=section.id+'-'+name.toLowerCase();
+        const assigned=snapshot.slots[key];
+        return assigned?[{key,name,state:assigned.state,componentId:assigned.componentId}]:[];
+      });
+      return [{id:section.id,title,slots}];
+    });
+  }catch{return [];}
 }
 
 const STUDIO = '/app/portfolios';
@@ -277,6 +307,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
+  const layerGroups=orderedLayerGroups(head?.snapshot);
   const assigned = Object.entries(head?.snapshot.slots ?? {});
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
@@ -318,11 +349,22 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           <button type="button" className="ws-secondary" disabled={saving}
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
-        <ul className="ws-editor-slots">{assigned.map(([key, item]) => <li key={key}>
-          <button type="button" aria-pressed={slot === key} onClick={() => {
-            setSlot(key); setValue(item.content[primaryField(item.componentId)] ?? '');
-          }}>{key.replace(/^section-[0-9a-f-]{36}-/, 'New section: ').replaceAll('-', ' ')} <span>{item.state}</span></button>
-        </li>)}</ul>
+        <ol className="ws-editor-layers">{layerGroups.map(group=><li key={group.id}>
+          <h3>{group.title}</h3>
+          <ul className="ws-editor-slots">{group.slots.map(item=><li key={item.key}>
+            <button type="button" aria-pressed={slot===item.key}
+              aria-label={(group.id.startsWith('section-')?'New section: ':group.id.replaceAll('-',' ')+' ')+item.name}
+              onClick={()=>{
+                setSlot(item.key);
+                const assignment=head?.snapshot.slots[item.key];
+                setValue(assignment?.content[primaryField(assignment.componentId)]??'');
+                setTool('Content');
+              }}>
+              <span className="ws-editor-layer-name">{item.name.replaceAll(/([A-Z])/g,' $1')}</span>
+              <span className="ws-editor-layer-state">{item.state==='EMPTY'?'Empty':item.state==='S0'?'Starter':item.state==='S1'?'Owned':'Custom'}</span>
+            </button>
+          </li>)}</ul>
+        </li>)}</ol>
         <div className="ws-actions">
           <button type="button" className="ws-secondary" disabled={!head.undo.length || saving}
             onClick={() => apply({kind: 'UNDO'})}>Undo</button>

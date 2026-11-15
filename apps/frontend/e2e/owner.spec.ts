@@ -202,6 +202,10 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: 'Choose template and create draft'}).click();
   await expect(page.getByRole('heading', {name: 'Browser portfolio', exact: true, level: 1})).toBeVisible();
   const editorPath = new URL(page.url()).pathname;
+  await expect(page.getByText('Illustrative empty-slot copy · Never saved or published')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Edit L1 title slot in preview'}))
+    .toContainText('Build things that make a difference.');
+  await expect(page.getByRole('button',{name:'arc hero title'})).toBeVisible();
   await capture('18_PORTFOLIO_EDITOR_BROWSER');
   await page.getByRole('button', {name: /arc hero title/i}).click();
   await page.getByLabel('Text content').fill('Portfolio draft title');
