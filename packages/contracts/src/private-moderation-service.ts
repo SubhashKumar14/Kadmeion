@@ -76,6 +76,16 @@ const REASONS = ['ABUSE','SECURITY','LEGAL','SPAM'] as const;
 const STATUSES = ['OPEN','APPEAL_PENDING','CLOSED'] as const;
 const PUBLIC_PATH = /^\/[a-z][a-z0-9_]{2,29}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const encoder = new TextEncoder();
+const RESERVED_PUBLIC_HANDLES = new Set([
+  'admin','api','auth','dashboard','edit','explore','help','login','logout',
+  'new','profile','projects','settings','signup','signin','register',
+  'workspace','status','r','app','support','templates','u'
+]);
+function isPublicPortfolioPath(value:unknown):value is string {
+  if(typeof value!=='string'||!PUBLIC_PATH.test(value))return false;
+  const [,handle,slug]=value.split('/');
+  return !RESERVED_PUBLIC_HANDLES.has(handle)&&slug.length>=3&&slug.length<=64;
+}
 const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION','OPERATOR_HOLD_LIFT'] as const;
 const isRecord = (value: unknown): value is Record<string,unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -255,7 +265,7 @@ export class SupabasePrivateModerationService {
       if(!isRecord(entry)||Object.keys(entry).sort().join(',')!==
         'created_at,evidence,id,reason_code,target_path'||
         !isUUID(entry.id)||seen.has(entry.id)||
-        typeof entry.target_path!=='string'||!PUBLIC_PATH.test(entry.target_path)||
+        !isPublicPortfolioPath(entry.target_path)||
         !isEnum(entry.reason_code,REASONS)||
         typeof entry.evidence!=='string'||
         [...entry.evidence].length<20||[...entry.evidence].length>500||
