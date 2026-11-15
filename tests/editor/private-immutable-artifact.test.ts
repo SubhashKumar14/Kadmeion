@@ -6,6 +6,7 @@ import {
 } from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 import type {SafePreviewInput} from '../../packages/editor-core/src/publish-preflight.ts';
 import {SupabasePrivateFrozenRevisionLoader} from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
+import {createPrivateImmutableMediaCandidate,verifyPrivateImmutableMediaCandidate} from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 
 const id='10000000-0000-4000-8000-000000000001';
 const requestId='20000000-0000-4000-8000-000000000002';
@@ -155,4 +156,109 @@ test('matching forged SHA fields without a loader attestation cannot create an a
   fake.frozen.snapshotSha256='b'.repeat(64);
   fake.loadedSnapshotSha256='b'.repeat(64);
   await assert.rejects(createPrivateImmutableArtifact(fake),{code:'VALIDATION'});
+});
+
+
+test('B08 joins verified frozen HTML to sanitized, relative content-addressed PNG media',async()=>{
+  const {deflateSync}=await import('node:zlib');
+  const source=await attested();
+  const assetId='40000000-0000-4000-8000-000000000004';
+  const crc=(bytes:Uint8Array):number=>{
+    let c=0xffffffff;
+    for(const byte of bytes){
+      c^=byte;
+      for(let i=0;i<8;i++)c=(c&1)?(0xedb88320^(c>>>1)):c>>>1;
+    }
+    return(c^0xffffffff)>>>0;
+  };
+  const chunk=(type:string,content:Uint8Array)=>{
+    const b=Buffer.alloc(12+content.length);
+    b.writeUInt32BE(content.length,0);b.write(type,4,'ascii');b.set(content,8);
+    b.writeUInt32BE(crc(b.subarray(4,-4)),b.length-4);
+    return b;
+  };
+  const ihdr=Buffer.alloc(13);
+  ihdr.writeUInt32BE(1,0);ihdr.writeUInt32BE(1,4);ihdr[8]=8;ihdr[9]=6;
+  const png=Buffer.concat([
+    Buffer.from([137,80,78,71,13,10,26,10]),
+    chunk('IHDR',ihdr),
+    chunk('tEXt',Buffer.from('Comment\0private note')),
+    chunk('IDAT',deflateSync(Buffer.from([0,200,40,20,255]))),
+    chunk('IEND',new Uint8Array())
+  ]);
+  const sourceSha=createHash('sha256').update(png).digest('hex');
+  const plan=[{assetId,expectedSourceSha256:sourceSha,altText:'Image <safe> & "real"'}];
+  let readCount=0;
+  const reader={
+    readFrozenPinnedImage:async(request:{
+      assetId:string;portfolioId:string;revision:number
+    })=>{
+      assert.deepEqual(request,{assetId,portfolioId:id,revision:7});
+      readCount++;
+      return {assetId,portfolioId:id,revision:7,sourceSha256:sourceSha,
+        mimeType:'image/png' as const,storageVersion:'storage-v1',bytes:png};
+    }
+  };
+  const candidate=await createPrivateImmutableMediaCandidate(source,plan,reader);
+  assert.equal(candidate.deployable,false);
+  assert.equal(candidate.publicUrl,null);
+  assert.deepEqual(candidate.files.map(f=>f.path),[
+    'index.html','assets/'+candidate.manifest.files[1].sha256+'.png'
+  ]);
+  const html=new TextDecoder().decode(candidate.files[0].bytes);
+  assert.match(html,/img-src &#39;self&#39;/);
+  assert.match(html,/src="\.\x2fassets\x2f[0-9a-f]{64}\.png"/);
+  assert.match(html,/alt="Image &lt;safe&gt; &amp; &quot;real&quot;"/);
+  assert.match(html,/noindex,nofollow,noarchive/);
+  assert.ok(!html.includes('SECRET_OWNED_SOURCE_DO_NOT_EXPORT'));
+  assert.ok(!html.includes(assetId));
+  assert.ok(!new TextDecoder().decode(candidate.files[1].bytes).includes('private note'));
+  assert.equal(candidate.manifest.files[1].sha256,
+    createHash('sha256').update(candidate.files[1].bytes).digest('hex'));
+  assert.deepEqual(await verifyPrivateImmutableMediaCandidate(candidate,source,plan,reader),{
+    verified:true,manifestSha256:candidate.manifestSha256,deployable:false,publicUrl:null
+  });
+  assert.ok(readCount>=2);
+  const changed={...candidate,files:[candidate.files[0],
+    {path:candidate.files[1].path,bytes:Uint8Array.from(candidate.files[1].bytes)}]};
+  changed.files[1].bytes[50]^=1;
+  await assert.rejects(verifyPrivateImmutableMediaCandidate(changed,source,plan,reader),{
+    code:'VALIDATION'
+  });
+  await assert.rejects(verifyPrivateImmutableMediaCandidate({
+    ...candidate,deployable:true
+  },source,plan,reader),{code:'VALIDATION'});
+  const wrong=await attested();
+  await assert.rejects(verifyPrivateImmutableMediaCandidate(candidate,wrong,plan,reader),{
+    code:'VALIDATION'
+  });
+});
+
+test('B08 media rejects unpinned bytes, stale portfolio, invalid plans and unsupported rasters',async()=>{
+  const input=await attested();
+  const assetId='50000000-0000-4000-8000-000000000005';
+  const sha='0'.repeat(64);
+  const p={assetId,expectedSourceSha256:sha,altText:'Valid alt'};
+  const read=(override:Record<string,unknown>={})=>({
+    readFrozenPinnedImage:async()=>({assetId,portfolioId:id,revision:7,
+      sourceSha256:sha,mimeType:'image/png',storageVersion:'storage-v1',
+      bytes:Uint8Array.from([137,80,78,71,13,10,26,10]),...override})
+  });
+  const fail=(plan:typeof p[],reader:ReturnType<typeof read>)=>
+    assert.rejects(createPrivateImmutableMediaCandidate(input,plan,reader),{
+      code:'VALIDATION'
+    });
+  await fail([p],read()); // forged source digest
+  await fail([p],read({portfolioId:'60000000-0000-4000-8000-000000000006'}));
+  await fail([p],read({revision:8}));
+  await fail([p],read({mimeType:'image/svg+xml'}));
+  await fail([p,p],read());
+  await fail([{...p,altText:'unsafe\nlabel'}],read());
+  await fail([],read());
+  await fail(Array.from({length:9},(_,i)=>({
+    ...p,assetId:'50000000-0000-4000-8000-'+String(i).padStart(12,'0')
+  })),read());
+  await assert.rejects(createPrivateImmutableMediaCandidate(make(),[p],read()),{
+    code:'VALIDATION'
+  });
 });
