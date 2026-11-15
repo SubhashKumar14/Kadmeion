@@ -47,6 +47,42 @@ function stringField(x:unknown,max:number):string|null {
 const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
 const diag=(code:string,target:string,message:string):PreflightDiagnostic=>({code,target,message});
 const themeColors=['surface','text','accent'] as const;
+const themeKeys=['mode',...themeColors] as const;
+const layouts=new Map([
+  ['arc-hero@1','L1'],['collage-hero@1','L2'],['project-showcase@1','L3'],
+  ['editorial-bento@1','L4'],['stepped-hero@1','L5'],['skills@1','L6'],
+  ['experience@1','L7'],['contact@1','L8']
+]);
+
+/** Resolve the frozen page's pinned section order against the server-approved slot plan. */
+function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:PortfolioSnapshot):SafeRenderSection[]|null {
+  if(!record(page)||!Array.isArray(page.sections)||page.sections.length>16)return null;
+  const groups:SafeRenderSection[]=[];
+  for(const section of page.sections as unknown[]){
+    if(!record(section)||typeof section.id!=='string'||typeof section.layout!=='string'||
+       !record(section.slots))return null;
+    const layout=layouts.get(section.layout);
+    if(!layout)return null;
+    const assignments=new Map<string,unknown>();
+    for(const [name,assignment] of Object.entries(section.slots)){
+      const key=section.id+'-'+name;
+      if(!SLOT.test(name)||!SLOT.test(key))return null;
+      const saved=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
+      if(assignment===null){
+        if(saved&&saved.state!=='EMPTY')return null;
+      }else if(!record(assignment)||typeof assignment.use!=='string'||
+        saved?.state!=='S0'||saved.componentId!==assignment.use)return null;
+      assignments.set(key,assignment);
+    }
+    const slots=plan.filter(slot=>assignments.has(slot.slotKey));
+    if(slots.length!==assignments.size||slots.some(slot=>{
+      const assignment=assignments.get(slot.slotKey);
+      return assignment!==null&&(!record(assignment)||assignment.use!==slot.componentId);
+    }))return null;
+    groups.push({id:section.id,layout,slotKeys:slots.map(slot=>slot.slotKey)});
+  }
+  return groupedSections(groups,plan.map(slot=>slot.slotKey));
+}
 
 function groupedSections(input:unknown,slotOrder:readonly string[]):SafeRenderSection[]|null {
   if(!Array.isArray(input)||input.length<1||input.length>16)return null;
@@ -215,8 +251,23 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
   else pass('SEO_FROM_SOURCE','kadmeion.json','SEO metadata is derived from the pinned file set.');
 
   let renderedContent=body.join('');
-  if(input.renderSections!==undefined){
-    const sections=groupedSections(input.renderSections,[...seen]);
+  let sections:SafeRenderSection[]|null|undefined;
+  const pageFile=valid?input.snapshot.files['pages/home.page.json']:undefined;
+  if(pageFile!==undefined){
+    const page:unknown=JSON.parse(pageFile);
+    if(record(page)&&Object.hasOwn(page,'sections')&&
+       (!Array.isArray(page.sections)||page.sections.length>0)){
+      const plan=Array.isArray(input.plan)&&seen.size===input.plan.length?input.plan:[];
+      sections=frozenSections(page,plan,input.snapshot);
+      if(sections&&input.renderSections!==undefined){
+        const override=groupedSections(input.renderSections,[...seen]);
+        if(JSON.stringify(sections)!==JSON.stringify(override))sections=null;
+      }
+    }
+  }
+  if(sections===undefined&&input.renderSections!==undefined)
+    sections=groupedSections(input.renderSections,[...seen]);
+  if(sections!==undefined){
     if(!sections){
       block('INVALID_TEMPLATE_GROUPING','pages/home.page.json',
         'Layout groups must exactly match the trusted pinned slot order.');
@@ -228,7 +279,16 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
       }).join('');
     }
   }
-  const theme=input.portfolioTheme;
+  let theme=input.portfolioTheme;
+  const themeFile=valid?input.snapshot.files['theme/tokens.json']:undefined;
+  if(themeFile!==undefined){
+    const tokens:unknown=JSON.parse(themeFile);
+    if(record(tokens)&&themeKeys.some(key=>Object.hasOwn(tokens,key))){
+      if(theme&&themeKeys.some(key=>tokens[key]!==theme?.[key]))
+        block('FROZEN_THEME_MISMATCH','theme/tokens.json','Frozen portfolio tokens and render settings disagree.');
+      theme=tokens as typeof theme;
+    }
+  }
   if(theme!==undefined&&(!record(theme)||(theme.mode!=='light'&&theme.mode!=='dark')||
      !themeColors.every(k=>typeof theme[k]==='string'&&
        /^#[0-9a-fA-F]{6}$/.test(theme[k]))))
@@ -248,8 +308,8 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
     '<style>html{font-family:system-ui,sans-serif;line-height:1.55;color:'+
     (theme?.text??'#222222')+';background:'+(theme?.surface??'#ffffff')+
     ';color-scheme:'+(theme?.mode??'light')+'}body{max-width:'+
-    (input.renderSections?'80rem':'70ch')+';margin:2rem auto;padding:0 1rem}section{margin:2rem 0}p{white-space:pre-line}a:focus-visible{outline:3px solid currentColor}.k-badge{display:inline-block;border:1px solid currentColor;border-radius:.3rem;padding:.15rem .55rem}.k-project-card{border:1px solid currentColor;border-radius:.65rem;padding:1rem}dt{font-size:.85rem}dd{margin:0;font-size:1.5rem;font-weight:650}'+
-    (input.renderSections?'main{display:grid;gap:clamp(1rem,3vw,2.5rem)}.k-layout{min-width:0;padding:clamp(1rem,3vw,2rem);border-block-start:2px solid '+(theme?.accent??'#737373')+'}.k-l1,.k-l5{min-height:20rem;display:grid;align-content:center}.k-l2,.k-l4{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.k-l2>section:first-child,.k-l4>section:first-child{grid-column:1/-1}.k-l3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.k-l3>section:first-child{grid-column:1/-1}.k-l8{border-block-end:2px solid currentColor}@media(max-width:48rem){.k-l2,.k-l3,.k-l4{grid-template-columns:1fr}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}':'')+
+    (sections?'80rem':'70ch')+';margin:2rem auto;padding:0 1rem}section{margin:2rem 0}p{white-space:pre-line}a:focus-visible{outline:3px solid currentColor}.k-badge{display:inline-block;border:1px solid currentColor;border-radius:.3rem;padding:.15rem .55rem}.k-project-card{border:1px solid currentColor;border-radius:.65rem;padding:1rem}dt{font-size:.85rem}dd{margin:0;font-size:1.5rem;font-weight:650}'+
+    (sections?'main{display:grid;gap:clamp(1rem,3vw,2.5rem)}.k-layout{min-width:0;padding:clamp(1rem,3vw,2rem);border-block-start:2px solid '+(theme?.accent??'#737373')+'}.k-l1,.k-l5{min-height:20rem;display:grid;align-content:center}.k-l2,.k-l4{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.k-l2>section:first-child,.k-l4>section:first-child{grid-column:1/-1}.k-l3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.k-l3>section:first-child{grid-column:1/-1}.k-l8{border-block-end:2px solid currentColor}@media(max-width:48rem){.k-l2,.k-l3,.k-l4{grid-template-columns:1fr}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}':'')+
     '</style>'+
     '</head><body><main id="content">'+renderedContent+'</main></body></html>';
   if(encoder.encode(html).byteLength>750000){

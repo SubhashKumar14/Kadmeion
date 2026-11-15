@@ -195,3 +195,30 @@ test('malformed runtime plan entries cannot crash grouped rendering',()=>{
   assert.ok(has(result,'INVALID_RENDER_PLAN'));
   assert.equal(result.previewHtml,null);
 });
+
+test('each approved section layout resolves from frozen source using server component pins',()=>{
+  const snapshot=structuredClone(fixture.snapshot);
+  const pins=['arc-hero','collage-hero','project-showcase','editorial-bento',
+    'stepped-hero','skills','experience','contact'];
+  snapshot.slots=Object.fromEntries(pins.map(id=>[id+'-title',fixture.snapshot.slots.hero]));
+  const plan=pins.map(id=>({...fixture.plan[0],slotKey:id+'-title'}));
+  const sections=pins.map(id=>({id,layout:id+'@1',slots:{title:{use:'title-stacked@1'}}}));
+  const page='pages/home.page.json';
+  snapshot.files[page]=JSON.stringify({sections});
+  snapshot.files['theme/tokens.json']=JSON.stringify({mode:'dark',surface:'#18181b',text:'#fafafa',accent:'#ce8f56'});
+  const r=prepareSafeStaticPreview(edit({snapshot,plan}));
+  assert.equal(r.status,'PREVIEW_ONLY');
+  assert.match(r.previewHtml??'',/background:#18181b;color-scheme:dark/);
+  assert.deepEqual([...r.previewHtml!.matchAll(/data-layout="(L[1-8])"/g)].map(match=>match[1]),
+    pins.map((_,i)=>'L'+(i+1)));
+  const conflictingTheme=prepareSafeStaticPreview(edit({snapshot,plan,
+    portfolioTheme:{mode:'light',surface:'#ffffff',text:'#000000',accent:'#696969'}}));
+  assert.ok(has(conflictingTheme,'FROZEN_THEME_MISMATCH'));
+  assert.equal(conflictingTheme.previewHtml,null);
+  for(const slot of [{use:'other-pin@1'},null]){
+    snapshot.files[page]=JSON.stringify({sections:[{...sections[0],slots:{title:slot}},...sections.slice(1)]});
+    const edited=prepareSafeStaticPreview(edit({snapshot,plan}));
+    assert.ok(has(edited,'INVALID_TEMPLATE_GROUPING'));
+    assert.equal(edited.previewHtml,null);
+  }
+});

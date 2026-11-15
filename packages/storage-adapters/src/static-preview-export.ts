@@ -27,7 +27,7 @@ export async function exportStandaloneStaticPreview(input:SafePreviewInput):Prom
     kind:'kadmeion-static-preview',formatVersion:1,previewOnly:true,
     publicUrl:null,sourceRevision:input.loadedRevision,
     files:[{path:'index.html',bytes:html.length,sha256:htmlSha256}],
-    limitations:['No approved template layout, custom JS or personal asset files',
+    limitations:['Supports scriptless text layouts. Custom JavaScript and media assets are excluded.',
       'No publish, staging URL, verified hosting or content revocation',
       'Noindex by default; manual static HTTP serving only']
   }));
