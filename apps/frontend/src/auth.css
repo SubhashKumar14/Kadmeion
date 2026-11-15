@@ -107,3 +107,18 @@
 }
 @media(prefers-reduced-motion:reduce){.auth-form-panel,.auth-brand-panel{transition:none!important}
   .auth-form-content section{animation:none!important}}
+
+/* Registration has more fields than sign-in. Keep the delivery warning below
+   the disabled submit and allow natural vertical growth/zoom reflow. */
+.auth-page[data-mode="signup"] .auth-form-content{justify-content:flex-start;padding-top:37px;padding-bottom:34px}
+.auth-page[data-mode="signup"] .auth-form-content .eyebrow{margin-bottom:14px}
+.auth-page[data-mode="signup"] .auth-description{margin-bottom:17px}
+.auth-page[data-mode="signup"] .auth-fields{gap:11px}
+.auth-page[data-mode="signup"] .auth-field{gap:6px}
+.auth-page[data-mode="signup"] .auth-field input{height:46px}
+.auth-page[data-mode="signup"] .auth-fields+.auth-field-hint{margin:10px 0 4px}
+.auth-page[data-mode="signup"] .auth-switch{margin-top:14px}
+@media(max-width:520px){
+  .auth-page[data-mode="signup"] .auth-form-content{padding-top:25px}
+  .auth-page[data-mode="signup"] .auth-field input{height:47px}
+}

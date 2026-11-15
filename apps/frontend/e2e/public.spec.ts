@@ -90,6 +90,11 @@ test('auth recovery and registration remain disabled until actual sender proof',
   await page.goto('/signup');
   await expect(page.getByRole('button',{name:/Create account/})).toBeDisabled();
   await expect(page.getByText(/until sender delivery is verified/)).toBeVisible();
+  const createButton=await page.getByRole('button',{name:/Create account/}).boundingBox();
+  const deliveryNotice=await page.getByText(/until sender delivery is verified/).boundingBox();
+  expect(createButton).not.toBeNull();
+  expect(deliveryNotice).not.toBeNull();
+  expect(deliveryNotice!.y).toBeGreaterThanOrEqual(createButton!.y+createButton!.height);
 });
 
 test('mobile public pages reflow without page-wide horizontal overflow', async ({ page }) => {
