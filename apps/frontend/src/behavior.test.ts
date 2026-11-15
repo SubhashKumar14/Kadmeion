@@ -30,3 +30,16 @@ test('reduced motion, manual pause, focus, pointer and hidden tab prevent auto m
   assert.equal(canAutoAdvance(false,false,true,true),false);
   assert.equal(canAutoAdvance(false,false,false,false),false);
 });
+
+test('public concept searching and category filters do not mutate backing records', async () => {
+  const { filterShowcaseConcepts } = await import('./behavior.ts');
+  const items = [
+    {title:'BidHub',description:'Bidding platform',field:'Full-Stack',tags:['Marketplace']},
+    {title:'Aegis AI',description:'Assistant tools',field:'AI / ML',tags:['Tools']}
+  ];
+  assert.equal(filterShowcaseConcepts(items,'bid','All','Featured')[0]?.title,'BidHub');
+  assert.deepEqual(filterShowcaseConcepts(items,'', 'AI / ML','Featured').map(x=>x.title),['Aegis AI']);
+  assert.deepEqual(filterShowcaseConcepts(items,'', 'All','Name A–Z').map(x=>x.title),['Aegis AI','BidHub']);
+  assert.equal(items[0]?.title,'BidHub');
+  assert.equal(filterShowcaseConcepts(items,'unknown','All','Featured').length,0);
+});

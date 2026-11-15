@@ -21,3 +21,14 @@ export function writeTheme(storage: Pick<Storage, 'setItem'> | null, theme: Them
 export function canAutoAdvance(reducedMotion: boolean, manuallyPaused: boolean, interacting: boolean, documentVisible: boolean): boolean {
   return !reducedMotion && !manuallyPaused && !interacting && documentVisible;
 }
+
+/** Public-gallery concept filtering is client-only. It must not be mistaken for
+ * an authorization filter or actual private/public portfolio data. */
+export function filterShowcaseConcepts<T extends { title: string; description: string; field: string; tags: readonly string[] }>(
+  items: readonly T[], query: string, category: string, sort: 'Featured' | 'Name A–Z'
+): T[] {
+  const term=query.trim().toLocaleLowerCase('en');
+  const result=items.filter(item=>(category==='All'||item.field===category)&&
+    (!term||[item.title,item.description,item.field,...item.tags].some(text=>text.toLocaleLowerCase('en').includes(term))));
+  return sort==='Name A–Z' ? result.sort((a,b)=>a.title.localeCompare(b.title,'en')) : result;
+}
