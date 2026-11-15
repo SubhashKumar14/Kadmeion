@@ -121,6 +121,44 @@ function appealReceipt(raw: unknown, caseId: string): ModerationAppealReceipt {
     publicRevocationVerified:false};
 }
 
+/**
+ * Operator-facing RPCs may carry user-submitted abuse evidence. Bound provider
+ * responses before JSON parsing: neither valid JSON nor a service JWT makes
+ * an arbitrarily large server body safe to allocate in the browser.
+ */
+async function readModerationJson(response:Response):Promise<unknown> {
+  const type=response.headers.get('content-type');
+  if(typeof type!=='string'||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
+    throw new PrivateModerationError('INVALID_ACK','Invalid moderation response media type.');
+  const length=response.headers.get('content-length');
+  const MAX_BYTES=256*1024;
+  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_BYTES))
+    throw new PrivateModerationError('INVALID_ACK','Moderation response exceeds size limit.');
+  if(!response.body)throw new PrivateModerationError('INVALID_ACK','Missing moderation response body.');
+  const reader=response.body.getReader(),parts:Uint8Array[]=[];let total=0;
+  try{
+    for(;;){
+      const part=await reader.read();
+      if(part.done)break;
+      if(!(part.value instanceof Uint8Array))
+        throw new PrivateModerationError('INVALID_ACK','Malformed moderation response stream.');
+      total+=part.value.byteLength;
+      if(total>MAX_BYTES)throw new PrivateModerationError('INVALID_ACK','Moderation response too large.');
+      parts.push(part.value);
+    }
+  }catch{
+    await reader.cancel().catch(()=>{});
+    throw new PrivateModerationError('INVALID_ACK','Moderation response stream was interrupted.');
+  }finally{reader.releaseLock();}
+  const encoding=response.headers.get('content-encoding');
+  if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&total!==Number(length))
+    throw new PrivateModerationError('INVALID_ACK','Moderation response length mismatch.');
+  const bytes=new Uint8Array(total);let offset=0;
+  for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
+  try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown;}
+  catch{throw new PrivateModerationError('INVALID_ACK','Malformed moderation response JSON.');}
+}
+
 /** Only private, role-checked case/audit APIs; no account or public-route enforcement. */
 export class SupabasePrivateModerationService {
   private readonly origin: string;
@@ -153,7 +191,7 @@ export class SupabasePrivateModerationService {
         headers: {apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
           ...(body === undefined ? {} : {'Content-Type':'application/json'})},
         body:body === undefined ? undefined : JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error'
+        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15_000)
       });
     } catch {
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation service is unreachable.');
@@ -161,7 +199,7 @@ export class SupabasePrivateModerationService {
     if (!response.ok) {
       if (response.status === 401) throw new PrivateModerationError('AUTH_EXPIRED','Session expired.');
       if (response.status === 403) throw new PrivateModerationError('FORBIDDEN','Moderation access denied.');
-      const problem: unknown = await response.json().catch(()=>null);
+      const problem:unknown=await readModerationJson(response).catch(()=>null);
       const message = isRecord(problem) ? problem.message : null;
       if (message === 'MODERATION_CASE_QUOTA_REACHED')
         throw new PrivateModerationError('QUOTA_EXCEEDED','Operator case quota reached.');
@@ -181,7 +219,7 @@ export class SupabasePrivateModerationService {
         throw new PrivateModerationError('CONFLICT','Operation ID or case state conflicts.');
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation operation was not acknowledged.');
     }
-    return response.json().catch(()=>{throw new PrivateModerationError('INVALID_ACK','Invalid moderation response.');});
+    return readModerationJson(response);
   }
   async openCase(targetUserId: string, operationId: string, reason: ModerationReason,
       summary: string): Promise<ModerationCaseReceipt> {
