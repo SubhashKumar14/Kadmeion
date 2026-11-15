@@ -1,3 +1,5 @@
+> CI correction on 16 November 2026: [Application and Database CI #815](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43760849993) rejected an inadvertently renamed ZIP verification status in the 52-screen CSV. Restored the existing schema value and reran both structural traceability and the verifier against the 52 original PNG bytes. Both passed locally. See [draft PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3) for the corrected head and its own CI.
+
 ## 16 November 2026 — Delivery, password-change isolation and current screen evidence
 
 - Working branch `feat/b0-backend-foundation`. [PR #1](https://github.com/SubhashKumar14/Kadmeion/pull/1) was already merged at `b42b72f`; the main-only follow-up was `ead5455faa2cd0d7f4aba87384215175fbe13aa0` and touched this handoff. This branch incorporates that document history. The latest tested executable source is `572ea3645faf31bc1bf7db9eefb28799e0b63b00`.
