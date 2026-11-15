@@ -197,14 +197,17 @@ export async function createPrivateImmutableMediaCandidate(
   let total=0;
   for(const item of plan){
     if(!item||typeof item!=='object'||Array.isArray(item)||
-       Object.keys(item).sort().join(',')!==
-       'altText,assetId,expectedSourceSha256'||
-       !MEDIA_UUID.test(item.assetId)||assetIds.has(item.assetId)||
-       typeof item.expectedSourceSha256!=='string'||
-       !MEDIA_SHA.test(item.expectedSourceSha256)||
-       typeof item.altText!=='string'||item.altText.length>300||
+       Object.keys(item).sort().join(',')!=='altText,assetId,expectedSourceSha256')
+      throw new ContractError('VALIDATION','Private media plan: invalid field layout.');
+    if(typeof item.assetId!=='string'||!MEDIA_UUID.test(item.assetId)||
+       assetIds.has(item.assetId))
+      throw new ContractError('VALIDATION','Private media plan: invalid asset reference.');
+    if(typeof item.expectedSourceSha256!=='string'||
+       !MEDIA_SHA.test(item.expectedSourceSha256))
+      throw new ContractError('VALIDATION','Private media plan: invalid source digest.');
+    if(typeof item.altText!=='string'||item.altText.length>300||
        MEDIA_ALT_BAD.test(item.altText))
-      throw new ContractError('VALIDATION','Private media plan contains an invalid or duplicate asset.');
+      throw new ContractError('VALIDATION','Private media plan: invalid text alternative.');
     assetIds.add(item.assetId);
     let evidence:unknown;
     try{
