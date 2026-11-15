@@ -583,3 +583,120 @@ export async function recoverPortfolioSourceZipFromPartialAccountExport(
     completeAccountExport:false,deletionAllowed:false
   };
 }
+
+
+/**
+ * B09: Convert one already-verified bounded partial account JSON export into a
+ * human-inspectable offline ZIP. Media is stored separately under content-hash
+ * filenames, rather than repeating base64 in the records. Unlike a complete
+ * archive, this is limited by the existing 10 MiB safe ZIP writer and may fail
+ * for owners whose verified partial export exceeds that budget. Never silently
+ * truncate or claim that unexported provider/account data is present.
+ *
+ * This is USER-OWNED PRIVATE DATA, not an artifact suitable for public hosting.
+ * A local digest proves only internal consistency, NOT Supabase authenticity,
+ * backup erasure, current server state or permission to delete the account.
+ */
+export interface BoundedPrivateAccountRecoveryBundle {
+  filename:'kadmeion-private-account-partial.zip';
+  zip:Uint8Array;
+  sha256:string;
+  originalExportSha256:string;
+  status:'BOUNDED_PARTIAL_ACCOUNT_BUNDLE';
+  assetFiles:number;
+  assetsReferenced:number;
+  privateData:true;
+  completeAccountExport:false;
+  providerAuthenticityVerified:false;
+  deletionAllowed:false;
+}
+export async function createBoundedPrivateAccountRecoveryBundle(
+  exportBytes:Uint8Array
+):Promise<BoundedPrivateAccountRecoveryBundle>{
+  const verified=await verifyBoundedPrivateAccountExport(exportBytes);
+  // The verification above checks all embedded bytes and scoped owner records.
+  let raw:JsonObject;
+  try{raw=JSON.parse(decoder.decode(exportBytes)) as JsonObject;}
+  catch{throw new PrivateAccountExportError('INTEGRITY','Unreadable partial export.');}
+  requireCondition(Array.isArray(raw.assets),'INTEGRITY','Missing private media entries.');
+  const parts:{name:string;bytes:Uint8Array}[]=[];
+  const stripped:JsonObject[]=[];
+  const files=new Map<string,{sha256:string;byteLength:number}>();
+  const references:{originalPath:string;archivePath:string;sha256:string}[]=[];
+  const suffix:Record<string,string>={
+    'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/avif':'avif'
+  };
+  for(const item of raw.assets as unknown[]){
+    requireCondition(object(item),'INTEGRITY','Invalid private media entry.');
+    const mediaType=item.mimeType as string;
+    const digest=item.expectedSha256 as string;
+    const name='assets/'+digest+'.'+suffix[mediaType];
+    requireCondition(/^[a-z0-9/.-]{1,160}$/.test(name)&&!name.includes('..'),
+      'INTEGRITY','Unsafe portable media filename.');
+    let media:Uint8Array;
+    try{
+      const binary=atob(item.base64 as string);
+      media=Uint8Array.from(binary,ch=>ch.charCodeAt(0));
+    }catch{
+      throw new PrivateAccountExportError('INTEGRITY','Invalid portable media encoding.');
+    }
+    requireCondition(media.length===item.byteSize&&await sha256(media)===digest,
+      'INTEGRITY','Private media bytes differ from the verified content pin.');
+    if(!files.has(name)){
+      parts.push({name,bytes:media});
+      files.set(name,{sha256:digest,byteLength:media.byteLength});
+    }
+    const {base64:discarded,...metadata}=item;
+    // The field points at the extracted file; never discard the original
+    // object identity or Storage version documented in metadata.
+    stripped.push({...metadata,archivePath:name});
+    references.push({
+      originalPath:item.path as string,archivePath:name,sha256:digest
+    });
+    void discarded;
+  }
+  const records={
+    ...raw,kind:'kadmeion-bounded-account-bundle-records',
+    assets:stripped
+  };
+  const recordsBytes=encoder.encode(JSON.stringify(records));
+  const manifest={
+    kind:'kadmeion-private-account-recovery-bundle',formatVersion:1,
+    privateData:true,completeAccountExport:false,
+    providerAuthenticityVerified:false,deletionAllowed:false,
+    sourceExportSha256:verified.sha256,ownerId:verified.ownerId,
+    inventorySnapshotId:verified.inventorySnapshotId,
+    recordsPath:'account/records.json',
+    recordsSha256:await sha256(recordsBytes),
+    files:[...files.entries()].map(([path,info])=>({path,...info})),
+    assetReferences:references
+  };
+  const warning=encoder.encode(
+    'KADMEION PRIVATE PARTIAL ACCOUNT RECOVERY\n'+
+    'This ZIP contains personally identifying information and private project data.\n'+
+    'It is a bounded backup, NOT a full account/provider export or erasure receipt.\n'+
+    'Assets are stored in assets/ and referenced from account/records.json.\n'+
+    'No server or sender authenticity, current-state or retention guarantees apply.\n'+
+    'Keep this archive private. Never publish its contents as a website.\n');
+  const {writeStoredZip}=await import('./portable-source-archive.ts');
+  let zip:Uint8Array;
+  try{
+    zip=writeStoredZip([
+      {name:'account/records.json',bytes:recordsBytes},
+      ...parts,
+      {name:'kadmeion-partial-bundle.json',bytes:encoder.encode(JSON.stringify(manifest))},
+      {name:'README.txt',bytes:warning}
+    ],{maxEntries:12,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024});
+  }catch{
+    throw new PrivateAccountExportError('LIMIT_EXCEEDED',
+      'The verified partial export exceeds the safe offline ZIP capacity. Keep the original JSON instead.');
+  }
+  return {
+    filename:'kadmeion-private-account-partial.zip',zip,
+    sha256:await sha256(zip),originalExportSha256:verified.sha256,
+    status:'BOUNDED_PARTIAL_ACCOUNT_BUNDLE',
+    assetFiles:files.size,assetsReferenced:references.length,
+    privateData:true,completeAccountExport:false,
+    providerAuthenticityVerified:false,deletionAllowed:false
+  };
+}

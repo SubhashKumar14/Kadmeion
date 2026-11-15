@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {
   SupabasePrivateAccountDataExporter,verifyBoundedPrivateAccountExport,
-  recoverPortfolioSourceZipFromPartialAccountExport
+  recoverPortfolioSourceZipFromPartialAccountExport,
+  createBoundedPrivateAccountRecoveryBundle
 } from '../../packages/storage-adapters/src/private-account-data-export.ts';
 import {importPortfolioSourceZip} from '../../packages/storage-adapters/src/portable-source-archive.ts';
 
@@ -529,4 +530,81 @@ test('B09 source archive extraction fails closed for wrong owner, duplicate revi
   await assert.rejects(recoverPortfolioSourceZipFromPartialAccountExport(
     mutate(v=>v.records.portfolio_revisions[0].owner_user_id=stranger),
     portfolioId,3),{code:'INTEGRITY'});
+});
+
+
+function inspectBundleLocalParts(zip:Uint8Array):Map<string,Uint8Array>{
+  const view=new DataView(zip.buffer,zip.byteOffset,zip.byteLength);
+  const entries=new Map<string,Uint8Array>();
+  let cursor=0;
+  while(cursor+30<=zip.length&&view.getUint32(cursor,true)===0x04034b50){
+    assert.equal(view.getUint16(cursor+8,true),0);
+    const size=view.getUint32(cursor+18,true);
+    const nameLength=view.getUint16(cursor+26,true);
+    const extra=view.getUint16(cursor+28,true);
+    const begin=cursor+30,name=new TextDecoder('utf-8',{fatal:true})
+      .decode(zip.subarray(begin,begin+nameLength));
+    const dataAt=begin+nameLength+extra;
+    assert.ok(dataAt+size<=zip.length);
+    assert.equal(entries.has(name),false);
+    entries.set(name,zip.slice(dataAt,dataAt+size));
+    cursor=dataAt+size;
+  }
+  assert.equal(view.getUint32(cursor,true),0x02014b50);
+  return entries;
+}
+test('B09 private recovery ZIP preserves all bounded records and separates hashed media files',async()=>{
+  const original=(await fixture().service.export(snapshot)).bytes;
+  const result=await createBoundedPrivateAccountRecoveryBundle(original);
+  assert.equal(result.status,'BOUNDED_PARTIAL_ACCOUNT_BUNDLE');
+  assert.equal(result.privateData,true);
+  assert.equal(result.completeAccountExport,false);
+  assert.equal(result.providerAuthenticityVerified,false);
+  assert.equal(result.deletionAllowed,false);
+  assert.equal(result.assetsReferenced,1);assert.equal(result.assetFiles,1);
+  assert.equal(result.sha256,createHash('sha256').update(result.zip).digest('hex'));
+  assert.equal(result.originalExportSha256,
+    createHash('sha256').update(original).digest('hex'));
+  const entries=inspectBundleLocalParts(result.zip);
+  const mediaName='assets/'+digest+'.png';
+  assert.deepEqual([...entries.keys()],[
+    'account/records.json',mediaName,'kadmeion-partial-bundle.json','README.txt'
+  ]);
+  assert.deepEqual(entries.get(mediaName),png);
+  const records=JSON.parse(new TextDecoder().decode(entries.get('account/records.json')!));
+  const originalRecords=JSON.parse(new TextDecoder().decode(original));
+  assert.deepEqual(records.records,originalRecords.records);
+  assert.deepEqual(records.restrictedAudit,originalRecords.restrictedAudit);
+  assert.equal(records.owner.id,owner);
+  assert.equal(records.assets[0].base64,undefined);
+  assert.equal(records.assets[0].archivePath,mediaName);
+  assert.equal(records.assets[0].storageVersionAtRead,'storage-v1');
+  assert.equal(records.limitations.completeAccountExport,false);
+  const manifest=JSON.parse(new TextDecoder().decode(
+    entries.get('kadmeion-partial-bundle.json')!));
+  assert.equal(manifest.recordsSha256,
+    createHash('sha256').update(entries.get('account/records.json')!).digest('hex'));
+  assert.deepEqual(manifest.files,[{path:mediaName,sha256:digest,byteLength:png.length}]);
+  assert.equal(manifest.sourceExportSha256,result.originalExportSha256);
+  assert.equal(manifest.assetReferences[0].originalPath,assetPath);
+  assert.ok(new TextDecoder().decode(entries.get('README.txt')!).includes('PRIVATE'));
+  const repeat=await createBoundedPrivateAccountRecoveryBundle(original);
+  assert.deepEqual(result.zip,repeat.zip);
+});
+test('B09 recovery ZIP fails closed on tampered assets and foreign record ownership',async()=>{
+  const original=(await fixture().service.export(snapshot)).bytes;
+  const parsed=JSON.parse(new TextDecoder().decode(original));
+  for(const mutate of [
+    (doc:any)=>{doc.assets[0].base64=btoa('tampered');},
+    (doc:any)=>{doc.assets[0].expectedSha256='0'.repeat(64);},
+    (doc:any)=>{doc.records.projects[0].owner_user_id=stranger;},
+    (doc:any)=>{doc.limitations.completeAccountExport=true;},
+    (doc:any)=>{doc.evidence.trustedServerWorkerHashesVerified=false;}
+  ]){
+    const copy=structuredClone(parsed);mutate(copy);
+    await assert.rejects(createBoundedPrivateAccountRecoveryBundle(
+      new TextEncoder().encode(JSON.stringify(copy))),{code:'INTEGRITY'});
+  }
+  await assert.rejects(createBoundedPrivateAccountRecoveryBundle(
+    new Uint8Array(16*1024*1024+1)),{code:'VALIDATION'});
 });
