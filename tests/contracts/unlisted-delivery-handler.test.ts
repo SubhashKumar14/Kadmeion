@@ -121,3 +121,16 @@ test('unlisted requires actual head robots metadata, not an incidental noindex s
   assert.equal(response.statusCode,503);
   assert.equal(response.body,'Temporarily unavailable');
 });
+
+test('unlisted rejects multiple robots directives or a commented-only noindex',async()=>{
+  for(const forged of [
+    html.replace('</head>','<meta name="robots" content="index"></head>'),
+    html.replace('</head>','<meta name=robots content=index></head>'),
+    html.replace('</head>','<meta name="bingbot" content="index"></head>'),
+    html.replace('<meta name="robots" content="noindex">','<!--<meta name="robots" content="noindex">-->')
+  ]){
+    const body={...receipt,html:forged,htmlSha256:createHash('sha256').update(forged).digest('hex')};
+    const {response}=await run({body});
+    assert.equal(response.statusCode,503,'Unlisted HTML must retain exactly one noindex policy');
+  }
+});
