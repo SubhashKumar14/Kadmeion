@@ -2,6 +2,7 @@ import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packag
 import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packages/contracts/src/private-project-case-studies.ts';
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
+import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
@@ -576,6 +577,86 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if (!this.isCurrentSession(session) || result.revision !== revision + 1)
         throw new Error('The new portfolio revision could not be confirmed.');
       return result.revision;
+    });
+  }
+
+  async listOwnerComponents(): Promise<AuthOutcome<MyComponentVersion[]>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabaseMyComponentsService} = await import('../../../packages/contracts/src/private-my-components-service.ts');
+      const service = new SupabaseMyComponentsService(this.origin, this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null, this.fetcher);
+      const versions = await service.listVersions();
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while loading My Components.');
+      return versions;
+    });
+  }
+
+  async saveOwnerComponent(input: MyComponentInput): Promise<AuthOutcome<MyComponentVersion>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabaseMyComponentsService} = await import('../../../packages/contracts/src/private-my-components-service.ts');
+      const service = new SupabaseMyComponentsService(this.origin, this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null, this.fetcher);
+      const version = await service.saveVersion(input);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed during component save.');
+      return version;
+    });
+  }
+
+  async listOwnerRevisions(id: string): Promise<AuthOutcome<{revision: number; createdAt: string}[]>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(id)) throw new Error('Portfolio unavailable.');
+      const {session} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'portfolio_id,revision,created_at',
+        portfolio_id: 'eq.' + id, order: 'revision.desc', limit: '50'});
+      const rows = await this.ownerRest('portfolio_revisions?' + params, session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length > 50)
+        throw new Error('Revision history could not be verified.');
+      return rows.map((row: Json) => {
+        if (!row || row.portfolio_id !== id || typeof row.revision !== 'number' || row.revision <= 0 ||
+            !Number.isSafeInteger(row.revision) || typeof row.created_at !== 'string' ||
+            !Number.isFinite(Date.parse(row.created_at))) throw new Error('Invalid revision response.');
+        return {revision: row.revision, createdAt: row.created_at};
+      });
+    });
+  }
+
+  async readOwnerRevision(id: string, revision: number): Promise<AuthOutcome<PortfolioSnapshot>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(id) || !Number.isSafeInteger(revision) || revision <= 0)
+        throw new Error('Revision unavailable.');
+      const {session} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'portfolio_id,revision,snapshot',
+        portfolio_id: 'eq.' + id, revision: 'eq.' + revision, limit: '1'});
+      const rows = await this.ownerRest('portfolio_revisions?' + params, session.access_token);
+      const row = Array.isArray(rows) && rows.length === 1 ? rows[0] as Json : null;
+      if (!this.isCurrentSession(session) || !row || row.portfolio_id !== id || row.revision !== revision)
+        throw new Error('Revision could not be verified.');
+      const {validateSnapshot} = await import('../../../packages/editor-core/src/portfolio-revision-transactions.ts');
+      const snapshot = row.snapshot as PortfolioSnapshot;
+      validateSnapshot(snapshot);
+      return snapshot;
+    });
+  }
+
+  async listOwnerAssets(): Promise<AuthOutcome<{id: string; projectId: string; mime: string; size: number; altText: string}[]>> {
+    return this.outcome(async () => {
+      const {session, userId} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'id,owner_user_id,project_id,mime_type,byte_size,alt_text',
+        owner_user_id: 'eq.' + userId, order: 'created_at.desc', limit: '100'});
+      const rows = await this.ownerRest('project_assets?' + params, session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length > 100)
+        throw new Error('Private assets could not be verified.');
+      return rows.map((row: Json) => {
+        if (!row || row.owner_user_id !== userId || typeof row.id !== 'string' || !PROJECT_ID_PATTERN.test(row.id) ||
+            typeof row.project_id !== 'string' || !PROJECT_ID_PATTERN.test(row.project_id) || typeof row.mime_type !== 'string' ||
+            !['image/png', 'image/jpeg', 'image/webp', 'image/avif'].includes(row.mime_type) ||
+            typeof row.byte_size !== 'number' || !Number.isSafeInteger(row.byte_size) ||
+            row.byte_size <= 0 || row.byte_size > 5242880 || typeof row.alt_text !== 'string')
+          throw new Error('Invalid private asset response.');
+        return {id: row.id, projectId: row.project_id, mime: row.mime_type, size: row.byte_size, altText: row.alt_text};
+      });
     });
   }
 

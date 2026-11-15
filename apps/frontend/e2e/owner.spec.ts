@@ -139,6 +139,8 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('status')).toHaveText('Private case study saved.');
   await page.reload();
   await page.getByRole('button', {name: 'Case study', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Case study sections'})).toBeVisible();
+  await expect(page.getByRole('group', {name: 'Design decisions'})).toBeVisible();
   await expect(page.getByLabel('Section content', {exact: true})).toHaveValue('Private project narrative.');
 
   await page.goto('/app/portfolios');
@@ -161,10 +163,33 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: 'Add section', exact: true}).click();
   await expect(page.getByRole('button', {name: /new section: title/i})).toBeVisible();
   await capture('20_SECTIONS_BROWSER');
+  await page.getByRole('button', {name: 'My Components', exact: true}).click();
+  await expect(page.getByText('You haven’t saved any component versions.')).toBeVisible();
+  await capture('21_COMPONENT_LIBRARY_BROWSER');
+  await page.getByRole('button', {name: 'Theme', exact: true}).click();
+  await page.getByLabel('Portfolio theme').selectOption('dark');
+  await page.getByLabel('Preview width').selectOption('390');
+  await capture('22_THEME_INSPECTOR_BROWSER');
+  await page.getByRole('button', {name: 'Assets', exact: true}).click();
+  await expect(page.getByText('No private project assets are registered.')).toBeVisible();
+  await capture('23_ASSET_LIBRARY_BROWSER');
+  await page.getByRole('button', {name: 'Source', exact: true}).click();
+  await expect(page.getByLabel('Source file')).toBeVisible();
+  await capture('24_SOURCE_BROWSER');
   await page.getByRole('button', {name: 'Save draft'}).click();
   await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
   await page.reload();
   await expect(page.getByText('Portfolio draft title', {exact: true})).toBeVisible();
+  await page.getByRole('button', {name: 'History', exact: true}).click();
+  await expect(page.getByRole('button', {name: /Revision 2/})).toBeVisible();
+  await capture('25_REVISION_HISTORY_BROWSER');
+  const fullscreenPath = await page.getByRole('link', {name: 'Fullscreen saved preview'}).getAttribute('href');
+  expect(fullscreenPath).toBeTruthy();
+  await page.goto(fullscreenPath!);
+  await expect(page.getByText('Portfolio draft title', {exact: true})).toBeVisible();
+  await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
+  await capture('26_FULLSCREEN_BROWSER');
+  await page.goto(editorPath);
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
 

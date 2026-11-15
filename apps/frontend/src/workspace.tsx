@@ -6,7 +6,7 @@ import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../
 import { BrandMark, Icon, useTheme } from './landing.tsx';
 import { PrivateProjectDetail, PrivateProjects } from './projects.tsx';
 import { DeveloperProfile } from './profile.tsx';
-import { PortfolioChooser, PortfolioEditor, PortfolioLibrary, portfolioIdFromRoute } from './portfolios.tsx';
+import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, PortfolioLibrary, portfolioIdFromRoute } from './portfolios.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -268,6 +268,8 @@ export function WorkspaceApp() {
       <button type="button" className="ws-secondary" onClick={() => window.location.reload()}>Retry verification</button></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
+  if (route.endsWith('/preview/fullscreen') && portfolioId && authRef.current)
+    return <FullscreenPortfolioPreview port={authRef.current} id={portfolioId}/>;
   return <WorkspaceFrame owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
     {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :

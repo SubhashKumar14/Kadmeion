@@ -392,7 +392,9 @@ function CaseStudyEditor({port, projectId, onSaved}: {
           if (kind) update(index, {kind});
         }}>{CASE_SECTION_KINDS.map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label>
         <label>Section title<input value={section.title} maxLength={120} onChange={event => update(index, {title: event.target.value})}/></label>
-        <label>Section content<textarea value={section.body} rows={4} maxLength={12000} onChange={event => update(index, {body: event.target.value})}/></label>
+        <label htmlFor={'case-body-' + section.id}>Section content</label>
+        <textarea id={'case-body-' + section.id} value={section.body} rows={4} maxLength={12000}
+          onChange={event => update(index, {body: event.target.value})}/>
         <label className="ws-case-check"><input type="checkbox" checked={section.visible}
           onChange={event => update(index, {visible: event.target.checked})}/> Include in future release</label>
         <div className="ws-actions">

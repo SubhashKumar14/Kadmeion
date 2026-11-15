@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
-  applyEditorTransaction, createEditorHead, type EditorHead, type EditorIntent
+  applyEditorTransaction, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
+import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionHistory, SourceInspector, ThemeInspector } from './portfolio-tools.tsx';
 
 const presets = [
   {id: 'arc', title: 'Arc', tone: 'curved', detail: 'Curved hero and a project showcase.'},
@@ -29,7 +31,7 @@ const authoringQuery = '(min-width: 900px)';
 type PortfolioRecord = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['readOwnerPortfolio']>>['data']>;
 
 export function portfolioIdFromRoute(path: string): string | undefined {
-  return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/edit$/i.exec(path)?.[1]?.toLowerCase();
+  return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:edit|preview\/fullscreen)$/i.exec(path)?.[1]?.toLowerCase();
 }
 
 function useAuthoringViewport() {
@@ -186,6 +188,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const loaded = useRef('');
   const [sectionLayout, setSectionLayout] = useState('arc-hero@1');
   const [sectionPicker, setSectionPicker] = useState(false);
+  const [tool, setTool] = useState('Content');
+  const [openedSource, setOpenedSource] = useState(false);
+  const [canvasWidth, setCanvasWidth] = useState(0);
 
   useEffect(() => {
     const key = id + ':' + attempt;
@@ -204,14 +209,32 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     return () => {active = false;};
   }, [port, id, attempt, allowed]);
 
-  function apply(intent: EditorIntent) {
-    if (!allowed || !head || saving) return;
+  function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
+    if (!allowed || !head || saving) return false;
     try {
-      const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision});
+      const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
       setHead(next);
       setValue(next.snapshot.slots[slot]?.content.text ?? '');
       setOperation(crypto.randomUUID()); setError(''); setNotice('Unsaved changes');
-    } catch (failure) {setError(failure instanceof Error ? failure.message : 'The editor could not apply the change.');}
+      return true;
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'The editor could not apply the change.');
+      return false;
+    }
+  }
+
+  function restore(snapshot: PortfolioSnapshot) {
+    if (!head || !allowed || saving) return;
+    try {
+      const next = restoreHistoricalSnapshot(head, snapshot, crypto.randomUUID());
+      setHead(next);
+      setSlot('');
+      setValue('');
+      setOperation(crypto.randomUUID());
+      setNotice('Revision restored into the working draft. Save to keep it.');
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'The editor could not restore the revision.');
+    }
   }
 
   async function save() {
@@ -238,11 +261,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
   const assigned = Object.entries(head?.snapshot.slots ?? {});
-  const contentPreview = <div className="ws-studio-canvas">
-    <h2>{record?.title}</h2>
-    {assigned.filter(([, entry]) => entry.content.text).map(([key, entry]) => <p key={key}>{entry.content.text}</p>)}
-    {!assigned.some(([, entry]) => entry.content.text) && <p>This draft has no authored text yet.</p>}
-  </div>;
+  const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'} width={canvasWidth || undefined}/>;
   if (!allowed) return <DeviceLimit/>;
   return <section aria-labelledby="edit-title" className="ws-studio-editor">
     <div className="ws-project-head"><div className="ws-heading">
@@ -250,7 +269,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       <h1 id="edit-title">{record?.title ?? 'Portfolio editor'}</h1>
       <p>{record ? 'Private draft · revision ' + record.revision : 'Open a private portfolio draft.'}</p>
     </div>{head && <div className="ws-actions">
-      <button type="button" className="ws-secondary" onClick={() => setPreview(current => !current)}>{preview ? 'Back to editor' : 'Preview text'}</button>
+      <button type="button" className="ws-secondary" onClick={() => setPreview(current => !current)}>{preview ? 'Back to editor' : 'Author preview'}</button>
+      {record && !operation && <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'}
+        target="_blank" rel="noopener">Fullscreen saved preview</a>}
       <button type="button" className="ws-primary" disabled={!operation || saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
@@ -286,7 +307,17 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         </div>
       </aside>
       {contentPreview}
-      <aside className="ws-project-fields"><h2>Content inspector</h2>
+      <aside className="ws-project-fields">
+        <div className="ws-editor-tool"><nav aria-label="Editor panels">{['Content', 'My Components', 'Theme', 'Assets', 'Source', 'History'].map(item =>
+          <button type="button" key={item} className="ws-secondary" aria-pressed={tool === item} onClick={() => {
+            setTool(item); if (item === 'Source') setOpenedSource(true);
+          }}>{item}</button>)}</nav></div>
+        {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
+        {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
+        {tool === 'Assets' && <AssetList port={port}/>}
+        {openedSource && <div hidden={tool !== 'Source'}><SourceInspector head={head} slot={slot} apply={apply}/></div>}
+        {tool === 'History' && record && <RevisionHistory port={port} id={id} revision={record.revision} onRestore={restore}/>}
+        {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
           {active.state === 'EMPTY'
@@ -300,8 +331,28 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
             <button type="button" className="ws-secondary" disabled={saving}
               onClick={() => apply({kind: 'RESTORE_STASH', slotKey: slot})}>Restore last assignment</button>}
-        </>}
+        </>}</>}
       </aside>
     </div>)}
   </section>;
+}
+
+
+export function FullscreenPortfolioPreview({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
+  const [record, setRecord] = useState<PortfolioRecord | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void port.readOwnerPortfolio(id).then(result => {
+      if (!active) return;
+      if (result.data?.snapshot) setRecord(result.data);
+      else setError(true);
+    });
+    return () => {active = false;};
+  }, [port, id]);
+
+  if (error) return <main className="ws-gate"><h1>Portfolio unavailable.</h1><a href={STUDIO}>Return to portfolio library</a></main>;
+  if (!record) return <main className="ws-gate" aria-busy="true"><p role="status">Loading saved portfolio preview…</p></main>;
+  return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone/>;
 }

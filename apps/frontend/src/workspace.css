@@ -230,3 +230,11 @@
 .ws-editor-section-picker label{display:grid;gap:6px}
 .ws-editor-section-picker select{min-height:40px;color:var(--ink);background:var(--panel);border:1px solid var(--line-dark);border-radius:7px}
 .ws-editor-grid aside .ws-secondary{margin-top:5px}
+.ws-editor-tool{display:grid;gap:12px}
+.ws-editor-tool h2,.ws-editor-tool p{margin:0}
+.ws-editor-tool label{margin:0}
+.ws-editor-tool select{width:100%;padding:9px;color:var(--ink);background:var(--panel);border:1px solid var(--line-dark);border-radius:7px}
+.ws-editor-tool input[type="color"]{height:42px}
+.ws-editor-grid aside .ws-editor-tool nav{display:flex;flex-wrap:wrap;gap:5px}
+.portfolio-only-preview{min-height:100dvh;padding:clamp(24px,6vw,100px);border-top:4px solid;white-space:pre-wrap;overflow-wrap:anywhere}
+.portfolio-only-preview h1{font-size:clamp(32px,6vw,72px)}
