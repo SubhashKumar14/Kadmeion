@@ -2,8 +2,8 @@
 
 **Repository:** SubhashKumar14/Kadmeion  
 **Feature branch:** `feat/b0-backend-foundation`  
-**Last verified code SHA:** `0098544617f99199032f17f4eacc62fbe35efdde`  
-**Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43636655565  
+**Last verified code SHA:** `88dda7ecf0eef28aae95fa6db486b8c2a5aa4134`  
+**Evidence:** https://github.com/SubhashKumar14/Kadmeion/actions/runs/43680601059  
 **Status:** Significant P1 backend code and local automated tests implemented. **NOT 100% production-ready.**
 
 This page supersedes the 12-Nov-2026 documentation-only "NOT IMPLEMENTED"
@@ -11,11 +11,21 @@ labels for verification of **existing code**, not for still-unproven features.
 See `IMPLEMENTATION_STATUS.md` for chronological commit-by-commit history.
 Latest owner selections remain authoritative over all historic drafts.
 
+## Latest implementation verification — 15 November 2026
+
+- **CI green at `88dda7e`:** 383/383 Node/auth/editor/contract tests; isolated Supabase migrations and pgTAP (PASS); 46/46 local GoTrue/PostgREST/Storage HTTP tests, local Deno Edge flows, Mailpit auth email, private PostgreSQL binding, and moderation races all PASS. See the linked run above. These are local/ephemeral proofs, not hosted production acceptance.
+- **B08 publication repair:** Public release HTTP now requires service-RPC `indexable` acknowledgment. Before acknowledgment, a correctly scoped PUBLIC route serves a `noindex,nofollow,noarchive` canary. The trusted worker verifies those exact bytes, acknowledges, then independently re-fetches the new indexable bytes before claiming delivery. Strict failure behavior and canary withdrawal have new Node/pgTAP/real HTTP coverage. The extra forward-only migration is `20261115121000_public_release_indexing_ack_gate.sql`.
+- **B5 operator intake:** typed private abuse queue listing/review adapters, exact-field receipt validation and bounded (256 KiB, 15-second timeout) RPC response handling; independent negative/cross-scope tests. Reports alone never impose a public restriction.
+- **Source-file accounting:** 202 *actual tracked authored application/config/test paths*, excluding `project-docs`, runtime dependencies and generated outputs. This is **2 above** the original 200-file proposal, attributed to two auditable forward-only security migrations. Do not misrepresent 202 as 200 or compact security code artificially. The approved source budget needs review.
+- **Hosted read-only proof:** 14 migrations currently applied out of 45 in the branch; 31 pending. Zero Edge Functions deployed. Two Brevo domains remain unverified. No hosted schema writes, SMTP enablement, public promotion or main merge in this continuation.
+- **CI optimization:** replaced needless global serialization of isolated runners with branch-scoped `cancel-in-progress` for superseded local DB jobs. Full CI green on this workflow.
+- **Vercel:** automatically generated feature-branch preview at `475f7ac` reports READY. This is a build outcome, not public-release/canonical-route validation.
+
 ## B07–B11 continuation checkpoint
 
 | Phase | Code and verification | Open hosted acceptance |
 |---|---|---|
-| B07 Supabase | Migration history matches the first 14 local versions. The branch contains 43 migrations and three Edge Functions. | Apply the 29 pending migrations and deploy the three functions to the authorized project. Keep feature switches disabled during rollout. Check live auth/RLS, function JWT and origin boundaries, and the hosted Trash schedule. |
+| B07 Supabase | Migration history matches the first 14 local versions. The branch contains 45 migrations and three Edge Functions. | Apply the 31 pending migrations and deploy the three functions to the authorized project. Keep feature switches disabled during rollout. Check live auth/RLS, function JWT and origin boundaries, and the hosted Trash schedule. |
 | B08 Publishing | Arc, Collage, Editorial, Stairs, Studio and Blank initialize typed drafts through the owner-only revision transaction. Private binding, reviewer staging and archive export resolve all eight frozen layout pins and palette tokens through the server-approved component plan. Fresh reviewer links use `/r/:token` and server-checked expiry and revocation. Withdrawal verification first hashes the live canonical release, then checks canonical and direct-path denial after withdrawal. | Select the ₹0 public host and run the hosted publish, rollback and withdrawal canary. Preset drafts currently supply documented layout and header structure with empty content slots. Curated default component assignments, media rendering and delivery are pending. |
 | B09 Account lifecycle | Owner-scoped partial export verifies private asset hashes and includes private platform links, goals, manual progress, milestones, notifications and notification preferences. The owner inbox receives real account, moderation, reviewer, verified-publication and optional cloud-save notices. Upload cleanup keeps one owner session for inventory, removal and verification. | Prove the hosted lifecycle with disposable data, including release revocation and provider retention. Export remains partial and deletion receipts report backup and external copies as unverified. |
 | B10 Auth email | Local signup and recovery use GoTrue and Mailpit. The existing Vercel preview reports email delivery disabled. | Verify an approved Brevo sender and secure SMTP configuration, then complete hosted confirmation and recovery with disposable mailboxes. Both configured Kadmeion domains are currently unverified. |
@@ -37,7 +47,7 @@ References: [Supabase CLI v3](https://supabase.com/changelog/supabase-cli-v3),
 ## Verified on the feature branch
 
 - Node 26.13.1 LTS, TypeScript 7.0.2, npm 12.2.2, safe environment-variable conventions, GitHub
-  Actions with database jobs serialized, and an authored-file budget tracker.
+  Actions with branch-scoped superseded-run cancellation, and an authored-file budget tracker.
 - Owner/Auth identity, private profile/project/asset persistence, owner RLS,
   immutable editor revision transactions, conflict/idempotency rules,
   portable snapshots and folder recovery, private Storage and registration.
@@ -86,9 +96,9 @@ the 11-Nov-2026 Node security release. No true universal security guarantee or
 
 ## External proof gates / unimplemented or unverified aspects
 
-1. **Hosted Supabase:** the source currently contains **43** ordered migrations; the
+1. **Hosted Supabase:** the source currently contains **45** ordered migrations; the
    existing hosted project still reports only the initial **14** applied
-   (**29 unapplied**). Verify a fresh read before any eventual authorized deployment.
+   (**31 unapplied**). Verify a fresh read before any eventual authorized deployment.
 2. **Brevo:** free SMTP relay is enabled; configured `kadmeion.com` and
    `mail.kadmeion.com` domains remain unauthenticated/unverified at the
    15-Nov-2026 read-only account check (free relay enabled, 300 credits). Hosted sender/recovery and multi-domain delivery are unproven.
@@ -111,7 +121,7 @@ the 11-Nov-2026 Node security release. No true universal security guarantee or
    accessibility/manual acceptance tests remain future work.
 6. **Optional P2/P3 features** (integrations/DevScore/goals/analytics, AI) are
    not counted as completed P1 backend and require their own approval/proofs.
-7. **200-file original plan:** 194 application files exist already. Building
+7. **200-file original plan:** 202 application files currently exist (2 separately justified security-migration paths over the original count). Building
    all 52 frontend surfaces cleanly will require owner review of this
    originally planned file budget; never combine security-sensitive modules
    merely to meet an arbitrary number.
