@@ -792,3 +792,67 @@ test('EDIT-06 upload rejects disguised SVG, false MIME and any forged server reg
   assert.equal(result.data,null);
   assert.match(result.error?.message??'',/registration was not confirmed/);
 });
+
+test('settings password change adopts the fresh token only after the owner update succeeds', async () => {
+  const rotated = {...tokens, access_token: 'f'.repeat(64), refresh_token: 's'.repeat(64)};
+  let logins = 0;
+  const {port, saved} = mock(async (url, init) => {
+    if (String(url).includes('grant_type=password')) return json(logins++ ? rotated : tokens);
+    if (String(url).endsWith('/user') && init?.method === 'PUT') {
+      assert.equal((init.headers as Record<string, string>).Authorization, 'Bearer ' + rotated.access_token);
+      assert.deepEqual(JSON.parse(String(init.body)), {password: 'new-strong-password'});
+      assert.ok([...saved.data.values()].join('').includes(tokens.refresh_token));
+    }
+    return json(user);
+  });
+  assert.equal((await port.signInWithPassword({email: user.email, password: 'password'})).error, null);
+  const changed = await port.changePasswordWithCurrentPassword({
+    currentPassword: 'password', newPassword: 'new-strong-password'
+  });
+  assert.equal(changed.error, null);
+  assert.ok([...saved.data.values()].join('').includes(rotated.refresh_token));
+});
+
+test('settings password change rejects a password grant for another user with the same email', async () => {
+  let logins = 0;
+  let writes = 0;
+  const {port, saved} = mock(async (url, init) => {
+    if (String(url).includes('grant_type=password'))
+      return json(logins++ ? {...secondTokens, user: {...secondUser, email: user.email}} : tokens);
+    if (init?.method === 'PUT') writes++;
+    return json(user);
+  });
+  assert.equal((await port.signInWithPassword({email: user.email, password: 'password'})).error, null);
+  const before = [...saved.data.values()];
+  const changed = await port.changePasswordWithCurrentPassword({
+    currentPassword: 'password', newPassword: 'new-strong-password'
+  });
+  assert.ok(changed.error);
+  assert.equal(writes, 0);
+  assert.deepEqual([...saved.data.values()], before);
+});
+
+test('a delayed rejection from user verification leaves a newer session intact', async () => {
+  let finish!: (value: Response) => void;
+  let start!: () => void;
+  const pending = new Promise<Response>(resolve => { finish = resolve; });
+  const started = new Promise<void>(resolve => { start = resolve; });
+  let logins = 0;
+  const {port, saved} = mock(async (url, init) => {
+    if (String(url).includes('grant_type=password')) return json(logins++ ? secondTokens : tokens);
+    if ((init?.headers as Record<string, string>).Authorization === 'Bearer ' + tokens.access_token) {
+      start();
+      return pending;
+    }
+    return json(secondUser);
+  });
+  assert.equal((await port.signInWithPassword({email: user.email, password: 'password'})).error, null);
+  const old = port.getUser();
+  await started;
+  assert.equal((await port.signInWithPassword({email: secondUser.email, password: 'password'})).error, null);
+  const before = [...saved.data.values()];
+  finish(json({}, 401));
+  assert.ok((await old).error);
+  assert.deepEqual([...saved.data.values()], before);
+  assert.equal((await port.getUser()).data.user?.id, secondUser.id);
+});

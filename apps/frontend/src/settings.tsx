@@ -215,12 +215,8 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
     if (next !== confirm) {setMessage({error: true, text: 'Passwords do not match.'}); return;}
     setBusy(true); setMessage(null);
     try {
-      const user = await port.getUser();
-      if (user.error || !user.data?.user?.email) throw new Error('Sign in with a verified email account first.');
-      const auth = await port.signInWithPassword({email: user.data.user.email, password: current});
-      if (auth.error || auth.data?.user?.id !== user.data.user.id) throw new Error('Current password could not be verified.');
-      const outcome = await port.updateUser({password: next});
-      if (outcome.error || outcome.data?.user?.id !== user.data.user.id) throw new Error('Password change could not be confirmed.');
+      const outcome = await port.changePasswordWithCurrentPassword({ currentPassword: current, newPassword: next });
+      if (outcome.error) throw new Error(outcome.error.message);
       setCurrent(''); setNext(''); setConfirm('');
       setMessage({error: false, text: 'Password updated.'});
     } catch (error) {setMessage(failure(error));}
