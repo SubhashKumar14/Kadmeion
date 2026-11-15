@@ -41,6 +41,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private readonly fetcher: typeof fetch;
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
+  // Last-started explicit Auth action wins; old network responses cannot
+  // replace a newer login or reinstate a session after explicit logout.
+  private authAttempt = 0;
+  private assertCurrentAuthAttempt(attempt:number):void {
+    if (attempt !== this.authAttempt)
+      throw new Error('This authentication attempt was superseded.');
+  }
 
   constructor(input: { supabaseUrl: string; publishableKey: string; appOrigin: string; storage: StorageLike; oauthStorage?: StorageLike; fetcher?: typeof fetch }) {
     const endpoint = new URL(input.supabaseUrl);
@@ -167,10 +174,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signUp({ email, password, options }: { email: string; password: string; options: { data: Record<string, string> } }): Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>> {
     return this.outcome(async () => {
+      const attempt=++this.authAttempt;
       const response = await this.request('/signup?redirect_to=' + encodeURIComponent(this.appOrigin + '/auth/callback'), 'POST', {
         email, password, data: options.data
       });
       let session: StoredSession | null = null;
+      this.assertCurrentAuthAttempt(attempt);
       const registered = userFrom(response.user ?? response);
       if (typeof response.access_token === 'string') {
         session = this.decodeSession(response);
@@ -188,8 +197,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signInWithPassword({ email, password }: { email: string; password: string }): Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>> {
     return this.outcome(async () => {
+      const attempt=++this.authAttempt;
       const response = await this.request('/token?grant_type=password', 'POST', { email, password });
+      this.assertCurrentAuthAttempt(attempt);
       const session = this.decodeSession(response);
+      if (typeof session.user.email !== 'string' ||
+          session.user.email.trim().toLowerCase() !== email.trim().toLowerCase())
+        throw new Error('The sign-in response does not match the requested email.');
       this.store(session);
       return { user: session.user, session };
     });
@@ -255,6 +269,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     return this.outcome(async () => {
       if(!['local','global','others'].includes(scope))
         throw new Error('Invalid sign-out scope.');
+      ++this.authAttempt;
       const current = await this.refreshed();
       if(scope === 'others'){
         // Supabase preserves the invoking session for 'others'. A network
@@ -283,6 +298,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     return this.outcome(async()=>{
       if(provider!=='google'||options.redirectTo!==this.appOrigin+'/auth/callback')
         throw new Error('Google OAuth requires the approved same-origin callback.');
+      ++this.authAttempt;
       if(!this.oauthStorage)
         throw new Error('Secure session storage is required for Google sign-in.');
       if(!globalThis.crypto?.getRandomValues || !globalThis.crypto?.subtle)
@@ -326,8 +342,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         typeof tx.expiresAt!=='number'||!Number.isFinite(tx.expiresAt)||
         Date.now()>=tx.expiresAt||tx.expiresAt>Date.now()+OAUTH_TTL_MS)
         throw new Error('The OAuth session expired or originated in another tab.');
+      const attempt=++this.authAttempt;
       const result=await this.request('/token?grant_type=pkce','POST',
         {auth_code:code,code_verifier:tx.verifier});
+      this.assertCurrentAuthAttempt(attempt);
       const session=this.decodeSession(result);
       this.storeEmailSession(session);
       return {user:session.user};
@@ -344,7 +362,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         ['access_token', 'refresh_token', 'expires_in', 'type'].some(key => parameters.getAll(key).length > 1) ||
         !Number.isSafeInteger(expires_in) || expires_in <= 0 || expires_in > 86400)
       throw new Error('The authentication link is incomplete or expired.');
+    const attempt=++this.authAttempt;
     const userPayload = await this.request('/user', 'GET', undefined, access_token);
+    this.assertCurrentAuthAttempt(attempt);
     const user = userFrom(userPayload);
     if (!user) throw new Error('Could not validate the invitation session.');
     this.storeEmailSession({ access_token, refresh_token,
@@ -356,6 +376,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   async verifyTokenHash(tokenHash: string, type: string): Promise<'invite' | 'recovery' | 'confirmation'> {
     if (!/^[a-zA-Z0-9_-]{8,2048}$/.test(tokenHash) || !isEmailAuthType(type))
       throw new Error('Unsupported or invalid verification link.');
+    const attempt=++this.authAttempt;
     const response = await this.request('/verify', 'POST', { token_hash: tokenHash, type });
     const session = this.decodeSession(response);
     // A redeemed token hash is not sufficient proof of the callback owner:
@@ -363,6 +384,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     // exactly as for implicit callback tokens, before browser persistence.
     const result = await this.request('/user', 'GET', undefined, session.access_token);
     const verified = userFrom(result);
+    this.assertCurrentAuthAttempt(attempt);
     if (!verified || verified.id !== session.user.id)
       throw new Error('Email link was not verified for the active account.');
     this.storeEmailSession({...session, user:verified});

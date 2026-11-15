@@ -486,3 +486,52 @@ test('B10 other-session revocation refuses success if account switches while the
   assert.ok(result.error,'Old-account revocation cannot be attributed to the newly signed-in owner');
   assert.equal((await port.getUser()).data.user?.id,secondUser.id);
 });
+
+test('B10 overlapping password sign-ins never allow a stale response to replace the newest account',async()=>{
+  const saved=storage();
+  let releaseOld!:(value:Response)=>void,started!:()=>void;
+  const pending=new Promise<Response>(resolve=>{releaseOld=resolve;});
+  const begun=new Promise<void>(resolve=>{started=resolve;});
+  let count=0;
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password')){
+      if(count++===0){started();return pending;}
+      return json(secondTokens);
+    }
+    if(String(url).endsWith('/user'))return json(secondUser);
+    throw Error('Unexpected endpoint');
+  }) as typeof fetch,saved);
+  const old=port.signInWithPassword({email:user.email,password:'old-password'});
+  await begun;
+  const latest=await port.signInWithPassword({email:secondUser.email,password:'new-password'});
+  assert.equal(latest.error,null);
+  releaseOld(json(tokens));
+  assert.ok((await old).error);
+  assert.equal((await port.getUser()).data.user?.id,secondUser.id);
+  assert.ok([...saved.data.values()].join('').includes(secondTokens.refresh_token));
+});
+
+test('B10 explicit logout cancels a pending uncommitted password login',async()=>{
+  const saved=storage();
+  let finish!:(value:Response)=>void,started!:()=>void;
+  const pending=new Promise<Response>(resolve=>{finish=resolve;});
+  const began=new Promise<void>(resolve=>{started=resolve;});
+  const {port}=mock((async(url:string|URL|Request)=>{
+    if(String(url).includes('grant_type=password')){started();return pending;}
+    throw Error('Unexpected endpoint');
+  }) as typeof fetch,saved);
+  const old=port.signInWithPassword({email:user.email,password:'password'});
+  await began;
+  assert.equal((await port.signOut({scope:'local'})).error,null);
+  finish(json(tokens));
+  assert.ok((await old).error);
+  assert.equal(saved.data.size,0);
+});
+
+test('B10 password login refuses a successful response for a different email',async()=>{
+  const saved=storage();
+  const {port}=mock((async()=>json(secondTokens)) as typeof fetch,saved);
+  const result=await port.signInWithPassword({email:user.email,password:'password'});
+  assert.ok(result.error);
+  assert.equal(saved.data.size,0);
+});
