@@ -229,9 +229,9 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     const getStaged=()=>api('/rest/v1/rpc/read_private_reviewer_stage_artifact',{
       method:'POST',jwt:cfg.service,key:cfg.service,
       body:{p_grant_id:reviewer.grantId,p_raw_token:reviewer.rawToken}});
-    async function serveByHeader(){
-      const request={method:'GET',url:'/api/reviewer?g='+reviewer.grantId,
-        headers:{authorization:'Bearer '+reviewer.rawToken}};
+    const reviewerPath='/r/'+reviewer.grantId+'.'+reviewer.rawToken;
+    async function serveReviewer(url,headers){
+      const request={method:'GET',url,headers};
       const response={
         statusCode:0,body:null,headers:new Map(),
         setHeader(name,value){this.headers.set(name.toLowerCase(),value);},
@@ -245,10 +245,13 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
       },http:fetch});
       return response;
     }
-    const served=await serveByHeader();
+    const serveByHeader=()=>serveReviewer('/api/reviewer?g='+reviewer.grantId,
+      {authorization:'Bearer '+reviewer.rawToken});
+    const served=await serveReviewer(reviewerPath,{});
     assert.equal(served.statusCode,200);
     assert.equal(served.body,new TextDecoder().decode(artifact.files[0].bytes));
     assert.match(served.headers.get('cache-control'),/no-store/);
+    assert.equal((await serveByHeader()).statusCode,200);
     const bytes=ok(await getStaged(),'Read real reviewer staging bytes');
     assert.equal(bytes.html,new TextDecoder().decode(artifact.files[0].bytes));
     assert.equal(bytes.publicServingEnabled,false);
@@ -257,6 +260,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     }),'Revoke real reviewer token');
     assert.equal(ok(await getStaged(),'Read revoked reviewer grant'),null);
     assert.equal((await serveByHeader()).statusCode,404);
+    assert.equal((await serveReviewer(reviewerPath,{})).statusCode,404);
 
     // B4 UNLISTED activation requires distinct typed owner consent and
     // privileged probe/activation; no public request is served before that.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SupabasePrivateReviewerService} from '../../packages/contracts/src/private-reviewer-service.ts';
+import {reviewerSharePath,SupabasePrivateReviewerService} from '../../packages/contracts/src/private-reviewer-service.ts';
 
 const requestId='10000000-0000-4000-8000-000000000001';
 const opId='20000000-0000-4000-8000-000000000002';
@@ -32,6 +32,12 @@ test('idempotent retry cannot reveal the original secret again',async()=>{
   const service=client(async()=>Response.json({...receipt,rawToken:null,alreadyRegistered:true}));
   const answer=await service.issue(requestId,opId,60);
   assert.equal(answer.rawToken,null);
+});
+test('only a fresh unexpired credential generates a relative reviewer route',()=>{
+  const now=Date.parse('2026-11-15T00:00:00Z');
+  assert.equal(reviewerSharePath(receipt,now),`/r/${grantId}.${receipt.rawToken}`);
+  assert.throws(()=>reviewerSharePath(receipt,Date.parse(receipt.expiresAt)),{code:'VALIDATION'});
+  assert.throws(()=>reviewerSharePath({...receipt,alreadyRegistered:true,rawToken:null},now),{code:'VALIDATION'});
 });
 test('fabricated public URL or token on retry cannot create a verified grant',async()=>{
   const service=client(async()=>Response.json({...receipt,rawToken:'a'.repeat(64),alreadyRegistered:true}));

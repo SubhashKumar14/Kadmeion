@@ -134,22 +134,14 @@ begin
       v_category:='PUBLISH';
       v_target:=(v_row->>'portfolio_id')::uuid;
       v_source:=(v_row->>'intent_id');
-    when 'portfolio_revisions' then
-      v_event:='CLOUD_REVISION_SAVED';
-      v_category:='SYNC';
-      v_target:=(v_row->>'portfolio_id')::uuid;
-      v_source:=(v_row->>'portfolio_id')||':'||(v_row->>'revision');
     else
       raise exception 'Unexpected notification event source';
   end case;
-  if v_category in ('REVIEWER','PUBLISH','SYNC') then
-    select case v_category
-        when 'REVIEWER' then p.reviewer_enabled
-        when 'PUBLISH' then p.publish_enabled
-        else p.sync_enabled
-      end into v_enabled
+  if v_category in ('REVIEWER','PUBLISH') then
+    select case when v_category='REVIEWER' then p.reviewer_enabled else p.publish_enabled end
+      into v_enabled
       from public.private_notification_preferences p where p.owner_user_id=v_owner;
-    if not coalesce(v_enabled,v_category<>'SYNC') then return null; end if;
+    if not coalesce(v_enabled,true) then return null; end if;
   end if;
   insert into public.private_notifications (
     owner_user_id,event_type,category,priority,target_id,source_key
@@ -162,6 +154,27 @@ begin
 end;
 $function$;
 revoke all on function kadmeion_private.record_owner_notification()
+  from public,anon,authenticated,service_role;
+
+-- Revision rows can contain large source snapshots. Read only the three
+-- columns needed for an opted-in notice and never serialize the snapshot.
+create function kadmeion_private.record_cloud_revision_notification()
+returns trigger language plpgsql security definer set search_path=''
+as $function$
+begin
+  if exists(select 1 from public.private_notification_preferences p
+    where p.owner_user_id=new.owner_user_id and p.sync_enabled) then
+    insert into public.private_notifications (
+      owner_user_id,event_type,category,priority,target_id,source_key
+    ) values (
+      new.owner_user_id,'CLOUD_REVISION_SAVED','SYNC','NORMAL',new.portfolio_id,
+      new.portfolio_id::text||':'||new.revision::text
+    ) on conflict (owner_user_id,event_type,source_key) do nothing;
+  end if;
+  return null;
+end;
+$function$;
+revoke all on function kadmeion_private.record_cloud_revision_notification()
   from public,anon,authenticated,service_role;
 
 create trigger kd_account_exit_notification after insert on public.private_account_erasure_requests
@@ -179,4 +192,4 @@ create trigger kd_reviewer_revoked_notification after update of revoked_at on pu
 create trigger kd_release_verified_notification after insert on public.verified_unlisted_releases
   for each row execute function kadmeion_private.record_owner_notification();
 create trigger kd_cloud_revision_notification after insert on public.portfolio_revisions
-  for each row execute function kadmeion_private.record_owner_notification();
+  for each row execute function kadmeion_private.record_cloud_revision_notification();

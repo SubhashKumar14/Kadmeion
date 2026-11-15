@@ -56,6 +56,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/r/:review",
+      "destination": "/api/reviewer?review=:review"
+    },
+    {
       "source": "/r/:path*",
       "destination": "/index.html"
     },

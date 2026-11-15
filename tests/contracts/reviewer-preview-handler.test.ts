@@ -130,6 +130,24 @@ test('header-only reviewer token validates without putting secrets into request 
   assert.equal(both.sent.length,0);
 });
 
+test('the canonical reviewer link and its rewrite use the same private grant checks',async()=>{
+  const opaque=grant+'.'+token;
+  for(const url of ['/r/'+opaque,'/api/reviewer?review='+opaque]){
+    const {res,sent}=await run({url});
+    assert.equal(res.statusCode,200);
+    assert.equal(res.body,html);
+    assert.deepEqual(JSON.parse(sent[0].init.body),{p_grant_id:grant,p_raw_token:token});
+    assert.equal((await run({url,data:null})).res.statusCode,404);
+    assert.equal((await run({url,headers:{authorization:'Bearer '+token}})).sent.length,0);
+  }
+  for(const url of ['/r/'+opaque+'?extra=1','/api/reviewer?review='+opaque+'&g='+grant,
+    '/api/reviewer?review='+opaque+'&review='+opaque,'/r/'+opaque+'.unexpected']){
+    const {res,sent}=await run({url});
+    assert.equal(res.statusCode,404);
+    assert.equal(sent.length,0);
+  }
+});
+
 test('reviewer refuses executable markup even when attacker supplies a matching digest',async()=>{
   for(const unsafe of [
     '<div onmouseover="alert(1)">Unsafe</div>',

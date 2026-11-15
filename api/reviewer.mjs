@@ -69,6 +69,22 @@ function validHtml(receipt){
   return createHash('sha256').update(html,'utf8').digest('hex')===receipt.htmlSha256;
 }
 
+function readLinkCredential(url,authorization){
+  const direct=/^\/r\/([^/]+)$/.exec(url.pathname);
+  const params=url.searchParams;
+  if(direct||params.has('review')){
+    if(authorization!==undefined||params.size!==(direct?0:1)||
+       (!direct&&url.pathname!=='/api/reviewer'))return null;
+    const parts=(direct?.[1]??params.get('review')).split('.');
+    return parts.length===2?parts:null;
+  }
+  if(url.pathname!=='/api/reviewer')return null;
+  const token=params.get('t');
+  if(token!==null)return params.size===2&&authorization===undefined?[params.get('g'),token]:null;
+  if(params.size!==1||typeof authorization!=='string')return null;
+  return [params.get('g'),/^Bearer ([0-9a-f]{64})$/.exec(authorization)?.[1]];
+}
+
 /** Pure dependency-injected handler for isolated tests and the Vercel adapter. */
 export async function handleReviewerRequest(req,res,{
   env=process.env,http=globalThis.fetch
@@ -83,22 +99,8 @@ export async function handleReviewerRequest(req,res,{
   let url;
   try{url=new URL(req.url??'/', 'https://kadmeion.internal');}
   catch{respond(res,404,'Not found','text/plain; charset=utf-8',method);return;}
-  if(url.pathname!=='/api/reviewer'){
-    respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
-  }
-  const grantId=url.searchParams.get('g');
-  const queryToken=url.searchParams.get('t');
-  const authorization=req.headers?.authorization;
-  const bearerToken=typeof authorization==='string'?
-    /^Bearer ([0-9a-f]{64})$/.exec(authorization)?.[1]:undefined;
-  // Header transport avoids recording the reviewer token in a URL. Query
-  // transport is retained only for link-compatible private staging, with
-  // strict no-referrer/no-store and short-lived server validation.
-  const validTransport=queryToken===null
-    ? url.searchParams.size===1&&bearerToken!==undefined
-    : url.searchParams.size===2&&authorization===undefined;
-  const token=queryToken??bearerToken;
-  if(!validTransport||!grantId||!UUID.test(grantId)||!token||!TOKEN.test(token)){
+  const [grantId,token]=readLinkCredential(url,req.headers?.authorization)??[];
+  if(!grantId||!UUID.test(grantId)||!token||!TOKEN.test(token)){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
   }
   let upstream;
@@ -117,6 +119,7 @@ export async function handleReviewerRequest(req,res,{
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
   if(!upstream.ok){
+    await upstream.body?.cancel().catch(()=>{});
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);
     return;
   }

@@ -16,6 +16,15 @@ export class ReviewerGrantError extends Error {
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN=/^[0-9a-f]{64}$/;
 
+/** Relative reviewer route for the one-time token from an unexpired new grant. */
+export function reviewerSharePath(grant:PrivateReviewerGrant,now=Date.now()):string {
+  if(!grant||grant.status!=='REGISTERED_UNSERVABLE'||grant.alreadyRegistered!==false||
+     !UUID.test(grant.grantId)||typeof grant.rawToken!=='string'||!TOKEN.test(grant.rawToken)||
+     !Number.isFinite(now)||!(Date.parse(grant.expiresAt)>now))
+    throw new ContractError('VALIDATION','A new, unexpired reviewer credential is required.');
+  return '/r/'+grant.grantId+'.'+grant.rawToken;
+}
+
 /** Owner-only registration. This does NOT issue a usable public staging URL. */
 export class SupabasePrivateReviewerService {
   private readonly origin:string;
