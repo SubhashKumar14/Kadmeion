@@ -243,3 +243,70 @@ test('malformed runtime slot identifiers cannot coerce to an existing slot',()=>
   assert.equal(head.snapshot.slots.undefined.content.title,'Untouched');
   assert.equal(head.revision,0);
 });
+
+test('WF-025 a saved private owned component reuses exact bytes only in compatible slots',()=>{
+  const head=createEditorHead({
+    formatVersion:1,
+    files:{'kadmeion.json':'{"formatVersion":1}'},
+    slots:{
+      'arc-hero-title':{state:'EMPTY',content:{}},
+      'arc-hero-text':{state:'EMPTY',content:{}}
+    },stashes:{}
+  });
+  const id='96000000-0000-4000-8000-000000000001';
+  const saved={
+    id,owner_user_id:'96000000-0000-4000-8000-000000000002',
+    component_key:'my-title',version:1,display_name:'My Title',
+    base_component_pin:'title-stacked@1',pristine_source:'export const title=1;',
+    source_code:'export const title=2;',compatible_slot_kinds:['title'],
+    source_sha256:'a'.repeat(64),created_at:'2026-11-15T11:00:00Z'
+  };
+  const cmd={operationId:'96000000-0000-4000-8000-000000000003',
+    baseRevision:0,intent:{kind:'REUSE_SAVED_COMPONENT' as const,
+      slotKey:'arc-hero-title',componentVersionId:id}};
+  assert.throws(()=>applyEditorTransaction(head,cmd),{code:'VALIDATION'});
+  const next=applyEditorTransaction(head,cmd,{}, {[id]:saved});
+  assert.equal(next.snapshot.slots['arc-hero-title'].state,'S2');
+  assert.equal(next.snapshot.slots['arc-hero-title'].componentId,'title-stacked@1');
+  const path=next.snapshot.slots['arc-hero-title'].sourcePath!;
+  assert.equal(next.snapshot.files[path],'export const title=2;');
+  assert.equal(next.snapshot.slots['arc-hero-title'].originalSource,'export const title=1;');
+  assert.strictEqual(applyEditorTransaction(next,cmd,{},{}),next,'idempotent replay needs no new fetch');
+  assert.deepEqual(head.snapshot.slots['arc-hero-title'],{state:'EMPTY',content:{}});
+  const other={...cmd,operationId:'96000000-0000-4000-8000-000000000004',
+    intent:{...cmd.intent,slotKey:'arc-hero-text'}};
+  assert.throws(()=>applyEditorTransaction(head,other,{}, {[id]:saved}),{code:'VALIDATION'});
+});
+
+test('WF-025 no user-saved file can impersonate S1 without matching pinned library bytes',()=>{
+  const head=createEditorHead({
+    formatVersion:1,files:{'kadmeion.json':'{"formatVersion":1}'},
+    slots:{'arc-hero-title':{state:'S0',componentId:'title-stacked@1',content:{title:'Prior'}}},
+    stashes:{}
+  });
+  const id='97000000-0000-4000-8000-000000000001';
+  const source='export const title="Saved text";';
+  const saved={
+    id,owner_user_id:'97000000-0000-4000-8000-000000000002',
+    component_key:'my-title',version:1,display_name:'My Title',
+    base_component_pin:'title-stacked@1',pristine_source:source,source_code:source,
+    compatible_slot_kinds:['title'],source_sha256:'a'.repeat(64),
+    created_at:'2026-11-15T11:00:00Z'
+  };
+  const command={operationId:'97000000-0000-4000-8000-000000000003',
+    baseRevision:0,intent:{kind:'REUSE_SAVED_COMPONENT' as const,
+      slotKey:'arc-hero-title',componentVersionId:id}};
+  const unsafe=applyEditorTransaction(head,command,{}, {[id]:saved});
+  assert.equal(unsafe.snapshot.slots['arc-hero-title'].state,'S2');
+  assert.equal(unsafe.snapshot.files[unsafe.snapshot.slots['arc-hero-title'].sourcePath!],source);
+  assert.notEqual(unsafe.snapshot.slots['arc-hero-title'].originalSource,source);
+  assert.equal(unsafe.snapshot.stashes['arc-hero-title'][0].content.title,'Prior');
+  const pinned=applyEditorTransaction(head,command,
+    {'title-stacked@1':source},{[id]:saved});
+  assert.equal(pinned.snapshot.slots['arc-hero-title'].state,'S1');
+  assert.equal(pinned.snapshot.slots['arc-hero-title'].originalSource,source);
+  const forged={...saved,compatible_slot_kinds:['text']};
+  assert.throws(()=>applyEditorTransaction(head,command,{}, {[id]:forged}),
+    {code:'VALIDATION'});
+});
+

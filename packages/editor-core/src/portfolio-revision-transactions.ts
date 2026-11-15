@@ -1,4 +1,5 @@
 import { ContractError, assertBaseRevision } from '../../contracts/src/index.ts';
+import type {MyComponentVersion} from '../../contracts/src/private-my-components-service.ts';
 import { assertManagedPath, assertOwnedSourcePath, validateManagedJson, MAX_FILE_BYTES } from './managed-project-files.ts';
 
 export type SlotState = 'EMPTY' | 'S0' | 'S1' | 'S2';
@@ -32,6 +33,7 @@ export type EditorIntent =
   | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
   | { kind:'CUSTOMIZE_COMPONENT'; slotKey:string; copiedSource:string }
+  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean }
   | { kind:'EDIT_OWNED_SOURCE'; slotKey:string; source:string }
   | { kind:'RESTORE_STASH'; slotKey:string }
   | { kind:'UNDO' }
@@ -165,6 +167,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
     UPDATE_CONTENT:['kind','slotKey','content'],
     CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
+    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement'],
     EDIT_OWNED_SOURCE:['kind','slotKey','source'],
     RESTORE_STASH:['kind','slotKey'],
     UNDO:['kind'],
@@ -198,7 +201,8 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
   return {id:command.operationId.toLowerCase(),hash};
 }
 
-export function applyEditorTransaction(head: EditorHead, command: EditorCommand, trustedLibrarySources: Readonly<Record<string,string>> = {}): EditorHead {
+export function applyEditorTransaction(head: EditorHead, command: EditorCommand, trustedLibrarySources: Readonly<Record<string,string>> = {},
+  ownerSavedComponents: Readonly<Record<string,MyComponentVersion>> = {}): EditorHead {
   const {id:operationId,hash:intentHash}=commandDigest(command);
   const seen = Object.hasOwn(head.operations,operationId) ?
     head.operations[operationId] : head.operations[command.operationId];
@@ -274,6 +278,56 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
           throw new ContractError('VALIDATION', 'Existing owned file cannot be overwritten.');
         next.files[path]=intent.copiedSource;
         next.slots[intent.slotKey]={...slot,state:'S1',sourcePath:path,originalSource:intent.copiedSource};
+        break;
+      }
+      case 'REUSE_SAVED_COMPONENT': {
+        // The command contains an ID only. Never accept client-authored code
+        // in an operation/event log: the caller provides a separately fetched,
+        // owner-JWT-validated private version from the component service.
+        const ref=intent.componentVersionId;
+        if (typeof ref!=='string'||!OP_ID.test(ref))
+          throw new ContractError('VALIDATION','Invalid saved component version ID.');
+        const id=ref.toLowerCase();
+        if (!Object.hasOwn(ownerSavedComponents,id))
+          throw new ContractError('VALIDATION','Saved component must be fetched and validated.');
+        const saved=ownerSavedComponents[id];
+        const kind=intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1);
+        if (!saved||saved.id!==id||typeof saved.base_component_pin!=='string'||
+            !COMPONENT_PIN.test(saved.base_component_pin)||
+            !Array.isArray(saved.compatible_slot_kinds)||
+            !saved.compatible_slot_kinds.includes(kind)||
+            typeof saved.source_code!=='string'||saved.source_code.length===0||
+            new TextEncoder().encode(saved.source_code).byteLength>32768||
+            typeof saved.pristine_source!=='string'||saved.pristine_source.length===0||
+            new TextEncoder().encode(saved.pristine_source).byteLength>32768)
+          throw new ContractError('VALIDATION','Saved component is incompatible or malformed.');
+        if(isOwned(slot)&&!intent.confirmOwnedReplacement)
+          throw new ContractError('VALIDATION','Owned source needs explicit replace-and-stash confirmation.');
+        const path='slots/'+intent.slotKey+'/owned/'+operationId+'/component-source.tsx';
+        assertOwnedSourcePath(path);
+        if(Object.hasOwn(next.files,path))
+          throw new ContractError('VALIDATION','Existing owned file cannot be overwritten.');
+        if(slot.state!=='EMPTY')stash.push(structuredClone(slot));
+        next.stashes[intent.slotKey]=stash;
+        next.files[path]=saved.source_code;
+        // A user-saved original is not automatically a trusted library
+        // signature. Reuse is S1 ONLY if the pinned source bytes are
+        // independently attested by the app's immutable trusted catalogue.
+        const trusted=Object.hasOwn(trustedLibrarySources,saved.base_component_pin)&&
+          trustedLibrarySources[saved.base_component_pin]===saved.pristine_source;
+        const pristine=trusted&&saved.source_code===saved.pristine_source;
+        // If the stored source was not modified but provenance is untrusted,
+        // force S2 using a non-executable comparison sentinel. The current
+        // bytes remain EXACT, and no public preflight can launder them as S1.
+        const marker='/* UNTRUSTED_KADMEION_SAVED_COMPONENT */';
+        const fallback=saved.source_code===marker
+          ?'/* UNTRUSTED_KADMEION_SAVED_COMPONENT_V2 */':marker;
+        const original=pristine?saved.pristine_source:
+          saved.source_code!==saved.pristine_source?saved.pristine_source:fallback;
+        next.slots[intent.slotKey]={
+          state:pristine?'S1':'S2',componentId:saved.base_component_pin,
+          content:{},sourcePath:path,originalSource:original
+        };
         break;
       }
       case 'EDIT_OWNED_SOURCE':
