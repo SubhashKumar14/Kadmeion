@@ -987,3 +987,15 @@ At code SHA `719fc0c16a0f3d150a65f1c8cb2704ff1373deaa`, frontend CI [43750740550
 **Test:** `apps/frontend/e2e/owner.spec.ts` first selects intentionally corrupt PNG data with a valid magic header and asserts an owner-visible `cannot be decoded` error (no upload), then uploads a genuinely decodable 70-byte PNG (generated and independently decoded) and verifies real local private registration and persisted record. No external API or paid dependencies.
 
 **Pending:** This commit's exact-SHA frontend, Node and isolated browser/database CI; screenshot parity #23/#24 still separate. Byte SHA attestation, host/CDN revocation and public image delivery explicitly blocked; no hosted database changes, main merge or recurring spend.
+
+---
+
+## EDIT-06 keyboard exit and approved native screenshot dimensions — 16 November 2026
+
+Starting SHA `94d1e526f7f230879ff1f39fa72d39b77532241d`. The new full-width Asset Manager hid the ordinary editor panel navigation, and unlike Source Explorer offered no explicit way back to Content. That is a real UX trap. `apps/frontend/src/portfolio-tools.tsx` now exposes a visible, keyboard-operable `Back to editor canvas` action in the private project collections pane; `apps/frontend/src/portfolios.tsx` returns to Content without discarding private file records or saved draft. `apps/frontend/e2e/owner.spec.ts` tests this action before opening the Source panel and preserves real image upload + case history journey.
+
+**Reference capture accuracy:** All approved LIGHT screenshots #12–52 in exact owner ZIP archives are **1600×1000**. Public approved #01–11 are **1586×992**. Previous Chromium snapshots were at 1534×960 then resized for SSIM, which may distort comparative geometry. Owner fixture now captures at 1600×1000; public screenshot workflow `.github/workflows/frontend.yml` now uses 1586×992. This is only a capture/test improvement, not fake design acceptance. Future SSIM comparisons must describe the changed viewport baseline.
+
+**Earlier results:** `94d1e52` added browser-native image decode and a real 70-byte valid PNG fixture after discovering a corrupt former test PNG; frontend CI [43752448090](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752448090) passed. Its isolated DB job must be checked separately. This new source SHA requires both frontend and isolated local browser/backend workflows. No paid dependencies, new mockups, hosted database writes, main merge or public hosting.
+
+**Next exact action:** Fix any exact-SHA CI failures; capture/compare #18–26 at approved native sizes; continue F6 keyboard, reflow, contrast and 52-screen UAT evidence. Notion final ledger needs updated check-point/readback.

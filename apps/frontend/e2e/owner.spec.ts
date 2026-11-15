@@ -89,7 +89,7 @@ test('real owner onboarding and project revision are private across browser sess
     await page.screenshot({path: captureDir + '/' + name + '.png', animations: 'disabled'});
   }
 
-  await page.setViewportSize({width: 1534, height: 960});
+  await page.setViewportSize({width: 1600, height: 1000});
   await signIn(page, owner);
   await page.getByRole('link', {name: 'Open private workspace'}).click();
   await expect(page.getByRole('heading', {name: /Make room for/})).toBeVisible();
@@ -302,6 +302,7 @@ test('real owner onboarding and project revision are private across browser sess
   await page.reload();
   await page.getByRole('button',{name:'Assets',exact:true}).click();
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
 
   await page.getByRole('button', {name: 'Source', exact: true}).click();
   await expect(page.getByRole('navigation',{name:'Source files'})).toBeVisible();
@@ -356,7 +357,7 @@ test('real owner onboarding and project revision are private across browser sess
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
   await capture('52_DEVICE_REQUIREMENTS_BROWSER');
-  await page.setViewportSize({width: 1534, height: 960});
+  await page.setViewportSize({width: 1600, height: 1000});
   await page.goto('/app/settings');
   await expect(page.getByRole('heading', {name: 'Settings', exact: true})).toBeVisible();
   await capture('41_SETTINGS_BROWSER');
@@ -404,7 +405,7 @@ test('real owner onboarding and project revision are private across browser sess
     await expect(other.getByRole('alert')).toContainText('Project unavailable');
     await expect(other.getByLabel('Project title')).toHaveCount(0);
     await expect(other.getByText('Private browser project', {exact: true})).toHaveCount(0);
-    await other.setViewportSize({width: 1534, height: 960});
+    await other.setViewportSize({width: 1600, height: 1000});
     await other.goto(editorPath);
     await expect(other.getByRole('alert')).toContainText('Portfolio unavailable.');
     await expect(other.getByText('Portfolio draft title', {exact: true})).toHaveCount(0);
@@ -421,7 +422,7 @@ test('verified local operator can read case-scoped views without impersonation o
   const operator=await localUser('CI Restricted Moderator');
   const subject=await localUser('CI Target Account');
   grantLocalOperatorRole(operator.id);
-  await page.setViewportSize({width:1534,height:960});
+  await page.setViewportSize({width:1600,height:1000});
   await signIn(page,operator);
   await page.goto('/app/operations/users');
   await expect(page.getByRole('heading',{name:'Admin users',exact:true})).toBeVisible();

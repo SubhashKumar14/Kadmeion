@@ -330,7 +330,7 @@ export function ComponentLibrary({port, head, committed, slot, apply}: {
   </div>;
 }
 
-export function AssetList({port}:{port:SupabaseBrowserAuthPort}) {
+export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>void}) {
   const [assets,setAssets]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']>|null>(null);
   const [projects,setProjects]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerProjects']>>['data']>|null>(null);
   const [error,setError]=useState('');
@@ -390,6 +390,7 @@ export function AssetList({port}:{port:SupabaseBrowserAuthPort}) {
       </nav>
       <p className="ws-asset-protection">Private uploads require an owner project, server-verified metadata and a unique write-once Storage object path.</p>
       <a className="ws-secondary" href="/app/projects">Manage private projects</a>
+      <button type="button" className="ws-secondary" onClick={back}>Back to editor canvas</button>
     </aside>
     <section className="ws-asset-center" aria-label="Owner-private media records">
       <div className="ws-asset-toolbar">

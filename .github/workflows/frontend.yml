@@ -54,7 +54,7 @@ jobs:
           test -n "$BROWSER"
           mkdir -p /tmp/kadmeion-f1-browser
           while read -r screen route; do
-            "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 --virtual-time-budget=1000 \
+            "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1586,992 --virtual-time-budget=1000 \
               --screenshot="/tmp/kadmeion-f1-browser/${screen}_BROWSER.png" "http://127.0.0.1:4173$route"
           done <<'ROUTES'
           01_LANDING /

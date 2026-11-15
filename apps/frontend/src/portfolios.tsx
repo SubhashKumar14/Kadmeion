@@ -491,7 +491,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               onClick={() => apply({kind: 'RESTORE_STASH', slotKey: slot})}>Restore last assignment</button>}
         </>}</>}
       </aside>
-    </div>{openedAssets&&<div hidden={tool!=='Assets'}><AssetList port={port}/></div>}
+    </div>{openedAssets&&<div hidden={tool!=='Assets'}>
+      <AssetList port={port} back={()=>setTool('Content')}/>
+    </div>
     {openedSource&&<div hidden={tool!=='Source'}>
       <SourceInspector head={head} slot={slot} apply={apply} back={()=>setTool('Content')}/>
     </div>}</>)}
