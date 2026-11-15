@@ -151,3 +151,30 @@ test('confirmation resend requires verified delivery and submits a neutral provi
   await assert.rejects(service.resendSignupConfirmation('dev@example.com'),
     {code:'PROVIDER_UNAVAILABLE',message:'Unable to submit the confirmation request.'});
 });
+
+test('B10 password sign-in refuses concurrent account switch or mismatched provider acknowledgement',async()=>{
+  for(const variant of ['session','provider'] as const){
+    const port=mockPort();
+    port.signInWithPassword=async()=>({
+      data:{user:{id:variant==='provider'?'wrong-owner':'original-owner'},
+        session:{access_token:'signed-token',user:{id:variant==='session'?'wrong-owner':'verified-owner'}}},
+      error:null
+    });
+    port.getUser=async()=>({data:{user:{id:'verified-owner'}},error:null});
+    const service=new AuthService(port,{siteOrigin:'https://app.example',
+      emailDeliveryVerified:false,googleOAuthConfigured:false});
+    await assert.rejects(service.login('dev@example.com','password'),{
+      code:'AUTH_EXPIRED',
+      message:'The account changed during sign-in. Sign in again.'
+    });
+  }
+  const port=mockPort();
+  port.signInWithPassword=async()=>({
+    data:{user:{id:'verified-owner'},session:{access_token:'signed-token',user:{id:'verified-owner'}}},
+    error:null
+  });
+  port.getUser=async()=>({data:{user:{id:'verified-owner'}},error:null});
+  const service=new AuthService(port,{siteOrigin:'https://app.example',
+    emailDeliveryVerified:false,googleOAuthConfigured:false});
+  assert.deepEqual(await service.login('dev@example.com','password'),{id:'verified-owner'});
+});
