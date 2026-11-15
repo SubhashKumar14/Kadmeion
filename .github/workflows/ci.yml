@@ -32,6 +32,36 @@ jobs:
           VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_test_only
       - run: npm test
       - run: npm run check:file-budget
+      # B07 release smoke uses no JWTs, accounts, secrets or mutating RPCs.
+      # PR-only: main's isolated code CI remains independent of paused free hosting.
+      - name: Hosted B07 Edge deny-by-default HTTP smoke
+        if: github.event_name == 'pull_request' && github.head_ref == 'feat/b0-backend-foundation'
+        timeout-minutes: 2
+        run: |
+          node --input-type=module <<'NODE'
+          const base='https://scyooqjitjzjdxgtanso.supabase.co/functions/v1/';
+          async function denied(slug,method,expected){
+            const r=await fetch(base+slug,{
+              method,redirect:'error',signal:AbortSignal.timeout(12000),
+              headers:{Accept:'application/json',
+                ...(method==='POST'?{'Content-Type':'application/json'}:{})},
+              ...(method==='POST'?{body:'{}'}:{})
+            });
+            const body=await r.text();
+            if(!expected.includes(r.status)){
+              throw Error(slug+' '+method+' unexpected HTTP '+r.status+
+                ' body='+body.slice(0,120).replace(/[\r\n]/g,' '));
+            }
+            console.log(slug,method,'HTTP',r.status,'denied by default');
+          }
+          // Unauthenticated reads cannot expose an owner-only worker.
+          await denied('publish','POST',[401,403]);
+          await denied('complete-private-asset','POST',[401,403]);
+          // The no-JWT scheduler must reach its handler but never run a sweep
+          // without the separate disabled feature flag and trusted secret.
+          await denied('purge-expired-trash','GET',[405]);
+          await denied('purge-expired-trash','POST',[401,404]);
+          NODE
 
   database:
     # Every GitHub-hosted runner is isolated, including localhost ports.

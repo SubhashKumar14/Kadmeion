@@ -1,5 +1,17 @@
 # Kadmeion — Current Backend Implementation State
 
+## B07 hosted foundation rollout — 15 November 2026
+
+**B07 migration and Edge deployment: COMPLETED; hosted HTTP security smoke: CI PROOF REQUIRED.**
+
+- [Supabase project](https://supabase.com/dashboard/project/scyooqjitjzjdxgtanso): **47 of 47 source migrations deployed**, all 47 exact filename versions present, no extra migration versions. The hosted migration ledger was aligned to original timestamps after the MCP deployment API allocated fresh timestamps; this prevented future CLI re-application of already deployed SQL.
+- **Three Edge Functions deployed ACTIVE v1:** `publish` (`verify_jwt=true`), `complete-private-asset` (`verify_jwt=true`), `purge-expired-trash` (`verify_jwt=false`, separately gated by an absent-by-default 32+ character sweep secret). The first two got an explicit runtime `Deno.serve` binding in [`d93df80`](https://github.com/SubhashKumar14/Kadmeion/commit/d93df80d527078fe208222c078bfb08161be5b4c); [GitHub Actions CI 43694908230](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43694908230) passed contracts and the isolated database + Edge smoke jobs.
+- **Hosted least privilege:** all public-schema tables have RLS; no public Storage bucket, `kadmeion-private-assets` private; zero anonymous-callable `SECURITY DEFINER` functions. Auth accounts remained 2, projects/portfolios/storage objects remained zero before and after the migration rollout.
+- **Post-deployment advisors:** 40 authenticated callable SECURITY DEFINER warning findings; expected owner RPCs require per-function review, not automatically a confirmed leak. 14 INFO RLS-no-policy warnings (restricted service-only tables) and one leaked-password protection warning remain. These are not claimed resolved.
+- **Public safety:** Release publishing, asset attestation and Trash sweeps stay disabled until independently proved/approved feature controls and secrets are configured. B07 deployment does **not** prove B08 independent host/revocation, B09 full erasure, B10 email sender delivery or B11 production acceptance.
+- **Additional proof:** `.github/workflows/ci.yml` now includes a PR-only no-credentials hosted HTTP denial smoke; full verification requires its run to succeed. Detailed inventory at `project-docs/B07_HOSTED_DEPLOYMENT_EVIDENCE.md`.
+
+
 ## B10 Auth provider failures and real Supabase sign-out contract — 15 November 2026
 
 - **Latest code SHA:** `4cd62e1285e9a26e3411d24d8bc8b2e8b8b97494`, branch `feat/b0-backend-foundation`. Node/contracts job passed **426/426 tests** on [CI run 43693150989](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43693150989); database job status must be checked independently before marking this exact SHA fully green.
