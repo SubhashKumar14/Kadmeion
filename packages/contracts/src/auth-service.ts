@@ -99,9 +99,19 @@ export class AuthService {
     }), 'Registration is temporarily unavailable.');
     if (error || !data?.user?.id)
       throw new AuthFlowError('AUTH_FAILED', 'Registration could not be completed.');
+    // A non-null signup session must belong to the newly created identity.
+    // Password-confirmation-required registrations deliberately have no session.
+    if (data.session !== null) {
+      if (!data.session?.access_token || data.session.user?.id !== data.user.id)
+        throw new AuthFlowError('AUTH_EXPIRED', 'Registration session could not be verified.');
+      const current = await authProviderCall(
+        ()=>this.auth.getUser(), 'Unable to verify the registration session.');
+      if (current?.error || current?.data?.user?.id !== data.user.id)
+        throw new AuthFlowError('AUTH_EXPIRED', 'Registration session could not be verified.');
+    }
     // Handle candidate is NOT reserved until authenticated ownership/uniqueness update.
-    return { status: data.session?.access_token && data.user ? 'signed_in' :
-      'confirmation_required', handleCandidate } as const;
+    return { status: data.session === null ? 'confirmation_required' : 'signed_in',
+      handleCandidate } as const;
   }
 
   async login(emailInput: unknown, password: string): Promise<AuthUser> {
