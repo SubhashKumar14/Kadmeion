@@ -999,3 +999,11 @@ Starting SHA `94d1e526f7f230879ff1f39fa72d39b77532241d`. The new full-width Asse
 **Earlier results:** `94d1e52` added browser-native image decode and a real 70-byte valid PNG fixture after discovering a corrupt former test PNG; frontend CI [43752448090](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752448090) passed. Its isolated DB job must be checked separately. This new source SHA requires both frontend and isolated local browser/backend workflows. No paid dependencies, new mockups, hosted database writes, main merge or public hosting.
 
 **Next exact action:** Fix any exact-SHA CI failures; capture/compare #18–26 at approved native sizes; continue F6 keyboard, reflow, contrast and 52-screen UAT evidence. Notion final ledger needs updated check-point/readback.
+
+---
+
+### JSX closure correction after EDIT-06 return control — 16 Nov 2026
+
+Latest `4d11974` frontend CI [43752842052](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752842052) **FAILED** TypeScript parsing `apps/frontend/src/portfolios.tsx:497 TS1005: '}' expected` because the new persistent Assets conditional wrapper `{openedAssets&&<div>…</div>}` had been authored without the closing expression brace. The Source wrapper following it was syntactically valid. This corrective commit adds the single missing `}` only; it does not modify private image logic or runtime rendering. Root CI on failed source SHA may be cancelled/superseded. Exact corrected SHA frontend + isolated backend/browser tests must be checked before acceptance.
+
+**Next:** verify both workflows, then measure native approved screenshot similarities #23/24. Preserve zero-spend, draft PR, no live publishing.

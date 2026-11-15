@@ -493,7 +493,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       </aside>
     </div>{openedAssets&&<div hidden={tool!=='Assets'}>
       <AssetList port={port} back={()=>setTool('Content')}/>
-    </div>
+    </div>}
     {openedSource&&<div hidden={tool!=='Source'}>
       <SourceInspector head={head} slot={slot} apply={apply} back={()=>setTool('Content')}/>
     </div>}</>)}
