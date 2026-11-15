@@ -93,5 +93,49 @@ for(const specification of specifications){
   console.log('Traceability inventory: '+specification.name+
     ' | '+items.length+' records | source links checked (not acceptance proof)');
 }
+
+// Every approved mockup is a visual *input*, not proof of a working screen.
+// Keep exact archive member and owner approval pinned for frontend cloning.
+const approvedFile=resolve(root,'project-docs/registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv');
+const approval=parseCsv(readFileSync(approvedFile,'utf8'));
+const [approvalHeader,...screens]=approval;
+const columns=Object.fromEntries(approvalHeader.map((name,index)=>[name,index]));
+const field=(row,key)=>row[columns[key]];
+const catalog=readFileSync(resolve(root,'project-docs/docs/02_design/SCREEN_CATALOG.md'),'utf8');
+const catalogIds=[...catalog.matchAll(/^\\|\\s*([A-Z]+-\\d{2})\\s*\\|/gm)].map(match=>match[1]);
+const expectedArchives=new Set([
+  'Kadmeion_LIGHT_Approved_01-11.zip','Kadmeion_LIGHT_Batch05_12-16.zip',
+  'Kadmeion_LIGHT_Batch06_17-26.zip','Kadmeion_LIGHT_Batch07_27-36.zip',
+  'Kadmeion_LIGHT_Batch08_37-46.zip','Kadmeion_LIGHT_Batch09_47-52.zip'
+]);
+if(screens.length!==52||catalogIds.length!==52)
+  fail('52-screen approval and catalog counts must agree');
+const usedImages=new Set();
+for(let i=0;i<screens.length;i++){
+  const row=screens[i],number=String(i+1).padStart(2,'0');
+  if(row.length!==approvalHeader.length){fail('Malformed approval screen '+number);continue;}
+  if(field(row,'Index')!==number||field(row,'Screen ID')!==catalogIds[i])
+    fail('Approval screen order or ID differs from catalog at '+number);
+  const asset=field(row,'Approved PNG archive member');
+  if(typeof asset!=='string'||!asset.startsWith(number+'_')||
+     !/^\\d{2}_[A-Z]+-\\d{2}_[A-Za-z0-9_-]+\\.png$/.test(asset)||
+     usedImages.has(asset))fail('Ambiguous approved screenshot at '+number);
+  usedImages.add(asset);
+  if(!expectedArchives.has(field(row,'Source archive in ChatGPT Library')))
+    fail('Unknown image archive at '+number);
+  if(!/^[a-f0-9]{16,64}$/.test(field(row,'SHA-256 prefix from approval record')))
+    fail('Approved screenshot digest prefix missing at '+number);
+  if(field(row,'Visual approval')!=='APPROVED_2026-11-14'||
+     field(row,'Source ZIP CRC checked')!=='ZIP_ARCHIVE_VALID')
+    fail('Image review or ZIP integrity not established at '+number);
+}
+if(screens[25]?.[columns['Approved PNG archive member']]!==
+    '26_EDIT-09_Fullscreen_Portfolio_Only_REVISION_LIGHT.png'||
+   screens[25]?.[columns['SHA-256 prefix from approval record']]!==
+    'e13f8330cbc0149a1e11')
+  fail('Screen 26 must use approved fullscreen-only corrected asset');
+console.log('Frontend source approval: '+screens.length+
+  '/52 LIGHT visuals pinned; zero functional acceptance implied');
+
 if(failures)process.exitCode=1;
 else console.log('Traceability inventories structurally valid; acceptance remains independently gated.');
