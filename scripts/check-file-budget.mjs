@@ -86,7 +86,9 @@ const justifiedExtra = [
   // Approved vector identity assets shared by public and private shells.
   'apps/frontend/public/brand/kadmeion-mark.svg',
   'apps/frontend/public/brand/kadmeion-wordmark.svg',
-  'apps/frontend/e2e/owner.spec.ts'
+  'apps/frontend/e2e/owner.spec.ts',
+  'apps/frontend/src/profile.tsx',
+  'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

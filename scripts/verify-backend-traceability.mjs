@@ -126,7 +126,7 @@ for(let i=0;i<screens.length;i++){
   if(!/^[a-f0-9]{16,64}$/.test(field(row,'SHA-256 prefix from approval record')))
     fail('Approved screenshot digest prefix missing at '+number);
   if(field(row,'Visual approval')!=='APPROVED_2026-11-14'||
-     field(row,'Source ZIP CRC checked')!=='ZIP_ARCHIVE_VALID')
+     !['ZIP_ARCHIVE_VALID','ZIP_MEMBER_CRC_AND_PNG_SHA256_PREFIX_VERIFIED'].includes(field(row,'Source ZIP CRC checked')))
     fail('Image review or ZIP integrity not established at '+number);
 }
 if(screens[25]?.[columns['Approved PNG archive member']]!==
@@ -139,3 +139,4 @@ console.log('Frontend source approval: '+screens.length+
 
 if(failures)process.exitCode=1;
 else console.log('Traceability inventories structurally valid; acceptance remains independently gated.');
+

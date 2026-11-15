@@ -179,3 +179,20 @@
 .ws-project-conflict{border-top:1px solid var(--line);margin-top:18px;padding-top:16px}
 .ws-project-conflict dt{font-weight:700}.ws-project-conflict dd{white-space:pre-wrap;margin:0 0 10px}
 @media(max-width:850px){.ws-project-detail{grid-template-columns:1fr}}
+
+.ws-profile-tabs{display:flex;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-top:20px}
+.ws-profile-tabs button{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--body);min-height:44px;padding:0 10px;font:inherit}
+.ws-profile-tabs button[aria-pressed="true"]{border-bottom-color:var(--accent);color:var(--ink);font-weight:700}
+.ws-profile-preview{display:grid;gap:14px}
+.ws-profile-preview h2{font-size:26px;margin:0 0 14px}
+.ws-profile-preview aside>p,.ws-profile-avatar p{font-size:13px;color:var(--body);margin:10px 0}
+.ws-profile-card{background:#193548;color:#fff;border-radius:11px;padding:20px;min-height:145px}
+.ws-profile-card h3{font-size:27px;margin:12px 0}
+.ws-profile-card p{white-space:pre-wrap}
+.ws-profile-card .ws-kicker{color:#ffcda4}
+.ws-profile-avatar{display:flex;align-items:center;gap:16px;padding:10px 0 18px;border-bottom:1px solid var(--line);margin-bottom:15px}
+.ws-profile-avatar span{display:grid;place-items:center;width:56px;height:56px;flex:none;border-radius:50%;background:var(--surface-soft);font-weight:700}
+.ws-profile-skills{display:flex;gap:6px;flex-wrap:wrap;padding:0;list-style:none}
+.ws-profile-skills button{min-height:34px;background:var(--surface-soft);border:1px solid var(--line);border-radius:7px;color:var(--ink)}
+.ws-profile-confirm,.ws-profile .ws-profile-check{display:flex;align-items:center;gap:8px}
+.ws-profile .ws-profile-check input{width:20px;min-height:20px}

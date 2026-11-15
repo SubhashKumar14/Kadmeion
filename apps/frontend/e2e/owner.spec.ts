@@ -69,6 +69,29 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('heading', {name: /Make room for/})).toBeVisible();
   await capture('11_WORKSPACE_BROWSER');
 
+  await page.goto('/app/profile');
+  await expect(page.getByLabel('Display name', {exact: true})).toBeVisible();
+  const stale = await page.context().newPage();
+  try {
+    await stale.goto('/app/profile');
+    await expect(stale.getByLabel('Display name', {exact: true})).toBeVisible();
+    await page.getByLabel('Headline', {exact: true}).fill('Private developer draft');
+    await page.getByLabel('Add skill', {exact: true}).fill('TypeScript');
+    await page.getByRole('button', {name: 'Add skill', exact: true}).click();
+    await page.getByRole('button', {name: 'Save profile draft'}).click();
+    await expect(page.getByRole('status')).toHaveText('Private profile draft saved.');
+    await stale.getByLabel('Headline', {exact: true}).fill('Stale overwritten headline');
+    await stale.getByRole('button', {name: 'Save profile draft'}).click();
+    await expect(stale.getByRole('alert')).toContainText('changed in another session');
+    await expect(stale.getByLabel('Headline', {exact: true})).toHaveValue('Stale overwritten headline');
+    await page.reload();
+    await expect(page.getByLabel('Headline', {exact: true})).toHaveValue('Private developer draft');
+    await expect(page.getByRole('button', {name: 'Remove TypeScript'})).toBeVisible();
+    await capture('12_PROFILE_BROWSER');
+  } finally {
+    await stale.close();
+  }
+
   await page.goto('/app/onboarding');
   await expect(page.getByRole('group', {name: 'Choose your next step'})).toBeVisible();
   await capture('10_ONBOARDING_BROWSER');

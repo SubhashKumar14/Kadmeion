@@ -5,6 +5,9 @@ import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+export type ProfileDraft = { displayName: string; headline: string; bio: string; skills: string[] };
+export type OwnerProfile = ProfileDraft & { handle: string | null };
+
 export type OwnerProject = {
   id: string; title: string; slug: string; summary: string; description: string;
   repositoryUrl: string | null; liveUrl: string | null; revision: number; updatedAt: string;
@@ -439,10 +442,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         cache: 'no-store', credentials: 'omit', redirect: 'error'
       });
     } catch { throw new Error('Private workspace service is unavailable.'); }
-    if (!response.ok && path === 'rpc/update_private_project') {
+    if (!response.ok && ['rpc/update_private_project', 'rpc/owner_save_profile_draft', 'rpc/update_private_project_case_study'].includes(path)) {
       const payload: unknown = await response.json().catch(() => null);
-      if (payload && typeof payload === 'object' && 'code' in payload && payload.code === '40001')
-        throw new Error('This project changed while you were editing. Load the latest revision before saving again.');
+      if (payload && typeof payload === 'object') {
+        if ('code' in payload && payload.code === '40001')
+          throw new Error(path === 'rpc/owner_save_profile_draft'
+            ? 'Your profile changed in another session. Load the latest draft before saving.'
+            : 'This project changed while you were editing. Load the latest revision before saving again.');
+        if ('message' in payload && payload.message === 'PROFILE_WITHDRAWAL_CONFIRMATION_REQUIRED')
+          throw new Error('Your public profile is live. Confirm withdrawal before saving these changes.');
+      }
     }
     if (!response.ok)
       throw new Error(response.status === 401 || response.status === 403
@@ -450,6 +459,41 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         ? 'Project conflicts with an existing owner record. Choose a different slug.' : 'Private workspace request failed.');
     try { return await response.json() as unknown; }
     catch { throw new Error('Private workspace returned an invalid response.'); }
+  }
+
+  private parseOwnerProfile(value: unknown, userId: string): OwnerProfile {
+    const row = value as Json | null;
+    if (!row || row.user_id !== userId || typeof row.display_name !== 'string' ||
+        typeof row.headline !== 'string' || typeof row.bio !== 'string' ||
+        (row.handle !== null && typeof row.handle !== 'string') ||
+        !Array.isArray(row.private_skills) || row.private_skills.some(skill => typeof skill !== 'string'))
+      throw new Error('Private profile response could not be verified.');
+    return {displayName: row.display_name, headline: row.headline, bio: row.bio,
+      handle: row.handle, skills: row.private_skills as string[]};
+  }
+
+  async readOwnerProfile(): Promise<AuthOutcome<OwnerProfile>> {
+    return this.outcome(async () => {
+      const {session, userId} = await this.ownerSession();
+      const rows = await this.ownerRest('profiles?select=user_id,handle,display_name,headline,bio,private_skills&user_id=eq.' +
+        encodeURIComponent(userId) + '&limit=1', session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
+        throw new Error('Private profile could not be loaded.');
+      return this.parseOwnerProfile(rows[0], userId);
+    });
+  }
+
+  async saveOwnerProfile(expected: ProfileDraft, draft: ProfileDraft, confirmWithdrawal: boolean): Promise<AuthOutcome<OwnerProfile>> {
+    return this.outcome(async () => {
+      const {session, userId} = await this.ownerSession();
+      const {displayName, headline, bio, skills} = expected;
+      const result = await this.ownerRest('rpc/owner_save_profile_draft', session.access_token, 'POST', {
+        p_expected: {displayName, headline, bio, skills},
+        p_draft: draft, p_confirm_projection_withdrawal: confirmWithdrawal
+      });
+      if (!this.isCurrentSession(session)) throw new Error('Owner session changed during profile save.');
+      return this.parseOwnerProfile(result, userId);
+    });
   }
 
   async readOwnerWorkspace(): Promise<AuthOutcome<OwnerWorkspaceSnapshot>> {

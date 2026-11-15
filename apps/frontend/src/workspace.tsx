@@ -5,6 +5,7 @@ import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.t
 import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../../auth-web/src/supabase-auth-port.ts';
 import { BrandMark, Icon, useTheme } from './landing.tsx';
 import { PrivateProjectDetail, PrivateProjects } from './projects.tsx';
+import { DeveloperProfile } from './profile.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -14,6 +15,7 @@ type StartChoice = PrivateStep;
 const NAV = [
   { title: 'Overview', href: '/app', icon: 'layers' },
   { title: 'Welcome', href: '/app/onboarding', icon: 'target' },
+  { title: 'Profile', href: '/app/profile', icon: 'user' },
   { title: 'Projects', href: '/app/projects', icon: 'folder' },
   { title: 'Templates', href: '/templates', icon: 'folder' },
   { title: 'Explore', href: '/explore', icon: 'activity' }
@@ -24,7 +26,7 @@ function projectIdFromRoute(path: string): string | undefined {
 }
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || !!projectIdFromRoute(path);
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || !!projectIdFromRoute(path);
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -54,7 +56,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     </aside>
     <div className="ws-main-col">
       <header className="ws-topbar">
-        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : 'Overview'}</span>
+        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : 'Overview'}</span>
         <div className="ws-topbar-actions">
           <button type="button" className="ws-theme" onClick={toggleTheme}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
@@ -80,15 +82,14 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
-    { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Profile editor integration pending' },
+    { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Template explorer available' },
     { key: 'connections', title: 'Connect developer accounts', description: 'Optional. You can continue without GitHub or any external account.', state: 'Connection controls not available yet' }
   ];
   function choose() {
     if (choice === 'portfolio') { window.location.assign('/templates'); return; }
-    setNote(choice === 'profile'
-      ? 'The owner profile editor is not connected in this frontend build. Your choice has not been saved. You can continue in your workspace.'
-      : 'Developer connections are optional and not enabled in this frontend build. No provider authorization was started.');
+    if (choice === 'profile') { window.location.assign('/app/profile'); return; }
+    setNote('Developer connections are optional and unavailable in this workspace.');
   }
   return <section className="ws-onboarding" aria-labelledby="ws-title">
     <div className="ws-heading"><p className="ws-kicker">WELCOME / FIRST STEPS</p>
@@ -209,7 +210,7 @@ export function WorkspaceApp() {
           return;
         }
         setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
-        if (route.startsWith('/app/projects')) return;
+        if (route.startsWith('/app/projects') || route === '/app/profile') return;
         void port.readOwnerWorkspace().then(read=>{
           if (cancelled) return;
           if (read.error || !read.data) {
@@ -267,6 +268,7 @@ export function WorkspaceApp() {
   return <WorkspaceFrame owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
     {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
+      route === '/app/profile' && authRef.current ? <DeveloperProfile port={authRef.current}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div className="ws-skeleton-heading" aria-hidden="true"/>
