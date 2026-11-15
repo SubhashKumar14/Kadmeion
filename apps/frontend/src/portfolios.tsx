@@ -36,6 +36,21 @@ const contentFields = {
   'author-metric@1': ['label', 'value']
 } as const satisfies Record<string, readonly string[]>;
 
+
+/** Only validate links that an owner explicitly authors. Never treat a valid
+ * URL as a verified provider account, deployed site, or publish approval. */
+function ownerLinkError(source:string):string|null {
+  if(source==='')return null;
+  if(source.length>2048||/[\\\s\u0000-\u001f\u007f]/u.test(source))
+    return 'Link must be a valid HTTPS address without spaces, backslashes or credentials (maximum 2048 characters).';
+  try{
+    const link=new URL(source);
+    if(link.protocol==='https:'&&link.hostname&&link.username===''&&link.password==='')
+      return null;
+  }catch{ /* unparseable URL */ }
+  return 'Link must be an HTTPS address without an embedded username or password.';
+}
+
 function primaryField(component?: string): string {
   return component && Object.hasOwn(contentFields, component)
     ? contentFields[component as keyof typeof contentFields][0] : 'text';
@@ -244,6 +259,10 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [head, setHead] = useState<EditorHead | null>(null);
   const [slot, setSlot] = useState('');
   const [value, setValue] = useState('');
+  // Secondary controls preserve malformed user input without silently
+  // committing it to the private snapshot or losing it on panel changes.
+  const [fieldDrafts,setFieldDrafts]=useState<Record<string,string>>({});
+  const [fieldIssues,setFieldIssues]=useState<Record<string,string>>({});
   const [operation, setOperation] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -280,6 +299,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setSlot(chosen);
       setValue(initial?.content[primaryField(initial.componentId)]??'');
       setOperation('');
+      setFieldDrafts({});setFieldIssues({});
       setError('');
     });
     return () => {active = false;};
@@ -308,6 +328,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setSlot('');
       setValue('');
       setOperation(crypto.randomUUID());
+      setFieldDrafts({});setFieldIssues({});
       setNotice('Revision restored into the working draft. Save to keep it.');
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not restore the revision.');
@@ -344,6 +365,12 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     id==='external-link@1'?'Links':
     id==='project-card@1'||id==='skills-list@1'||id==='author-metric@1'?'Work':'Text';
   const assigned = Object.entries(head?.snapshot.slots ?? {});
+  const pendingFields=Object.entries(fieldDrafts).some(([key,draft])=>{
+    const pivot=key.lastIndexOf(':');
+    if(pivot<0)return false;
+    const parent=key.slice(0,pivot),field=key.slice(pivot+1);
+    return (head?.snapshot.slots[parent]?.content[field]??'')!==draft;
+  });
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{
@@ -363,7 +390,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'} target="_blank" rel="noopener">Fullscreen saved preview</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/staging'}>Release workspace</a>
       </>}
-      <button type="button" className="ws-primary" disabled={!operation || saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
+      <button type="button" className="ws-primary" disabled={!operation||saving||pendingFields}
+        title={pendingFields?'Resolve or apply unfinished inspector fields before saving.':undefined}
+        onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {error && <button type="button" className="ws-secondary" onClick={() => {
@@ -479,11 +508,37 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               <button type="button" className="ws-secondary" disabled={saving || value === (active.content[primaryField(active.componentId)] ?? '')}
                 onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})}>Apply text</button>
               {active.componentId && Object.hasOwn(contentFields, active.componentId) &&
-                contentFields[active.componentId as keyof typeof contentFields].slice(1).map(field =>
-                  <label key={field}>{field}<input defaultValue={active.content[field] ?? ''} key={slot + ':' + field + ':' + (active.content[field] ?? '')}
-                    onBlur={event => {if ((active.content[field] ?? '') !== event.target.value)
-                      apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[field]: event.target.value}});
-                    }}/></label>)}
+                contentFields[active.componentId as keyof typeof contentFields].slice(1).map(field => {
+                  const inputKey=slot+':'+field;
+                  const stored=active.content[field]??'';
+                  const draft=Object.hasOwn(fieldDrafts,inputKey)?fieldDrafts[inputKey]!:stored;
+                  const issue=fieldIssues[inputKey];
+                  const id='kd-field-'+inputKey;
+                  return <label key={inputKey}>{field}<input
+                    type={field==='url'?'url':'text'} maxLength={field==='url'?2048:12000}
+                    value={draft} aria-invalid={!!issue}
+                    aria-describedby={issue?id+'-error':undefined}
+                    onChange={event=>{
+                      const changed=event.target.value;
+                      setFieldDrafts(values=>({...values,[inputKey]:changed}));
+                      setFieldIssues(values=>{const updated={...values};delete updated[inputKey];return updated;});
+                    }}
+                    onBlur={()=>{
+                      const warning=field==='url'?ownerLinkError(draft):null;
+                      if(warning){
+                        setFieldIssues(values=>({...values,[inputKey]:warning}));
+                        return;
+                      }
+                      if(draft===stored){
+                        setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
+                      }else if(apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
+                        setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
+                      }
+                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</label>;
+                })}
+              {pendingFields&&<p className="ws-field-hint" role="status">
+                One or more secondary fields have uncommitted edits. Correct or apply them before saving this draft.
+              </p>}
               <button type="button" className="ws-secondary" disabled={saving}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&

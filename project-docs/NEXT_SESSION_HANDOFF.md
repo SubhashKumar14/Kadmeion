@@ -1007,3 +1007,15 @@ Starting SHA `94d1e526f7f230879ff1f39fa72d39b77532241d`. The new full-width Asse
 Latest `4d11974` frontend CI [43752842052](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752842052) **FAILED** TypeScript parsing `apps/frontend/src/portfolios.tsx:497 TS1005: '}' expected` because the new persistent Assets conditional wrapper `{openedAssets&&<div>…</div>}` had been authored without the closing expression brace. The Source wrapper following it was syntactically valid. This corrective commit adds the single missing `}` only; it does not modify private image logic or runtime rendering. Root CI on failed source SHA may be cancelled/superseded. Exact corrected SHA frontend + isolated backend/browser tests must be checked before acceptance.
 
 **Next:** verify both workflows, then measure native approved screenshot similarities #23/24. Preserve zero-spend, draft PR, no live publishing.
+
+---
+
+## EDIT-02 guarded HTTPS link inspector — 16 November 2026
+
+**Starting verified code:** `c8f4ebb969d5168b59f249b175e806a74761d8dc`. Frontend CI [43752977569](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752977569) successful; isolated DB/browser pipeline [43752983179](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43752983179) still running at beginning of this change. Prior `4d11974` JSX unclosed conditional was fixed by a concurrent commit `c8f4ebb`, so avoid duplicate patch.
+
+**Why and exact code:** EDIT-02 content inspector previously sent arbitrary text from `url` fields into `UPDATE_CONTENT` immediately on blur, including `javascript:` or credentials, and offered no error or recovery. `apps/frontend/src/portfolios.tsx` adds bounded HTTPS-only/no-credentials URL checks (2,048 chars; reject spaces/backslashes/control bytes), controlled owner-private secondary field buffers keyed by slot+field, field-level accessible error messages, and a Save guard for unapplied/invalid secondary fields. Malformed input stays in the visible editor buffer, not in the versioned snapshot. Valid URLs still use the exact transactional `UPDATE_CONTENT` writer; no auto-fetch, public link or ownership verification is implied. Historical revision restore and account/portfolio reload clear ephemeral fields. `apps/frontend/src/workspace.css` adds semantic error/hint and light/dark focus contrast. `apps/frontend/e2e/owner.spec.ts` checks a malicious `javascript:` CTA URL is rejected and blocks save, then checks real owner HTTPS field applies and survives private revision save/reload.
+
+**Test/acceptance boundary:** New commit's exact SHA TypeScript/build/public Chromium and isolated GoTrue+PostgREST owner Chrome must pass. The browser tests at local isolated Supabase never publish. Content provenance and true public delivery stay blocked by separate host/CDN proofs. Visual screenshot #19 and full WCAG/UAT remain unaccepted, no main merge or new recurring spend.
+
+**Next:** Verify both CI workflows, fix any owner Chrome locator/focus failure, run reference screenshot comparisons, continue F6 keyboard/reflow and save Notion+GitHub checkpoint.

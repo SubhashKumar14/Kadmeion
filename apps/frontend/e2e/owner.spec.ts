@@ -249,6 +249,17 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(previewSlot).toBeFocused();
   await expect(page.getByLabel('Text content')).toHaveValue('Portfolio draft title');
   await capture('19_CONTENT_INSPECTOR_BROWSER');
+  // EDIT-02: rejected link remains visible in the owner's unsaved inspector
+  // and must never silently become a project URL.
+  await page.getByRole('button',{name:/arc hero cta1/i}).click();
+  await page.getByLabel('url',{exact:true}).fill('javascript:alert(1)');
+  await page.getByLabel('url',{exact:true}).press('Tab');
+  await expect(page.getByRole('alert')).toContainText('Link must be an HTTPS address');
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();
+  await page.getByLabel('url',{exact:true}).fill('https://example.org/portfolio');
+  await page.getByLabel('url',{exact:true}).press('Tab');
+  await expect(page.getByLabel('url',{exact:true})).toHaveValue('https://example.org/portfolio');
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeEnabled();
   await page.getByRole('button', {name: 'Sections', exact: true}).click();
   await page.getByLabel('Section layout').selectOption('contact@1');
   await page.getByRole('button', {name: 'Add section', exact: true}).click();
@@ -317,6 +328,8 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('button', {name:'Edit L1 title slot in preview'}))
     .toContainText('Portfolio draft title');
   await expect(page.getByLabel('Text content')).toHaveValue('Portfolio draft title');
+  await page.getByRole('button',{name:/arc hero cta1/i}).click();
+  await expect(page.getByLabel('url',{exact:true})).toHaveValue('https://example.org/portfolio');
   await page.getByRole('button', {name: 'History', exact: true}).click();
   await expect(page.getByRole('button', {name: /Revision 2/})).toBeVisible();
   await capture('25_REVISION_HISTORY_BROWSER');

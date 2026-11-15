@@ -740,3 +740,12 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-shell .ws-preview-workbench{min-height:calc(100dvh - 108px)}
 }
 @media(max-width:900px){.ws-editor-theme-switch{display:none}}
+
+/* EDIT-02: keep malformed author URLs in an unsaved, accessible field buffer.
+   Never quietly persist javascript:, non-HTTPS or credential-bearing links. */
+.ws-field-error{display:block;margin:5px 0 0;color:var(--danger,#ad3d37);
+  font-size:11px;line-height:1.45}
+.ws-project-fields [aria-invalid="true"]{border-color:var(--danger,#ad3d37)!important;
+  outline:2px solid color-mix(in srgb,var(--danger,#ad3d37) 18%,transparent)}
+.ws-field-hint{border-left:3px solid var(--accent-strong);padding:10px 12px;
+  font-size:11px;line-height:1.5;color:var(--body);background:var(--surface-soft)}
