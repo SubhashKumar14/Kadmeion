@@ -35,6 +35,8 @@ jobs:
           VITE_SUPABASE_URL: https://scyooqjitjzjdxgtanso.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_test_only
       - run: npm test
+      - name: Validate D01-D90, UI, workflow, case and proof evidence indexes
+        run: node scripts/verify-backend-traceability.mjs
       - run: npm run check:file-budget
       # B07 release smoke uses no JWTs, accounts, secrets or mutating RPCs.
       # PR-only: main's isolated code CI remains independent of paused free hosting.

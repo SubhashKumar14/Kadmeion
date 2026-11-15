@@ -39,7 +39,10 @@ const justifiedExtra = [
   'supabase/migrations/20261115140000_owner_my_components_library.sql',
   'supabase/tests/private-my-components.sql',
   'packages/contracts/src/private-my-components-service.ts',
-  'tests/contracts/private-my-components-service.test.ts'
+  'tests/contracts/private-my-components-service.test.ts',
+  // B11 integrity gate ensures all five durable evidence registers remain
+  // unique, complete and linked to actual sources without fabricating UAT.
+  'scripts/verify-backend-traceability.mjs'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
