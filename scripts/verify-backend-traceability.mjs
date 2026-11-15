@@ -102,7 +102,7 @@ const [approvalHeader,...screens]=approval;
 const columns=Object.fromEntries(approvalHeader.map((name,index)=>[name,index]));
 const field=(row,key)=>row[columns[key]];
 const catalog=readFileSync(resolve(root,'project-docs/docs/02_design/SCREEN_CATALOG.md'),'utf8');
-const catalogIds=[...catalog.matchAll(/^\\|\\s*([A-Z]+-\\d{2})\\s*\\|/gm)].map(match=>match[1]);
+const catalogIds=[...catalog.matchAll(/^\|\s*([A-Z]+-\d{2})\s*\|/gm)].map(match=>match[1]);
 const expectedArchives=new Set([
   'Kadmeion_LIGHT_Approved_01-11.zip','Kadmeion_LIGHT_Batch05_12-16.zip',
   'Kadmeion_LIGHT_Batch06_17-26.zip','Kadmeion_LIGHT_Batch07_27-36.zip',
@@ -118,7 +118,7 @@ for(let i=0;i<screens.length;i++){
     fail('Approval screen order or ID differs from catalog at '+number);
   const asset=field(row,'Approved PNG archive member');
   if(typeof asset!=='string'||!asset.startsWith(number+'_')||
-     !/^\\d{2}_[A-Z]+-\\d{2}_[A-Za-z0-9_-]+\\.png$/.test(asset)||
+     !/^\d{2}_[A-Z]+-\d{2}_[A-Za-z0-9_-]+\.png$/.test(asset)||
      usedImages.has(asset))fail('Ambiguous approved screenshot at '+number);
   usedImages.add(asset);
   if(!expectedArchives.has(field(row,'Source archive in ChatGPT Library')))
