@@ -266,7 +266,9 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: 'Save draft'}).click();
   await expect(page.getByRole('status')).toHaveText('Private portfolio draft saved.');
   await page.reload();
-  await expect(page.getByText('Portfolio draft title', {exact: true})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Edit L1 title slot in preview'}))
+    .toContainText('Portfolio draft title');
+  await expect(page.getByLabel('Text content')).toHaveValue('Portfolio draft title');
   await page.getByRole('button', {name: 'History', exact: true}).click();
   await expect(page.getByRole('button', {name: /Revision 2/})).toBeVisible();
   await capture('25_REVISION_HISTORY_BROWSER');

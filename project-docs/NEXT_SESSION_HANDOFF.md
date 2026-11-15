@@ -823,3 +823,11 @@ The source ZIP `Kadmeion_Canva_Logo_Family_2026.zip`, member `vectors/03_pictori
 Latest brand asset exact-byte source commit `f15781d` caused [frontend CI 43746845196](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43746845196) to fail at `apps/frontend/src/portfolios.tsx:255`, TS2345: the verified `readOwnerPortfolio()` type allows a `null` snapshot, but `orderedLayerGroups` accepted only `undefined`. The helper already guards falsy snapshots before parsing. This commit corrects its static parameter type to `PortfolioSnapshot | null | undefined` while keeping the same null-safe fail-closed implementation. Earlier error came from F3 code, not logo SVG rendering. The new SHA must be re-verified through both CI suites before success is claimed.
 
 **Next:** Check TS7/build/Chromium and local DB on correction SHA, measure actual #16 Folio empty-state snapshot and final #18 editor screenshot, log exact evidence to Notion.
+
+---
+
+### Isolated owner browser selector correction — 15 Nov 2026
+
+[CI `9a0615d`, frontend 43746958392](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43746958392) **SUCCESS** after TS7 nullability correction. [Database/owner browser run 43746963138](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43746963138) FAILED at E2E `apps/frontend/e2e/owner.spec.ts:269`, **not** due PostgreSQL migration or cross-user authorization: after new first-title preselection, `getByText('Portfolio draft title')` matched both the now-visible Content inspector textarea and the canvas slot. The isolated positive operator E2E in the same job PASSED, proving role-gated cases remained functional. This correction scopes the reloaded owner assertion to exact canvas slot button and the labeled textarea to verify both durable views independently. No app code changed; no weakening to `first()` or bypassing tests.
+
+**Next:** rerun both Actions workflows on corrected SHA; verify authenticated owner E2E and capture #16 Folio and #18 editor screenshots for measured comparison. Keep exact renderer, F4 privacy/hosting gates and ₹0 unchanged.
