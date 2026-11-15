@@ -128,7 +128,8 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
       <div className="ws-project-aside ws-studio-list">
         {items.length > 0 && <label className="ws-studio-search">Find a portfolio<input type="search" value={query} onChange={event => setQuery(event.target.value)}/></label>}
         {!items.length && <div className="ws-project-empty">
-          <div className="ws-area-icon"><Icon name="layers" size={25}/></div>
+          <img className="ws-brand-folio" src="/brand/kadmeion-open-folio.svg"
+            width="118" height="118" alt="" decoding="async"/>
           <h2>No portfolios yet.</h2><p>Choose a preset or start with a blank draft.</p>
           <a className="ws-primary" href={STUDIO + '/new'}>Create your first portfolio</a>
         </div>}

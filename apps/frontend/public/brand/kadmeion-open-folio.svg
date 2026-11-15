@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Open folio pictorial logo for Kadmeion"><defs>
+  <linearGradient id="oxide" x1="0" x2=".98" y1=".12" y2="1"><stop offset="0" stop-color="#c36b43"/><stop offset="1" stop-color="#a94f2d"/></linearGradient>
+  <linearGradient id="spear" x1="0" x2="1" y1="1" y2="0"><stop offset="0" stop-color="#b85b35"/><stop offset=".55" stop-color="#c67247"/><stop offset="1" stop-color="#c77142"/></linearGradient>
+  <linearGradient id="ribbon" x1="0" x2="1" y1=".25" y2=".85"><stop offset="0" stop-color="#fffaf2"/><stop offset=".38" stop-color="#f7eee4"/><stop offset=".85" stop-color="#dfb9a2"/><stop offset="1" stop-color="#c98e72"/></linearGradient>
+  <linearGradient id="sliver" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#fffdf7"/><stop offset="1" stop-color="#f0e6da"/></linearGradient>
+  <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#DE9C77"/><stop offset=".55" stop-color="#C36B43"/><stop offset="1" stop-color="#9F4F32"/></linearGradient>
+  <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFFCF5"/><stop offset="1" stop-color="#DBB5A0"/></linearGradient>
+  <linearGradient id="night" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#13242E"/><stop offset="1" stop-color="#071218"/></linearGradient>
+</defs><g>
+ <path d="M81 153 C118 133 184 118 246 148 L246 365 C184 337 129 343 84 368 C81 301 81 212 81 153 Z" fill="url(#paper)"/>
+ <path d="M267 148 C328 118 392 133 431 153 L428 368 C383 343 328 337 267 365 Z" fill="#E6D7C9"/>
+ <path d="M256 139 L256 377" stroke="#B9613C" stroke-width="15" stroke-linecap="round"/>
+ <path d="M81 155 L112 142 L112 350 L84 370 Z" fill="url(#metal)"/>
+ <path d="M267 148 C328 118 392 133 431 153 L431 228 C382 208 332 214 267 243 Z" fill="url(#metal)"/>
+ <path d="M305 278 L391 278" stroke="#C36B43" stroke-width="11" stroke-linecap="round"/>
+ <path d="M305 308 L369 308" stroke="#C36B43" stroke-width="11" stroke-linecap="round"/>
+ <path d="M135 208 L207 190" stroke="#B17862" stroke-width="11" stroke-linecap="round"/>
+ <path d="M135 246 L207 228" stroke="#B17862" stroke-width="11" stroke-linecap="round"/>
+ <path d="M135 285 L182 273" stroke="#B17862" stroke-width="11" stroke-linecap="round"/>
+ </g></svg>

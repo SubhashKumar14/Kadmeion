@@ -476,3 +476,8 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-layer-group[open] summary{background:var(--surface-soft);margin-bottom:7px}
 .ws-editor-layer-group:not([open]) .ws-editor-slots{display:none}
 .ws-editor-layer-group .ws-editor-slots{max-height:none}
+
+/* Canva #05 approved pictorial Open Folio: a single contextual empty-state
+   illustration, never used as a verification badge or replacement app mark. */
+.ws-brand-folio{display:block;width:118px;height:118px;max-width:100%;
+  object-fit:contain;margin:0 auto 10px;filter:drop-shadow(0 9px 12px color-mix(in srgb,var(--ink) 9%,transparent))}

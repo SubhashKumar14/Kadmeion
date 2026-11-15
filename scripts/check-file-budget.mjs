@@ -86,6 +86,10 @@ const justifiedExtra = [
   // Approved vector identity assets shared by public and private shells.
   'apps/frontend/public/brand/kadmeion-mark.svg',
   'apps/frontend/public/brand/kadmeion-wordmark.svg',
+  // Explicit 15 Nov owner approval of all 12 Canva identity pages superseded
+  // the archived concepts' review-only status. Original pictorial SVG is
+  // a distinct contextual empty-state asset; 200-file cap variance remains.
+  'apps/frontend/public/brand/kadmeion-open-folio.svg',
   'apps/frontend/e2e/owner.spec.ts',
   'apps/frontend/src/profile.tsx',
   'apps/frontend/src/portfolios.tsx',

@@ -220,6 +220,7 @@ test('real owner onboarding and project revision are private across browser sess
 
   await page.goto('/app/portfolios');
   await expect(page.getByRole('heading', {name: 'No portfolios yet.'})).toBeVisible();
+  await expect(page.locator('img.ws-brand-folio')).toHaveAttribute('src','/brand/kadmeion-open-folio.svg');
   await capture('16_PORTFOLIO_LIBRARY_BROWSER');
   await page.getByRole('link', {name: 'Create portfolio', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Choose your foundation.'})).toBeVisible();
