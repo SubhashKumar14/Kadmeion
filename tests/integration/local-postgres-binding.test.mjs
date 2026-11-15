@@ -11,8 +11,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {randomBytes,randomUUID} from 'node:crypto';
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {createServer} from 'node:http';
+import {verifyReleaseWithdrawal} from '../../packages/storage-adapters/src/host-revocation-probe.ts';
 import {once} from 'node:events';
 import {SupabasePrivateFrozenRevisionLoader}
   from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
@@ -528,10 +529,21 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.match(await canonicalResponse.text(), /content="index,follow"/);
     assert.equal((await publicHostRead()).statusCode, 404);
     assert.equal((await fetch(canonical + '/assets/secret.png')).status, 404);
-    for (const nextHandle of ['changed_' + handle, handle]) {
+    const changeHandle=async(nextHandle)=>{
       ok(await api('/rest/v1/profiles?user_id=eq.' + owner.id, {
         method: 'PATCH', jwt: owner.jwt, body: {handle: nextHandle}
       }), 'Change canonical address');
+    };
+    const servedPublicSha=createHash('sha256').update(publicHtml.replace(
+      '<meta name="robots" content="noindex,nofollow,noarchive">',
+      '<meta name="robots" content="index,follow">'
+    )).digest('hex');
+    const revoked=await verifyReleaseWithdrawal({origin:deliveryOrigin,
+      canonicalPath:'/'+handle+'/'+slug,candidateDirectPaths:['/'+handle+'/'+slug+'/assets/secret.png'],
+      allowLocal:true},servedPublicSha,()=>changeHandle('changed_'+handle));
+    assert.equal(revoked.observedHttpRequests,5);
+    for (const nextHandle of ['changed_'+handle,handle]) {
+      if(nextHandle===handle)await changeHandle(handle);
       assert.equal((await fetch(canonical)).status, 404);
       assert.equal((await fetch(deliveryOrigin + '/' + nextHandle + '/' + slug)).status, 404);
     }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {probeHostRevocation} from
+import {createHash} from 'node:crypto';
+import {probeHostRevocation,verifyReleaseWithdrawal} from
   '../../packages/storage-adapters/src/host-revocation-probe.ts';
 
 const input={origin:'https://kadmeion.vercel.app',
@@ -40,6 +41,7 @@ test('wrong or partial direct asset coverage is rejected before any HTTP fetch',
     {...input,candidateDirectPaths:[]},
     {...input,candidateDirectPaths:['//evil.example/a']},
     {...input,candidateDirectPaths:['/../secret']},
+    {...input,candidateDirectPaths:['/releases/./asset.png']},
     {...input,candidateDirectPaths:['/one','/one']},
     {...input,candidateDirectPaths:['https://foreign.example/a']},
     {...input,canonicalPath:'/app/admin'},
@@ -88,4 +90,33 @@ test('denial pages cannot contain unbounded output or private HTML',async()=>{
 test('transport outage never counts as successful revocation',async()=>{
   await assert.rejects(probeHostRevocation(input,async()=>{throw Error('Timeout');}),
     {code:'HOST_UNAVAILABLE'});
+});
+
+test('release withdrawal proves live bytes first and blocks all paths after the operation',async()=>{
+  const html='<!doctype html><title>Published release</title>';
+  const sha=createHash('sha256').update(html).digest('hex');
+  let withdrawn=false;
+  const http:typeof fetch=async(url,options)=>{
+    if(!withdrawn){
+      assert.equal(new URL(String(url)).pathname,input.canonicalPath);
+      assert.equal(options?.method,'GET');
+      return new Response(html,{headers:{'Content-Type':'text/html'}});
+    }
+    return response(404,{},options?.method==='HEAD'?'':'Not found');
+  };
+  const observation=await verifyReleaseWithdrawal(input,sha,async()=>{withdrawn=true;},http);
+  assert.equal(withdrawn,true);
+  assert.equal(observation.observedHttpRequests,7);
+  assert.equal(observation.directPathsChecked,2);
+});
+
+test('an always-denied or unrelated canonical response cannot stand in for a live baseline',async()=>{
+  let withdrawals=0;
+  for(const before of [response(),new Response('<!doctype html><title>Other release</title>',{
+    headers:{'Content-Type':'text/html'}
+  })]){
+    await assert.rejects(verifyReleaseWithdrawal(input,'a'.repeat(64),
+      async()=>{withdrawals++;},async()=>before),{code:'RELEASE_NOT_OBSERVED'});
+  }
+  assert.equal(withdrawals,0);
 });

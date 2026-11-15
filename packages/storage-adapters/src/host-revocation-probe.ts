@@ -21,7 +21,7 @@ export interface HostRevocationObservation {
   thirdPartyArchiveErasureVerified:false;
 }
 export class HostRevocationProbeError extends Error {
-  readonly code:'INVALID_INPUT'|'HOST_UNAVAILABLE'|'STILL_VISIBLE'|'UNSAFE_HEADERS'|'UNSAFE_BODY';
+  readonly code:'INVALID_INPUT'|'HOST_UNAVAILABLE'|'STILL_VISIBLE'|'UNSAFE_HEADERS'|'UNSAFE_BODY'|'RELEASE_NOT_OBSERVED';
   constructor(code:HostRevocationProbeError['code']){
     super('External release revocation could not be verified: '+code);
     this.name='HostRevocationProbeError';this.code=code;
@@ -45,8 +45,24 @@ function trustedOrigin(origin:string,local:boolean):URL {
 function pathValid(path:string):boolean {
   if(typeof path!=='string'||path.includes('//')||path.includes('..')||
      path.includes('%')||path.includes('\\')||path.includes('#')||
-     path.includes('@'))return false;
+     path.includes('@')||path.split('/').includes('.'))return false;
   return DIRECT.test(path);
+}
+function validatedOrigin(input:HostRevocationProbeInput):URL {
+  if(!input||!Array.isArray(input.candidateDirectPaths)||
+     input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
+     !canonicalPathValid(input.canonicalPath)||
+     input.candidateDirectPaths.some(path=>!pathValid(path)||path===input.canonicalPath)||
+     new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  return trustedOrigin(input.origin,input.allowLocal===true);
+}
+
+async function fetchPath(url:URL,method:'GET'|'HEAD',http:typeof fetch):Promise<Response>{
+  try{
+    return await http(url,{method,credentials:'omit',cache:'no-store',redirect:'error',
+      signal:AbortSignal.timeout(5000)});
+  }catch{throw new HostRevocationProbeError('HOST_UNAVAILABLE');}
 }
 function canonicalPathValid(path:unknown):boolean {
   if(typeof path!=='string')return false;
@@ -106,25 +122,11 @@ async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void>
 export async function probeHostRevocation(
   input:HostRevocationProbeInput,http:typeof fetch=fetch
 ):Promise<HostRevocationObservation>{
-  if(!input||!Array.isArray(input.candidateDirectPaths)||
-     input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
-     !canonicalPathValid(input.canonicalPath)||
-     input.candidateDirectPaths.some(path=>!pathValid(path)||path===input.canonicalPath)||
-     new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
-    throw new HostRevocationProbeError('INVALID_INPUT');
-  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const origin=validatedOrigin(input);
   let count=0;
   for(const path of [input.canonicalPath,...input.candidateDirectPaths]){
     for(const method of ['GET','HEAD'] as const){
-      let response:Response;
-      try{
-        response=await http(new URL(path,origin),{
-          method,credentials:'omit',cache:'no-store',redirect:'error',
-          signal:AbortSignal.timeout(5000)
-        });
-      }catch{
-        throw new HostRevocationProbeError('HOST_UNAVAILABLE');
-      }
+      const response=await fetchPath(new URL(path,origin),method,http);
       await verifyDenied(response,method);
       count++;
     }
@@ -137,4 +139,45 @@ export async function probeHostRevocation(
     universalCacheErasureVerified:false as const,
     thirdPartyArchiveErasureVerified:false as const
   });
+}
+
+/** Verify one real pre-withdrawal release and then independently probe the same URL set after withdrawal. */
+export async function verifyReleaseWithdrawal(
+  input:HostRevocationProbeInput,expectedServedSha256:string,
+  withdraw:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<HostRevocationObservation>{
+  const origin=validatedOrigin(input);
+  if(typeof expectedServedSha256!=='string'||!/^[0-9a-f]{64}$/.test(expectedServedSha256)||
+     typeof withdraw!=='function')throw new HostRevocationProbeError('INVALID_INPUT');
+  const paths={...input,origin:origin.origin,candidateDirectPaths:[...input.candidateDirectPaths]};
+  const response=await fetchPath(new URL(paths.canonicalPath,origin),'GET',http);
+  const reader=response.body?.getReader();
+  if(!reader)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  try{
+    if(response.status!==200||response.redirected||
+       !/^text\/html(?:;|$)/i.test(response.headers.get('content-type')??''))
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    const bytes=new Uint8Array(750_000);
+    let size=0;
+    for(;;){
+      const chunk=await reader.read();
+      if(chunk.done)break;
+      if(chunk.value.byteLength>bytes.byteLength-size)
+        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+      bytes.set(chunk.value,size);
+      size+=chunk.value.byteLength;
+    }
+    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes.subarray(0,size)));
+    const hex=Array.from(digest,value=>value.toString(16).padStart(2,'0')).join('');
+    if(size===0||hex!==expectedServedSha256)
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }catch{
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }finally{
+    await reader.cancel().catch(()=>{});
+    reader.releaseLock();
+  }
+  await withdraw();
+  const after=await probeHostRevocation(paths,http);
+  return Object.freeze({...after,observedHttpRequests:after.observedHttpRequests+1});
 }
