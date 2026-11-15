@@ -270,7 +270,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  exchangeCodeForSession(code:string):Promise<AuthOutcome<unknown>> {
+  exchangeCodeForSession(code:string):Promise<AuthOutcome<{user:AuthUser|null}>> {
     return this.outcome(async()=>{
       if(typeof code!=='string'|| !/^[A-Za-z0-9._-]{8,2048}$/.test(code))
         throw new Error('Invalid OAuth callback code.');
