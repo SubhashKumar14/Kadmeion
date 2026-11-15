@@ -59,41 +59,86 @@ function safeDeliveryHeaders(headers:Headers,indexable:boolean):boolean {
     });
 }
 
-async function digestHtml(response: Response, indexable: boolean): Promise<string | null> {
-  if (response.status !== 200 || !response.body ||
-      !/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '') ||
-      !safeDeliveryHeaders(response.headers,indexable)) {
+const DELIVERY_IMAGE=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
+
+async function readBounded(response:Response, limit:number):Promise<Buffer|null> {
+  const reader=response.body?.getReader();
+  if(!reader) return null;
+  const chunks:Uint8Array[]=[];
+  let size=0;
+  try{
+    for(;;){
+      const chunk=await reader.read();
+      if(chunk.done) break;
+      size+=chunk.value.byteLength;
+      if(size>limit){await reader.cancel();return null;}
+      chunks.push(chunk.value);
+    }
+    return size ? Buffer.concat(chunks) : null;
+  }finally{reader.releaseLock();}
+}
+
+async function digestHtml(response:Response, indexable:boolean, route:URL,
+  host:URL, http:typeof fetch, expectedSha:string):Promise<string|null> {
+  if(response.status!==200 ||
+      !/^text\/html(?:;|$)/i.test(response.headers.get('content-type')??'') ||
+      !safeDeliveryHeaders(response.headers,indexable)){
     await response.body?.cancel();
     return null;
   }
-
-  const hash = createHash('sha256');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > MAX_HTML_BYTES) {
-        await reader.cancel();
-        return null;
-      }
-      if (indexable) chunks.push(chunk.value);
-      else hash.update(chunk.value);
-    }
-    if (!size) return null;
-    if (indexable) {
-      const html = new TextDecoder('utf-8', {fatal: true}).decode(Buffer.concat(chunks));
-      const marker = '<meta name="robots" content="index,follow">';
-      if (html.split(marker).length !== 2) return null;
-      hash.update(html.replace(marker, '<meta name="robots" content="noindex,nofollow,noarchive">'));
-    }
-    return hash.digest('hex');
-  } finally {
-    reader.releaseLock();
+  const bytes=await readBounded(response,MAX_HTML_BYTES);
+  if(!bytes)return null;
+  let html=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+  if(indexable){
+    const marker='<meta name="robots" content="index,follow">';
+    if(html.split(marker).length!==2)return null;
+    html=html.replace(marker,'<meta name="robots" content="noindex,nofollow,noarchive">');
   }
+  const media=new Map<string,string>();
+  const unlisted=route.pathname==='/api/unlisted';
+  const [,handle,slug]=route.pathname.split('/');
+  let manifest:string|undefined;
+  for(const [,src] of html.matchAll(DELIVERY_IMAGE)){
+    const asset=new URL(src.replaceAll('&amp;','&'),host);
+    const sha=asset.searchParams.get('asset');
+    const candidate=asset.searchParams.get('manifest');
+    if(!sha||!SHA256.test(sha)||!candidate||!SHA256.test(candidate)||
+       (manifest!==undefined&&candidate!==manifest)) return null;
+    manifest=candidate;
+    const scope:Record<string,string>=unlisted ? {portfolioId:route.searchParams.get('portfolioId')!} : {handle,slug};
+    const expected=(unlisted?'/api/unlisted':'/api/public-portfolio')+'?'+
+      new URLSearchParams({...scope,manifest,asset:sha}).toString().replaceAll('&','&amp;');
+    if(src!==expected)return null;
+    media.set(src,sha);
+    if(media.size>8)return null;
+  }
+  // Only reverse URLs in the renderer's exact image tags. Text and links
+  // containing URL-like user content must retain their original bytes.
+  const frozen=html.replace(DELIVERY_IMAGE,(tag,src:string)=>
+    tag.replace(src,'./assets/'+media.get(src)+'.png'));
+  const digest=createHash('sha256').update(frozen).digest('hex');
+  if(digest!==expectedSha)return null;
+  for(const [src,sha] of media){
+    const png=await http(new URL(src.replaceAll('&amp;','&'),host),{
+      method:'GET',credentials:'omit',cache:'no-store',redirect:'error',
+      signal:AbortSignal.timeout(5000)
+    });
+    const noStore=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control']
+      .every(name=>{
+        const value=png.headers.get(name);
+        if(value===null)return name!=='cache-control';
+        const tokens=value.toLowerCase().split(',').map(part=>part.trim());
+        return tokens.includes('no-store')&&!tokens.includes('public')&&
+          !tokens.some(part=>/^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*"?\d*[1-9]/.test(part));
+      });
+    if(png.status!==200||png.headers.get('content-type')!=='image/png'||!noStore){
+      await png.body?.cancel();
+      return null;
+    }
+    const image=await readBounded(png,4_000_000);
+    if(!image||createHash('sha256').update(image).digest('hex')!==sha)return null;
+  }
+  return digest;
 }
 
 /** Trusted worker only. The configured origin must come from server configuration. */
@@ -120,7 +165,7 @@ export async function verifyActivatedUnlistedRelease(
       return await digestHtml(await http(route, {
         method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error',
         signal: AbortSignal.timeout(5_000)
-      }),indexable);
+      }),indexable,route,host,http,htmlSha256);
     }catch{return null;}
   };
   // A newly activated PUBLIC route serves a noindex canary UNTIL the

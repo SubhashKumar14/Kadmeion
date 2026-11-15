@@ -1,4 +1,4 @@
-import {readBoundedRpcJson, containsUnsafeStaticMarkup} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng} from './_bounded-rpc-json.mjs';
 /**
  * Candidate Vercel Node function for PRIVATE reviewer staging, NOT publication.
  * Deliberately disabled unless the operator explicitly proves the host, sets
@@ -8,7 +8,6 @@ import {readBoundedRpcJson, containsUnsafeStaticMarkup} from './_bounded-rpc-jso
  * This is a narrow *delivery adapter*; business state and grants remain
  * solely in Supabase. External CDN, platform and cache proof is still required.
  */
-import {createHash} from 'node:crypto';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN=/^[0-9a-f]{64}$/;
@@ -30,8 +29,9 @@ const HEADERS=Object.freeze({
 });
 const record=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 
-function respond(res,status,body,contentType='text/plain; charset=utf-8',method='GET'){
+function respond(res,status,body,contentType='text/plain; charset=utf-8',method='GET',media=false){
   for(const [key,value] of Object.entries(HEADERS))res.setHeader(key,value);
+  if(media)res.setHeader('Content-Security-Policy',HEADERS['Content-Security-Policy'].replace("img-src 'none'","img-src 'self'"));
   res.setHeader('Content-Type',contentType);
   res.statusCode=status;
   res.end(method==='HEAD'?'':body);
@@ -55,7 +55,7 @@ function config(env){
   return {origin,secret};
 }
 function validHtml(receipt){
-  if(!record(receipt)||Object.keys(receipt).length!==5||
+  if(!record(receipt)||
      receipt.status!=='REVIEWER_PRIVATE_HTML'||
      receipt.publicServingEnabled!==false||receipt.publicUrl!==null||
      typeof receipt.html!=='string'||typeof receipt.htmlSha256!=='string'||
@@ -63,10 +63,9 @@ function validHtml(receipt){
   const html=receipt.html,bytes=Buffer.byteLength(html,'utf8');
   if(bytes<70||bytes>MAX_HTML_BYTES||
      !html.toLowerCase().startsWith('<!doctype html>')||
-     !html.toLowerCase().includes('noindex')||
-     containsUnsafeStaticMarkup(html))
+     !html.toLowerCase().includes('noindex'))
     return false;
-  return createHash('sha256').update(html,'utf8').digest('hex')===receipt.htmlSha256;
+  return true;
 }
 
 function readLinkCredential(url,authorization){
@@ -99,19 +98,28 @@ export async function handleReviewerRequest(req,res,{
   let url;
   try{url=new URL(req.url??'/', 'https://kadmeion.internal');}
   catch{respond(res,404,'Not found','text/plain; charset=utf-8',method);return;}
+  const assetRequest=url.searchParams.has('asset')||url.searchParams.has('manifest');
+  const media=assetRequest?mediaQuery(url.searchParams):null;
+  if(assetRequest&&(!media||url.pathname!=='/api/reviewer')){
+    respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
+  }
+  if(media){
+    url.searchParams.delete('manifest');
+    url.searchParams.delete('asset');
+  }
   const [grantId,token]=readLinkCredential(url,req.headers?.authorization)??[];
   if(!grantId||!UUID.test(grantId)||!token||!TOKEN.test(token)){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
   }
   let upstream;
   try{
-    upstream=await http(cfg.origin+'/rest/v1/rpc/read_private_reviewer_stage_artifact',{
+    upstream=await http(cfg.origin+'/rest/v1/rpc/'+(media?'service_read_frozen_release_png':'read_private_reviewer_stage_artifact'),{
       method:'POST',headers:{
         'apikey':cfg.secret,'Authorization':'Bearer '+cfg.secret,
         'Content-Type':'application/json','Accept':'application/json',
         'Cache-Control':'no-store'
       },
-      body:JSON.stringify({p_grant_id:grantId,p_raw_token:token}),
+      body:JSON.stringify({p_grant_id:grantId,p_raw_token:token,...media}),
       cache:'no-store',credentials:'omit',redirect:'error',
       signal:AbortSignal.timeout(5000)
     });
@@ -124,15 +132,20 @@ export async function handleReviewerRequest(req,res,{
     return;
   }
   let receipt;
-  try{receipt=await readBoundedRpcJson(upstream);}
+  try{receipt=media?await readFrozenPng(upstream,media.p_sha):await readBoundedRpcJson(upstream);}
   catch{respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
   if(receipt===null){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
   }
+  if(media){
+    respond(res,200,receipt,'image/png',method);return;
+  }
   if(!validHtml(receipt)){
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
-  respond(res,200,receipt.html,'text/html; charset=utf-8',method);
+  const rendered=renderReleaseHtml(receipt,['status', 'html', 'htmlSha256', 'publicServingEnabled', 'publicUrl'],'/api/reviewer',{review:grantId+'.'+token});
+  if(!rendered){respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
+  respond(res,200,rendered.html,'text/html; charset=utf-8',method,rendered.media);
 }
 
 export default function handler(req,res){

@@ -185,3 +185,42 @@ test('invalid owner-consent routes and invalid transport origin never activate',
     origin:'http://169.254.169.254/'}));
   assert.equal(f.calls.length,0);
 });
+
+test('image-backed release requires exact scoped PNG bytes before acknowledgement',async()=>{
+  const png=Buffer.from('89504e470d0a1a0a','hex');
+  const imageSha=createHash('sha256').update(png).digest('hex');
+  const frozen=html.replace('</main>',
+    '<img loading="lazy" decoding="async" src="./assets/'+imageSha+
+    '.png" alt="Evidence" width="1" height="1"></main>');
+  const frozenSha=createHash('sha256').update(frozen).digest('hex');
+  const asset='/api/public-portfolio?handle=release_owner&slug=release-fixture&manifest='+
+    'a'.repeat(64)+'&asset='+imageSha;
+  for(const valid of [false,true]){
+    let ack=false, visits=0;
+    const result=await publishConsentedUnlistedRelease(id,{origin:'https://release.example',
+      rpc:async operation=>{
+        if(operation==='service_prepare_unlisted_release')
+          return {...base,htmlSha256:frozenSha,status:'AWAITING_VERIFICATION'};
+        if(operation==='service_acknowledge_unlisted_release'){ack=true;return true;}
+        if(operation==='service_recover_failed_unlisted_release')
+          return {portfolioId,status:'REVOKED',releaseGeneration:null};
+        assert.fail(operation);
+      },
+      http:async input=>{
+        const target=new URL(String(input));
+        if(target.pathname==='/api/public-portfolio'){
+          assert.equal(target.pathname+target.search,asset);
+          visits++;
+          return new Response(valid?png:Buffer.from('wrong'),{
+            headers:{'cache-control':'private, no-store','content-type':'image/png'}});
+        }
+        const body=frozen.replace('./assets/'+imageSha+'.png',asset.replaceAll('&','&amp;'));
+        return new Response(ack?body.replace(marker,'<meta name="robots" content="index,follow">'):body,
+          {headers:{...releaseHeaders,'X-Robots-Tag':ack?'index, follow':'noindex, nofollow, noarchive'}});
+      }
+    });
+    assert.equal(result.status,valid?'DELIVERY_ACKNOWLEDGED':'DELIVERY_REVOKED');
+    assert.equal(ack,valid);
+    assert.equal(visits,valid?2:1);
+  }
+});

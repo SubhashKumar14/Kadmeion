@@ -293,7 +293,7 @@ select ok(has_function_privilege('service_role',
 select ok(not has_function_privilege('authenticated',
   'public.service_acknowledge_unlisted_release(uuid,uuid,text)','EXECUTE'),
   'owners cannot acknowledge external verification');
--- Frozen media stays isolated from the existing text-only publication and reviewer routes.
+-- A frozen candidate reaches staging but never creates a live public route.
 select ok((select relrowsecurity from pg_class
   where oid='kadmeion_private.frozen_media_candidates'::regclass),
   'frozen media registry has RLS');
@@ -345,5 +345,44 @@ select ok(public.service_read_unlisted_release('10000000-0000-4000-8000-00000000
 reset role;
 select is((select count(*) from kadmeion_private.frozen_media_candidates),1::bigint,
   'the candidate, including all of its files, is one immutable row');
+select ok(exists(select 1 from kadmeion_private.private_reviewer_stage_artifacts
+  where portfolio_id='10000000-0000-4000-8000-0000000000c1' and pointer_generation=3),
+  'media candidate is staged for the existing consent and rollback pipeline');
+select ok(not has_function_privilege('authenticated',
+  'public.service_read_frozen_release_png(text,text,text,text,uuid,uuid,text)','EXECUTE'),
+  'browser clients cannot bypass the guarded asset host');
+select set_config('kd.media.manifestsha',
+  encode(sha256(convert_to(current_setting('kd.media.manifest'),'UTF8')),'hex'),true);
+select set_config('kd.media.sha',encode(sha256(decode(current_setting('kd.media.png'),'hex')),'hex'),true);
+set local role service_role;
+select ok(public.service_read_frozen_release_png(current_setting('kd.media.manifestsha'),
+  current_setting('kd.media.sha'),p_portfolio_id=>'10000000-0000-4000-8000-0000000000c1') is null,
+  'unpublished media direct URL denied');
+select ok(public.service_read_frozen_release_png(current_setting('kd.media.manifestsha'),
+  current_setting('kd.media.sha'),p_grant_id=>current_setting('kd.bind.grant')::uuid,
+  p_raw_token=>current_setting('kd.bind.token')) is null,
+  'revoked reviewer cannot recover media bytes');
+reset role;
+set local role authenticated;
+do $block$
+declare receipt jsonb;
+begin
+  receipt:=public.issue_private_reviewer_grant(
+    '30000000-0000-4000-8000-0000000000c1',
+    '60000000-0000-4000-8000-0000000000c2',60);
+  perform set_config('kd.media.grant',receipt->>'grantId',true);
+  perform set_config('kd.media.token',receipt->>'rawToken',true);
+end $block$;
+set local role service_role;
+select is(public.service_read_frozen_release_png(current_setting('kd.media.manifestsha'),
+  current_setting('kd.media.sha'),p_grant_id=>current_setting('kd.media.grant')::uuid,
+  p_raw_token=>current_setting('kd.media.token'))->>'png',
+  encode(decode(current_setting('kd.media.png'),'hex'),'base64'),
+  'valid reviewer reads precisely the scoped PNG bytes');
+select ok(public.service_read_frozen_release_png(repeat('f',64),
+  current_setting('kd.media.sha'),p_grant_id=>current_setting('kd.media.grant')::uuid,
+  p_raw_token=>current_setting('kd.media.token')) is null,
+  'a reviewer token cannot select the same image from a foreign manifest');
+reset role;
 select * from finish();
 rollback;

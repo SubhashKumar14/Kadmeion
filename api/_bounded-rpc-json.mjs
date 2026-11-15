@@ -1,10 +1,12 @@
+import {createHash} from 'node:crypto';
+
 /**
  * Fail-closed bounded JSON reader for private service-key RPC calls.
  * Transport JSON can be roughly twice the served HTML size when quotes and
  * backslashes are escaped. The HTML envelope retains its own 750 KB cap.
  */
 export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
-  if(!Number.isSafeInteger(limit)||limit<1||limit>2 * 1024 * 1024)throw Error('Invalid RPC limit');
+  if(!Number.isSafeInteger(limit)||limit<1||limit>5_350_000)throw Error('Invalid RPC limit');
   const type=response?.headers?.get('content-type');
   if(typeof type!=='string'||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
     throw Error('Invalid RPC content type');
@@ -60,4 +62,53 @@ export function containsUnsafeStaticMarkup(html) {
     } catch { return true; }
   }
   return false;
+}
+
+
+const SHA=/^[a-f0-9]{64}$/;
+const PNG_TAG=/<img loading="lazy" decoding="async" src="\.\/assets\/([a-f0-9]{64})\.png" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
+
+export function mediaQuery(params) {
+  const manifest=params.get('manifest');
+  const asset=params.get('asset');
+  return manifest && asset && SHA.test(manifest) && SHA.test(asset) &&
+    params.getAll('manifest').length===1 && params.getAll('asset').length===1
+    ? {p_manifest:manifest,p_sha:asset} : null;
+}
+
+export function renderReleaseHtml(receipt, keys, endpoint, scope) {
+  const media=Object.hasOwn(receipt,'mediaManifest') || Object.hasOwn(receipt,'assetHashes');
+  const expected=media ? [...keys,'mediaManifest','assetHashes'] : keys;
+  if(Object.keys(receipt).sort().join(',')!==[...expected].sort().join(',')) return null;
+  const {html,htmlSha256,mediaManifest,assetHashes}=receipt;
+  if(typeof html!=='string'||typeof htmlSha256!=='string'||!SHA.test(htmlSha256)||
+     createHash('sha256').update(html,'utf8').digest('hex')!==htmlSha256) return null;
+  if(!media) return containsUnsafeStaticMarkup(html) ? null : {html,media:false};
+  if(typeof mediaManifest!=='string'||!SHA.test(mediaManifest)||
+     !Array.isArray(assetHashes)||assetHashes.length<1||assetHashes.length>8||
+     assetHashes.some(sha=>typeof sha!=='string'||!SHA.test(sha))||
+     new Set(assetHashes).size!==assetHashes.length) return null;
+  const images=[...html.matchAll(PNG_TAG)];
+  const used=new Set(images.map(([,sha])=>sha));
+  if(used.size!==assetHashes.length||assetHashes.some(sha=>!used.has(sha))||
+     containsUnsafeStaticMarkup(html.replace(PNG_TAG,''))) return null;
+  const rendered=html.replace(PNG_TAG,(tag,sha)=>{
+    const query=new URLSearchParams({...scope,manifest:mediaManifest,asset:sha});
+    return tag.replace('./assets/'+sha+'.png',endpoint+'?'+query.toString().replaceAll('&','&amp;'));
+  });
+  return Buffer.byteLength(rendered)<=750000 ? {html:rendered,media:true} : null;
+}
+
+/** Only call with a service-key RPC response and a validated requested digest. */
+export async function readFrozenPng(response, expectedSha) {
+  const value=await readBoundedRpcJson(response,5_350_000);
+  if(value===null) return null;
+  if(!value||Object.keys(value).length!==1||typeof value.png!=='string'||
+     !/^[A-Za-z0-9+/]+={0,2}$/.test(value.png)) throw Error('Invalid PNG receipt');
+  const png=Buffer.from(value.png,'base64');
+  if(png.length<8||png.length>4_000_000||
+     png.toString('base64')!==value.png||
+     !png.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex'))||
+     createHash('sha256').update(png).digest('hex')!==expectedSha) throw Error('Invalid PNG receipt');
+  return png;
 }

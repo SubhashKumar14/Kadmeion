@@ -61,17 +61,25 @@ function trustedOrigin(origin:string,local:boolean):URL {
     throw new HostRevocationProbeError('INVALID_INPUT');
   return u;
 }
-function pathValid(path:string):boolean {
+function scopedMediaSha(path:string,canonicalPath:string):string|undefined {
+  const publicRoute=canonicalPath.split('/');
+  const unlisted=UNLISTED.test(canonicalPath);
+  const scope=unlisted?canonicalPath:'/api/public-portfolio?'+
+    new URLSearchParams({handle:publicRoute[1],slug:publicRoute[2]});
+  if(!path.startsWith(scope+'&manifest='))return undefined;
+  return /^&manifest=[a-f0-9]{64}&asset=([a-f0-9]{64})$/.exec(path.slice(scope.length))?.[1];
+}
+function pathValid(path:string,canonicalPath:string):boolean {
   if(typeof path!=='string'||path.includes('//')||path.includes('..')||
      path.includes('%')||path.includes('\\')||path.includes('#')||
      path.includes('@')||path.split('/').includes('.'))return false;
-  return DIRECT.test(path);
+  return DIRECT.test(path)||scopedMediaSha(path,canonicalPath)!==undefined;
 }
 function validatedOrigin(input:HostRevocationProbeInput):URL {
   if(!input||!Array.isArray(input.candidateDirectPaths)||
      input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
      !canonicalPathValid(input.canonicalPath)||
-     input.candidateDirectPaths.some(path=>!pathValid(path)||path===input.canonicalPath)||
+     input.candidateDirectPaths.some(path=>!pathValid(path,input.canonicalPath)||path===input.canonicalPath)||
      new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
     throw new HostRevocationProbeError('INVALID_INPUT');
   return trustedOrigin(input.origin,input.allowLocal===true);
@@ -203,7 +211,8 @@ export async function verifyReleaseWithdrawal(
   const liveAssets=new Map<string,string>();
   for(const asset of assets){
     if(!asset||typeof asset.path!=='string'||typeof asset.sha256!=='string'||
-       !pathValid(asset.path)||PNG_PATH.exec(asset.path)?.[1]!==asset.sha256||
+       !pathValid(asset.path,paths.canonicalPath)||
+       (PNG_PATH.exec(asset.path)?.[1]??scopedMediaSha(asset.path,paths.canonicalPath))!==asset.sha256||
        liveAssets.has(asset.path)||!paths.candidateDirectPaths.includes(asset.path))
       throw new HostRevocationProbeError('INVALID_INPUT');
     liveAssets.set(asset.path,asset.sha256);

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {readBoundedRpcJson, containsUnsafeStaticMarkup} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -48,7 +48,7 @@ async function reportBody(req) {
 }
 
 export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch} = {}) {
-  function reply(status, body, type, indexable = false) {
+  function reply(status, body, type, indexable = false, media = false) {
     res.statusCode = status;
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
@@ -57,7 +57,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src " + (media ? "'self'" : "'none'") + "; frame-ancestors 'none'; base-uri 'none'");
     res.setHeader('Content-Type', type ?? (status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8'));
     res.setHeader('X-Robots-Tag', status === 200 && indexable ? 'index, follow' : 'noindex, nofollow, noarchive');
     res.end(req.method === 'HEAD' ? '' : body);
@@ -72,12 +72,15 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     const target = new URL(req.url, 'https://kadmeion.invalid');
     const path = target.pathname.match(/^\/([^/]+)\/([^/]+)$/);
     const rewritten = target.pathname === '/api/public-portfolio';
+    const assetRequest = target.searchParams.has('asset') || target.searchParams.has('manifest');
+    const media = rewritten && assetRequest ? mediaQuery(target.searchParams) : null;
+    if (assetRequest && (!media || reporting)) return reply(404, 'Not found');
     const handle = rewritten ? target.searchParams.get('handle') : path?.[1];
     const slug = rewritten ? target.searchParams.get('slug') : path?.[2];
     // Reject ambiguous duplicate route parameters and shadow query strings.
     // A host/CDN may parse repeated keys differently from URLSearchParams.get().
     const uniqueRoute = rewritten
-      ? target.searchParams.size === 2 &&
+      ? target.searchParams.size === (media ? 4 : 2) &&
         target.searchParams.getAll('handle').length === 1 &&
         target.searchParams.getAll('slug').length === 1
       : Boolean(path) && target.search === '';
@@ -98,11 +101,12 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
         typeof key !== 'string' || !key.startsWith('eyJ') || key.length < 70) {
       return reply(503, 'Temporarily unavailable');
     }
-    const rpc = reporting ? 'service_submit_portfolio_abuse_report' : 'service_read_public_portfolio';
+    const rpc = reporting ? 'service_submit_portfolio_abuse_report' :
+      media ? 'service_read_frozen_release_png' : 'service_read_public_portfolio';
     const upstream = await http(new URL('/rest/v1/rpc/' + rpc, origin), {
       method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit',
       headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
-      body: JSON.stringify({p_handle: handle, p_slug: slug, ...report}), signal: AbortSignal.timeout(5000)
+      body: JSON.stringify({p_handle: handle, p_slug: slug, ...report, ...media}), signal: AbortSignal.timeout(5000)
     });
     if (reporting) {
       const receipt = await readBoundedRpcJson(upstream, 4096);
@@ -118,26 +122,29 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       return reply(503, 'Temporarily unavailable');
     }
 
+    if (media) {
+      const png = await readFrozenPng(upstream, media.p_sha);
+      return png ? reply(200, png, 'image/png') : reply(404, 'Not found');
+    }
     const release = await readBoundedRpcJson(upstream);
     if (release === null) return reply(404, 'Not found');
     if (!release || typeof release !== 'object' || Array.isArray(release) ||
-        Object.keys(release).sort().join(',') !== 'html,htmlSha256,indexable' ||
         typeof release.indexable !== 'boolean')
       return reply(503, 'Temporarily unavailable');
     const html = release.html;
     if (typeof html !== 'string' || Buffer.byteLength(html) > 750000 ||
-        !html.startsWith('<!doctype html>') || html.split(stagedRobots).length !== 2 ||
-        !/^[0-9a-f]{64}$/.test(release.htmlSha256) ||
-        containsUnsafeStaticMarkup(html) ||
-        createHash('sha256').update(html).digest('hex') !== release.htmlSha256) {
+        !html.startsWith('<!doctype html>') || html.split(stagedRobots).length !== 2) {
       return reply(503, 'Temporarily unavailable');
     }
     // Before the host acknowledges the exact release, allow only a noindex canary.
     // A successful database read is not independently verified publication.
-    const published = release.indexable ? html.replace(stagedRobots, publicRobots) : html;
+    const rendered=renderReleaseHtml(release,['html','htmlSha256','indexable'],
+      '/api/public-portfolio',{handle,slug});
+    if(!rendered) return reply(503,'Temporarily unavailable');
+    const published = release.indexable ? rendered.html.replace(stagedRobots, publicRobots) : rendered.html;
     res.setHeader('X-Kadmeion-Served-SHA256',
       createHash('sha256').update(published).digest('hex'));
-    return reply(200, published, undefined, release.indexable);
+    return reply(200, published, undefined, release.indexable, rendered.media);
   } catch {
     return reply(503, 'Temporarily unavailable');
   }

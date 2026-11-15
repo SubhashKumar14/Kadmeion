@@ -239,3 +239,29 @@ test('Vercel reserves all frontend system paths before generic published portfol
     route.source==='/u/:handle/projects/:slug'&&
     route.destination.startsWith('/api/published-identity')));
 });
+
+test('media delivery rewrites only pinned PNGs and reauthorizes every direct read',async()=>{
+  const png=Buffer.from('89504e470d0a1a0a','hex');
+  const sha=createHash('sha256').update(png).digest('hex');
+  const manifest='e'.repeat(64);
+  const image='<img loading="lazy" decoding="async" src="./assets/'+sha+
+    '.png" alt="Evidence" width="1" height="1">';
+  const release={...payload(html.replace('</body>',image+'</body>')),
+    mediaManifest:manifest,assetHashes:[sha]};
+  const page=await invoke(handlePublicPortfolio,{data:release});
+  assert.equal(page.res.statusCode,200);
+  assert.match(page.res.headers.get('content-security-policy')??'',/img-src 'self'/);
+  const asset=path+'&manifest='+manifest+'&asset='+sha;
+  assert.ok(String(page.res.body).includes(asset.replaceAll('&','&amp;')));
+  const direct=await invoke(handlePublicPortfolio,{url:asset,data:{png:png.toString('base64')}});
+  assert.equal(direct.res.statusCode,200);
+  assert.deepEqual(direct.res.body,png);
+  assert.equal(direct.res.headers.get('cache-control'),'private, no-store');
+  assert.ok(direct.calls[0].url.endsWith('service_read_frozen_release_png'));
+  assert.deepEqual(JSON.parse(String(direct.calls[0].options.body)),
+    {p_handle:'sample_user',p_slug:'sample-site',p_manifest:manifest,p_sha:sha});
+  assert.equal((await invoke(handlePublicPortfolio,{url:asset,data:null})).res.statusCode,404);
+  assert.equal((await invoke(handlePublicPortfolio,{url:asset,data:{png:'aGVsbG8='}})).res.statusCode,503);
+  assert.equal((await invoke(handlePublicPortfolio,{url:asset+'&asset='+sha})).calls.length,0);
+  assert.equal((await invoke(handlePublicPortfolio,{data:{...release,assetHashes:[manifest]}})).res.statusCode,503);
+});
