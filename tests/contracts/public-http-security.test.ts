@@ -108,7 +108,7 @@ test('public abuse intake forwards only bounded evidence and returns a generic r
     body:{operationId,reason:'ABUSE',evidence:'A concrete description of the portfolio issue.'}};
   const {res,calls}=await invoke(handlePublicPortfolio,{...options,data:{status:'RECEIVED_FOR_REVIEW'}});
   assert.equal(res.statusCode,202);
-  assert.equal(res.headers.get('x-robots-tag'),'noindex');
+  assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   assert.deepEqual(JSON.parse(res.body),{status:'RECEIVED_FOR_REVIEW'});
   assert.equal(calls.length,1);
   assert.match(calls[0].url,/\/service_submit_portfolio_abuse_report$/);
@@ -141,7 +141,7 @@ test('public release rejects tampered, executable or unexpected response fields'
   for(const data of cases){
     const {res}=await invoke(handlePublicPortfolio,{data});
     assert.equal(res.statusCode,503);assert.equal(res.body,'Temporarily unavailable');
-    assert.equal(res.headers.get('x-robots-tag'),'noindex');
+    assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   }
 });
 test('both public adapters reject oversized or non-JSON upstream bodies',async()=>{
