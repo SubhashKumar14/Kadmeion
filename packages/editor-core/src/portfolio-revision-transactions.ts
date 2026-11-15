@@ -1,5 +1,5 @@
 import { ContractError, assertBaseRevision } from '../../contracts/src/index.ts';
-import type {MyComponentVersion} from '../../contracts/src/private-my-components-service.ts';
+import type {MyComponentVersion,MyComponentInput} from '../../contracts/src/private-my-components-service.ts';
 import { assertManagedPath, assertOwnedSourcePath, validateManagedJson, MAX_FILE_BYTES } from './managed-project-files.ts';
 
 export type SlotState = 'EMPTY' | 'S0' | 'S1' | 'S2';
@@ -353,6 +353,55 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     revision:head.revision+1,snapshot:next,
     undo:[...head.undo.slice(-29),structuredClone(head.snapshot)],redo:[],
     operations:{...head.operations,[operationId]:intentHash}
+  };
+}
+
+
+/** Build an immutable private library input from a verified owned editor slot.
+ * Never accept an invented author-code field from a click handler. The exact
+ * pristine/current bytes come from the validated committed snapshot; anything
+ * still in the invalid/uncommitted buffer must stay in the draft recovery UI.
+ */
+export function savedComponentInputFromOwnedSlot(
+  snapshot:PortfolioSnapshot,slotKey:string,
+  input:Pick<MyComponentInput,'operationId'|'componentKey'|'displayName'|'compatibleSlotKinds'>
+):MyComponentInput {
+  validateSnapshot(snapshot);
+  assertSlotKey(slotKey);
+  if(!input||typeof input!=='object'||Array.isArray(input)||
+    Object.keys(input).sort().join(',')!==
+      'compatibleSlotKinds,componentKey,displayName,operationId'||
+    typeof input.operationId!=='string'||!OP_ID.test(input.operationId)||
+    typeof input.componentKey!=='string'||
+      !/^[a-z][a-z0-9-]{2,63}$/.test(input.componentKey)||
+    typeof input.displayName!=='string'||
+      input.displayName.trim().length<1||input.displayName.length>80||
+    !Array.isArray(input.compatibleSlotKinds)||
+      input.compatibleSlotKinds.length<1||input.compatibleSlotKinds.length>20||
+      input.compatibleSlotKinds.some(k=>typeof k!=='string')||
+      new Set(input.compatibleSlotKinds).size!==input.compatibleSlotKinds.length)
+    throw new ContractError('VALIDATION','Invalid private component manifest.');
+  const slot=Object.hasOwn(snapshot.slots,slotKey)?snapshot.slots[slotKey]:null;
+  if(!slot||!isOwned(slot)||!slot.sourcePath||!slot.componentId||
+     !slot.originalSource)
+    throw new ContractError('VALIDATION','Only committed, owned component source may be saved.');
+  const allowed=new Set(['title','text','cta1','cta2','note','avatar','btn1','btn2',
+    'imagea','imageb','project','thumbs','media','image','badge','meta','cta',
+    'text1','card','text2','items','entries']);
+  const kind=slotKey.slice(slotKey.lastIndexOf('-')+1);
+  if(!input.compatibleSlotKinds.includes(kind)||
+     input.compatibleSlotKinds.some(k=>!allowed.has(k)))
+    throw new ContractError('VALIDATION','My Component must declare compatible layout slots.');
+  const source=snapshot.files[slot.sourcePath];
+  if(typeof source!=='string'||source.length<1||
+     new TextEncoder().encode(source).byteLength>32768||
+     new TextEncoder().encode(slot.originalSource).byteLength>32768)
+    throw new ContractError('VALIDATION','Owned source exceeds the private library quota.');
+  return {
+    operationId:input.operationId.toLowerCase(),
+    componentKey:input.componentKey,displayName:input.displayName,
+    baseComponentPin:slot.componentId,pristineSource:slot.originalSource,
+    sourceCode:source,compatibleSlotKinds:[...input.compatibleSlotKinds].sort()
   };
 }
 

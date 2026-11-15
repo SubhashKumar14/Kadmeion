@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
+import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, savedComponentInputFromOwnedSlot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
 
 const make = (): EditorHead => createEditorHead({
   formatVersion:1,
@@ -310,3 +310,41 @@ test('WF-025 no user-saved file can impersonate S1 without matching pinned libra
     {code:'VALIDATION'});
 });
 
+test('WF-025 capture My Component from a committed owned source without losing byte provenance',()=>{
+  const snap=createEditorHead({formatVersion:1,
+    files:{'kadmeion.json':'{"formatVersion":1}'},
+    slots:{'arc-hero-title':{state:'S0',componentId:'title-stacked@1',content:{title:'First'}}},
+    stashes:{}
+  });
+  const trusted='export const t = "pristine";';
+  const first=applyEditorTransaction(snap,{
+    operationId:'91000000-0000-4000-8000-000000000001',baseRevision:0,
+    intent:{kind:'CUSTOMIZE_COMPONENT',slotKey:'arc-hero-title',copiedSource:trusted}
+  },{'title-stacked@1':trusted});
+  const modified='export const t = "owner";';
+  const changed=applyEditorTransaction(first,{
+    operationId:'91000000-0000-4000-8000-000000000002',baseRevision:1,
+    intent:{kind:'EDIT_OWNED_SOURCE',slotKey:'arc-hero-title',source:modified}
+  });
+  const id='91000000-0000-4000-8000-000000000003';
+  const options={operationId:id,componentKey:'personal-heading',displayName:'Personal Heading',
+    compatibleSlotKinds:['title','text']};
+  const exported=savedComponentInputFromOwnedSlot(changed.snapshot,'arc-hero-title',options);
+  assert.deepEqual(exported,{
+    operationId:id,componentKey:'personal-heading',displayName:'Personal Heading',
+    baseComponentPin:'title-stacked@1',pristineSource:trusted,
+    sourceCode:modified,compatibleSlotKinds:['text','title']
+  });
+  assert.equal(changed.snapshot.slots['arc-hero-title'].state,'S2');
+  assert.equal(first.snapshot.files[first.snapshot.slots['arc-hero-title'].sourcePath!],trusted);
+  assert.throws(()=>savedComponentInputFromOwnedSlot(snap.snapshot,'arc-hero-title',options),
+    {code:'VALIDATION'},'A protected S0 block is not saved as a fabricated user component');
+  for(const bad of [
+    {...options,compatibleSlotKinds:['image']},
+    {...options,compatibleSlotKinds:['title','title']},
+    {...options,compatibleSlotKinds:['title','__proto__']},
+    {...options,displayName:' '},
+    {...options,operationId:'not-an-id'}
+  ])assert.throws(()=>savedComponentInputFromOwnedSlot(changed.snapshot,'arc-hero-title',bad),
+    {code:'VALIDATION'});
+});
