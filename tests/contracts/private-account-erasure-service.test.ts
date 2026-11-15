@@ -452,3 +452,28 @@ test('a session switch while verifying upload removal cannot acknowledge the pre
   await assert.rejects(service.removeUploadBatch(),{code:'AUTH_EXPIRED'});
   assert.equal(calls,3);
 });
+
+test('B09 account erasure receipt does not falsely claim immediate JWT invalidation',async()=>{
+  const receiptId='40000000-0000-4000-8000-000000000004';
+  const verified={status:'ACTIVE_ACCOUNT_ERASED',receiptId,
+    accessTerminated:false,backupErasureVerified:false,externalCopiesErased:false};
+  const service=client(async(url,init)=>{
+    assert.equal(url,origin+'/rest/v1/rpc/owner_execute_account_erasure');
+    assert.equal(init?.method,'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)),{
+      p_request_id:requestId,p_challenge_id:withdrawId,
+      p_confirmation:'DELETE MY ACCOUNT'
+    });
+    return ok(verified);
+  });
+  assert.deepEqual(await service.execute(requestId,withdrawId,'DELETE MY ACCOUNT'),verified);
+  for(const invalid of [
+    {...verified,accessTerminated:true},
+    {...verified,backupErasureVerified:true},
+    {...verified,externalCopiesErased:true},
+    {...verified,receiptId:'not-a-uuid'}
+  ]){
+    await assert.rejects(client(async()=>ok(invalid))
+      .execute(requestId,withdrawId,'DELETE MY ACCOUNT'),{code:'INVALID_ACK'});
+  }
+});
