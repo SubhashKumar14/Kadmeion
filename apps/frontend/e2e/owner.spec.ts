@@ -274,7 +274,21 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Portfolio theme').selectOption('light');
   await page.getByRole('button', {name: 'Assets', exact: true}).click();
   await expect(page.getByText('No private project assets are registered.')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Upload private image'})).toBeDisabled();
+  await page.getByLabel('Owner project').selectOption(projectPath.split('/').at(-1)!);
+  await page.getByLabel('Image alt text').fill('Tiny private image for an isolated browser test');
+  await page.getByLabel('Private image file').setInputFiles({
+    name:'browser-test.png',mimeType:'image/png',
+    buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64')
+  });
+  await page.getByRole('button',{name:'Upload private image'}).click();
+  await expect(page.getByRole('status')).toContainText('Image uploaded and privately registered.');
+  await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_LIBRARY_BROWSER');
+  await page.reload();
+  await page.getByRole('button',{name:'Assets',exact:true}).click();
+  await expect(page.getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
+
   await page.getByRole('button', {name: 'Source', exact: true}).click();
   await expect(page.getByLabel('Source file')).toBeVisible();
   await capture('24_SOURCE_BROWSER');

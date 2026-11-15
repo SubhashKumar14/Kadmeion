@@ -592,3 +592,20 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-compatibility strong{font-size:10px;color:var(--body)}
 .ws-editor-compatibility span{font-size:12px;color:var(--ink);overflow-wrap:anywhere;
   padding-bottom:7px;border-bottom:1px solid var(--line)}
+
+/* EDIT-06 — owner-private write-once media uploads, no public image illusion. */
+.ws-asset-manager h3{font-family:Georgia,serif;font-size:21px;margin-top:20px}
+.ws-asset-manager>p,.ws-asset-limits{color:var(--body);font-size:12px;line-height:1.55}
+.ws-asset-records{list-style:none;display:grid;gap:8px;padding:0;margin:12px 0;max-height:260px;overflow:auto}
+.ws-asset-records li{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);
+  display:grid;gap:5px;padding:10px 12px;overflow-wrap:anywhere}
+.ws-asset-records strong{font-size:12px}
+.ws-asset-records span,.ws-asset-records small{font-size:11px;color:var(--body)}
+.ws-asset-upload{display:grid;gap:11px;margin-top:13px}
+.ws-asset-upload label{display:grid;gap:6px;font-size:12px;font-weight:650;color:var(--body)}
+.ws-asset-upload select,.ws-asset-upload textarea,.ws-asset-upload input[type=file]{width:100%;min-width:0;
+  padding:8px 10px;min-height:42px;background:var(--panel);color:var(--ink);
+  border:1px solid var(--line-dark);border-radius:8px;font:inherit}
+.ws-asset-upload input[type=file]{font-size:12px;overflow-wrap:anywhere}
+.ws-asset-upload textarea{resize:vertical}
+.ws-asset-manager button:disabled{opacity:.6}

@@ -700,6 +700,71 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+
+  /** Private-only, write-once Storage upload with server-validated registration.
+   * Registered metadata is NOT an attested media byte pin or publish authority.
+   */
+  async uploadOwnerProjectImage(projectId:string,file:File,altText:string):
+    Promise<AuthOutcome<{id:string;projectId:string;mime:string;size:number;altText:string;verifiedMetadata:true;publicDeliveryAllowed:false}>> {
+    return this.outcome(async()=>{
+      const mime:Readonly<Record<string,{ext:string;magic:(bytes:Uint8Array)=>boolean}>>={
+        'image/png':{ext:'png',magic:bytes=>bytes.length>=8&&
+          [137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n)},
+        'image/jpeg':{ext:'jpg',magic:bytes=>bytes.length>=3&&
+          bytes[0]===255&&bytes[1]===216&&bytes[2]===255},
+        'image/webp':{ext:'webp',magic:bytes=>bytes.length>=12&&
+          String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&
+          String.fromCharCode(...bytes.slice(8,12))==='WEBP'}
+      };
+      if(!PROJECT_ID_PATTERN.test(projectId)||!(file instanceof File)||
+        file.size<12||file.size>5242880||!Object.hasOwn(mime,file.type)||
+        typeof altText!=='string'||altText.trim().length<1||altText.length>500)
+        throw new Error('Choose a private project, a PNG/JPEG/WebP image under 5 MB, and descriptive alt text.');
+      const format=mime[file.type];
+      const bytes=new Uint8Array(await file.slice(0,16).arrayBuffer());
+      if(!format||!format.magic(bytes))throw new Error('File bytes do not match the selected image format.');
+      const {session,userId}=await this.ownerSession();
+      const params=new URLSearchParams({select:'id,owner_user_id',
+        id:'eq.'+projectId,owner_user_id:'eq.'+userId,
+        trashed_at:'is.null',limit:'1'});
+      const project=await this.ownerRest('projects?'+params,session.access_token);
+      if(!this.isCurrentSession(session)||!Array.isArray(project)||project.length!==1||
+        project[0]?.id!==projectId||project[0]?.owner_user_id!==userId)
+        throw new Error('The selected private project could not be verified.');
+      // Never use the owner's upload filename for a Storage path.
+      const objectPath=userId+'/'+projectId+'/'+crypto.randomUUID()+'.'+format.ext;
+      let upload:Response;
+      try{
+        upload=await this.fetcher(this.origin+'/storage/v1/object/kadmeion-private-assets/'+objectPath,{
+          method:'POST',
+          headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+            'Content-Type':file.type,'x-upsert':'false','Cache-Control':'no-store'},
+          body:file,credentials:'omit',cache:'no-store',redirect:'error',
+          signal:AbortSignal.timeout(60_000)
+        });
+      }catch{throw new Error('The private Storage upload was not confirmed. Retry with a new upload.');}
+      if(!upload.ok||!this.isCurrentSession(session)){
+        await upload.body?.cancel().catch(()=>{});
+        throw new Error('Private image upload was not confirmed. No public image was created.');
+      }
+      await upload.body?.cancel().catch(()=>{});
+      const receipt=await this.ownerRest('rpc/register_private_project_image',
+        session.access_token,'POST',{
+          p_project_id:projectId,p_object_path:objectPath,p_mime_type:file.type,
+          p_byte_size:file.size,p_alt_text:altText.trim()
+        });
+      if(!receipt||typeof receipt!=='object'||Array.isArray(receipt)||
+        !('id' in receipt)||typeof receipt.id!=='string'||
+        !PROJECT_ID_PATTERN.test(receipt.id)||
+        !('object_path' in receipt)||receipt.object_path!==objectPath||
+        !('storage_metadata_matched' in receipt)||receipt.storage_metadata_matched!==true||
+        !this.isCurrentSession(session))
+        throw new Error('Private upload registration was not confirmed; orphaned private bytes may require cleanup.');
+      return {id:receipt.id,projectId,mime:file.type,size:file.size,
+        altText:altText.trim(),verifiedMetadata:true as const,publicDeliveryAllowed:false as const};
+    });
+  }
+
   /** The caller must subsequently obtain server-RPC operator authorization.
    * The token alone never grants an operator role. */
   async operatorModeration() {

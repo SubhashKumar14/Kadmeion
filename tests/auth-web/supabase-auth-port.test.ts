@@ -720,3 +720,75 @@ test('WORK-06 owner project detail and save enforce identity and the exact base 
   assert.match(stale.error?.message ?? '', /changed while you were editing/);
   assert.equal(saves, 2);
 });
+
+
+test('EDIT-06 private image validates bytes, write-once Storage and registered owner metadata',async()=>{
+  const projectId='11111111-1111-4111-8111-111111111111';
+  const assetId='22222222-2222-4222-8222-222222222222';
+  const png=new File([Uint8Array.from([137,80,78,71,13,10,26,10,1,2,3,4])],'unused-owner-filename.png',{type:'image/png'});
+  let storagePath='',requests=0;
+  const {port}=mock((async(url:string|URL|Request,init?:RequestInit)=>{
+    const u=String(url);requests++;
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    if(u.includes('/rest/v1/projects?')) {
+      assert.equal(new URL(u).searchParams.get('owner_user_id'),'eq.'+user.id);
+      return json([{id:projectId,owner_user_id:user.id}]);
+    }
+    if(u.includes('/storage/v1/object/')){
+      const headers=init?.headers as Record<string,string>;
+      assert.equal(init?.method,'POST');assert.equal(headers['x-upsert'],'false');
+      assert.equal(headers.Authorization,'Bearer '+tokens.access_token);
+      assert.equal(headers['Content-Type'],'image/png');
+      assert.equal(init?.credentials,'omit');
+      assert.ok(init?.body instanceof File);
+      storagePath=u.split('/storage/v1/object/kadmeion-private-assets/')[1]??'';
+      assert.match(storagePath,new RegExp('^'+user.id+'/'+projectId+'/[a-f0-9-]{36}\\.png$'));
+      assert.equal(storagePath.includes('unused-owner-filename'),false);
+      return new Response(null,{status:201});
+    }
+    if(u.endsWith('/rest/v1/rpc/register_private_project_image')){
+      assert.equal(init?.method,'POST');
+      const args=JSON.parse(String(init?.body));
+      assert.deepEqual(args,{
+        p_project_id:projectId,p_object_path:storagePath,p_mime_type:'image/png',
+        p_byte_size:12,p_alt_text:'Diagram with a single square'
+      });
+      return json({id:assetId,object_path:storagePath,storage_metadata_matched:true});
+    }
+    return json({},404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'correct'})).error,null);
+  const receipt=await port.uploadOwnerProjectImage(projectId,png,'Diagram with a single square');
+  assert.equal(receipt.error,null);assert.equal(receipt.data?.id,assetId);
+  assert.equal(receipt.data?.publicDeliveryAllowed,false);
+  assert.equal(receipt.data?.verifiedMetadata,true);
+  assert.equal(requests,5);
+});
+test('EDIT-06 upload rejects disguised SVG, false MIME and any forged server registration',async()=>{
+  const projectId='11111111-1111-4111-8111-111111111111';
+  let attempts=0;
+  const {port}=mock((async(url:string|URL|Request)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    attempts++;
+    if(u.includes('/rest/v1/projects?'))return json([{id:projectId,owner_user_id:user.id}]);
+    if(u.includes('/storage/v1/object/'))return new Response(null,{status:201});
+    return json({id:'22222222-2222-4222-8222-222222222222',
+      object_path:'forged-path.png',storage_metadata_matched:true});
+  }) as typeof fetch);
+  await port.signInWithPassword({email:user.email,password:'correct'});
+  assert.ok((await port.uploadOwnerProjectImage(projectId,
+    new File(['<svg onload="alert(1)"/>'],'svg.png',{type:'image/png'}),'X')).error);
+  assert.ok((await port.uploadOwnerProjectImage(projectId,
+    new File(['the wrong bytes'],'fake.webp',{type:'image/webp'}),'X')).error);
+  assert.ok((await port.uploadOwnerProjectImage(projectId,
+    new File([new Uint8Array(12)],'x.avif',{type:'image/avif'}),'X')).error);
+  assert.equal(attempts,0,'invalid bytes must never reach private Storage');
+  const png=new File([Uint8Array.from([137,80,78,71,13,10,26,10,1,2,3,4])],
+    'valid.png',{type:'image/png'});
+  const result=await port.uploadOwnerProjectImage(projectId,png,'Private diagram');
+  assert.equal(result.data,null);
+  assert.match(result.error?.message??'',/registration was not confirmed/);
+});

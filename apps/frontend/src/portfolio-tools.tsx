@@ -275,27 +275,80 @@ export function ComponentLibrary({port, head, committed, slot, apply}: {
   </div>;
 }
 
-export function AssetList({port}: {port: SupabaseBrowserAuthPort}) {
-  const [assets, setAssets] = useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']> | null>(null);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true;
-    void port.listOwnerAssets().then(result => {
-      if (!active) return;
-      if (result.data) setAssets(result.data);
-      else setError(result.error?.message ?? 'Private assets could not be loaded.');
-    });
-    return () => {active = false;};
-  }, [port]);
-  return <div className="ws-editor-tool"><h2>Assets</h2>
-    {error && <p role="alert">{error}</p>}
-    {!assets && !error && <p role="status">Loading private asset records…</p>}
-    {assets?.length === 0 && <p>No private project assets are registered.</p>}
-    {!!assets?.length && <ul className="ws-editor-slots">{assets.map(asset => <li key={asset.id}>
-      <strong>{asset.altText || 'Image ' + asset.id.slice(0, 8)}</strong>
-      <span>{asset.mime} · {Math.ceil(asset.size / 1024)} KB</span>
+export function AssetList({port}:{port:SupabaseBrowserAuthPort}) {
+  const [assets,setAssets]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']>|null>(null);
+  const [projects,setProjects]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerProjects']>>['data']>|null>(null);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const [projectId,setProjectId]=useState('');
+  const [file,setFile]=useState<File|null>(null);
+  const [alt,setAlt]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [refresh,setRefresh]=useState(0);
+  useEffect(()=>{
+    let active=true;setError('');
+    void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
+      if(!active)return;
+      if(!assetReply.data||!projectReply.data){
+        setError(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');
+        setAssets(null);setProjects(null);return;
+      }
+      setAssets(assetReply.data);setProjects(projectReply.data);
+    }).catch(()=>{if(active){setError('Private asset records could not be loaded.');setAssets(null);setProjects(null);}});
+    return ()=>{active=false;};
+  },[port,refresh]);
+  async function upload(event:import('react').FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(busy||!file||!projectId||!alt.trim())return;
+    setBusy(true);setError('');setNotice('');
+    try{
+      const receipt=await port.uploadOwnerProjectImage(projectId,file,alt.trim());
+      if(!receipt.data||receipt.data.publicDeliveryAllowed!==false||
+        receipt.data.verifiedMetadata!==true)
+        throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
+      setNotice('Image uploaded and privately registered. Public delivery remains blocked; a trusted byte attestation is still required.');
+      setAlt('');setFile(null);setRefresh(n=>n+1);
+      const input=document.getElementById('kd-private-image-file');
+      if(input instanceof HTMLInputElement)input.value='';
+    }catch(cause){setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
+    finally{setBusy(false);}
+  }
+  return <div className="ws-editor-tool ws-asset-manager" aria-label="Private asset manager">
+    <h2>Private assets</h2>
+    <p>Only owner-authenticated project images are stored here. No uploaded image becomes public or available in portfolio slots by registering it.</p>
+    {error&&<p role="alert">{error}<button className="ws-secondary" type="button" onClick={()=>setRefresh(n=>n+1)}>Retry private records</button></p>}
+    {notice&&<p role="status">{notice}</p>}
+    {assets===null&&!error&&<p role="status">Checking private assets and projects…</p>}
+    {assets?.length===0&&<p>No private project assets are registered.</p>}
+    {!!assets?.length&&<ul className="ws-asset-records">{assets.map(asset=><li key={asset.id}>
+      <strong>{asset.altText}</strong>
+      <span>{asset.mime} · {Math.ceil(asset.size/1024)} KB</span>
+      <small>Owner project {projects?.find(project=>project.id===asset.projectId)?.title??asset.projectId}</small>
+      <small>Private registration only · no public access or signed byte pin claimed</small>
     </li>)}</ul>}
-    <p>Asset registration and replacement controls are unavailable in this panel.</p>
+    {assets?.length===100&&<p>Only the newest 100 private records were returned. This is not an all-time asset count.</p>}
+    <h3>Register a private project image</h3>
+    {projects?.length===0?<p>First <a href="/app/projects">create an owner-private project</a> to hold media.</p>:
+      <form className="ws-asset-upload" onSubmit={event=>void upload(event)}>
+        <label>Owner project<select required value={projectId} onChange={event=>setProjectId(event.target.value)}>
+          <option value="">Select a private project</option>
+          {projects?.map(project=><option key={project.id} value={project.id}>{project.title}</option>)}
+        </select></label>
+        <label htmlFor="kd-private-image-file">Private image file</label>
+        <input id="kd-private-image-file" type="file" required
+          accept="image/png,image/jpeg,image/webp" onChange={event=>setFile(event.currentTarget.files?.[0]??null)}/>
+        <label>Image alt text<textarea rows={2} required maxLength={500} value={alt}
+          onChange={event=>setAlt(event.target.value)}
+          placeholder="Describe the image for assistive technology"/></label>
+        <p className="ws-asset-limits">PNG, JPEG or WebP only · 5 MB maximum · unique, write-once private path.
+          Images cannot be deleted or replaced in-place from this panel.
+          A failed registration may leave private unreferenced bytes requiring cleanup.
+          Registered metadata does not prove trusted byte attestation.</p>
+        <button className="ws-primary" type="submit"
+          disabled={busy||!projects||!file||!projectId||!alt.trim()}>
+          {busy?'Registering private image…':'Upload private image'}
+        </button>
+      </form>}
   </div>;
 }
 
