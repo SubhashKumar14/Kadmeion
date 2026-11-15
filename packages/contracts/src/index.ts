@@ -21,3 +21,4 @@ export * from './private-release-visibility-service.ts';
 export * from './private-goals-service.ts';
 
 export * from './private-notifications-service.ts';
+export * from './private-my-components-service.ts';

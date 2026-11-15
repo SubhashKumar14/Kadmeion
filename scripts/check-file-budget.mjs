@@ -33,7 +33,13 @@ const justifiedExtra = [
   'supabase/migrations/20261115133000_account_erasure_jwt_truthful_receipt.sql',
   'supabase/tests/account-erasure-jwt-receipt.sql',
   // Daily expiry requires a separately gated scheduler without a billable service.
-  '.github/workflows/trash-expiry.yml'
+  '.github/workflows/trash-expiry.yml',
+  // WF-025 private durable user components need independently audited RLS,
+  // client contracts and regression coverage (not a false 200-file claim).
+  'supabase/migrations/20261115140000_owner_my_components_library.sql',
+  'supabase/tests/private-my-components.sql',
+  'packages/contracts/src/private-my-components-service.ts',
+  'tests/contracts/private-my-components-service.test.ts'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
