@@ -80,7 +80,9 @@ const justifiedExtra = [
   'apps/frontend/src/auth.css',
   // WORK-01/WORK-02 owner-only guarded React shell; variance is NOT owner approval.
   'apps/frontend/src/workspace.tsx',
-  'apps/frontend/src/workspace.css'
+  'apps/frontend/src/workspace.css',
+  // F2 owner-only project gallery/quick-add; above proposed 200-file cap pending owner review.
+  'apps/frontend/src/projects.tsx'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

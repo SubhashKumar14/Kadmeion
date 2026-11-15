@@ -98,7 +98,7 @@ test('auth recovery and registration remain disabled until actual sender proof',
 });
 
 test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
-  for (const route of ['/app', '/app/onboarding']) {
+  for (const route of ['/app', '/app/onboarding', '/app/projects']) {
     await page.goto(route);
     await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');

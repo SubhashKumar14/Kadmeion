@@ -93,3 +93,60 @@
 .ws-recent-grid li strong{font-size:13px;font-weight:700;overflow-wrap:anywhere}
 .ws-recent-grid li span{flex:none;color:var(--muted);font-size:10px}
 @media(max-width:720px){.ws-recent-grid,.ws-skeleton-grid{grid-template-columns:1fr}}
+
+/* WORK-04 private project gallery and WORK-05 native-dialog quick add. */
+.ws-project-head{display:flex;align-items:end;justify-content:space-between;gap:24px}
+.ws-project-head>.ws-primary{margin-bottom:10px;flex:none}
+.ws-project-controls{display:flex;flex-wrap:wrap;align-items:end;gap:14px;padding:23px 0 15px;
+  border-bottom:1px solid var(--line)}
+.ws-project-controls label{display:grid;gap:6px;color:var(--body);font-size:11px;font-weight:700}
+.ws-project-search{flex:1;min-width:180px}
+.ws-project-controls input,.ws-project-controls select{width:100%;max-width:100%;min-height:42px;
+  border:1px solid var(--line-dark);background:var(--panel);color:var(--ink);
+  border-radius:8px;padding:10px 12px;font-size:12px}
+.ws-project-view{display:flex;gap:3px;border:1px solid var(--line);border-radius:8px;padding:3px}
+.ws-project-view button{min-height:34px;padding:0 12px;background:transparent;border:0;
+  border-radius:6px;color:var(--body);font-size:11px}
+.ws-project-view button[aria-pressed="true"]{background:var(--nav);color:var(--on-nav)}
+.ws-project-count{padding:15px 0;color:var(--muted);font-size:11px}
+.ws-project-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;padding:0;
+  margin:0;list-style:none}
+.ws-project-grid li{min-width:0}
+.ws-project-card{display:flex;flex-direction:column;gap:10px;min-height:226px;height:100%;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px}
+.ws-project-mark{display:grid;place-items:center;width:43px;height:43px;color:var(--accent-strong);
+  background:var(--accent-soft);border-radius:10px}
+.ws-project-card .ws-area-meta{margin:12px 0 8px!important}
+.ws-project-card h2{font-size:20px;line-height:1.2;margin-bottom:7px;overflow-wrap:anywhere}
+.ws-project-card-body>p:not(.ws-area-meta){font-size:12px;color:var(--body);margin-bottom:15px}
+.ws-project-card-body>span{font-size:10px;color:var(--muted)}
+.ws-project-links{display:flex;flex-wrap:wrap;gap:10px;margin-top:13px}
+.ws-project-links a{font-size:11px;text-decoration:underline;color:var(--accent-strong)}
+.ws-project-grid.as-list{grid-template-columns:1fr;gap:8px}
+.ws-project-grid.as-list .ws-project-card{min-height:0;flex-direction:row;gap:16px;align-items:center}
+.ws-project-grid.as-list .ws-area-meta{margin:0 0 5px!important}
+.ws-project-state,.ws-project-empty{border:1px dashed var(--line-dark);padding:36px;
+  margin-top:25px;background:var(--surface-soft);border-radius:12px}
+.ws-project-empty{max-width:650px;margin-inline:auto}
+.ws-project-empty h2{font-size:26px;margin:15px 0}
+.ws-project-empty p,.ws-project-state p{color:var(--body);font-size:13px}
+.ws-project-dialog{position:fixed;inset:0 0 0 auto;margin:0;padding:0;height:100dvh;
+  width:min(480px,100vw);max-width:100vw;max-height:100dvh;border:0;border-left:1px solid var(--line);
+  border-radius:0;background:var(--panel);color:var(--ink);box-shadow:-20px 0 60px #08192748;overflow:auto}
+.ws-project-dialog::backdrop{background:#09182499}
+.ws-project-dialog form{min-height:100%;padding:clamp(20px,3vw,34px);
+  display:flex;flex-direction:column;gap:16px}
+.ws-project-modal-heading{display:flex;justify-content:space-between;align-items:start;gap:15px}
+.ws-project-modal-heading h2{font-size:30px;margin:0}
+.ws-project-close{width:39px;height:39px;background:var(--surface-soft);border:1px solid var(--line);
+  border-radius:8px;color:var(--ink);font-size:23px}
+.ws-project-help,.ws-project-privacy{font-size:12px;color:var(--body);margin:0}
+.ws-project-dialog form>label{display:grid;gap:7px;font-size:12px;font-weight:680}
+.ws-project-dialog label input,.ws-project-dialog label textarea{padding:10px 12px;min-width:0;width:100%;
+  font:inherit;font-size:12px;color:var(--ink);border-radius:8px;border:1px solid var(--line-dark);
+  background:var(--surface)}
+.ws-project-dialog label small{font-size:10px;font-weight:450;color:var(--muted)}
+.ws-project-modal-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-top:auto}
+@media(max-width:1050px){.ws-project-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.ws-project-head{flex-direction:column;align-items:start}
+  .ws-project-grid{grid-template-columns:1fr}.ws-project-state,.ws-project-empty{padding:23px}}

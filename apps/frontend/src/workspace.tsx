@@ -4,6 +4,7 @@ import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { OwnerWorkspaceSnapshot, PrivateStep, PrivateStepStatus } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon, useTheme } from './landing.tsx';
+import { PrivateProjects } from './projects.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -13,12 +14,13 @@ type StartChoice = PrivateStep;
 const NAV = [
   { title: 'Overview', href: '/app', icon: 'layers' },
   { title: 'Welcome', href: '/app/onboarding', icon: 'target' },
+  { title: 'Projects', href: '/app/projects', icon: 'folder' },
   { title: 'Templates', href: '/templates', icon: 'folder' },
   { title: 'Explore', href: '/explore', icon: 'activity' }
 ] as const;
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding';
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects';
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -48,7 +50,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     </aside>
     <div className="ws-main-col">
       <header className="ws-topbar">
-        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : 'Overview'}</span>
+        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route === '/app/projects' ? 'Projects' : 'Overview'}</span>
         <div className="ws-topbar-actions">
           <button type="button" className="ws-theme" onClick={toggleTheme}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
@@ -124,7 +126,7 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
         <h1 id="ws-title">Make room for<br/><em>what comes next.</em></h1>
         <p>One private place for portfolios, projects and your development journey. {snapshot.profile?.displayName ? 'Welcome back, ' + snapshot.profile.displayName + '.' : 'Your verified private workspace is ready.'}</p>
       </div>
-      <a href="/templates" className="ws-primary">Continue work — explore templates <Icon name="arrow" size={16}/></a>
+      <a href="/app/projects" className="ws-primary">Continue work — your projects <Icon name="arrow" size={16}/></a>
     </div>
     <div className="ws-section-head"><h2>Workspace areas</h2><span>Owner-only access verified</span></div>
     <div className="ws-area-grid">
@@ -142,7 +144,7 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
         <h3>Your work, on your terms.</h3>
         <p>{snapshot.projects.length ? 'Your latest private projects are shown below.' :
           'No active private projects were returned by your owner-scoped account query.'}</p>
-        <p className="ws-unavailable">Project editing is not connected yet</p>
+        <a href="/app/projects">Open private project library <Icon name="arrow" size={15}/></a>
       </article>
       <article className="ws-area">
         <div className="ws-area-icon"><Icon name="target" size={20}/></div>
@@ -266,6 +268,7 @@ export function WorkspaceApp() {
       <button type="button" className="ws-secondary" onClick={()=>window.location.reload()}>Retry securely</button>
     </section> : route === '/app/onboarding' ?
       <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
+      route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       <Home snapshot={snapshot.value}/>}
   </WorkspaceFrame>;
 }
