@@ -74,7 +74,14 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     const rewritten = target.pathname === '/api/public-portfolio';
     const handle = rewritten ? target.searchParams.get('handle') : path?.[1];
     const slug = rewritten ? target.searchParams.get('slug') : path?.[2];
-    if (!handlePattern.test(handle ?? '') || reservedHandles.has(handle) ||
+    // Reject ambiguous duplicate route parameters and shadow query strings.
+    // A host/CDN may parse repeated keys differently from URLSearchParams.get().
+    const uniqueRoute = rewritten
+      ? target.searchParams.size === 2 &&
+        target.searchParams.getAll('handle').length === 1 &&
+        target.searchParams.getAll('slug').length === 1
+      : Boolean(path) && target.search === '';
+    if (!uniqueRoute || !handlePattern.test(handle ?? '') || reservedHandles.has(handle) ||
         !slugPattern.test(slug ?? '')) return reply(404, 'Not found');
     let report;
     if (reporting) {

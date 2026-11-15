@@ -126,6 +126,36 @@ test('public abuse intake forwards only bounded evidence and returns a generic r
   assert.equal(extra.res.statusCode,503);
   assert.doesNotMatch(extra.res.body,/secret/);
 });
+test('canonical and rewritten public URLs reject duplicate or shadow route identities',async()=>{
+  for(const url of [
+    path+'&handle=other_user',
+    path+'&slug=shadow-project',
+    path+'&extra=1',
+    '/sample_user/sample-site?handle=other_user',
+    '/sample_user/sample-site?slug=other-project',
+    '/api/public-portfolio?handle=sample_user&slug=sample-site&handle=sample_user'
+  ]){
+    const {res,calls}=await invoke(handlePublicPortfolio,{url});
+    assert.equal(res.statusCode,404,url);
+    assert.equal(calls.length,0,'no privileged read permitted on ambiguous URL');
+  }
+  for(const url of [
+    identityPath+'&handle=other_user',
+    identityPath+'&bogus=1',
+    identityPath+'&slug=case-study&slug=shadow',
+    '/u/sample_user?slug=case-study',
+    '/u/sample_user/projects/case-study?handle=other_user'
+  ]){
+    const {res,calls}=await invoke(handlePublishedIdentity,{url});
+    assert.equal(res.statusCode,404,url);
+    assert.equal(calls.length,0,'no privileged projection read permitted on ambiguous URL');
+  }
+  const plain=await invoke(handlePublishedIdentity,{
+    url:'/u/sample_user',data:{handle:'sample_user',displayName:'Valid profile'}
+  });
+  assert.equal(plain.res.statusCode,200);
+});
+
 test('public release rejects tampered, executable or unexpected response fields',async()=>{
   const cases=[
     {...payload(html),htmlSha256:'0'.repeat(64)},
@@ -162,6 +192,8 @@ test('published profile escapes text and rejects private leaked fields',async()=
   assert.equal(good.res.statusCode,200);
   assert.match(good.res.body,/&lt;unsafe&gt;/);
   assert.match(good.res.body,/A &amp; B/);
+  assert.match(good.res.body,/<meta name="description" content="A &amp; B">/);
+  assert.doesNotMatch(good.res.body,/privateEmail/);
   for(const data of [{...profile,privateEmail:'no'},{...profile,handle:'foreign'},
     {...profile,bio:'a'.repeat(12001)}]){
     const {res}=await invoke(handlePublishedIdentity,{url:identityPath,data});
@@ -175,6 +207,9 @@ test('published case study validates each section and escapes HTML',async()=>{
   const good=await invoke(handlePublishedIdentity,{url,data:source});
   assert.equal(good.res.statusCode,200);
   assert.match(good.res.body,/&lt;Case&gt;/);
+  const withSummary=await invoke(handlePublishedIdentity,{url,data:{...source,summary:'Public & <safe>'}});
+  assert.equal(withSummary.res.statusCode,200);
+  assert.match(withSummary.res.body,/<meta name="description" content="Public &amp; &lt;safe&gt;">/);
   assert.match(good.res.body,/A &amp; B/);
   for(const bad of [
     {...source,sections:[{title:'Demo',body:'A',privateField:'no'}]},

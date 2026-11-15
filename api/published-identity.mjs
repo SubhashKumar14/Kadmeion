@@ -53,9 +53,16 @@ function render(projection, slug) {
       projection.sections.map(section =>
         '<section><h2>' + escape(section.title) + '</h2>' + paragraph(section.body) + '</section>').join('')
     : paragraph(projection.headline) + paragraph(projection.bio);
+  // SEO text is taken only from already-consented public projection fields.
+  // Do not synthesize an author biography, claim verification or expose raw JSON.
+  const visibleDescription = slug ? projection.summary : (projection.headline || projection.bio);
+  const description = typeof visibleDescription === 'string' && visibleDescription.trim()
+    ? '<meta name="description" content="' +
+      escape(visibleDescription.trim().slice(0, 300)) + '">' : '';
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title +
-    '</title></head><body><main><h1>' + title + '</h1>' + content + '</main></body></html>';
+    '</title>' + description + '</head><body><main><h1>' + title + '</h1>' +
+    content + '</main></body></html>';
 }
 
 export async function handlePublishedIdentity(req, res, {env = process.env, http = fetch} = {}) {
@@ -89,8 +96,16 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   const path = target.pathname.match(/^\/u\/([^/]+)(?:\/projects\/([^/]+))?$/);
   const handle = path?.[1] ?? target.searchParams.get('handle');
   const slug = path?.[2] ?? (path ? null : target.searchParams.get('slug'));
-  if ((!path && target.pathname !== '/api/published-identity') ||
-      !handlePattern.test(handle ?? '') || (slug !== null && !slugPattern.test(slug))) {
+  // Never accept a second, untrusted identity in the query string.
+  // Rewritten API URLs must carry exactly the named route parameters once.
+  const uniqueRoute = path
+    ? target.search === ''
+    : target.pathname === '/api/published-identity' &&
+      target.searchParams.size === (slug === null ? 1 : 2) &&
+      target.searchParams.getAll('handle').length === 1 &&
+      (slug === null || target.searchParams.getAll('slug').length === 1);
+  if (!uniqueRoute || !handlePattern.test(handle ?? '') ||
+      (slug !== null && !slugPattern.test(slug))) {
     return reply(404, 'Not found');
   }
 
