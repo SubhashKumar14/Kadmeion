@@ -14,7 +14,7 @@ for(let n=0;n<256;n++){
 }
 function crc32(data:Uint8Array):number {
   let crc=0xffffffff;
-  for(const byte of data)crc=crcTable[(crc^byte)&255]^(crc>>>8);
+  for(const byte of data)crc=crcTable[(crc^byte)&255]!^(crc>>>8);
   return (crc^0xffffffff)>>>0;
 }
 function check(condition:unknown,message:string):asserts condition {

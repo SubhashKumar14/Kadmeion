@@ -403,6 +403,7 @@ export class SupabasePrivateAccountDataExporter {
     const records:Record<string,JsonObject[]>={};
     for(const [table,column,projection] of TABLES)records[table]=await this.rows(table,column,owner.id,projection);
     const assets=records.project_assets;
+    requireCondition(Array.isArray(assets),'INTEGRITY','Required private asset projection is missing.');
     requireCondition(assets.length===before,'UNVERIFIED','Asset inventory changed during export.');
     requireCondition(assets.length<=MAX_ASSETS,'LIMIT_EXCEEDED','Too many assets for bounded byte export.');
     const expected=await this.trustedPins(snapshotId,assets);

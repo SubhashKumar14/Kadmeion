@@ -149,7 +149,7 @@ export class SupabasePrivateProjectService {
       requested_at:selection.showOnProfile||selection.showCaseStudy?new Date().toISOString():null
     },'application/json',true) as Array<{project_id:string;owner_user_id:string}>;
     if (!Array.isArray(result) || result.length!==1 ||
-        result[0].project_id!==projectId || result[0].owner_user_id!==ownerUserId)
+        result[0]?.project_id!==projectId || result[0]?.owner_user_id!==ownerUserId)
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Exposure preference was not acknowledged.');
     return 'saved_private_intent';
   }
@@ -180,7 +180,7 @@ export class SupabasePrivateProjectService {
       if(res.status===401||res.status===403)throw new ProjectServiceError('AUTH_EXPIRED','Private image not authorized.');
       throw new ProjectServiceError('PROVIDER_UNAVAILABLE','Private image unavailable.');
     }
-    const mime=(res.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
+    const mime=((res.headers.get('content-type')??'').split(';')[0]?.trim().toLowerCase() ?? '');
     if(!['image/png','image/jpeg','image/webp','image/avif'].includes(mime))
       throw new ProjectServiceError('INVALID_UPLOAD','Unexpected image content type.');
     const bytes=await readBoundedPrivateImageBytes(res,5*1024*1024);
