@@ -41,6 +41,11 @@ h1:focus{outline:none}.lede{font-size:14px;line-height:1.7;color:var(--body);mar
 .label-row label{margin:0}.label-row a{font-size:11px;font-weight:700}
 .primary-action{width:100%;display:flex;align-items:center;justify-content:space-between;gap:14px;border:0;border-radius:10px;background:var(--action);color:var(--on-action);padding:14px 17px;text-align:left;font-size:13px;font-weight:750;min-height:48px;margin-top:8px;transition:opacity 160ms,transform 160ms}
 .primary-action:hover{opacity:.89}.primary-action:active{transform:scale(.995)}.primary-action:disabled{opacity:.5;cursor:wait}
+.provider-divider{display:flex;align-items:center;gap:15px;color:var(--muted);font-size:11px;text-align:center;margin:20px 0 15px}
+.provider-divider::before,.provider-divider::after{content:"";height:1px;flex:1;background:var(--line)}
+.provider-action{width:100%;min-height:46px;border:1px solid var(--line);border-radius:10px;background:var(--form);color:var(--ink);font-size:13px;font-weight:700;transition:background 140ms,border-color 140ms}
+.provider-action:not(:disabled):hover{background:var(--soft);border-color:var(--focus)}
+.provider-action:disabled{cursor:not-allowed;color:var(--muted);opacity:.8}
 .switch-prompt{color:var(--body);font-size:12px;line-height:1.6;margin:22px 0 0}.switch-prompt a{font-weight:750}
 .form-footer{border-top:1px solid var(--line);padding-top:17px;font-size:10px;color:var(--muted)}
 .notice:not(:empty){background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:12px 15px;font-size:12px;line-height:1.55;margin:0 0 24px}

@@ -14,7 +14,7 @@
       <div class="form-shell">
         <header class="page-header">
           <a href="/signin" class="wordmark" aria-label="Kadmeion — sign in">KADMEION</a>
-          <button id="theme-button" class="theme-control" type="button" aria-label="Switch to dark theme">Dark mode</button>
+          <button id="theme-button" class="theme-control" type="button" aria-label="Switch to dark theme" aria-pressed="false">Dark mode</button>
         </header>
         <div class="form-stage">
           <p id="notice" role="status" aria-live="polite" class="notice"></p>
@@ -29,6 +29,8 @@
               <div class="password-field"><input id="login-password" name="password" type="password" autocomplete="current-password" required><button type="button" class="password-toggle" aria-controls="login-password" aria-pressed="false">Show</button></div>
               <button class="primary-action" type="submit">Sign in <span aria-hidden="true">↗</span></button>
             </form>
+            <div class="provider-divider" aria-hidden="true"><span>or</span></div>
+            <button id="google-login-button" class="provider-action" type="button" disabled aria-disabled="true">Google sign-in not yet available</button>
             <p class="switch-prompt">New to Kadmeion? <a href="/signup" data-auth-switch="register">Create an account</a></p>
           </section>
           <section id="register" class="auth-view" hidden>

@@ -2,6 +2,7 @@ import { AuthService } from '../../../packages/contracts/src/auth-service.ts';
 import { parseAuthRedirect } from './auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from './supabase-auth-port.ts';
 import { cleanHandleInput, checkHandleInput, validatePasswordPair } from './form-helpers.ts';
+import { readStoredTheme, nextTheme, themeButtonCopy, writeStoredTheme } from './theme-preference.ts';
 
 type Config = { supabaseUrl?: string; publishableKey?: string; emailDeliveryVerified?: boolean; googleOAuthEnabled?: boolean };
 const sections = ['login', 'register', 'forgot-password', 'set-password', 'workspace', 'callback'] as const;
@@ -47,12 +48,46 @@ function bind(id: string, action: (input: Record<string, string>) => Promise<voi
   });
 }
 function navigate(name: 'login' | 'workspace' | 'set-password', success = ''): void {
+  clearPasswordBuffers();
   history.replaceState(null, '', '/' + name);
   show(name);
   message(success);
 }
 
+function setupTheme(): void {
+  // The theme remains usable when configuration, network or storage is unavailable.
+  const root = document.documentElement;
+  const button = document.getElementById('theme-button');
+  function render(theme: 'light' | 'dark'): void {
+    root.dataset.theme = theme;
+    if (button) {
+      const copy = themeButtonCopy(theme);
+      button.textContent = copy.text;
+      button.setAttribute('aria-label', copy.label);
+      button.setAttribute('aria-pressed', String(theme === 'dark'));
+    }
+  }
+  render(readStoredTheme(window.localStorage));
+  button?.addEventListener('click', () => {
+    const theme = nextTheme(root.dataset.theme);
+    render(theme);
+    writeStoredTheme(window.localStorage, theme);
+  });
+}
+function clearPasswordBuffers(): void {
+  // Auth forms stay mounted during mode switches, but never after navigation.
+  document.querySelectorAll<HTMLInputElement>('.password-field input').forEach(input => {
+    input.value = '';
+    input.type = 'password';
+  });
+  document.querySelectorAll<HTMLButtonElement>('.password-toggle').forEach(button => {
+    button.textContent = 'Show';
+    button.setAttribute('aria-pressed', 'false');
+  });
+}
+
 async function main(): Promise<void> {
+  setupTheme();
   let config: Config;
   try {
     const response = await fetch('/config.json', { cache: 'no-store' });
@@ -86,22 +121,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  const themeRoot = document.documentElement;
-  const themeToggle = document.getElementById('theme-button');
-  const savedTheme = window.localStorage.getItem('kadmeion.theme');
-  function applyTheme(theme: 'light' | 'dark'): void {
-    themeRoot.dataset.theme = theme;
-    if (themeToggle) {
-      themeToggle.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
-      themeToggle.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
-    }
-  }
-  applyTheme(savedTheme === 'dark' ? 'dark' : 'light');
-  themeToggle?.addEventListener('click', () => {
-    const next = themeRoot.dataset.theme === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
-    try { window.localStorage.setItem('kadmeion.theme', next); } catch { /* private browser fallback */ }
-  });
 
   // Switch panels in place, preserving unsent entries without new history entries.
   document.querySelectorAll<HTMLAnchorElement>('[data-auth-switch]').forEach(link => {
@@ -144,6 +163,30 @@ async function main(): Promise<void> {
   handleField?.addEventListener('input', () => {
     if (handleError && !handleError.hidden) handleFeedback();
   });
+
+  const googleButton = document.getElementById('google-login-button');
+  if (googleButton instanceof HTMLButtonElement) {
+    const configured = config.googleOAuthEnabled === true;
+    googleButton.disabled = !configured;
+    googleButton.textContent = configured ? 'Continue with Google' : 'Google sign-in not yet available';
+    googleButton.setAttribute('aria-disabled', String(!configured));
+    if (configured) {
+      googleButton.addEventListener('click', () => {
+        googleButton.disabled = true;
+        message('');
+        void (async () => {
+          try {
+            // AuthService + the PKCE adapter validate the provider redirect.
+            const authorizationUrl = await service.googleLogin();
+            window.location.assign(authorizationUrl);
+          } catch (error) {
+            message(errorText(error), true);
+            googleButton.disabled = false;
+          }
+        })();
+      });
+    }
+  }
 
   bind('login-form', async input => {
     await service.login(input.email, input.password);
