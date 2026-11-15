@@ -1,3 +1,11 @@
+# B10 Auth SDK contract + safe provider outage handling — 15 November 2026
+
+- [`585e985`](https://github.com/SubhashKumar14/Kadmeion/commit/585e9856ad84c151429d36edc3d1e41a6c58d80e): normalize thrown Supabase/Auth provider errors and reject incomplete registration/password acknowledgements, with negative tests. [CI PASS 43692947936](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43692947936).
+- [`4cd62e1`](https://github.com/SubhashKumar14/Kadmeion/commit/4cd62e1285e9a26e3411d24d8bc8b2e8b8b97494): align `AuthPort.signOut` with the actual SDK error-only envelope. Tests cover `others`/default `local` scopes; no claim immediate access-JWT revocation. [CI 43693150989](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43693150989), contracts passed with 426/426 Node tests, database result pending when written.
+- Brevo Free relay enabled but Kadmeion domain authentication/verification incomplete; production email recovery remains blocked.
+
+---
+
 # B09 durable private recovery ZIP and deletion public-revocation guard — 15 November 2026
 
 - [`2c24844`](https://github.com/SubhashKumar14/Kadmeion/commit/2c24844655c4009521d47b257f405d1048d3fbc9): deterministic bounded private ZIP with records, content-addressed original media bytes and verified manifest; no truncation. [CI PASS 43691579380](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43691579380).

@@ -1,5 +1,14 @@
 # Kadmeion — Current Backend Implementation State
 
+## B10 Auth provider failures and real Supabase sign-out contract — 15 November 2026
+
+- **Latest code SHA:** `4cd62e1285e9a26e3411d24d8bc8b2e8b8b97494`, branch `feat/b0-backend-foundation`. Node/contracts job passed **426/426 tests** on [CI run 43693150989](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43693150989); database job status must be checked independently before marking this exact SHA fully green.
+- **Implemented:** `packages/contracts/src/auth-service.ts` now normalizes thrown/network exceptions from registration, password login, current-user verification, password recovery, password change, sign-out and Google OAuth exchange into safe application errors. Missing signup user IDs or password-update acknowledgements are not accepted as success. `AuthPort.signOut` now matches Supabase's data-less `{error}` response, and `logout('others')` behavior is tested. All sensitive responses remain subject to live provider verification.
+- **Source and tests:** [`585e985`](https://github.com/SubhashKumar14/Kadmeion/commit/585e9856ad84c151429d36edc3d1e41a6c58d80e) ([full CI PASS 43692947936](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43692947936)) and [`4cd62e1`](https://github.com/SubhashKumar14/Kadmeion/commit/4cd62e1285e9a26e3411d24d8bc8b2e8b8b97494). Local sign-out does not prove already issued access JWT invalidation; those may remain valid until expiry.
+- **Brevo read-only status:** Free relay is enabled, and there is an active sender entry, but both configured Kadmeion sending domains are **unauthenticated and unverified**. This is NOT sender-domain authentication or evidence of delivered email. No DNS changes, SMTP secrets, messages, credits or paid subscriptions were used. Keep registration/password recovery gated until independently proven.
+- **Remaining:** B07 33 pending hosted migrations and 3 Edge Functions; B08 public route/direct asset host and revocation; B09 external revocation-gated account deletion and full provider/retention evidence; B10 hosted sender verification and actual email delivery; B11 90-decision/53-workflow/138-acceptance/20-proof-gate audit.
+
+
 ## B09 private portability and account deletion revocation guard — 15 November 2026
 
 - **Verified code SHA:** `b7cce7f27c9eb947a05968788b7252dd321f69c4` on `feat/b0-backend-foundation`; [GitHub Actions 43692318856](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43692318856) passed both contracts and ephemeral database jobs, **423/423 Node tests**.
