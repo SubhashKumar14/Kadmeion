@@ -131,6 +131,25 @@ select is(
   public.service_read_public_portfolio('release_owner','release-fixture')->>'html',
   current_setting('kd.public_fixture.html'),
   'public route does not switch to another snapshot');
+select is(
+  (public.service_read_public_portfolio('release_owner','release-fixture')->>'indexable')::boolean,
+  true,'HTTP-acknowledged public release is eligible for indexing');
+-- Simulate a fresh activation that has not completed the independent host canary.
+reset role;
+update kadmeion_private.unlisted_release_routes set verified_at=null
+  where portfolio_id='10000000-0000-4000-8000-0000000000d1';
+set local role service_role;
+select is(
+  (public.service_read_public_portfolio('release_owner','release-fixture')->>'indexable')::boolean,
+  false,'unacknowledged public canary is explicitly non-indexable');
+select is(
+  public.service_read_public_portfolio('release_owner','release-fixture')->>'htmlSha256',
+  current_setting('kd.public_fixture.sha'),
+  'non-indexable canary retains the exact trusted immutable release bytes');
+reset role;
+update kadmeion_private.unlisted_release_routes set verified_at=transaction_timestamp()
+  where portfolio_id='10000000-0000-4000-8000-0000000000d1';
+set local role service_role;
 select is(public.service_read_public_portfolio('foreign_owner','release-fixture'),
   null::jsonb,'wrong public owner handle does not return a release');
 select is(public.service_read_public_portfolio('release_owner','other-fixture'),
