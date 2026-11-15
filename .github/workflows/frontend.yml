@@ -55,6 +55,10 @@ jobs:
             --screenshot=/tmp/kadmeion-f1-browser/02_EXPLORE_BROWSER.png http://127.0.0.1:4173/explore
           "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 \
             --screenshot=/tmp/kadmeion-f1-browser/03_TEMPLATES_BROWSER.png http://127.0.0.1:4173/templates
+          "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 \
+            --screenshot=/tmp/kadmeion-f1-browser/04_SIGNIN_BROWSER.png http://127.0.0.1:4173/signin
+          "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1534,960 \
+            --screenshot=/tmp/kadmeion-f1-browser/05_SIGNUP_BROWSER.png http://127.0.0.1:4173/signup
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
