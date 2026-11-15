@@ -174,7 +174,7 @@ test('WF-025 database uniqueness conflict, quota and fake successful payload are
 
 test('WF-025 delayed data response cannot succeed when the browser auth token changes',async()=>{
   let tokenCalls=0;
-  const token=async()=>++tokenCalls<3?'owner-token'.repeat(4):'next-token'.repeat(4);
+  const token=async()=>++tokenCalls<2?'owner-token'.repeat(4):'next-token'.repeat(4);
   const {client}=example(url=>{
     if(identity(url))return Response.json({id:owner});
     if(receipt(url))return Response.json(version());

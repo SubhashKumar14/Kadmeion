@@ -7,7 +7,7 @@
 export function isSafeSupabaseClientKey(value:unknown):value is string {
   if(typeof value!=='string'||value.length===0||value.length>4096||
     value.trim()!==value||/[\s\u0000-\u001f\u007f]/.test(value)||
-    /^sb_(?:secret|service_role)_/i.test(value))return false;
+    /^sb_(?:secret|service_role)_/i.test(value)||/^replace-with-/i.test(value))return false;
   if(value.startsWith('eyJ')){
     const parts=value.split('.');
     if(parts.length!==3||parts.some(part=>!/^[A-Za-z0-9_-]+$/.test(part)))return false;
