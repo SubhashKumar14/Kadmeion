@@ -1,0 +1,62 @@
+# B09: optional daily scheduler for the already gated, owner-scoped Trash worker.
+# GitHub schedules execute from the DEFAULT branch only; this file does not
+# activate deletion while it remains solely on the backend feature branch.
+name: Expire Kadmeion Trash (opt-in)
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: kadmeion-private-trash-expiry
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    if: github.repository == 'SubhashKumar14/Kadmeion' && vars.KADMEION_TRASH_SWEEP_SCHEDULE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SWEEP_SECRET: ${{ secrets.KADMEION_TRASH_SWEEP_SECRET }}
+    steps:
+      - name: Sweep only expired Trash after protected server-side authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${#SWEEP_SECRET}" -lt 32 ]; then
+            echo "::error::Protected Trash sweep secret is missing or too short"
+            exit 1
+          fi
+          file=$(mktemp)
+          trap 'rm -f "$file"' EXIT
+          # A bounded number of batches prevents unexpected free-tier usage.
+          # A partial failure (207) must be investigated, not treated as purged.
+          for batch in 1 2 3 4 5; do
+            status=$(curl --silent --show-error --max-time 20 --retry 0 \
+              --request POST \
+              --header "Authorization: Bearer ${SWEEP_SECRET}" \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              --output "$file" --write-out '%{http_code}' \
+              'https://scyooqjitjzjdxgtanso.supabase.co/functions/v1/purge-expired-trash')
+            if [ "$status" != 200 ]; then
+              echo "::error::Trash worker returned HTTP $status (no deletion success is assumed)"
+              exit 1
+            fi
+            count=$(node - "$file" <<'NODE'
+          const fs=require('node:fs');
+          const payload=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+          if(!payload||Object.keys(payload).sort().join(',')!=='pending,purged'||
+             !Number.isSafeInteger(payload.purged)||payload.purged<0||
+             payload.purged>10||payload.pending!==0)
+            throw Error('Unexpected or incomplete Trash sweep receipt');
+          process.stdout.write(String(payload.purged));
+          NODE
+            )
+            echo "Expired-Trash sweep batch $batch: $count records"
+            if [ "$count" -lt 10 ]; then exit 0; fi
+          done
+          echo "Daily Trash sweep reached its five-batch cap; further expired records remain for a later run."
