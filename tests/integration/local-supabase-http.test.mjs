@@ -1254,6 +1254,18 @@ test('B5: real local owner export reads RLS records and verifies private Storage
     'Storage info contract mismatch fields: '+
       Object.entries(infoChecks).filter(([,valid])=>!valid).map(([key])=>key).join(',')+
       '; keys: '+Object.keys(info).sort().join(','));
+  const createPrivateRecord=async(table,values)=>successful(await send('/rest/v1/'+table+'?select=id',{
+    ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:values
+  }),'Create export fixture '+table)[0].id;
+  const linkId=await createPrivateRecord('private_platform_links',{provider:'GITHUB',handle:'export-fixture'});
+  const goalId=await createPrivateRecord('private_goals',{operation_id:randomUUID(),title:'Practice export'});
+  const progressId=await createPrivateRecord('private_goal_progress_events',{
+    goal_id:goalId,operation_id:randomUUID(),value:1
+  });
+  const milestoneId=await createPrivateRecord('private_goal_milestones',{
+    goal_id:goalId,operation_id:randomUUID(),title:'First exercise'
+  });
   const exporter=new SupabasePrivateAccountDataExporter(cfg.origin,cfg.anon,
     async()=>owner.token);
   const artifact=await exporter.export(snapshot.snapshotId);
@@ -1262,6 +1274,10 @@ test('B5: real local owner export reads RLS records and verifies private Storage
   const body=JSON.parse(new TextDecoder().decode(artifact.bytes));
   assert.equal(body.owner.id,owner.id);
   assert.ok(body.records.projects.some(p=>p.id===project.id));
+  assert.ok(body.records.private_platform_links.some(link=>link.id===linkId&&link.ownership_verified===false));
+  assert.ok(body.records.private_goals.some(goal=>goal.id===goalId));
+  assert.ok(body.records.private_goal_progress_events.some(event=>event.id===progressId&&event.source==='MANUAL'));
+  assert.ok(body.records.private_goal_milestones.some(milestone=>milestone.id===milestoneId));
   assert.equal(body.assets.length,1);
   assert.equal(body.assets[0].path,path);
   assert.equal(body.assets[0].byteSize,png.length);

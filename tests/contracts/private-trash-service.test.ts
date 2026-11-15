@@ -104,6 +104,26 @@ test('malformed owner scope and oversized provider response fail closed',async()
   const huge=(async()=>new Response(JSON.stringify([]),{headers:{'Content-Type':'application/json','Content-Length':'999999'}})) as typeof fetch;
   assert.equal((await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http:huge})).status,503);
 });
+test('a Trash inventory entry cannot mix uploads from different owners',async()=>{
+  const other='20000000-0000-4000-8000-000000000002';
+  let calls=0;
+  const http:typeof fetch=async()=>{
+    calls++;
+    return Response.json([{trash_id:id,item_type:'project',
+      object_paths:[id+'/cover/image.png',other+'/cover/image.png']}]);
+  };
+  assert.equal((await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http})).status,503);
+  assert.equal(calls,1);
+});
+test('scheduled sweeps tolerate decoded RPC responses and reject identity length mismatch',async()=>{
+  for(const encoding of ['gzip','identity']){
+    const http:typeof fetch=async()=>new Response('[]',{headers:{
+      'Content-Type':'application/json','Content-Encoding':encoding,'Content-Length':'25'
+    }});
+    const result=await handlePurgeExpiredTrash(scheduled(),{env:sweepEnv,http});
+    assert.equal(result.status,encoding==='gzip'?200:503);
+  }
+});
 test('expired trash worker reports individual failure and continues without false purge',async()=>{
   let calls=0;
   const http=(async()=>{

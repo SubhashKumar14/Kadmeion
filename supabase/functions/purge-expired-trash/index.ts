@@ -45,28 +45,30 @@ function matchesSecret(authorization:string,secret:string):boolean {
   return a.byteLength===b.byteLength&&timingSafeEqual(a,b);
 }
 async function boundedJson(response:Response):Promise<unknown> {
-  if(!response.ok){
-    await response.body?.cancel();
-    throw Error('Provider rejected internal sweep operation');
-  }
-  if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(
-    response.headers.get('content-type')??''))throw Error('Invalid provider response');
   const length=response.headers.get('content-length');
-  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_RESPONSE))
-    throw Error('Oversized provider response');
   if(!response.body)throw Error('Missing provider response');
   const reader=response.body.getReader();
   const chunks:Uint8Array[]=[];let size=0;
   try {
+    if(!response.ok)throw Error('Provider rejected internal sweep operation');
+    if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(
+      response.headers.get('content-type')??''))throw Error('Invalid provider response');
+    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_RESPONSE))
+      throw Error('Oversized provider response');
     for(;;){
       const item=await reader.read();
       if(item.done)break;
       size+=item.value.byteLength;
-      if(size>MAX_RESPONSE){await reader.cancel();throw Error('Oversized provider response');}
+      if(size>MAX_RESPONSE)throw Error('Oversized provider response');
       chunks.push(item.value);
     }
+  }catch(error){
+    await reader.cancel().catch(()=>{});
+    throw error;
   }finally{reader.releaseLock();}
-  if(length!==null&&Number(length)!==size)throw Error('Provider length mismatch');
+  const encoding=response.headers.get('content-encoding');
+  if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==size)
+    throw Error('Provider length mismatch');
   const bytes=new Uint8Array(size);let offset=0;
   for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
   return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
@@ -74,13 +76,15 @@ async function boundedJson(response:Response):Promise<unknown> {
 function validRow(row:unknown):row is TrashRow {
   if(row===null||typeof row!=='object'||Array.isArray(row))return false;
   const value=row as Record<string,unknown>;
+  const paths=value.object_paths;
   return Object.keys(value).sort().join(',')==='item_type,object_paths,trash_id'&&
     (value.item_type==='project'||value.item_type==='portfolio')&&
     typeof value.trash_id==='string'&&UUID.test(value.trash_id)&&
-    Array.isArray(value.object_paths)&&value.object_paths.length<=100&&
-    value.object_paths.every(p=>typeof p==='string'&&OBJECT_PATH.test(p)&&!p.includes('..'))&&
-    new Set(value.object_paths).size===value.object_paths.length&&
-    (value.item_type==='project'||value.object_paths.length===0);
+    Array.isArray(paths)&&paths.length<=100&&
+    paths.every(p=>typeof p==='string'&&OBJECT_PATH.test(p)&&
+      p.split('/')[0]===paths[0].split('/')[0]&&!p.includes('..'))&&
+    new Set(paths).size===paths.length&&
+    (value.item_type==='project'||paths.length===0);
 }
 
 export async function handlePurgeExpiredTrash(request:Request,deps:Dependencies={}):Promise<Response> {

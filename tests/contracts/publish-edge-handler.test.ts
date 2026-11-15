@@ -31,6 +31,7 @@ function request(body:unknown={intentId:id},method='POST',origin='https://kadmei
 }
 function fixture(options:{
   intent?:unknown;user?:unknown;providerFail?:boolean;forgedType?:boolean;
+  upstreamEncoding?:string;
   publish?:()=>Promise<unknown>;settings?:Record<string,string>;
 }={}) {
   const calls:{url:string;method:string;headers:Record<string,string>}[]=[];
@@ -40,7 +41,9 @@ function fixture(options:{
     calls.push({url,method:init?.method??'GET',headers});
     if(options.providerFail)return Response.json({message:'failed'},{status:503});
     if(options.forgedType)return new Response('{}',{headers:{'Content-Type':'text/html'}});
-    if(url.includes('/auth/v1/user'))return Response.json(options.user??{id:owner});
+    if(url.includes('/auth/v1/user'))return Response.json(options.user??{id:owner},
+      options.upstreamEncoding?{headers:{'Content-Encoding':options.upstreamEncoding,
+        'Content-Length':'1'}}:undefined);
     if(url.includes('/private_unlisted_publication_intents?')){
       return Response.json(options.intent===undefined?[consent]:options.intent);
     }
@@ -113,6 +116,19 @@ test('anonymous, invalid intent and excess request fields are denied before netw
     request({intentId:'__proto__'})
   ]) assert.ok((await handleOwnerPublishRelease(req,f.deps)).status>=400);
   assert.equal(f.calls.length,0);
+});
+test('publish accepts Fetch-decoded upstream responses and rejects encoded client bodies',async()=>{
+  const upstream=fixture({upstreamEncoding:'gzip'});
+  assert.equal((await handleOwnerPublishRelease(request(),upstream.deps)).status,200);
+  const truncated=fixture({upstreamEncoding:'identity'});
+  assert.equal((await handleOwnerPublishRelease(request(),truncated.deps)).status,503);
+  assert.equal(truncated.calls.length,1);
+
+  const client=fixture();
+  const encoded=request();
+  encoded.headers.set('Content-Encoding','gzip');
+  assert.equal((await handleOwnerPublishRelease(encoded,client.deps)).status,415);
+  assert.equal(client.calls.length,0);
 });
 test('owner JWT and RLS consent are checked before service-role RPCs',async()=>{
   const f=fixture({intent:[]});

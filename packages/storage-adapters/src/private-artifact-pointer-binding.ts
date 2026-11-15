@@ -7,7 +7,7 @@
  * The writer MUST use the non-exposed service-role DB function, not PostgREST.
  * Even on success, nothing here is a publish, artifact upload or serving grant.
  */
-import type { SafeSlotPlan,SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
+import type { SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
 import type { LoadedPrivateFrozenRevision } from './private-frozen-revision-loader.ts';
 import { createPrivateImmutableArtifact,verifyPrivateImmutableArtifact }
   from './private-immutable-artifact.ts';
@@ -33,11 +33,10 @@ export interface TrustedPrivateBindingWriter {
   /** Direct SQL connection, service role, private schema. Never public REST. */
   bindPrivateArtifact(request:TrustedPrivateBindingRequest):Promise<unknown>;
 }
-export interface PrivateBindingContext {
+/** Render settings must come from the server-pinned template, never a raw request. */
+export interface PrivateBindingContext extends Pick<SafePreviewInput,'plan'|'renderSections'|'portfolioTheme'> {
   portfolioId:string;
   requestId:string;
-  /** Only a server-pinned template plan, never a user-defined input. */
-  plan:readonly SafeSlotPlan[];
   loader:{load(requestId:string):Promise<LoadedPrivateFrozenRevision>};
   pointer:{read(portfolioId:string):Promise<PrivatePointerSnapshot>};
   writer:TrustedPrivateBindingWriter;
@@ -64,7 +63,8 @@ export async function bindPrivateArtifactToPointer(
   const loaded=await ctx.loader.load(ctx.requestId);
   if(loaded.frozen.portfolioId!==ctx.portfolioId)
     throw new PrivateArtifactBindingError('VALIDATION','Frozen revision belongs to another portfolio.');
-  const input:SafePreviewInput={...loaded,plan:ctx.plan};
+  const input:SafePreviewInput={...loaded,plan:ctx.plan,
+    renderSections:ctx.renderSections,portfolioTheme:ctx.portfolioTheme};
   // This requires the process-local WeakMap proof generated ONLY by the
   // authenticated atomic loader and rerenders a deterministic scriptless HTML.
   const artifact=await createPrivateImmutableArtifact(input);

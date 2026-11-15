@@ -97,7 +97,8 @@ export async function stagePrivateReviewerArtifact(
     throw new PrivateReviewerStagingError('INVALID_INPUT');
   const bound=await bindPrivateArtifactToPointer(ctx);
   const loaded=await ctx.loader.load(ctx.requestId);
-  const artifact=await createPrivateImmutableArtifact({...loaded,plan:ctx.plan});
+  const artifact=await createPrivateImmutableArtifact({...loaded,plan:ctx.plan,
+    renderSections:ctx.renderSections,portfolioTheme:ctx.portfolioTheme});
   const file=artifact.files[0];
   if(artifact.manifestSha256!==bound.manifestSha256||
      artifact.manifest.files[0].sha256!==bound.htmlSha256||

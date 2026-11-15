@@ -152,7 +152,8 @@ test('metric, badge and project fields fail closed without inventing claims',()=
     snapshot.slots.extra={state:'S0',componentId:'safe-card@1',content};
     const result=prepareSafeStaticPreview(edit({snapshot,plan:[...fixture.plan,
       {slotKey:'extra',componentId:'safe-card@1',kind,required:true}]}));
-    assert.ok(has(result,code));assert.equal(result.previewHtml,null);
+    assert.ok(has(result,code),`${kind}: ${result.blockers.map(item=>item.code).join(', ')}`);
+    assert.equal(result.previewHtml,null);
   }
 });
 
@@ -172,7 +173,9 @@ test('untrusted layout grouping and malformed color tokens never produce HTML',(
     [{id:'hero" onclick="bad',layout:'L1',slotKeys:['hero','about','link']}],
     [{id:'hero',layout:'L9',slotKeys:['hero','about','link']}],
     [{id:'hero',layout:'L1',slotKeys:['hero','link','about']}],
-    [{id:'hero',layout:'L1',slotKeys:['hero','about','link','private']}]
+    [{id:'hero',layout:'L1',slotKeys:['hero','about','link','private']}],
+    [{id:'same',layout:'L1',slotKeys:['hero']},
+      {id:'same',layout:'L2',slotKeys:['about','link']}]
   ]){
     const result=prepareSafeStaticPreview(edit({renderSections}));
     assert.ok(has(result,'INVALID_TEMPLATE_GROUPING'));
@@ -182,4 +185,13 @@ test('untrusted layout grouping and malformed color tokens never produce HTML',(
     mode:'dark',surface:'url(https://evil.invalid)',text:'#ffffff',accent:'#999999'
   }}));
   assert.ok(has(invalid,'INVALID_PORTFOLIO_THEME'));assert.equal(invalid.previewHtml,null);
+});
+
+test('malformed runtime plan entries cannot crash grouped rendering',()=>{
+  const result=prepareSafeStaticPreview(edit({
+    plan:[...fixture.plan,null] as unknown as SafePreviewInput['plan'],
+    renderSections:[{id:'hero',layout:'L1',slotKeys:['hero','about','link']}]
+  }));
+  assert.ok(has(result,'INVALID_RENDER_PLAN'));
+  assert.equal(result.previewHtml,null);
 });

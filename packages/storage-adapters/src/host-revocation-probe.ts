@@ -1,3 +1,5 @@
+import {HANDLE_PATTERN,RESERVED_HANDLES} from '../../contracts/src/project.ts';
+
 /**
  * Host-neutral B4 external HTTP revocation probe. Server/test harness only.
  * Never authorizes, revokes or publishes data. Observes actual configured
@@ -26,9 +28,7 @@ export class HostRevocationProbeError extends Error {
   }
 }
 const DIRECT=/^\/[a-zA-Z0-9._/-]{1,512}$/;
-const PUBLIC=/^\/[a-z][a-z0-9_]{2,29}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const RESERVED=new Set(['u','app','auth','signin','signup','templates',
-  'r','status','explore','api']);
+const PORTFOLIO_SLUG=/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const UNLISTED=/^\/api\/unlisted\?portfolioId=[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function trustedOrigin(origin:string,local:boolean):URL {
   let u:URL;
@@ -47,6 +47,13 @@ function pathValid(path:string):boolean {
      path.includes('%')||path.includes('\\')||path.includes('#')||
      path.includes('@'))return false;
   return DIRECT.test(path);
+}
+function canonicalPathValid(path:unknown):boolean {
+  if(typeof path!=='string')return false;
+  if(UNLISTED.test(path))return true;
+  const [root,handle,slug,...rest]=path.split('/');
+  return root===''&&rest.length===0&&HANDLE_PATTERN.test(handle??'')&&
+    !RESERVED_HANDLES.has(handle)&&PORTFOLIO_SLUG.test(slug??'');
 }
 async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void> {
   if(response.status!==404&&response.status!==410){
@@ -85,14 +92,15 @@ async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void>
       if(size>4096)throw new HostRevocationProbeError('UNSAFE_BODY');
       chunks.push(next.value);
     }
-    // Decode the entire bounded body so tags split across network chunks
-    // cannot evade the deny-page markup validation.
+    // Require an expected generic denial, even when the body is delivered in chunks.
     const content=new Uint8Array(size);
     let offset=0;
     for(const chunk of chunks){content.set(chunk,offset);offset+=chunk.byteLength;}
-    const text=new TextDecoder('utf-8',{fatal:true}).decode(content);
-    if(/<!doctype html>|<html\b|<script\b|<meta\s+name="robots"\s+content="index/i.test(text))
+    const text=new TextDecoder('utf-8',{fatal:true}).decode(content).trim();
+    if(text!==''&&text!==(response.status===404?'Not found':'Gone'))
       throw new HostRevocationProbeError('UNSAFE_BODY');
+  }catch{
+    throw new HostRevocationProbeError('UNSAFE_BODY');
   }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 export async function probeHostRevocation(
@@ -100,9 +108,7 @@ export async function probeHostRevocation(
 ):Promise<HostRevocationObservation>{
   if(!input||!Array.isArray(input.candidateDirectPaths)||
      input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
-     !((typeof input.canonicalPath==='string'&&PUBLIC.test(input.canonicalPath)&&
-         !RESERVED.has(input.canonicalPath.slice(1).split('/')[0]))||
-       (typeof input.canonicalPath==='string'&&UNLISTED.test(input.canonicalPath)))||
+     !canonicalPathValid(input.canonicalPath)||
      input.candidateDirectPaths.some(path=>!pathValid(path)||path===input.canonicalPath)||
      new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
     throw new HostRevocationProbeError('INVALID_INPUT');

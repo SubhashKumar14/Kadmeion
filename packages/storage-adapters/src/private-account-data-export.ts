@@ -11,7 +11,9 @@ const TABLES=[
   ['private_onboarding_steps','user_id'],['projects','owner_user_id'],
   ['project_exposure_intents','owner_user_id'],['portfolios','owner_user_id'],
   ['portfolio_revisions','owner_user_id'],['project_assets','owner_user_id'],
-  ['private_release_requests','owner_user_id'],['private_trash_items','owner_user_id']
+  ['private_release_requests','owner_user_id'],['private_trash_items','owner_user_id'],
+  ['private_platform_links','owner_user_id'],['private_goals','owner_user_id'],
+  ['private_goal_progress_events','owner_user_id'],['private_goal_milestones','owner_user_id']
 ] as const;
 const MAX_ROWS=100,MAX_TABLE_BYTES=1024*1024,MAX_ASSETS=8;
 const MAX_ASSET_BYTES=5*1024*1024,MAX_TOTAL_ASSET_BYTES=8*1024*1024;
@@ -53,15 +55,14 @@ function base64(bytes:Uint8Array):string {
 }
 async function boundedBytes(response:Response,max:number):Promise<Uint8Array> {
   const length=response.headers.get('content-length');
-  if(length!==null){
-    const n=Number(length);
-    requireCondition(Number.isSafeInteger(n)&&n>=0&&n<=max,'LIMIT_EXCEEDED',
-      'Provider response exceeds export limits.');
-  }
   requireCondition(response.body!==null,'PROVIDER_UNAVAILABLE','Missing provider response body.');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];
   let total=0;
   try {
+    requireCondition(length===null||/^\d+$/.test(length),'INTEGRITY',
+      'Invalid provider response length.');
+    requireCondition(length===null||Number(length)<=max,'LIMIT_EXCEEDED',
+      'Provider response exceeds export limits.');
     while(true){
       const {done,value}=await reader.read();
       if(done)break;
@@ -69,11 +70,17 @@ async function boundedBytes(response:Response,max:number):Promise<Uint8Array> {
       requireCondition(total<=max,'LIMIT_EXCEEDED','Provider response exceeds export limits.');
       parts.push(value);
     }
+  }catch(error){
+    await reader.cancel().catch(()=>{});
+    if(error instanceof PrivateAccountExportError)throw error;
+    throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export response was interrupted.');
   }finally{reader.releaseLock();}
   const bytes=new Uint8Array(total);let offset=0;
   for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
-  if(length!==null)requireCondition(total===Number(length),'INTEGRITY',
-    'Provider response length changed.');
+  // Fetch decodes compressed bodies while keeping the wire Content-Length.
+  const encoding=response.headers.get('content-encoding');
+  if(length!==null&&(!encoding||encoding.toLowerCase()==='identity'))
+    requireCondition(total===Number(length),'INTEGRITY','Provider response length changed.');
   return bytes;
 }
 export class SupabasePrivateAccountDataExporter {
@@ -103,12 +110,15 @@ export class SupabasePrivateAccountDataExporter {
         method:body===undefined?'GET':'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,
           Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
         body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error'
+        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15_000)
       });
     }catch{throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export source unavailable.');}
-    if(!response.ok)throw new PrivateAccountExportError(
-      response.status===401||response.status===403?'AUTH_EXPIRED':'PROVIDER_UNAVAILABLE',
-      'Private export read was denied or unavailable.');
+    if(!response.ok){
+      await response.body?.cancel().catch(()=>{});
+      throw new PrivateAccountExportError(
+        response.status===401||response.status===403?'AUTH_EXPIRED':'PROVIDER_UNAVAILABLE',
+        'Private export read was denied or unavailable.');
+    }
     return {bytes:await boundedBytes(response,max),headers:response.headers};
   }
   private async json(path:string,max:number,body?:Record<string,unknown>):Promise<unknown> {
@@ -322,7 +332,7 @@ export class SupabasePrivateAccountDataExporter {
         storageObjectVersionCheckedBeforeAndAfter:true,
         crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
       limitations:{completeAccountExport:false,
-        omittedCategories:['case-study revision history','reviewer grants',
+        omittedCategories:['case-study revision history','reviewer grant credentials',
           'provider integrations and backups',
           'non-atomic provider-side histories'],
         providerRetentionVerified:false,publicRouteRevocationVerified:false,

@@ -11,6 +11,29 @@ labels for verification of **existing code**, not for still-unproven features.
 See `IMPLEMENTATION_STATUS.md` for chronological commit-by-commit history.
 Latest owner selections remain authoritative over all historic drafts.
 
+## B07–B11 continuation checkpoint
+
+| Phase | Code and verification | Open hosted acceptance |
+|---|---|---|
+| B07 Supabase | Migration history matches the first 14 local versions. The branch contains 42 migrations and three Edge Functions. | Apply the 28 pending migrations and deploy the three functions to the authorized project. Keep feature switches disabled during rollout. Check live auth/RLS, function JWT and origin boundaries, and the hosted Trash schedule. |
+| B08 Publishing | Scriptless, hash-bound route adapters are exercised locally. Private artifact binding and reviewer staging use the same trusted section grouping and theme tokens. The revocation probe rejects reserved paths and denial responses containing portfolio content. | Select the ₹0 public host and prove publish, rollback and canonical/direct URL revocation on a disposable hosted release. The current renderer covers a bounded set of trusted components. |
+| B09 Account lifecycle | Owner-scoped partial export verifies private asset hashes and includes private platform links, goals, manual progress and milestones. Upload cleanup keeps one owner session for inventory, removal and verification. | Prove the hosted lifecycle with disposable data, including release revocation and provider retention. Export remains partial and deletion receipts report backup and external copies as unverified. |
+| B10 Auth email | Local signup and recovery use GoTrue and Mailpit. The existing Vercel preview reports email delivery disabled. | Verify an approved Brevo sender and secure SMTP configuration, then complete hosted confirmation and recovery with disposable mailboxes. Both configured Kadmeion domains are currently unverified. |
+| B11 Handoff | The auth-only Vercel feature-branch preview at `b5e3d98` served `/signin` and `/config.json` with HTTP 200. The next code changes pass the pinned local Node/TypeScript checks. | Verify fresh feature-branch CI and hosted acceptance before merging to `main`. Final preview verification is tied to the merged SHA. |
+
+### Hosted rollout order
+
+1. Confirm the release SHA and exact target project. Compare the remote migration versions with the checked-out branch using `supabase migration list --remote` and `supabase db push --remote --dry-run`. The hosted project currently uses ref `scyooqjitjzjdxgtanso`. Preserve the old deployment and review each pending change before applying it.
+2. After authorization, apply the reviewed migrations and deploy `complete-private-asset`, `publish` and `purge-expired-trash` with the corresponding `verify_jwt` values in `supabase/config.toml`. Verify anonymous, wrong-origin, cross-owner and stale-session requests before an owner canary. Use Vault for the scheduler bearer secret and verify the Edge response as well as the scheduled job record.
+3. Use one disposable account and a known, previously reachable release to exercise publish, rollback, privacy withdrawal and direct-URL denial. A path that always returned 404 cannot prove revocation. Exercise archive download and active account cleanup, and record provider retention separately.
+4. Configure the verified Brevo sender/SMTP in Supabase using server-side credentials. Validate the allowed callback origin and successful confirmation and password recovery before enabling the auth preview email flag.
+5. Review the CI and hosted outcomes against the release criteria, then merge the reviewed SHA and verify the intended nonproduction Vercel preview. Preserve the ₹0 limit at each step.
+
+References: [Supabase CLI v3](https://supabase.com/changelog/supabase-cli-v3),
+[Edge scheduling](https://supabase.com/docs/guides/functions/schedule-functions),
+[Supabase custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp),
+[Brevo domain authentication](https://help.brevo.com/hc/en-us/articles/12163873383186-Authenticate-your-domain-with-Brevo-Brevo-code-DKIM-DMARC).
+
 ## Verified on the feature branch
 
 - Node 26.13.1 LTS, TypeScript 7.0.2, npm 12.2.2, safe environment-variable conventions, GitHub
@@ -63,9 +86,9 @@ the 11-Nov-2026 Node security release. No true universal security guarantee or
 
 ## External proof gates / unimplemented or unverified aspects
 
-1. **Hosted Supabase:** the source currently contains **40** ordered migrations; the
+1. **Hosted Supabase:** the source currently contains **42** ordered migrations; the
    existing hosted project still reports only the initial **14** applied
-   (**26 unapplied**). Verify a fresh read before any eventual authorized deployment.
+   (**28 unapplied**). Verify a fresh read before any eventual authorized deployment.
 2. **Brevo:** free SMTP relay is enabled; configured `kadmeion.com` and
    `mail.kadmeion.com` domains remain unauthenticated/unverified at the
    15-Nov-2026 read-only account check (free relay enabled, 300 credits). Hosted sender/recovery and multi-domain delivery are unproven.

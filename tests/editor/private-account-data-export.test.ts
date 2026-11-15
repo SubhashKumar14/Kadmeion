@@ -245,13 +245,30 @@ test('new private categories reject cross-tenant injection before any Storage do
     ['private_onboarding_steps','user_id'],
     ['project_exposure_intents','owner_user_id'],
     ['private_release_requests','owner_user_id'],
-    ['private_trash_items','owner_user_id']
+    ['private_trash_items','owner_user_id'],
+    ['private_platform_links','owner_user_id'],
+    ['private_goals','owner_user_id'],
+    ['private_goal_progress_events','owner_user_id'],
+    ['private_goal_milestones','owner_user_id']
   ] as const){
     const {service,paths}=fixture({rows:{...baseRows,
       [table]:[{[column]:stranger,id:'foreign'}]}});
     await assert.rejects(service.export(snapshot),{code:'INTEGRITY'});
     assert.equal(paths.some(p=>p.includes('/storage/v1/object/')),false);
   }
+});
+
+test('private export includes platform links, goals, manual progress and milestones',async()=>{
+  const records={
+    private_platform_links:[{owner_user_id:owner,provider:'GITHUB',ownership_verified:false}],
+    private_goals:[{owner_user_id:owner,title:'Practice'}],
+    private_goal_progress_events:[{owner_user_id:owner,value:3,source:'MANUAL'}],
+    private_goal_milestones:[{owner_user_id:owner,title:'First exercise'}]
+  };
+  const {service}=fixture({rows:{...baseRows,...records}});
+  const body=JSON.parse(new TextDecoder().decode((await service.export(snapshot)).bytes));
+  for(const [table,rows] of Object.entries(records))assert.deepEqual(body.records[table],rows);
+  assert.equal(body.limitations.completeAccountExport,false);
 });
 
 test('same-size Storage overwrite with changed provider version fails closed',async()=>{
@@ -356,4 +373,36 @@ test('audit export refuses foreign, oversized, password-bearing and changing rec
   await assert.rejects(fixture({auditAfter:{...base,categories:{
     ...empty,moderationEvents:[{event_type:'PUBLISH'}]
   }}}).service.export(snapshot),{code:'UNVERIFIED'});
+});
+
+test('export accepts Fetch-decoded compressed JSON and rejects truncated identity bodies',async()=>{
+  const user=JSON.stringify({id:owner,email:'owner@example.test'});
+  for(const encoding of ['gzip','identity']){
+    const paths:string[]=[];
+    const exporter=new SupabasePrivateAccountDataExporter(origin,'publishable',async()=> 'owner-jwt',
+      async(input,init)=>{
+        assert.ok(init?.signal instanceof AbortSignal);
+        paths.push(new URL(String(input)).pathname);
+        if(paths.length===1)return new Response(user,{headers:{
+          'Content-Encoding':encoding,'Content-Length':String(user.length-1)
+        }});
+        return json(reconciliation,503);
+      });
+    await assert.rejects(exporter.export(snapshot),{
+      code:encoding==='gzip'?'PROVIDER_UNAVAILABLE':'INTEGRITY'
+    });
+    assert.equal(paths.length,encoding==='gzip'?2:1);
+  }
+});
+
+test('export cancels a response stream when it crosses the byte cap',async()=>{
+  let cancelled=false;
+  const oversized=new ReadableStream<Uint8Array>({
+    start(controller){ controller.enqueue(new Uint8Array(65_537)); },
+    cancel(){ cancelled=true; }
+  });
+  const exporter=new SupabasePrivateAccountDataExporter(origin,'publishable',async()=> 'owner-jwt',
+    async()=>new Response(oversized));
+  await assert.rejects(exporter.export(snapshot),{code:'LIMIT_EXCEEDED'});
+  assert.equal(cancelled,true);
 });

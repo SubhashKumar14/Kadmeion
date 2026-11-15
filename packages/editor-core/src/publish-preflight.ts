@@ -6,6 +6,7 @@ export type SafeSlotKind = 'heading'|'paragraph'|'external-link'|'badge'|'metric
 export interface SafeSlotPlan {
   slotKey:string; componentId:string; kind:SafeSlotKind; required:boolean;
 }
+type SafeRenderSection={id:string;layout:string;slotKeys:readonly string[]};
 export interface FrozenPreviewEvidence {
   portfolioId:string; revision:number; snapshotSha256:string;
   status:'FROZEN'; publicUrl:null; visibilityIntent:'PUBLIC'|'UNLISTED';
@@ -17,7 +18,7 @@ export interface SafePreviewInput {
   /** The call site must derive this plan from trusted, pinned application code. */
   plan:readonly SafeSlotPlan[];
   /** Strict grouping of the same pinned slots, never arbitrary HTML or scripts. */
-  renderSections?:readonly {id:string;layout:string;slotKeys:readonly string[]}[];
+  renderSections?:readonly SafeRenderSection[];
   /** Independent portfolio theme, not Kadmeion application chrome. */
   portfolioTheme?:{mode:'light'|'dark';surface:string;text:string;accent:string};
 }
@@ -45,6 +46,29 @@ function stringField(x:unknown,max:number):string|null {
 }
 const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
 const diag=(code:string,target:string,message:string):PreflightDiagnostic=>({code,target,message});
+const themeColors=['surface','text','accent'] as const;
+
+function groupedSections(input:unknown,slotOrder:readonly string[]):SafeRenderSection[]|null {
+  if(!Array.isArray(input)||input.length<1||input.length>16)return null;
+  const sections:SafeRenderSection[]=[];
+  const ids=new Set<string>();
+  let slotIndex=0;
+  for(const section of input as unknown[]){
+    if(!record(section)||typeof section.id!=='string'||
+       !/^[a-z][a-z0-9_-]{0,63}$/.test(section.id)||ids.has(section.id)||
+       typeof section.layout!=='string'||!/^L[1-8]$/.test(section.layout)||
+       !Array.isArray(section.slotKeys)||section.slotKeys.length<1||section.slotKeys.length>12)
+      return null;
+    const slotKeys:string[]=[];
+    for(const key of section.slotKeys as unknown[]){
+      if(typeof key!=='string'||key!==slotOrder[slotIndex++])return null;
+      slotKeys.push(key);
+    }
+    ids.add(section.id);
+    sections.push({id:section.id,layout:section.layout,slotKeys});
+  }
+  return slotIndex===slotOrder.length?sections:null;
+}
 
 /**
  * B4 preflight is deliberately fail-closed: the host/resolver/revocation proof
@@ -95,7 +119,8 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
         block('COMPONENT_PIN_MISMATCH',spec.slotKey,'Pinned component does not match trusted render plan.');continue;
       }
       const c=slot.content;
-      const emit=(html:string):void=>{body.push(html);rendered.set(spec.slotKey,html);};
+      const slotKey=spec.slotKey;
+      const emit=(html:string):void=>{body.push(html);rendered.set(slotKey,html);};
       if(spec.kind==='heading'){
         if(Object.keys(c).some(k=>!['title','subtitle'].includes(k))){
           block('UNKNOWN_PUBLIC_FIELD',spec.slotKey,'Unexpected fields are not released.');continue;
@@ -191,23 +216,12 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
 
   let renderedContent=body.join('');
   if(input.renderSections!==undefined){
-    const sections=input.renderSections;
-    const keys=Array.isArray(sections)?
-      sections.flatMap(section=>Array.isArray(section?.slotKeys)?section.slotKeys:[]):[];
-    const planKeys=Array.isArray(input.plan)?input.plan.map(slot=>slot.slotKey):[];
-    const sectionIds=new Set<string>();
-    if(!Array.isArray(sections)||sections.length<1||sections.length>16||
-       sections.some(section=>!record(section)||
-         typeof section.id!=='string'||!/^[a-z][a-z0-9_-]{0,63}$/.test(section.id)||
-         typeof section.layout!=='string'||!/^L[1-8]$/.test(section.layout)||
-         sectionIds.has(section.id)||!Array.isArray(section.slotKeys)||
-         section.slotKeys.length<1||section.slotKeys.length>12)||
-       keys.length!==planKeys.length||keys.some((key,i)=>key!==planKeys[i])){
+    const sections=groupedSections(input.renderSections,[...seen]);
+    if(!sections){
       block('INVALID_TEMPLATE_GROUPING','pages/home.page.json',
         'Layout groups must exactly match the trusted pinned slot order.');
     }else{
       renderedContent=sections.map(section=>{
-        sectionIds.add(section.id);
         return '<section class="k-layout k-'+section.layout.toLowerCase()+
           '" data-layout="'+section.layout+'" data-section="'+section.id+'">'+
           section.slotKeys.map(key=>rendered.get(key)??'').join('')+'</section>';
@@ -215,8 +229,8 @@ export function prepareSafeStaticPreview(input:SafePreviewInput):SafePreviewResu
     }
   }
   const theme=input.portfolioTheme;
-  if(theme!==undefined&&(!record(theme)||!['light','dark'].includes(String(theme.mode))||
-     !['surface','text','accent'].every(k=>typeof theme[k]==='string'&&
+  if(theme!==undefined&&(!record(theme)||(theme.mode!=='light'&&theme.mode!=='dark')||
+     !themeColors.every(k=>typeof theme[k]==='string'&&
        /^#[0-9a-fA-F]{6}$/.test(theme[k]))))
     block('INVALID_PORTFOLIO_THEME','theme/tokens.json','Unsafe portfolio color tokens.');
 

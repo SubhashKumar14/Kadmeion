@@ -121,6 +121,21 @@ function proofFlags(x:Record<string,unknown>,snake=false):boolean {
     : ['publicRevocationVerified','reauthVerified','accessTerminated','erasureExecuted','retentionVerified'];
   return keys.every(k=>x[k]===false);
 }
+function uploadPaths(raw:unknown):string[] {
+  if(!Array.isArray(raw)||raw.length>100||new Set(raw).size!==raw.length)
+    throw new PrivateAccountErasureError('INVALID_ACK','Invalid account-exit upload inventory.');
+  let ownerId:string|undefined;
+  for(const path of raw){
+    const parts=typeof path==='string'?path.split('/'):[];
+    const owner=parts[0];
+    if(!uuid(owner)||parts.length<2||parts.some(part=>
+      !part||part==='.'||part==='..'||part.includes('\\'))||
+      (ownerId!==undefined&&owner!==ownerId))
+      throw new PrivateAccountErasureError('INVALID_ACK','Invalid account-exit upload inventory.');
+    ownerId=owner;
+  }
+  return raw;
+}
 function inventoryReceipt(raw:unknown,expectedId?:string):AccountExitInventoryReceipt {
   const names=[
     'projects','portfolios','portfolioRevisions','projectExposureIntents',
@@ -170,7 +185,7 @@ function receipt(raw:unknown,expectedId?:string,withdraw=false):AccountErasureRe
     publicRevocationVerified:false,reauthVerified:false,accessTerminated:false,
     erasureExecuted:false,retentionVerified:false};
 }
-/** Request/status only. Does NOT delete accounts, revoke sessions, or prove retention. */
+/** Owner account-exit operations, including active account deletion after reauthentication. */
 export class SupabasePrivateAccountErasureService {
   private readonly origin:string;
   private readonly key:string;
@@ -189,8 +204,8 @@ export class SupabasePrivateAccountErasureService {
       throw new ContractError('VALIDATION','Publishable key is required.');
     this.origin=url.origin;this.key=publishableKey;this.token=accessToken;this.http=http;
   }
-  private async send(path:string,payload?:Record<string,unknown>):Promise<unknown>{
-    const jwt=await this.token();
+  private async send(path:string,payload?:Record<string,unknown>,session?:string):Promise<unknown>{
+    const jwt=session??await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in to review account exit.');
     let response:Response;
     try{
@@ -199,7 +214,7 @@ export class SupabasePrivateAccountErasureService {
         headers:{apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
           ...(payload===undefined?{}:{'Content-Type':'application/json'})},
         body:payload===undefined?undefined:JSON.stringify(payload),
-        credentials:'omit',cache:'no-store',redirect:'error'
+        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15_000)
       });
     }catch{
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit request was not acknowledged.');
@@ -363,27 +378,28 @@ export class SupabasePrivateAccountErasureService {
     }));
   }
   async removeUploadBatch():Promise<number>{
-    const paths=await this.send('rpc/owner_list_account_exit_uploads',{});
-    if(!Array.isArray(paths)||paths.length>100||paths.some(path=>
-      typeof path!=='string'||!uuid(path.split('/')[0])||path.split('/').length<2||
-      path.split('/').some((part:string)=>!part||part==='.'||part==='..'||part.includes('\\'))))
-      throw new PrivateAccountErasureError('INVALID_ACK','Invalid account-exit upload inventory.');
-    if(paths.length===0)return 0;
     const jwt=await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
+    const paths=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
+    if(paths.length===0)return 0;
+    if(await this.token()!==jwt)
+      throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed before upload removal.');
     let response:Response;
     try{
       response=await this.http(this.origin+'/storage/v1/object/kadmeion-private-assets',{
         method:'DELETE',headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json'},
-        credentials:'omit',cache:'no-store',redirect:'error',body:JSON.stringify({prefixes:paths})
+        credentials:'omit',cache:'no-store',redirect:'error',body:JSON.stringify({prefixes:paths}),
+        signal:AbortSignal.timeout(15_000)
       });
     }catch{
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
     }
+    await response.body?.cancel().catch(()=>{});
     if(!response.ok)
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
-    const remaining=await this.send('rpc/owner_list_account_exit_uploads',{});
-    if(!Array.isArray(remaining)||paths.some(path=>remaining.includes(path)))
+    const remaining=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
+    if(remaining.some(path=>path.split('/')[0]!==paths[0].split('/')[0])||
+      paths.some(path=>remaining.includes(path)))
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
     return paths.length;
   }

@@ -92,23 +92,28 @@ function error(code:number,message:string,origin?:string,allowed=false):Response
 }
 async function bounded(request:Request|Response,limit:number):Promise<unknown> {
   const length=request.headers.get('content-length');
-  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
-    throw Error('Response too large');
   const reader=request.body?.getReader();
   if(!reader)throw Error('Missing body');
   const chunks:Uint8Array[]=[];
   let size=0;
   try{
+    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
+      throw Error('Body too large');
     for(;;){
       const next=await reader.read();
       if(next.done)break;
       if(!(next.value instanceof Uint8Array))throw Error('Invalid stream');
       size+=next.value.byteLength;
-      if(size>limit){await reader.cancel();throw Error('Response too large');}
+      if(size>limit)throw Error('Body too large');
       chunks.push(next.value);
     }
+  }catch(error){
+    await reader.cancel().catch(()=>{});
+    throw error;
   }finally{reader.releaseLock();}
-  if(length!==null&&Number(length)!==size)throw Error('Invalid response length');
+  const encoding=request.headers.get('content-encoding');
+  if(length!==null&&(!('status' in request)||!encoding||encoding.toLowerCase()==='identity')&&
+      Number(length)!==size)throw Error('Invalid body length');
   const bytes=new Uint8Array(size);let offset=0;
   for(const part of chunks){bytes.set(part,offset);offset+=part.byteLength;}
   return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
@@ -156,6 +161,9 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
   if(!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(
     request.headers.get('content-type')??''))
     return error(415,'JSON required',origin,permitted);
+  const encoding=request.headers.get('content-encoding');
+  if(encoding&&encoding.toLowerCase()!=='identity')
+    return error(415,'Uncompressed JSON required',origin,permitted);
   let data:unknown;
   try{data=await bounded(request,MAX_REQUEST);}
   catch{return error(400,'Invalid request',origin,permitted);}

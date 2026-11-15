@@ -376,3 +376,29 @@ test('reconciliation requires a live owner JWT and fails closed on provider outa
   await assert.rejects(client(async()=>Response.json({message:'LIVE_SESSION_REQUIRED'},
     {status:403})).reconcileStorage(requestId),{code:'AUTH_EXPIRED'});
 });
+
+test('an account switch between upload inventory and removal prevents the DELETE',async()=>{
+  let token='owner-jwt';
+  const service=new SupabasePrivateAccountErasureService(origin,'publishable',async()=>token,
+    async(_url,init)=>{
+      assert.equal(init?.method,'POST');
+      token='other-owner-jwt';
+      return ok([`${operationId}/exit/file.png`]);
+    });
+  await assert.rejects(service.removeUploadBatch(),{code:'AUTH_EXPIRED'});
+});
+
+test('upload removal cannot be acknowledged by a foreign or malformed verification batch',async()=>{
+  for(const remaining of [[`${requestId}/exit/foreign.png`],[null],[`${operationId}/exit/file.png`]]){
+    const methods:string[]=[];
+    const service=client(async(_url,init)=>{
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer owner-jwt');
+      methods.push(init?.method??'GET');
+      if(methods.length===1)return ok([`${operationId}/exit/file.png`]);
+      if(methods.length===2)return ok([]);
+      return ok(remaining);
+    });
+    await assert.rejects(service.removeUploadBatch(),{name:'PrivateAccountErasureError'});
+    assert.deepEqual(methods,['POST','DELETE','POST']);
+  }
+});

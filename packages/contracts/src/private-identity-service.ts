@@ -15,7 +15,7 @@ export interface PrivatePlatformLink {
   connection_mode:'LINK_ONLY';sync_status:'NOT_SYNCED';ownership_verified:false;
   created_at:string;updated_at:string;
 }
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROFILE_ORIGINS:Readonly<Record<PrivatePlatformProvider,string>>={
   GITHUB:'https://github.com/',
   LEETCODE:'https://leetcode.com/u/',

@@ -24,7 +24,7 @@ const source:SafePreviewInput={
   loadedPortfolioId:portfolioId,loadedRevision:7,loadedSnapshotSha256:'a'.repeat(64),
   plan:[{slotKey:'hero',componentId:'title-stacked@1',kind:'heading',required:true}]
 };
-async function fixture(){
+async function fixture(layout:Pick<SafePreviewInput,'renderSections'|'portfolioTheme'>={}){
   const snapshotCanonicalJson=JSON.stringify(source.snapshot);
   const snapshotSha256=createHash('sha256').update(snapshotCanonicalJson).digest('hex');
   const loader=new SupabasePrivateFrozenRevisionLoader('https://unit.supabase.co',
@@ -34,7 +34,7 @@ async function fixture(){
       snapshot:source.snapshot,snapshotCanonicalJson
     }));
   const loaded=await loader.load(requestId);
-  const artifact=await createPrivateImmutableArtifact({...loaded,plan:source.plan});
+  const artifact=await createPrivateImmutableArtifact({...loaded,plan:source.plan,...layout});
   const pointer={
     portfolioId,status:'PREPARED_PRIVATE' as const,generation:4,revocationGeneration:2,
     candidateRequestId:requestId,candidateManifestSha256:artifact.manifestSha256,
@@ -48,7 +48,7 @@ async function fixture(){
   };
   let called=0;
   const ctx:PrivateBindingContext={
-    portfolioId,requestId,plan:source.plan,loader:{load:async()=>loaded},
+    portfolioId,requestId,plan:source.plan,...layout,loader:{load:async()=>loaded},
     pointer:{read:async()=>pointer},
     writer:{bindPrivateArtifact:async input=>{
       called++;
@@ -167,12 +167,15 @@ test('trusted artifact orchestration reaches the private SQL RPC with rebuilt by
 test('trusted B4 staging composes binding, exact re-render and server stage receipt',async()=>{
   const {stagePrivateReviewerArtifact}=
     await import('../../packages/storage-adapters/src/private-reviewer-staging.ts');
-  const f=await fixture();
+  const f=await fixture({renderSections:[{id:'hero',layout:'L1',slotKeys:['hero']}],
+    portfolioTheme:{mode:'dark',surface:'#15171a',text:'#f2f3f4',accent:'#9a8967'}});
   let stages=0;
   const result=await stagePrivateReviewerArtifact(f.ctx,{store:async input=>{
     stages++;
     assert.equal(input.requestId,requestId);
     assert.equal(input.generation,4);
+    assert.match(input.html,/data-layout="L1" data-section="hero"/);
+    assert.match(input.html,/background:#15171a;color-scheme:dark/);
     assert.equal(createHash('sha256').update(input.html).digest('hex'),
       f.receipt.htmlSha256);
     return {status:'STAGED_PRIVATE',requestId,generation:4,

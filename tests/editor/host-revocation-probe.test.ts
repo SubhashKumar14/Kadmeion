@@ -45,6 +45,9 @@ test('wrong or partial direct asset coverage is rejected before any HTTP fetch',
     {...input,canonicalPath:'/app/admin'},
     {...input,canonicalPath:'/api/private'},
     {...input,canonicalPath:'/auth/signin'},
+    {...input,canonicalPath:'/workspace/portfolio'},
+    {...input,canonicalPath:'/release_owner/ab'},
+    {...input,canonicalPath:'/release_owner/'+'a'.repeat(65)},
     {...input,origin:'http://127.0.0.1:8765'},
     {...input,origin:'https://127.0.0.1/'},
     {...input,origin:'https://user:secret@kadmeion.vercel.app/'}
@@ -77,7 +80,7 @@ test('cacheable, indexable, redirected or ETagged denial cannot pass',async()=>{
 });
 test('denial pages cannot contain unbounded output or private HTML',async()=>{
   for(const body of ['<!doctype html><html><body>private</body></html>',
-    '<script>alert(1)</script>','x'.repeat(4097)]){
+    '<script>alert(1)</script>','Private portfolio content in a plain-text 404','x'.repeat(4097)]){
     await assert.rejects(probeHostRevocation(input,async()=>response(404,{},body)),
       {code:'UNSAFE_BODY'});
   }
