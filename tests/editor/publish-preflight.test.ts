@@ -228,7 +228,15 @@ test('preset page schemas read the actual saved assignments without duplicating 
   snapshot.files['kadmeion.json']=fixture.snapshot.files['kadmeion.json'];
   const page=JSON.parse(snapshot.files['pages/home.page.json']);
   snapshot.files['pages/home.page.json']=JSON.stringify({...page,sections:[page.sections[0]]});
+  // Narrow this fixture to the selected section. Other curated S0 starters
+  // are genuine draft assignments and must not silently enter a one-section
+  // publication: clear them explicitly for this specific projection test.
+  for(const [key,slot] of Object.entries(snapshot.slots)){
+    if(!key.startsWith('stepped-hero-') && slot.state==='S0')
+      snapshot.slots[key]={state:'EMPTY',content:{}};
+  }
   snapshot.slots['stepped-hero-title']=fixture.snapshot.slots.hero;
+  snapshot.slots['stepped-hero-cta']=fixture.snapshot.slots.link;
   const plan=[
     {...fixture.plan[0],slotKey:'stepped-hero-title'},
     {...fixture.plan[2],slotKey:'stepped-hero-cta'}

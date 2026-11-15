@@ -48,7 +48,10 @@ test('preset initialization writes the documented draft through the existing fir
       const payload=JSON.parse(options?.body as string);
       assert.equal(payload.p_base_revision,0);
       assert.equal(payload.p_operation_id,operationId);
-      assert.equal(payload.p_snapshot.slots['arc-hero-title'].state,'EMPTY');
+      assert.equal(payload.p_snapshot.slots['arc-hero-title'].state,'S0');
+       assert.equal(payload.p_snapshot.slots['arc-hero-title'].componentId,'title-stacked@1');
+       assert.deepEqual(payload.p_snapshot.slots['arc-hero-title'].content,{});
+       assert.equal(payload.p_snapshot.slots['project-showcase-image'].state,'EMPTY');
       return Response.json({portfolioId,revision:1,snapshotSha256:sha,alreadyCommitted:false});
     });
   assert.equal((await store.initializePreset(portfolioId,operationId,'arc')).revision,1);
