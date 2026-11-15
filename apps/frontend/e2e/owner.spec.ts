@@ -348,6 +348,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: 'History', exact: true}).click();
   await expect(page.getByRole('heading',{name:'Revisions',level:2})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Diagnostics',level:2})).toBeVisible();
+  await page.getByRole('tab',{name:'Problems'}).click();
+  await expect(page.getByRole('heading',{name:'Validation has not been run here.'})).toBeVisible();
+  await page.getByRole('tab',{name:'Conflicts'}).click();
+  await expect(page.getByRole('heading',{name:'Concurrent-save checks happen on save.'})).toBeVisible();
+  await page.getByRole('tab',{name:'History'}).click();
   await expect(page.getByRole('button', {name: /Revision 2/})).toBeVisible();
   await page.getByRole('button',{name:/Revision 2/}).click();
   await page.getByRole('button',{name:'Compare to working copy'}).click();

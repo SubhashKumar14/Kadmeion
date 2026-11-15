@@ -825,7 +825,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-revision-center{min-width:0;background:var(--surface-soft);padding:0 16px 24px}
 .ws-revision-breadcrumb{display:flex;justify-content:space-between;flex-wrap:wrap;gap:7px;
   min-height:44px;align-items:center;color:var(--body);font-size:10px;letter-spacing:.05em}
-.ws-revision-canvas{height:310px;overflow:auto;border:1px solid var(--line);
+.ws-revision-canvas{height:390px;overflow:auto;border:1px solid var(--line);
   border-radius:9px;background:var(--panel)}
 .ws-revision-canvas .pv-document{padding:0!important;border:0!important;
   min-height:300px!important;max-height:none!important}
@@ -860,3 +860,15 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media(max-width:900px){.ws-revision-workspace{grid-template-columns:1fr}
   .ws-revision-nav,.ws-revision-diagnostics{border:0;border-bottom:1px solid var(--line)}
   .ws-revision-canvas{height:300px}}
+
+/* EDIT-08 approved tabs: no fabricated success scan or no-conflict status. */
+.ws-revision-tabs{display:flex;gap:15px;border-bottom:1px solid var(--line);margin:12px 0}
+.ws-revision-tabs button{min-height:34px;border:0;border-bottom:2px solid transparent;
+  background:none;color:var(--body);padding:7px 3px;font-size:11px;cursor:pointer}
+.ws-revision-tabs button[aria-selected=true]{border-color:var(--accent-strong);color:var(--ink);font-weight:750}
+.ws-revision-tabs button:focus-visible{outline:3px solid var(--focus);outline-offset:1px}
+.ws-revision-honest-state{min-height:110px;padding:12px 0}
+.ws-revision-honest-state h3{font-size:13px;margin:5px 0}
+.ws-revision-honest-state p{color:var(--body);font-size:11px;line-height:1.6}
+.ws-revision-honest-state a{font-size:11px;text-decoration:underline}
+@media(max-width:900px){.ws-revision-canvas{height:300px}}

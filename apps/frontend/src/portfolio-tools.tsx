@@ -495,12 +495,6 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
     });
     return ()=>{active=false;};
   },[port,id,revision]);
-  async function readSelected():Promise<PortfolioSnapshot|null>{
-    if(!selected||busy)return null;
-    const result=await port.readOwnerRevision(id,selected);
-    if(!result.data){setError(result.error?.message??'Historical revision cannot be verified.');return null;}
-    return result.data;
-  }
   async function compare(){
     if(!selected||busy)return;
     setBusy(true);setError('');setComparison(null);
@@ -572,6 +566,7 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
   working:PortfolioSnapshot;title:string;dirty:boolean;
   onRestore:(snapshot:PortfolioSnapshot)=>void;back:()=>void;
 }){
+  const [tab,setTab]=useState<'History'|'Problems'|'Conflicts'>('History');
   return <div className="ws-revision-workspace">
     <aside className="ws-revision-nav">
       <p className="ws-kicker">DOCUMENT HISTORY</p>
@@ -593,9 +588,25 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
       </div>
       <section id="history-checkpoints" className="ws-revision-bottom">
         <div className="ws-revision-tab-row"><h2>History &amp; problems</h2>
-          <span>Owner-authenticated history · no fake checkpoints</span></div>
-        <RevisionHistory port={port} id={id} revision={revision}
-          working={working} onRestore={onRestore}/>
+          <span>Private revisions · diagnostics are explicitly scoped</span></div>
+        <div className="ws-revision-tabs" role="tablist" aria-label="Revision views">
+          {(['History','Problems','Conflicts'] as const).map(view=>
+            <button role="tab" type="button" key={view} aria-selected={tab===view}
+              onClick={()=>setTab(view)}>{view}</button>)}
+        </div>
+        <div role="tabpanel" aria-label={tab+' revision view'}>
+          {tab==='History'?<RevisionHistory port={port} id={id} revision={revision}
+            working={working} onRestore={onRestore}/>:
+          tab==='Problems'?<div className="ws-revision-honest-state">
+            <h3>Validation has not been run here.</h3>
+            <p>Saved revision integrity is checked on read. This history page does not run source lint, custom-code analysis, media attestation or public host checks.</p>
+            <a href={'/app/portfolios/'+id+'/preflight'}>Open private release preflight</a>
+          </div>:
+          <div className="ws-revision-honest-state">
+            <h3>Concurrent-save checks happen on save.</h3>
+            <p>This screen cannot infer other active editing sessions. A stale private revision is rejected by the compare-and-swap save writer without replacing the newer version.</p>
+          </div>}
+        </div>
       </section>
     </section>
     <aside className="ws-revision-diagnostics">
