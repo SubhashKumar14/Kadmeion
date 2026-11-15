@@ -169,7 +169,7 @@ export interface PrivateImmutableMediaCandidate {
   deployable:false;
   publicUrl:null;
 }
-const MEDIA_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+const MEDIA_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MEDIA_SHA=/^[0-9a-f]{64}$/;
 const MEDIA_ALT_BAD=/[\u0000-\u001f\u007f]/;
 const escapeMediaAlt=(text:string):string=>text.replace(/&/g,'&amp;')

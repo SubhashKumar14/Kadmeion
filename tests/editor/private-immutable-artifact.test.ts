@@ -264,3 +264,19 @@ test('B08 media rejects unpinned bytes, stale portfolio, invalid plans and unsup
     code:'VALIDATION'
   });
 });
+
+test('B08 source-plan UUID validation accepts RFC 4122 asset IDs and denies malformed ones',async()=>{
+  const source=await attested();
+  const valid='40000000-0000-4000-8000-000000000004';
+  const img={assetId:valid,expectedSourceSha256:'a'.repeat(64),altText:'Image'};
+  let readCount=0;
+  const reader={readFrozenPinnedImage:async()=>{readCount++;throw Error('offline');}};
+  await assert.rejects(createPrivateImmutableMediaCandidate(source,[img],reader),{
+    code:'VALIDATION',message:'Private media authorization or Storage read failed.'
+  });
+  assert.equal(readCount,1,'RFC UUID must pass validation and reach the trusted reader');
+  await assert.rejects(createPrivateImmutableMediaCandidate(source,[
+    {...img,assetId:valid.replace('-8000-','-0000-')}
+  ],reader),{code:'VALIDATION'});
+  assert.equal(readCount,1,'malformed variant cannot reach private Storage');
+});
