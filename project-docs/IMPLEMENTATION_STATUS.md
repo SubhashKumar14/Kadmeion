@@ -1,3 +1,13 @@
+# B09 durable private recovery ZIP and deletion public-revocation guard — 15 November 2026
+
+- [`2c24844`](https://github.com/SubhashKumar14/Kadmeion/commit/2c24844655c4009521d47b257f405d1048d3fbc9): deterministic bounded private ZIP with records, content-addressed original media bytes and verified manifest; no truncation. [CI PASS 43691579380](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43691579380).
+- [`0898c81`](https://github.com/SubhashKumar14/Kadmeion/commit/0898c819f5d3980d147dfa333476af75f5759f0a): strict ZIP-STORE central/local checksum and path validation, exact offline reconstruction of the original partial account JSON. [CI PASS 43691883832](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43691883832).
+- [`b7cce7f`](https://github.com/SubhashKumar14/Kadmeion/commit/b7cce7f27c9eb947a05968788b7252dd321f69c4): source-only forward migration blocking destructive account deletion when public/reviewer release withdrawal is unverified; client-side error handling and pgTAP static guard/role ACL tests. [CI PASS 43692318856](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43692318856); 423/423 Node tests, database job passed.
+- The account exit SQL **has not been deployed to hosted Supabase**. This migration is a safety fix, NOT a proof that external revocation can be completed. Some owner accounts with release history will stay deletion-blocked until the B08 host and B09 reliable revocation acknowledgment are implemented.
+- Brevo Free relay observed enabled, but both configured domains were unverified and unauthenticated; no hosted SMTP test or credential exposure occurred.
+
+---
+
 # B09 source archive recovery — 15 November 2026
 
 - [`1ba1670`](https://github.com/SubhashKumar14/Kadmeion/commit/1ba167015ca848ef2f2f3817549040f732ec76f8): initial owner-only offline portfolio ZIP recovery from verified partial-account JSON. Its first CI failed TypeScript compilation; do not cite that SHA as green.
