@@ -284,7 +284,18 @@ test('media delivery rewrites only pinned PNGs and reauthorizes every direct rea
   assert.ok(direct.calls[0].url.endsWith('service_read_frozen_release_png'));
   assert.deepEqual(JSON.parse(String(direct.calls[0].options.body)),
     {p_handle:'sample_user',p_slug:'sample-site',p_manifest:manifest,p_sha:sha});
-  assert.equal((await invoke(handlePublicPortfolio,{url:asset,data:null})).res.statusCode,404);
+  const head=await invoke(handlePublicPortfolio,{url:asset,method:'HEAD',data:{png:png.toString('base64')}});
+  assert.equal(head.res.statusCode,200);
+  assert.equal(head.res.body,'');
+  assert.equal(head.calls[0].url,direct.calls[0].url);
+  assert.equal(head.calls[0].options.body,direct.calls[0].options.body);
+  for(const method of ['GET','HEAD']){
+    const withdrawn=await invoke(handlePublicPortfolio,{url:asset,method,data:null});
+    assert.equal(withdrawn.res.statusCode,404);
+    assert.equal(withdrawn.res.body,method==='HEAD'?'':'Not found');
+    assert.equal(withdrawn.res.headers.get('cache-control'),'private, no-store');
+    assert.equal(withdrawn.calls.length,1);
+  }
   assert.equal((await invoke(handlePublicPortfolio,{url:asset,data:{png:'aGVsbG8='}})).res.statusCode,503);
   assert.equal((await invoke(handlePublicPortfolio,{url:asset+'&asset='+sha})).calls.length,0);
   assert.equal((await invoke(handlePublicPortfolio,{data:{...release,assetHashes:[manifest]}})).res.statusCode,503);
