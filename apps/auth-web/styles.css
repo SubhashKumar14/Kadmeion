@@ -4,23 +4,23 @@
   color-scheme:light;font-family:Inter,Arial,Helvetica,system-ui,sans-serif;font-synthesis:none
 }
 html[data-theme=dark]{--page:#111b28;--form:#172337;--ink:#f5f7fa;--body:#c5d0dc;--muted:#a8b9c9;--line:#53647a;--focus:#ffad64;--soft:#24344a;--action:#ffb06b;--on-action:#142235;--error:#ffacaf;--error-bg:#4e262e;color-scheme:dark}
-*{box-sizing:border-box}html{background:var(--page)}body{margin:0;color:var(--ink);background:var(--page);min-width:320px}
+*{box-sizing:border-box}html{background:var(--page)}body{margin:0;color:var(--ink);background:radial-gradient(circle at 100% 0%,color-mix(in srgb,var(--amber) 14%,var(--page)),var(--page) 55%);min-width:320px}
 a{color:var(--ink);text-underline-offset:4px}button,input{font:inherit}button{cursor:pointer}
-.auth-shell{max-width:1700px;height:100dvh;min-height:500px;position:relative;margin:auto;background:var(--form);overflow:hidden}
+.auth-shell{width:min(1490px,calc(100% - 72px));height:calc(100dvh - 72px);max-width:1490px;min-height:600px;position:relative;margin:36px auto;background:var(--form);overflow:hidden;border-radius:23px;border:1px solid color-mix(in srgb,var(--line) 48%,transparent);box-shadow:0 14px 44px #10263820}
 .form-side,.brand-side{position:absolute;top:0;bottom:0;width:50%;transition:transform 300ms cubic-bezier(.22,.75,.22,1)}
-.form-side{left:0;background:var(--form);z-index:1;overflow-y:auto;overflow-x:hidden}.brand-side{left:50%;background:#152638;color:#f2f6fa;overflow:hidden}
+.form-side{left:0;background:var(--form);z-index:1;overflow-y:auto;overflow-x:hidden}.brand-side{left:50%;background:#0b1a21;color:#f2f6fa;overflow:hidden}
 .auth-shell[data-auth-mode=register] .form-side{transform:translateX(100%)}
 .auth-shell[data-auth-mode=register] .brand-side{transform:translateX(-100%)}
-.form-shell{max-width:520px;margin:0 auto;padding:30px 38px 22px;min-height:100%;display:flex;flex-direction:column}
+.form-shell{max-width:675px;margin:0 auto;padding:34px clamp(34px,4.5vw,76px) 27px;min-height:100%;display:flex;flex-direction:column}
 .page-header,.form-footer{display:flex;justify-content:space-between;align-items:center;gap:16px}
 .wordmark{font-size:16px;letter-spacing:.19em;font-weight:850;text-decoration:none;white-space:nowrap}
 .theme-control{padding:9px 13px;border:1px solid var(--line);border-radius:999px;color:var(--body);background:transparent;font-size:12px;font-weight:600}
 .theme-control:hover{background:var(--soft)}
-.form-stage{flex:1;display:flex;flex-direction:column;justify-content:center;padding:44px 0 28px}
+.form-stage{flex:1;display:flex;flex-direction:column;justify-content:center;padding:40px 0 26px}
 .auth-view{animation:appear 260ms ease both}
-.kicker{color:var(--muted);font-size:11px;font-weight:750;letter-spacing:.145em;text-transform:uppercase;margin:0 0 13px}
+.kicker{color:#a04f22;font-size:11px;font-weight:750;letter-spacing:.145em;text-transform:uppercase;margin:0 0 13px}
 h1,h2{font-family:Georgia,"Times New Roman",serif;font-weight:400;letter-spacing:-.045em}
-h1{font-size:clamp(34px,3.1vw,49px);line-height:1.07;margin:0 0 16px}
+h1{font-size:clamp(36px,3.1vw,49px);line-height:1.08;margin:0 0 18px}
 h1:focus{outline:none}.lede{font-size:14px;line-height:1.7;color:var(--body);margin:0;max-width:390px}
 .auth-form{display:flex;flex-direction:column;gap:0;margin:29px 0 0}
 .auth-form label,.label-row label{font-size:12px;font-weight:720;line-height:1.4;margin:0 0 8px}
@@ -65,7 +65,7 @@ h1:focus{outline:none}.lede{font-size:14px;line-height:1.7;color:var(--body);mar
 [hidden]{display:none!important}
 @keyframes appear{from{opacity:.3;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:980px){
-  .auth-shell{display:flex;flex-direction:column;min-height:100dvh;height:auto;overflow:visible}
+  .auth-shell{display:flex;flex-direction:column;width:100%;max-width:none;min-height:100dvh;height:auto;margin:0;border:0;border-radius:0;box-shadow:none;overflow:visible}
   .form-side,.brand-side{position:relative;inset:auto;width:100%;transform:none!important;transition:none;overflow:visible}
   .form-side{order:2;flex:1}.brand-side{order:1;min-height:170px}
   .brand-contents{padding:25px 30px;display:block}.brand-contents h2{font-size:32px;margin:25px 0 0}
