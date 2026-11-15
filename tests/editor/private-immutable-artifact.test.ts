@@ -6,7 +6,7 @@ import {
 } from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 import type {SafePreviewInput} from '../../packages/editor-core/src/publish-preflight.ts';
 import {SupabasePrivateFrozenRevisionLoader} from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
-import {createPrivateImmutableMediaCandidate,verifyPrivateImmutableMediaCandidate} from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
+import {createPrivateImmutableMediaCandidate,verifyPrivateImmutableMediaCandidate,exportPrivateStandaloneMediaPreview} from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 
 const id='10000000-0000-4000-8000-000000000001';
 const requestId='20000000-0000-4000-8000-000000000002';
@@ -219,6 +219,32 @@ test('B08 joins verified frozen HTML to sanitized, relative content-addressed PN
     verified:true,manifestSha256:candidate.manifestSha256,deployable:false,publicUrl:null
   });
   assert.ok(readCount>=2);
+  const offline=await exportPrivateStandaloneMediaPreview(source,plan,reader);
+  assert.equal(offline.previewOnly,true);assert.equal(offline.publicUrl,null);
+  assert.equal(offline.htmlSha256,candidate.manifest.files[0].sha256);
+  const zipBytes=offline.zip,view=new DataView(zipBytes.buffer,
+    zipBytes.byteOffset,zipBytes.byteLength);
+  const archiveFiles=new Map<string,Uint8Array>();
+  let cursor=0;
+  while(cursor+30<=zipBytes.byteLength&&view.getUint32(cursor,true)===0x04034b50){
+    const size=view.getUint32(cursor+18,true);
+    const nameBytes=view.getUint16(cursor+26,true);
+    const extra=view.getUint16(cursor+28,true);
+    const nameStart=cursor+30,contentStart=nameStart+nameBytes+extra;
+    const name=new TextDecoder().decode(zipBytes.slice(nameStart,contentStart-extra));
+    archiveFiles.set(name,zipBytes.slice(contentStart,contentStart+size));
+    cursor=contentStart+size;
+  }
+  assert.deepEqual([...archiveFiles.keys()],[
+    'index.html',candidate.files[1].path,'kadmeion-static-media-preview.json','README.txt'
+  ]);
+  const publishedManifest=JSON.parse(new TextDecoder().decode(
+    archiveFiles.get('kadmeion-static-media-preview.json')!));
+  assert.equal(publishedManifest.previewOnly,true);
+  assert.equal(publishedManifest.files[1].sha256,candidate.manifest.files[1].sha256);
+  assert.deepEqual(archiveFiles.get(candidate.files[1].path),candidate.files[1].bytes);
+  assert.ok(!new TextDecoder().decode(zipBytes).includes(assetId));
+  assert.ok(!new TextDecoder().decode(zipBytes).includes('SECRET_OWNED_SOURCE_DO_NOT_EXPORT'));
   const changed={...candidate,files:[candidate.files[0],
     {path:candidate.files[1].path,bytes:Uint8Array.from(candidate.files[1].bytes)}]};
   changed.files[1].bytes[50]^=1;

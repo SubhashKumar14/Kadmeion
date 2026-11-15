@@ -30,7 +30,7 @@ export interface StoredZipLimits { maxEntries:number; maxBytes:number; maxEntryB
 export function writeStoredZip(parts:readonly StoredZipPart[],limits:StoredZipLimits):Uint8Array {
   check(Array.isArray(parts)&&parts.length>0&&Number.isSafeInteger(limits.maxEntries)&&
     parts.length<=limits.maxEntries&&limits.maxEntries<=101 &&
-    Number.isSafeInteger(limits.maxBytes)&&limits.maxBytes>22&&limits.maxBytes<=2*1024*1024 &&
+    Number.isSafeInteger(limits.maxBytes)&&limits.maxBytes>22&&limits.maxBytes<=10*1024*1024 &&
     Number.isSafeInteger(limits.maxEntryBytes)&&limits.maxEntryBytes>0&&
     limits.maxEntryBytes<=limits.maxBytes,'Invalid ZIP resource limits.');
   const seen=new Set<string>();

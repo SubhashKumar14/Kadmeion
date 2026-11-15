@@ -80,3 +80,16 @@ test('shared ZIP-STORE writer refuses unsafe names, duplicates and oversize file
   assert.throws(()=>writeStoredZip([file,file],limits),{code:'VALIDATION'});
   assert.throws(()=>writeStoredZip([{name:'big',bytes:new Uint8Array(51)}],limits),{code:'VALIDATION'});
 });
+
+
+test('ZIP writer permits bounded media archives without increasing source-import quotas',()=>{
+ const photo=new Uint8Array(3*1024*1024);
+ const output=writeStoredZip([{name:'assets/cover.png',bytes:photo}],{
+   maxEntries:3,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024
+ });
+ assert.ok(output.byteLength>2*1024*1024);
+ assert.throws(()=>importPortfolioSourceZip(output),{code:'VALIDATION'});
+ assert.throws(()=>writeStoredZip([{name:'assets/cover.png',bytes:photo}],{
+   maxEntries:3,maxBytes:10*1024*1024,maxEntryBytes:1024
+ }),{code:'VALIDATION'});
+});

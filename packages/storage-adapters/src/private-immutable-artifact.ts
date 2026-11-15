@@ -1,4 +1,5 @@
 import type { SanitizedPublicationPng } from './safe-png-publication.ts';
+import {writeStoredZip} from './portable-source-archive.ts';
 import { ContractError } from '../../contracts/src/project.ts';
 import { prepareSafeStaticPreview, type SafePreviewInput } from '../../editor-core/src/publish-preflight.ts';
 import { assertAttestedPrivateFrozenRevision } from './private-frozen-revision-loader.ts';
@@ -310,4 +311,43 @@ export async function verifyPrivateImmutableMediaCandidate(
   }
   return {verified:true,manifestSha256:expected.manifestSha256,
     deployable:false,publicUrl:null};
+}
+
+
+/**
+ * Offline static media preview. The archive intentionally omits owner IDs,
+ * frozen source digest, access tokens and raw Storage paths. It is not a
+ * public release claim and contains no executable author-supplied JavaScript.
+ * The original source ZIP continues to use its separate stricter 2 MiB cap.
+ */
+export async function exportPrivateStandaloneMediaPreview(
+  input:SafePreviewInput,
+  mediaPlan:readonly ServerPinnedPrivateMediaPlanItem[],
+  reader:TrustedPrivateMediaReader
+):Promise<{zip:Uint8Array;htmlSha256:string;previewOnly:true;publicUrl:null}>{
+  const candidate=await createPrivateImmutableMediaCandidate(input,mediaPlan,reader);
+  const exposedManifest={
+    kind:'kadmeion-standalone-media-preview',
+    formatVersion:1,
+    previewOnly:true,
+    publicUrl:null,
+    files:candidate.manifest.files,
+    limitations:[
+      'No publication or third-party cache revocation proof',
+      'Scriptless text and sanitized PNG only; custom JavaScript excluded',
+      'Serve as private local static preview; noindex by default'
+    ]
+  };
+  const manifest=encoder.encode(JSON.stringify(exposedManifest));
+  const readme=encoder.encode('KADMEION PRIVATE STATIC MEDIA PREVIEW\n'+
+    'Extract this archive and serve index.html using a local HTTP static server.\n'+
+    'This archive is NOT a verified public release, and has no live URL.\n'+
+    'The preview is noindex, scriptless and uses relative sanitized PNG assets.\n');
+  const zip=writeStoredZip([
+    ...candidate.files.map(file=>({name:file.path,bytes:file.bytes})),
+    {name:'kadmeion-static-media-preview.json',bytes:manifest},
+    {name:'README.txt',bytes:readme}
+  ],{maxEntries:11,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024});
+  return {zip,htmlSha256:candidate.manifest.files[0].sha256,
+    previewOnly:true,publicUrl:null};
 }
