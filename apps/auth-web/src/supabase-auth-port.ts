@@ -700,6 +700,50 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  async ownerSettings() {
+    return this.outcome(async () => {
+      const {userId} = await this.ownerSession();
+      const token = async () => {
+        try {
+          const current = await this.ownerSession();
+          return current.userId === userId ? current.session.access_token : null;
+        } catch { return null; }
+      };
+      const [identity, notifications, trash, account, data] = await Promise.all([
+        import('../../../packages/contracts/src/private-identity-service.ts'),
+        import('../../../packages/contracts/src/private-notifications-service.ts'),
+        import('../../../packages/contracts/src/private-trash-service.ts'),
+        import('../../../packages/contracts/src/private-account-erasure-service.ts'),
+        import('../../../packages/storage-adapters/src/private-account-data-export.ts')
+      ]);
+      return {
+        identity: new identity.SupabasePrivateIdentityService(this.origin, this.publishableKey, token, this.fetcher),
+        notifications: new notifications.SupabasePrivateNotificationsService(this.origin, this.publishableKey, userId, token, this.fetcher),
+        trash: new trash.SupabasePrivateTrashService(this.origin, this.publishableKey, token, this.fetcher),
+        account: new account.SupabasePrivateAccountErasureService(this.origin, this.publishableKey, token, this.fetcher),
+        data: new data.SupabasePrivateAccountDataExporter(this.origin, this.publishableKey, token, this.fetcher)
+      };
+    });
+  }
+
+  async ownerSharingPreferences(): Promise<AuthOutcome<{shareDisplayName: boolean; shareHeadline: boolean; shareBio: boolean; publicationRequested: boolean}>> {
+    return this.outcome(async () => {
+      const {session, userId} = await this.ownerSession();
+      const params = new URLSearchParams({select: 'user_id,share_display_name,share_headline,share_bio,publication_requested',
+        user_id: 'eq.' + userId, limit: '1'});
+      const rows = await this.ownerRest('profile_sharing_preferences?' + params, session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length > 1)
+        throw new Error('Private sharing preferences could not be verified.');
+      const row = rows[0] as Json | undefined;
+      if (!row) return {shareDisplayName: false, shareHeadline: false, shareBio: false, publicationRequested: false};
+      if (row.user_id !== userId || typeof row.share_display_name !== 'boolean' ||
+          typeof row.share_headline !== 'boolean' || typeof row.share_bio !== 'boolean' ||
+          typeof row.publication_requested !== 'boolean') throw new Error('Invalid sharing preferences.');
+      return {shareDisplayName: row.share_display_name, shareHeadline: row.share_headline,
+        shareBio: row.share_bio, publicationRequested: row.publication_requested};
+    });
+  }
+
   async readOwnerWorkspace(): Promise<AuthOutcome<OwnerWorkspaceSnapshot>> {
     return this.outcome(async () => {
       const { session, userId } = await this.ownerSession();

@@ -438,7 +438,7 @@ export class SupabasePrivateAccountDataExporter {
       const objectPath=path.split('/').map(encodeURIComponent).join('/');
       const response=await this.request('/storage/v1/object/authenticated/kadmeion-private-assets/'+
         objectPath,MAX_ASSET_BYTES);
-      const actualMime=(response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
+      const actualMime=(response.headers.get('content-type')??'').split(';',1)[0]?.trim().toLowerCase()??'';
       requireCondition(response.bytes.length===size&&actualMime===mime,'INTEGRITY',
         'Private asset bytes do not match registered size or MIME.');
       total+=response.bytes.length;
@@ -941,3 +941,4 @@ export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
     deletionAllowed:false
   };
 }
+

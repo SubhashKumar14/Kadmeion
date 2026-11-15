@@ -170,6 +170,7 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Portfolio theme').selectOption('dark');
   await page.getByLabel('Preview width').selectOption('390');
   await capture('22_THEME_INSPECTOR_BROWSER');
+  await page.getByLabel('Portfolio theme').selectOption('light');
   await page.getByRole('button', {name: 'Assets', exact: true}).click();
   await expect(page.getByText('No private project assets are registered.')).toBeVisible();
   await capture('23_ASSET_LIBRARY_BROWSER');
@@ -207,6 +208,46 @@ test('real owner onboarding and project revision are private across browser sess
   await page.goto(editorPath);
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
+  await capture('52_DEVICE_REQUIREMENTS_BROWSER');
+  await page.setViewportSize({width: 1534, height: 960});
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading', {name: 'Settings', exact: true})).toBeVisible();
+  await capture('41_SETTINGS_BROWSER');
+
+  await page.getByRole('link', {name: 'Open privacy & sharing'}).click();
+  await page.getByLabel('Display name', {exact: true}).check();
+  await page.getByLabel('Save these preferences and withdraw any affected public profile projection').check();
+  await page.getByRole('button', {name: 'Save sharing preferences'}).click();
+  await expect(page.getByRole('status')).toHaveText('Sharing preferences saved privately.');
+  await capture('42_PRIVACY_BROWSER');
+
+  await page.goto('/app/notifications');
+  await expect(page.getByRole('heading', {name: 'Inbox'})).toBeVisible();
+  await expect(page.getByLabel('Reviewer activity')).toBeVisible();
+  await capture('43_NOTIFICATIONS_BROWSER');
+
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading', {name: 'Account security'})).toBeVisible();
+  await page.getByRole('button', {name: 'Sign out other sessions'}).click();
+  await expect(page.getByRole('status')).toHaveText('Other sessions were signed out.');
+  await capture('44_SECURITY_BROWSER');
+
+  await page.goto('/app/trash');
+  await expect(page.getByText('Trash is empty.')).toBeVisible();
+  await capture('45_TRASH_BROWSER');
+
+  await page.goto('/app/export');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', {name: 'Download application metadata'}).click();
+  const downloaded = await download;
+  expect(downloaded.suggestedFilename()).toBe('kadmeion-account-metadata.json');
+  await expect(page.getByRole('status')).toHaveText('Application metadata download prepared.');
+  await capture('46_EXPORT_BROWSER');
+
+  await page.goto('/app/settings/account/delete');
+  await page.getByRole('button', {name: 'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading', {name: 'Private inventory'})).toBeVisible();
+  await capture('47_ACCOUNT_EXIT_BROWSER');
 
   const foreign = await browser.newContext({baseURL: testInfo.project.use.baseURL});
   try {

@@ -210,7 +210,7 @@ export class SupabasePrivateNotificationsService {
     const rows=raw as PrivateNotification[],seen=new Set<string>();
     for(let i=0;i<rows.length;i++){
       const row=rows[i];
-      if(seen.has(row.id))throw new PrivateNotificationsError('INVALID_ACK');
+      if(!row||seen.has(row.id))throw new PrivateNotificationsError('INVALID_ACK');
       seen.add(row.id);
       const previous=i?rows[i-1]:null;
       if(previous&&(Date.parse(row.created_at)>Date.parse(previous.created_at)||
@@ -265,3 +265,4 @@ export class SupabasePrivateNotificationsService {
     return raw;
   }
 }
+

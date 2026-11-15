@@ -91,6 +91,7 @@ const justifiedExtra = [
   'apps/frontend/src/portfolios.tsx',
   'apps/frontend/src/portfolio-tools.tsx',
   'apps/frontend/src/release.tsx',
+  'apps/frontend/src/settings.tsx',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));

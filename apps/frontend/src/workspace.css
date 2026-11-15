@@ -240,3 +240,18 @@
 .portfolio-only-preview h1{font-size:clamp(32px,6vw,72px)}
 .ws-private-static-preview{width:100%;min-height:400px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
 .ws-profile-tabs a[aria-current="page"]{border-bottom-color:var(--accent)}
+
+.ws-settings-body{margin-top:22px}
+.ws-settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:14px;align-items:start}
+.ws-setting-card h2{font-size:26px;margin-bottom:12px}
+.ws-setting-card p{color:var(--body)}
+.ws-setting-card fieldset{margin:10px 0;padding:12px;border:1px solid var(--line);border-radius:8px}
+.ws-setting-card legend{font-weight:700}
+.ws-settings-check{display:flex;align-items:center;gap:8px;min-height:44px}
+.ws-settings-check input{width:18px;height:18px;flex:none;accent-color:var(--accent-strong)}
+.ws-settings-records{padding:0;list-style:none}
+.ws-settings-records li{padding:12px 0;border-bottom:1px solid var(--line)}
+.ws-settings-records .ws-actions{margin:6px 0}
+.ws-settings-form{display:grid;gap:10px}
+.ws-settings-form label{display:grid;gap:4px}
+.ws-settings-form input{min-height:44px;width:100%;padding:7px 10px;color:var(--ink);background:var(--surface);border:1px solid var(--line-dark);border-radius:8px}

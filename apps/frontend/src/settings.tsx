@@ -1,0 +1,334 @@
+import { useEffect, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
+import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
+import type { AccountExitPreflight } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { PrivateTrashEntry } from '../../../packages/contracts/src/private-trash-service.ts';
+import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
+
+const settingsLinks = [
+  ['/app/settings/privacy', 'Privacy & sharing', 'Choose which profile fields are eligible for sharing.'],
+  ['/app/notifications', 'Notifications', 'Review activity and notification preferences.'],
+  ['/app/settings/security', 'Account security', 'Update your password or sign out other sessions.'],
+  ['/app/trash', 'Trash', 'Review items you can restore privately.'],
+  ['/app/export', 'Export center', 'Download your application metadata.'],
+  ['/app/settings/account/delete', 'Account exit', 'Review prerequisites for account deletion.']
+] as const;
+type Services = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['ownerSettings']>>['data']>;
+type Message = {error: boolean; text: string} | null;
+const emptyMessage: Message = null;
+
+export function isSettingsRoute(path: string) {
+  return path === '/app/settings' || settingsLinks.some(([href]) => path === href);
+}
+
+function Status({message}: {message: Message}) {
+  return message && <p className="ws-inline-alert" role={message.error ? 'alert' : 'status'}>{message.text}</p>;
+}
+
+function failure(error: unknown): Message {
+  return {error: true, text: error instanceof Error ? error.message : 'The account service could not confirm that action.'};
+}
+
+function SettingsCard({title, children}: {title: string; children: ReactNode}) {
+  return <section className="ws-project-aside ws-setting-card"><h2>{title}</h2>{children}</section>;
+}
+
+export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path: string}) {
+  const [services, setServices] = useState<Services | null>(null);
+  const [error, setError] = useState('');
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (path === '/app/settings') return;
+    let active = true;
+    void port.ownerSettings().then(result => {
+      if (!active) return;
+      if (result.data) {setServices(result.data); setError('');}
+      else setError(result.error?.message ?? 'Account settings are unavailable.');
+    });
+    return () => {active = false;};
+  }, [port, path, retry]);
+
+  const title = settingsLinks.find(([href]) => href === path)?.[1] ?? 'Settings';
+  let content: ReactNode = null;
+  if (path === '/app/settings') content = <div className="ws-settings-grid">{settingsLinks.map(([href, title, detail]) =>
+    <SettingsCard key={href} title={title}><p>{detail}</p><a href={href} className="ws-secondary">Open {title.toLowerCase()}</a></SettingsCard>)}</div>;
+  else if (!services) content = error
+    ? <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary" onClick={() => {
+      setError(''); setRetry(value => value + 1);
+    }}>Retry account settings</button></>
+    : <p role="status">Loading private account settings…</p>;
+  else if (path === '/app/settings/privacy') content = <Privacy port={port} services={services}/>;
+  else if (path === '/app/notifications') content = <Notifications service={services.notifications}/>;
+  else if (path === '/app/settings/security') content = <Security port={port}/>;
+  else if (path === '/app/trash') content = <Trash service={services.trash}/>;
+  else if (path === '/app/export') content = <ExportCenter services={services}/>;
+  else content = <AccountExit service={services.account}/>;
+
+  return <section aria-labelledby="settings-title">
+    <div className="ws-heading">
+      {path !== '/app/settings' && <a href="/app/settings">Back to settings</a>}
+      <p className="ws-kicker">YOUR ACCOUNT</p><h1 id="settings-title">{title}</h1>
+    </div>
+    <div className="ws-settings-body">{content}</div>
+  </section>;
+}
+
+function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
+  const [prefs, setPrefs] = useState<SharingPreferences | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [message, setMessage] = useState<Message>(emptyMessage);
+  const [busy, setBusy] = useState(false);
+  const fields: [keyof SharingPreferences, string][] = [
+    ['shareDisplayName', 'Display name'], ['shareHeadline', 'Headline'], ['shareBio', 'About you']
+  ];
+  useEffect(() => {
+    let active = true;
+    void port.ownerSharingPreferences().then(result => {
+      if (!active) return;
+      if (result.data) setPrefs(result.data);
+      else setMessage({error: true, text: result.error?.message ?? 'Privacy preferences are unavailable.'});
+    });
+    return () => {active = false;};
+  }, [port]);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!prefs || !confirmed || busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      await services.identity.requestPublicIdentity(prefs);
+      setConfirmed(false);
+      setMessage({error: false, text: 'Sharing preferences saved privately.'});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  return <SettingsCard title="Profile visibility">
+    <p>Choose eligible fields. Activating public delivery requires a separate publication action.</p>
+    <Status message={message}/>
+    {!prefs && !message && <p role="status">Loading sharing preferences…</p>}
+    {prefs && <form onSubmit={event => void save(event)}>
+      <fieldset disabled={busy}>
+        <legend>Shareable profile fields</legend>
+        {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
+          <input type="checkbox" checked={prefs[key]} onChange={event => {
+            const next = {...prefs, [key]: event.target.checked};
+            if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
+            setPrefs(next); setConfirmed(false);
+          }}/>{label}
+        </label>)}
+        <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
+          disabled={!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio}
+          onChange={event => {setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+          Allow a later publication request
+        </label>
+        <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
+          Save these preferences and withdraw any affected public profile projection
+        </label>
+      </fieldset>
+      <button type="submit" className="ws-primary" disabled={!confirmed || busy}>{busy ? 'Saving…' : 'Save sharing preferences'}</button>
+    </form>}
+  </SettingsCard>;
+}
+
+function Notifications({service}: {service: Services['notifications']}) {
+  const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
+  const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
+  const [message, setMessage] = useState<Message>(emptyMessage);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void Promise.all([service.listPage(), service.getPreferences()]).then(([items, settings]) => {
+      if (active) {setInbox(items); setPrefs(settings);}
+    }).catch(error => {if (active) setMessage(failure(error));});
+    return () => {active = false;};
+  }, [service]);
+
+  async function acknowledge(item: PrivateNotification, dismiss: boolean) {
+    if (busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      const receipt = await service.acknowledge(item.id, dismiss);
+      setInbox(current => current && {...current, items: dismiss ? current.items.filter(row => row.id !== item.id)
+        : current.items.map(row => row.id === item.id ? {...row, read_at: receipt.read_at} : row)});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  async function more() {
+    if (!inbox?.nextCursor || busy) return;
+    setBusy(true);
+    try {
+      const next = await service.listPage(50, inbox.nextCursor);
+      setInbox({...next, items: [...inbox.items, ...next.items]});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  async function preference(key: 'reviewerEnabled' | 'publishEnabled' | 'syncEnabled', checked: boolean) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const fields = {reviewerEnabled: prefs?.reviewer_enabled ?? false,
+        publishEnabled: prefs?.publish_enabled ?? false, syncEnabled: prefs?.sync_enabled ?? false};
+      setPrefs(await service.setPreferences({...fields, [key]: checked}));
+      setMessage({error: false, text: 'Notification preferences saved.'});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  return <div className="ws-settings-grid"><SettingsCard title="Inbox">
+    <Status message={message}/>
+    {!inbox && !message && <p role="status">Loading notifications…</p>}
+    {inbox?.items.length === 0 && <p>You’re caught up.</p>}
+    <ul className="ws-settings-records">{inbox?.items.map(item => <li key={item.id}>
+      <strong>{item.event_type.toLowerCase().replaceAll('_', ' ')}</strong>
+      <p>{new Date(item.created_at).toLocaleString()} · {item.read_at ? 'Read' : 'Unread'}</p>
+      <div className="ws-actions">{!item.read_at && <button className="ws-secondary" type="button" disabled={busy}
+        onClick={() => void acknowledge(item, false)}>Mark as read</button>}
+        <button className="ws-secondary" type="button" disabled={busy} onClick={() => void acknowledge(item, true)}>Dismiss</button></div>
+    </li>)}</ul>
+    {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
+  </SettingsCard><SettingsCard title="Optional in-app notifications">
+    {prefs !== undefined && <>
+      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.reviewer_enabled ?? false}
+        disabled={busy} onChange={event => void preference('reviewerEnabled', event.target.checked)}/> Reviewer activity</label>
+      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.publish_enabled ?? false}
+        disabled={busy} onChange={event => void preference('publishEnabled', event.target.checked)}/> Publishing activity</label>
+      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.sync_enabled ?? false}
+        disabled={busy} onChange={event => void preference('syncEnabled', event.target.checked)}/> Draft sync activity</label>
+    </>}
+    <p>Security and moderation notices use the required in-app channel.</p>
+  </SettingsCard></div>;
+}
+
+function Security({port}: {port: SupabaseBrowserAuthPort}) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<Message>(emptyMessage);
+  async function change(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    if (next !== confirm) {setMessage({error: true, text: 'Passwords do not match.'}); return;}
+    setBusy(true); setMessage(null);
+    try {
+      const user = await port.getUser();
+      if (user.error || !user.data?.user?.email) throw new Error('Sign in with a verified email account first.');
+      const auth = await port.signInWithPassword({email: user.data.user.email, password: current});
+      if (auth.error || auth.data?.user?.id !== user.data.user.id) throw new Error('Current password could not be verified.');
+      const outcome = await port.updateUser({password: next});
+      if (outcome.error || outcome.data?.user?.id !== user.data.user.id) throw new Error('Password change could not be confirmed.');
+      setCurrent(''); setNext(''); setConfirm('');
+      setMessage({error: false, text: 'Password updated.'});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+  async function revoke() {
+    if (busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      const result = await port.signOut({scope: 'others'});
+      if (result.error) throw new Error('Sign-out for other sessions could not be confirmed.');
+      setMessage({error: false, text: 'Other sessions were signed out.'});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  return <><Status message={message}/><div className="ws-settings-grid">
+    <SettingsCard title="Change password"><form className="ws-settings-form" onSubmit={event => void change(event)}>
+      <label>Current password<input type="password" required maxLength={128} autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)}/></label>
+      <label>New password<input type="password" required minLength={8} maxLength={128} autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)}/></label>
+      <label>Confirm new password<input type="password" required minLength={8} maxLength={128} autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
+      <button className="ws-primary" type="submit" disabled={busy}>Update password</button>
+    </form></SettingsCard>
+    <SettingsCard title="Other sessions"><p>Revoke access on other signed-in browsers and devices.</p>
+      <button type="button" className="ws-secondary" disabled={busy} onClick={() => void revoke()}>Sign out other sessions</button></SettingsCard>
+    </div></>;
+}
+
+function Trash({service}: {service: Services['trash']}) {
+  const [items, setItems] = useState<PrivateTrashEntry[] | null>(null);
+  const [message, setMessage] = useState<Message>(emptyMessage);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void service.list().then(rows => {if (active) setItems(rows);})
+      .catch(error => {if (active) setMessage(failure(error));});
+    return () => {active = false;};
+  }, [service]);
+
+  async function restore(item: PrivateTrashEntry) {
+    if (busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      await service.restore(item.item_type, item.item_id);
+      setItems(current => current?.filter(row => row.item_id !== item.item_id || row.item_type !== item.item_type) ?? []);
+      setMessage({error: false, text: 'Item restored as private.'});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  return <SettingsCard title="Recoverable items">
+    <Status message={message}/>
+    {!items && !message && <p role="status">Loading Trash…</p>}
+    {items?.length === 0 && <p>Trash is empty.</p>}
+    <ul className="ws-settings-records">{items?.map(item => <li key={item.item_type + ':' + item.item_id}>
+      <strong>{item.item_type} · {item.item_id.slice(0, 8)}</strong>
+      <p>Restore by {new Date(item.restore_until).toLocaleString()}</p>
+      <button type="button" className="ws-secondary" disabled={busy} onClick={() => void restore(item)}>Restore privately</button>
+    </li>)}</ul>
+  </SettingsCard>;
+}
+
+function ExportCenter({services}: {services: Services}) {
+  const [message, setMessage] = useState<Message>(emptyMessage);
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    if (busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      const inventory = await services.account.captureInventory(crypto.randomUUID());
+      const result = await services.data.exportApplicationMetadata(inventory.snapshotId);
+      const bytes = Uint8Array.from(result.bytes);
+      const url = URL.createObjectURL(new Blob([bytes], {type: result.mime}));
+      const link = document.createElement('a');
+      link.href = url; link.download = result.filename; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage({error: false, text: 'Application metadata download prepared.'});
+    } catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+
+  return <SettingsCard title="Application metadata">
+    <p>Download a verified JSON snapshot of application records. Storage bytes and external provider data are excluded.</p>
+    <Status message={message}/>
+    <button className="ws-primary" type="button" disabled={busy} onClick={() => void download()}>{busy ? 'Preparing export…' : 'Download application metadata'}</button>
+  </SettingsCard>;
+}
+
+function AccountExit({service}: {service: Services['account']}) {
+  const [inventory, setInventory] = useState<AccountExitPreflight | null>(null);
+  const [message, setMessage] = useState<Message>(emptyMessage);
+  const [busy, setBusy] = useState(false);
+  async function check() {
+    if (busy) return;
+    setBusy(true); setMessage(null);
+    try {setInventory(await service.preflight());}
+    catch (error) {setMessage(failure(error));}
+    finally {setBusy(false);}
+  }
+  return <SettingsCard title="Deletion prerequisites">
+    <p>Account deletion requires identity, public revocation and storage verification.</p>
+    <Status message={message}/>
+    <button className="ws-primary" type="button" disabled={busy} onClick={() => void check()}>{busy ? 'Checking…' : 'Review deletion prerequisites'}</button>
+    {inventory && <div role="status">
+      <h3>Private inventory</h3>
+      <dl><dt>Projects</dt><dd>{inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.counts.portfolios}</dd>
+        <dt>Public routes</dt><dd>Awaiting revocation verification</dd><dt>Active session</dt><dd>Verified for inventory</dd></dl>
+      <p>Deletion is blocked pending the required evidence.</p>
+    </div>}
+  </SettingsCard>;
+}

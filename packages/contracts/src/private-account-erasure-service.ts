@@ -454,7 +454,7 @@ export class SupabasePrivateAccountErasureService {
       if(!response.ok)
         throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
       const remaining=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
-      if(remaining.some(path=>path.split('/')[0]!==paths[0].split('/')[0])||
+      if(remaining.some(path=>path.split('/')[0]!==paths[0]?.split('/')[0])||
         paths.some(path=>remaining.includes(path)))
         throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
       if(await this.token()!==jwt)
@@ -509,3 +509,4 @@ export class SupabasePrivateAccountErasureService {
     });
   }
 }
+

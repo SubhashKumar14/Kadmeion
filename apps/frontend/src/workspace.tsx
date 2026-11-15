@@ -8,6 +8,7 @@ import { PrivateProjectDetail, PrivateProjects } from './projects.tsx';
 import { DeveloperProfile } from './profile.tsx';
 import { FullscreenPortfolioPreview, PortfolioChooser, PortfolioEditor, PortfolioLibrary, portfolioIdFromRoute } from './portfolios.tsx';
 import { PortfolioRelease, releaseRoute } from './release.tsx';
+import { OwnerSettings, isSettingsRoute } from './settings.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -20,6 +21,7 @@ const NAV = [
   { title: 'Portfolio Studio', href: '/app/portfolios', icon: 'layers' },
   { title: 'Profile', href: '/app/profile', icon: 'user' },
   { title: 'Projects', href: '/app/projects', icon: 'folder' },
+  { title: 'Settings', href: '/app/settings', icon: 'user' },
   { title: 'Templates', href: '/templates', icon: 'folder' },
   { title: 'Explore', href: '/explore', icon: 'activity' }
 ] as const;
@@ -29,7 +31,7 @@ function projectIdFromRoute(path: string): string | undefined {
 }
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
+  return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -46,7 +48,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       <p className="ws-rail-label">YOUR WORKSPACE</p>
       <nav aria-label="Workspace navigation">
         {NAV.map(item => <a key={item.href} href={item.href}
-          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) ? 'page' : undefined}>
+          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) ? 'page' : undefined}>
           <Icon name={item.icon} size={18}/><span>{item.title}</span>
         </a>)}
       </nav>
@@ -59,7 +61,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     </aside>
     <div className="ws-main-col">
       <header className="ws-topbar">
-        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : route.startsWith('/app/portfolios') ? 'Portfolio Studio' : 'Overview'}</span>
+        <span className="ws-topbar-context">Personal workspace <span aria-hidden="true">/</span> {route === '/app/onboarding' ? 'Welcome' : route.startsWith('/app/projects') ? 'Projects' : route === '/app/profile' ? 'Developer profile' : route.startsWith('/app/portfolios') ? 'Portfolio Studio' : isSettingsRoute(route) ? 'Settings' : 'Overview'}</span>
         <div className="ws-topbar-actions">
           <button type="button" className="ws-theme" onClick={toggleTheme}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
@@ -215,7 +217,7 @@ export function WorkspaceApp() {
           return;
         }
         setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
-        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios')) return;
+        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') || isSettingsRoute(route)) return;
         void port.readOwnerWorkspace().then(read=>{
           if (cancelled) return;
           if (read.error || !read.data) {
@@ -280,6 +282,7 @@ export function WorkspaceApp() {
       portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId}/> :
       route === '/app/portfolios/new' && authRef.current ? <PortfolioChooser port={authRef.current}/> :
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
+      isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div className="ws-skeleton-heading" aria-hidden="true"/>
