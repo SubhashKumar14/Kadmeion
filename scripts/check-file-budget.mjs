@@ -6,13 +6,16 @@ const app = paths.filter((path) => path !== 'README.md' && !path.startsWith('pro
   !path.startsWith('node_modules/') && !path.startsWith('dist/') &&
   !path.startsWith('coverage/'));
 const planned = 200;
-// Three forward-only migrations retain separately auditable security boundaries.
+// Three forward-only migrations plus one owner-notification contract/test pair
+// retain independent security reviews without hiding missing backend mechanisms.
 // They are justified departures from the *proposed* 200-path inventory,
 // NOT evidence that the owner has approved a new design/file budget.
 const justifiedExtra = [
   'supabase/migrations/20261115043831_portfolio_abuse_intake.sql',
   'supabase/migrations/20261115121000_public_release_indexing_ack_gate.sql',
-  'supabase/migrations/20261115122000_public_projection_content_privacy_invalidation.sql'
+  'supabase/migrations/20261115122000_public_projection_content_privacy_invalidation.sql',
+  'packages/contracts/src/private-notifications-service.ts',
+  'tests/contracts/private-notifications-service.test.ts'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

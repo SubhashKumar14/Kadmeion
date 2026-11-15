@@ -19,3 +19,5 @@ export * from './private-account-erasure-service.ts';
 export * from './private-release-visibility-service.ts';
 
 export * from './private-goals-service.ts';
+
+export * from './private-notifications-service.ts';

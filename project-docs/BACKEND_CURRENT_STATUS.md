@@ -2,6 +2,17 @@
 
 ## Latest code continuation — 15 November 2026
 
+**Additional WF-045 implementation checkpoint:** a typed, owner-JWT-scoped
+notification inbox client, safe paginated reads, server-only preference RPCs,
+explicit acknowledgments and negative contract tests are now authored on the
+feature branch; full fresh CI remains the acceptance gate. This in-app service
+does **not** imply Brevo email delivery. The checkpoint introduces two isolated
+feature/test files rather than combining notification behavior with unrelated
+auth code. Latest authored count is **205**, variance **+5** against the
+original 200-file proposal; all five additions are separately enumerated
+for review. The preceding 203-path snapshot remains historical.
+
+
 - **Current feature-branch code:** `feat/b0-backend-foundation` at privacy invalidation commit
   `adb4d081` (subsequent housekeeping CI SHA may differ). This continuation
   added curated source-pinned starter assignments with empty owner content
