@@ -1,5 +1,15 @@
 # Kadmeion — Current Backend Implementation State
 
+## B08–B11 backend continuation
+
+The existing release host now serves scoped PNGs for canonical public pages, unlisted releases and token-scoped reviewer previews. The PostgreSQL media write enters the existing immutable stage atomically. Publication probes verify the normalized frozen HTML and exact same-origin media before acknowledgement. Public rollback requires explicit owner consent, a verified target at the same canonical address and a fresh host acknowledgement. Reviewer responses, direct assets and denials carry no-store.
+
+Account exit has an explicit reauthenticated withdrawal call and a trusted CLI proof of GET/HEAD denial for the database's known canonical, API and direct-media URLs. The resulting receipt is bound to the active exit request, current publication state and a 30-minute freshness window. Reviewer grant revocation is enforced in PostgreSQL. Receipt scope excludes third-party copies, external backups and retention guarantees. Run `scripts/verify-host-revocation.mjs --account-exit <request-id>` in the trusted operator environment only after enabling `KADMEION_ACCOUNT_EXIT_HOST_RECEIPTS_ENABLED` and setting the verified host and protected Supabase configuration.
+
+Signup confirmation resend uses the pinned Auth callback and the same verified-delivery feature gate as registration and password recovery. The private custom preview worker accepts constrained synchronous JavaScript with explicit strings in and typed text blocks out. It has no guest host functions or public serving permission. It does not run arbitrary JSX and has no deployed browser preview route.
+
+Deployable source migrations from `20261115130001` onward remain pending hosted authorization. Hosted acceptance still needs an approved public and reviewer host, real direct-media and rollback observations, email-domain verification and delivery, retention evidence, and full product and accessibility acceptance. Keep all production switches off pending scoped approval.
+
 ## B08 frozen image slots and private PostgreSQL persistence
 
 - GitHub PR #1 continues on `feat/b0-backend-foundation`. The B07 hosted baseline is 47 applied migration versions and three deployed Edge Functions. Migration `20261115130001_private_frozen_media_candidates.sql` is a forward-only source change that has not been applied to the hosted project.

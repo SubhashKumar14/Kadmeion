@@ -187,9 +187,21 @@ export class SupabasePrivateReleasePointerService {
   async requestUnlistedRollback(targetIntentId:string,currentIntentId:string,
     expectedGeneration:number,operationId:string,
     confirmation:'ROLL BACK UNLISTED'):Promise<UnlistedPublicationConsent>{
+    return this.requestRollback(targetIntentId,currentIntentId,expectedGeneration,operationId,
+      confirmation,'ROLL BACK UNLISTED');
+  }
+  async requestPublicRollback(targetIntentId:string,currentIntentId:string,
+    expectedGeneration:number,operationId:string,
+    confirmation:'ROLL BACK PUBLIC'):Promise<UnlistedPublicationConsent>{
+    return this.requestRollback(targetIntentId,currentIntentId,expectedGeneration,operationId,
+      confirmation,'ROLL BACK PUBLIC');
+  }
+  private async requestRollback(targetIntentId:string,currentIntentId:string,
+    expectedGeneration:number,operationId:string,confirmation:string,
+    expectedConfirmation:string):Promise<UnlistedPublicationConsent>{
     if(!uuid(targetIntentId)||!uuid(currentIntentId)||targetIntentId===currentIntentId||
        !generation(expectedGeneration)||expectedGeneration<1||!uuid(operationId)||
-       confirmation!=='ROLL BACK UNLISTED')
+       confirmation!==expectedConfirmation)
       throw new PrivatePointerError('VALIDATION','Explicit rollback confirmation is required.');
     const raw=await this.call('owner_request_unlisted_rollback',{
       p_target_intent_id:targetIntentId,p_current_intent_id:currentIntentId,

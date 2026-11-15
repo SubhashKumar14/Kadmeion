@@ -19,11 +19,11 @@ import {SupabasePrivateFrozenRevisionLoader}
   from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {SupabasePrivateReleasePointerService}
   from '../../packages/contracts/src/private-release-visibility-service.ts';
-import {createPrivateImmutableArtifact}
+import {createPrivateImmutableArtifact,createPrivateImmutableMediaCandidateFromFrozenSlots}
   from '../../packages/storage-adapters/src/private-immutable-artifact.ts';
 import {bindPrivateArtifactToPointer}
   from '../../packages/storage-adapters/src/private-artifact-pointer-binding.ts';
-import {DirectSqlPrivateArtifactBindingWriter}
+import {DirectSqlPrivateArtifactBindingWriter,storeAttestedFrozenMediaCandidate}
   from '../../packages/storage-adapters/src/private-artifact-direct-sql-writer.ts';
 import {openPrivateArtifactPgWorker}
   from '../../packages/storage-adapters/src/private-artifact-pg-worker.ts';
@@ -132,7 +132,9 @@ CREATE ROLE :"worker" LOGIN PASSWORD :'kd_bind_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 GRANT USAGE ON SCHEMA kadmeion_private TO :"worker";
 GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
-  uuid,bigint,text,text) TO :"worker";`,
+  uuid,bigint,text,text) TO :"worker";
+GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
+  uuid,bigint,text,bytea[]) TO :"worker";`,
       {vars:{worker:role},extraEnv:{KADMEION_LOCAL_BIND_PASSWORD:password}});
     created=true;
     // Real node-postgres connection: restricted role, bounded pool and probe.
@@ -529,6 +531,77 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     assert.match(await canonicalResponse.text(), /content="index,follow"/);
     assert.equal((await publicHostRead()).statusCode, 404);
     assert.equal((await fetch(canonical + '/assets/secret.png')).status, 404);
+    const updateSnapshot=structuredClone(snapshot);
+    updateSnapshot.slots.hero.content.title='Replacement verified content';
+    const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');
+    const assetId=randomUUID();
+    const sourceSha256=createHash('sha256').update(png).digest('hex');
+    updateSnapshot.slots.image={state:'S0',componentId:'image@1',
+      content:{asset_id:assetId,source_sha256:sourceSha256,alt_text:'Fixture image'}};
+
+    const replacementRevision=ok(await api('/rest/v1/rpc/commit_portfolio_revision',{
+      method:'POST',jwt:owner.jwt,body:{p_portfolio_id:portfolioId,p_operation_id:randomUUID(),
+        p_base_revision:committed.revision,p_snapshot:updateSnapshot}
+    }),'Commit replacement public content');
+    const replacementFrozen=ok(await api('/rest/v1/rpc/freeze_private_release_request',{
+      method:'POST',jwt:owner.jwt,body:{p_portfolio_id:portfolioId,p_operation_id:randomUUID(),
+        p_revision:replacementRevision.revision,p_visibility_intent:'PUBLIC'}
+    }),'Freeze replacement public content');
+    const frozenMedia={...await loader.load(replacementFrozen.requestId),plan:[...renderPlan,
+      {slotKey:'image',componentId:'image@1',kind:'image',required:true}]};
+    const reader={readFrozenPinnedImage:async pins=>({
+      ...pins,sourceSha256,mimeType:'image/png',storageVersion:'integration_fixture',bytes:png
+    })};
+    const secondPublicArtifact=await createPrivateImmutableMediaCandidateFromFrozenSlots(frozenMedia,reader);
+    const replacementPointer=await pointer.prepare(portfolioId,replacementFrozen.requestId,
+      secondPublicArtifact.manifestSha256,publicPointer.generation,randomUUID());
+    const mediaPort={async query(sql,[request,generation,manifest,files]){
+      assert.match(sql,/kadmeion_private\.store_frozen_media_candidate/);
+      assert.equal(files.length,2);
+      const value=dbQuery(String.raw`select kadmeion_private.store_frozen_media_candidate(
+        :'request'::uuid,:'generation'::bigint,:'manifest',
+        array[decode(:'html','hex'),decode(:'png','hex')]);`,
+      {user:role,password,vars:{request,generation,manifest,html:files[0].toString('hex'),png:files[1].toString('hex')}});
+      return {rows:[{receipt:JSON.parse(value)}]};
+    }};
+    const stagedMedia=await storeAttestedFrozenMediaCandidate(mediaPort,{
+      requestId:replacementFrozen.requestId,expectedGeneration:replacementPointer.generation,input:frozenMedia
+    },reader);
+    assert.equal(stagedMedia.status,'STORED_PRIVATE');
+    const imageHash=createHash('sha256').update(secondPublicArtifact.files[1].bytes).digest('hex');
+    const newGrant=ok(await api('/rest/v1/rpc/issue_private_reviewer_grant',{
+      method:'POST',jwt:owner.jwt,body:{p_request_id:replacementFrozen.requestId,
+        p_operation_id:randomUUID(),p_valid_minutes:60}
+    }),'Issue separate scoped media reviewer');
+    const mediaQuery='&manifest='+stagedMedia.manifestSha256+'&asset='+imageHash;
+    const reviewerImage='/api/reviewer?review='+newGrant.grantId+'.'+newGrant.rawToken+mediaQuery;
+    assert.equal((await serveReviewer('/r/'+newGrant.grantId+'.'+newGrant.rawToken,{})).statusCode,200);
+    const trustedImage=await serveReviewer(reviewerImage,{});
+    assert.equal(trustedImage.statusCode,200);
+    assert.deepEqual(trustedImage.body,Buffer.from(secondPublicArtifact.files[1].bytes));
+    ok(await api('/rest/v1/rpc/revoke_private_reviewer_grant',{
+      method:'POST',jwt:owner.jwt,body:{p_grant_id:newGrant.grantId}
+    }),'Revoke scoped media reviewer');
+    assert.equal((await serveReviewer(reviewerImage,{})).statusCode,404);
+    const replacementConsent=await pointer.requestPublicPublication(replacementFrozen.requestId,
+      replacementPointer.generation,randomUUID(),'PUBLISH PUBLIC');
+    assert.equal((await publishConsentedUnlistedRelease(replacementConsent.intentId,verificationPorts)).status,
+      'DELIVERY_ACKNOWLEDGED');
+    assert.match(await (await fetch(canonical)).text(),/Replacement verified content/);
+    const directImage=deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+slug+mediaQuery;
+    const publicImage=await fetch(directImage);
+    assert.equal(publicImage.status,200);
+    assert.deepEqual(Buffer.from(await publicImage.arrayBuffer()),Buffer.from(secondPublicArtifact.files[1].bytes));
+    await assert.rejects(outsiderPointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
+      replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC'),{code:'FORBIDDEN'});
+    const publicRollback=await pointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
+      replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC');
+    assert.equal((await publishConsentedUnlistedRelease(publicRollback.intentId,verificationPorts)).status,
+      'DELIVERY_ACKNOWLEDGED');
+    assert.match(await (await fetch(canonical)).text(),/Owner&#39;s checked artifact/);
+    for(const method of ['GET','HEAD'])
+      assert.equal((await fetch(directImage,{method})).status,404,'Rollback withdraws replaced media');
+    assert.equal((await publicHostRead()).statusCode,404,'Public rollback must keep the unlisted alias unavailable');
     const changeHandle=async(nextHandle)=>{
       ok(await api('/rest/v1/profiles?user_id=eq.' + owner.id, {
         method: 'PATCH', jwt: owner.jwt, body: {handle: nextHandle}
@@ -550,7 +623,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
 
     // New generation is never silently revived after Trash.
     const preparedAgain=await pointer.prepare(portfolioId,frozen.requestId,
-      artifact.manifestSha256,publicPointer.generation,randomUUID());
+      artifact.manifestSha256,replacementPointer.generation,randomUUID());
     assert.equal(preparedAgain.status,'PREPARED_PRIVATE');
     const moved=ok(await api('/rest/v1/rpc/trash_private_item',{
       method:'POST',jwt:owner.jwt,body:{p_item_type:'portfolio',p_item_id:portfolioId}}),
@@ -566,6 +639,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
     if(worker)await worker.close();
     if(created)dbQuery(String.raw`REVOKE EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(
   uuid,bigint,text,text) FROM :"worker";
+REVOKE EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
+  uuid,bigint,text,bytea[]) FROM :"worker";
 REVOKE USAGE ON SCHEMA kadmeion_private FROM :"worker";
 DROP ROLE :"worker";`,{vars:{worker:role}});
   }

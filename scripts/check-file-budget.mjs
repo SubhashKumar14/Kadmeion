@@ -24,7 +24,9 @@ const justifiedExtra = [
   'supabase/migrations/20261115130002_account_exit_storage_revocation_gate.sql',
   'supabase/migrations/20261115130003_frozen_media_delivery.sql',
   'supabase/migrations/20261115130004_account_exit_withdraw_owned_public_content.sql',
-  'supabase/migrations/20261115130005_account_exit_scoped_host_receipts.sql'
+  'supabase/migrations/20261115130005_account_exit_scoped_host_receipts.sql',
+  'packages/editor-core/src/isolated-owned-preview.ts',
+  'supabase/migrations/20261115130006_guarded_public_portfolio_rollback.sql'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;

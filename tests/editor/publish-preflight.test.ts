@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createPortfolioPresetDraft,prepareSafeStaticPreview,type SafePreviewInput} from '../../packages/editor-core/src/index.ts';
 
+import {evaluateOwnedPreview,evaluateOwnedSlotPreview} from '../../packages/editor-core/src/isolated-owned-preview.ts';
+
 const id='10000000-0000-4000-8000-000000000001',sha='a'.repeat(64);
 const fixture:SafePreviewInput={
   snapshot:{formatVersion:1,
@@ -248,4 +250,40 @@ test('preset page schemas read the actual saved assignments without duplicating 
   assert.equal(result.publicationReady,false);
   const unchecked=prepareSafeStaticPreview(edit({snapshot,plan:[{...plan[0],required:false},plan[1]]}));
   assert.ok(has(unchecked,'INVALID_TEMPLATE_GROUPING'));
+});
+
+
+test('a valid owned slot can produce typed private preview text while public output still rejects it',async()=>{
+  const snapshot=structuredClone(fixture.snapshot);
+  const sourcePath='slots/hero/index.tsx';
+  snapshot.files[sourcePath]='return [{kind:"heading",text:input.title+" <written>"}]';
+  snapshot.slots.hero={state:'S2',componentId:'title-stacked@1',sourcePath,
+    content:{title:'Owner'},originalSource:'return []'};
+  assert.deepEqual(await evaluateOwnedSlotPreview(snapshot,'hero'),{
+    status:'PREVIEW_ONLY',blocks:[{kind:'heading',text:'Owner <written>'}],publicServingAllowed:false
+  });
+  assert.equal(prepareSafeStaticPreview({...fixture,snapshot}).status,'BLOCKED');
+  assert.deepEqual(await evaluateOwnedSlotPreview(snapshot,'about'),{status:'REJECTED',reason:'INVALID_INPUT'});
+});
+
+test('the preview VM exposes no host capabilities and refuses active output',async()=>{
+  const readGlobal='return [{kind:"paragraph",text:[typeof fetch,typeof require,typeof process,'+
+    'typeof document,typeof WebSocket,typeof XMLHttpRequest,typeof std,typeof os].join(",")}]';
+  assert.deepEqual(await evaluateOwnedPreview(readGlobal,{}),{
+    status:'PREVIEW_ONLY',blocks:[{kind:'paragraph',text:Array(8).fill('undefined').join(',')}],
+    publicServingAllowed:false
+  });
+  for(const source of ['return [{kind:"html",text:"<script>"}]',
+    'return [{kind:"heading",text:"text",href:"https://example.com"}]',
+    'return [{kind:"paragraph",text:"x".repeat(10000)}]',
+    'return Promise.resolve([{kind:"heading",text:"async"}])']){
+    assert.deepEqual(await evaluateOwnedPreview(source,{}),{status:'REJECTED',reason:'INVALID_OUTPUT'});
+  }
+});
+
+test('infinite execution and memory growth terminate without corrupting later previews',async()=>{
+  for(const source of ['while(true){}','return new ArrayBuffer(16*1024*1024)']){
+    assert.deepEqual(await evaluateOwnedPreview(source,{}),{status:'REJECTED',reason:'SCRIPT_FAILED'});
+  }
+  assert.equal((await evaluateOwnedPreview('return [{kind:"heading",text:"ready"}]',{})).status,'PREVIEW_ONLY');
 });
