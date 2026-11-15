@@ -97,6 +97,27 @@ test('auth recovery and registration remain disabled until actual sender proof',
   expect(deliveryNotice!.y).toBeGreaterThanOrEqual(createButton!.y+createButton!.height);
 });
 
+test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
+  for (const route of ['/app', '/app/onboarding']) {
+    await page.goto(route);
+    await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');
+    await expect(page.getByRole('link',{name:/Go to sign in/})).toHaveAttribute('href','/signin');
+    await expect(page.getByRole('heading',{name:/Shape your portfolio/})).toHaveCount(0);
+    await expect(page.getByRole('group',{name:'Choose your next step'})).toHaveCount(0);
+    await page.getByRole('button',{name:'Retry verification'}).focus();
+    await expect(page.getByRole('button',{name:'Retry verification'})).toBeFocused();
+  }
+});
+
+test('private route denied on phone does not produce horizontal overflow', async ({ page }) => {
+  await page.setViewportSize({width:390,height:844});
+  await page.goto('/app/onboarding');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  const dimensions=await page.evaluate(()=>({viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
+  expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.viewport+2);
+});
+
 test('mobile public pages reflow without page-wide horizontal overflow', async ({ page }) => {
   await page.setViewportSize({width:390,height:844});
   for (const route of ['/','/explore','/templates']) {

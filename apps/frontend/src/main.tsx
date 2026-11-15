@@ -4,6 +4,7 @@ import { Landing } from './landing.tsx';
 import { TemplateExplorer } from './templates.tsx';
 import { ExplorePortfolios } from './explore.tsx';
 import { AuthApp, isAuthRoute } from './auth.tsx';
+import { WorkspaceApp, isWorkspaceRoute } from './workspace.tsx';
 import './styles.css';
 
 const mount = document.getElementById('root');
@@ -11,6 +12,7 @@ if (!mount) throw new Error('Kadmeion frontend root is missing.');
 const path = window.location.pathname.replace(/\/$/, '') || '/';
 const page = path === '/templates' ? <TemplateExplorer/> :
   path === '/explore' ? <ExplorePortfolios/> :
+  isWorkspaceRoute(path) ? <WorkspaceApp/> :
   isAuthRoute(path) ? <AuthApp/> :
   path === '/' ? <Landing/> :
   <main className="route-unavailable" id="main" role="main">

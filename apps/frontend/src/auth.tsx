@@ -125,7 +125,7 @@ export function AuthApp(){
   }
   async function signedIn(userEmail:string|null,kind:Outcome='session-verified'){
     setIdentity(userEmail);
-    result(kind,'An authenticated session was independently verified. The private workspace is not connected to this isolated frontend build yet.');
+    result(kind,'An authenticated session was independently verified. Open your private workspace to continue.');
   }
   useEffect(()=>{
     document.title='Kadmeion — '+({
@@ -303,6 +303,7 @@ export function AuthApp(){
             </h1>
             <p className="auth-description" role={error?'alert':undefined}>{notice||error||'Check your account details before continuing.'}</p>
             {identity&&<p className="auth-identity">Verified account email: {identity}</p>}
+            {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
             <button type="button" className="auth-submit" onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {identity&&auth&&<button type="button" className="auth-text-button" disabled={pending} onClick={()=>{
               setPending(true);

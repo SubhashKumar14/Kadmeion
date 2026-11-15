@@ -77,7 +77,10 @@ const justifiedExtra = [
   // F1 uses existing secure AuthService/SupabaseBrowserAuthPort in React,
   // preserving provider gates and no separate business auth backend.
   'apps/frontend/src/auth.tsx',
-  'apps/frontend/src/auth.css'
+  'apps/frontend/src/auth.css',
+  // WORK-01/WORK-02 owner-only guarded React shell; variance is NOT owner approval.
+  'apps/frontend/src/workspace.tsx',
+  'apps/frontend/src/workspace.css'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
