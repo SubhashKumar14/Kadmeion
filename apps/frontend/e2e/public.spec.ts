@@ -158,3 +158,25 @@ test('mobile public pages reflow without page-wide horizontal overflow', async (
     await expect(page.getByRole('navigation',{name:'Primary navigation'})).toBeVisible();
   }
 });
+
+test('SYS-01 fallback does not disclose private records and responds to offline changes', async ({ page }) => {
+  await page.goto('/private-or-expired-example');
+  await expect(page.getByRole('heading', { name: 'This page is unavailable.' })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('do not confirm whether a private record exists');
+  await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
+  const retry = page.getByRole('button', {name: 'Retry this address'});
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'onLine', {configurable: true, get: () => false});
+    window.dispatchEvent(new Event('offline'));
+  });
+  await expect(page.getByRole('heading', {name: 'Your browser reports no connection.'})).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'onLine', {configurable: true, get: () => true});
+    window.dispatchEvent(new Event('online'));
+  });
+  await expect(page.getByRole('heading', {name: 'This page is unavailable.'})).toBeVisible();
+  await page.getByRole('link', {name: 'Return to home'}).click();
+  await expect(page).toHaveURL('/');
+});
