@@ -31,7 +31,9 @@ const justifiedExtra = [
   // Account-erasure JWT truthfulness needs an independently replayable
   // forward-only migration and an explicit SQL authorization regression.
   'supabase/migrations/20261115133000_account_erasure_jwt_truthful_receipt.sql',
-  'supabase/tests/account-erasure-jwt-receipt.sql'
+  'supabase/tests/account-erasure-jwt-receipt.sql',
+  // Daily expiry requires a separately gated scheduler without a billable service.
+  '.github/workflows/trash-expiry.yml'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
