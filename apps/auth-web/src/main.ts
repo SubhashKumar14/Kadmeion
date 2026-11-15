@@ -67,11 +67,14 @@ function setupTheme(): void {
       button.setAttribute('aria-pressed', String(theme === 'dark'));
     }
   }
-  render(readStoredTheme(window.localStorage));
+  // Accessing the localStorage property itself can throw in sandboxed origins.
+  let storage: Storage | null = null;
+  try { storage = window.localStorage; } catch { /* volatile theme still works */ }
+  render(readStoredTheme(storage));
   button?.addEventListener('click', () => {
     const theme = nextTheme(root.dataset.theme);
     render(theme);
-    writeStoredTheme(window.localStorage, theme);
+    writeStoredTheme(storage, theme);
   });
 }
 function clearPasswordBuffers(): void {
