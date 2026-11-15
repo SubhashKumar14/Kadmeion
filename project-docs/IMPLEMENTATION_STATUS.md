@@ -1,3 +1,12 @@
+# B08 byte-boundary continuation — 15 November 2026
+
+- [`eba9e00`](https://github.com/SubhashKumar14/Kadmeion/commit/eba9e002e813f6c40d4bd7605f0ed143ca59663b): host-neutral private immutable-blob verifier with first pointer read, cryptographic integrity and second pointer read, never a public grant.
+- [`89dff68`](https://github.com/SubhashKumar14/Kadmeion/commit/89dff68ef39045244c41fc8833ac0d16bc2e255f): expose trusted generation token and reject ABA same-hash release swaps between storage fetch and response inspection. [CI 43689978548](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43689978548) **green**, 416 Node tests passing, database test job passed.
+- Hosted Supabase: 14 migrations installed, zero Edge Functions. Public host and direct media serving still disabled. D10, D20 and D42 remain unproven for live delivery.
+- Rollout boundary: no hosted mutations, production feature activation or `main` promotion.
+
+---
+
 # Implementation progress — 15 November 2026 B08/B09 continuation
 
 - `e60b00d`, `3c3d07b`, `fa3a3af`, `8017c96`, `ff05bad`, `46356a0`: Introduced and corrected private frozen HTML plus sanitized media composition. Several earlier intermediate commits failed CI due a malformed UUID regex; `46356a0` fixes that with a regression test.

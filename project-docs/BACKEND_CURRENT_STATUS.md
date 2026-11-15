@@ -1,5 +1,16 @@
 # Kadmeion — Current Backend Implementation State
 
+## B08 immutable-delivery byte verification — 15 November 2026
+
+- **Latest source commit:** `89dff68ef39045244c41fc8833ac0d16bc2e255f` on `feat/b0-backend-foundation`.
+- **Verified CI:** [run 43689978548](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43689978548), both contracts and database jobs **PASS**, **416/416 Node tests** passing.
+- **Implemented code:** `packages/storage-adapters/src/public-delivery-policy.ts` now offers `PrivateVerifiedReleaseByteGate.inspect()`, a host-neutral **non-deployable** verifier for `index.html` and content-addressed `.png` objects. For each request, it validates a fresh authoritative visibility pointer, reads bounded immutable bytes, verifies SHA-256 against the allowlisted release manifest, and re-reads the pointer after the storage operation. It also rejects generation changes even if release bytes/hashes are identical (ABA republish).
+- **Security tests:** `tests/editor/public-delivery-policy.test.ts` covers authorized reads, failed/oversized/wrong bytes, incorrect MIME/path, invalid requests, provider failure, revocation/moderation during blob reads, digest changes and identical-byte generation changes.
+- **Important limit:** This only returns a **private verified-byte candidate** with `servingAllowed:false`, `publicUrl:null`, `hostRevocationVerified:false`. It does NOT implement a public host, proof of globally complete cache invalidation, public asset serving authorization or full publication. A host-scope independent final response/revocation gate remains mandatory before exposing routes. Do not deploy public assets on this evidence.
+- **Hosted read-only inventory:** Supabase project `scyooqjitjzjdxgtanso` still had only 14 migrations applied and zero Edge Functions deployed when inspected in this continuation. The rest remain pending approval. Security advisors show 5 authenticated SECURITY DEFINER alerts requiring independent security review (some may be intentional owner RPCs), an info-level RLS-without-policy finding in the restricted operator schema, and a leaked-password-protection warning. No setting was changed.
+- **Scope:** 90 approved decisions still not individually accepted; no new authored source files and no paid dependencies. Phase 1 backend, B07–B11, hosted acceptance and `main` merge remain incomplete.
+
+
 ## Latest backend continuation — 15 November 2026 (B08/B09)
 
 **Feature branch:** `feat/b0-backend-foundation`. Source checkpoint before this documentation update: `9a5066e4d784df6791a68558eb2c94a6983158f8`. **Do not describe B07–B11 or Phase 1 as 100% implemented.**
