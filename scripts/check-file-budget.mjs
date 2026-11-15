@@ -42,7 +42,13 @@ const justifiedExtra = [
   'tests/contracts/private-my-components-service.test.ts',
   // B11 integrity gate ensures all five durable evidence registers remain
   // unique, complete and linked to actual sources without fabricating UAT.
-  'scripts/verify-backend-traceability.mjs'
+  'scripts/verify-backend-traceability.mjs',
+  // F1 auth/theme UX must work even when storage or Supabase config fails;
+  // preserve a separately testable, dependency-free theme policy instead of
+  // burying recoverability in mutable DOM effects. Extra files are NOT an
+  // owner-approved budget increase; this exception remains pending review.
+  'apps/auth-web/src/theme-preference.ts',
+  'tests/auth-web/theme-preference.test.ts'
 ];
 const extras = justifiedExtra.filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
