@@ -178,3 +178,23 @@ test('B10 password sign-in refuses concurrent account switch or mismatched provi
     emailDeliveryVerified:false,googleOAuthConfigured:false});
   assert.deepEqual(await service.login('dev@example.com','password'),{id:'verified-owner'});
 });
+
+test('B10 immediate registration session must be verified for the same user',async()=>{
+  const options={siteOrigin:'https://app.example',emailDeliveryVerified:true,googleOAuthConfigured:false};
+  const signup={email:'dev@example.com',password:'strong-password',
+    displayName:'Developer',handle:'developer'};
+  const port=mockPort();
+  port.signUp=async()=>({data:{user:{id:'new-owner'},
+    session:{access_token:'signup-token',user:{id:'new-owner'}}},error:null});
+  port.getUser=async()=>({data:{user:{id:'new-owner'}},error:null});
+  const service=new AuthService(port,options);
+  assert.deepEqual(await service.register(signup),{status:'signed_in',handleCandidate:'developer'});
+  port.getUser=async()=>({data:{user:{id:'other-owner'}},error:null});
+  await assert.rejects(service.register(signup),{code:'AUTH_EXPIRED'});
+  port.signUp=async()=>({data:{user:{id:'new-owner'},
+    session:{access_token:'signup-token',user:{id:'other-owner'}}},error:null});
+  await assert.rejects(service.register(signup),{code:'AUTH_EXPIRED'});
+  port.signUp=async()=>({data:{user:{id:'new-owner'},
+    session:{access_token:'',user:{id:'new-owner'}}},error:null});
+  await assert.rejects(service.register(signup),{code:'AUTH_EXPIRED'});
+});
