@@ -1,3 +1,5 @@
+> R1 local-stack integration extension: `tests/integration/local-postgres-binding.test.mjs` now checks direct reviewer PNG GET/HEAD before and after revocation and expiry, current manifest access, stale manifest denial and existing rollback revocation. Expiry uses an isolated SQL fixture. Local `node --check` passed. Check the draft PR's same-head database run for executable proof; hosted CDN/public authorization remains separate.
+
 > CI correction on 16 November 2026: [Application and Database CI #815](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43760849993) rejected an inadvertently renamed ZIP verification status in the 52-screen CSV. Restored the existing schema value and reran both structural traceability and the verifier against the 52 original PNG bytes. Both passed locally. See [draft PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3) for the corrected head and its own CI.
 
 ## 16 November 2026 — Delivery, password-change isolation and current screen evidence
