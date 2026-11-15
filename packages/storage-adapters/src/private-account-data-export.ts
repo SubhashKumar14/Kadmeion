@@ -25,6 +25,29 @@ const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
 type JsonObject=Record<string,unknown>;
 const object=(v:unknown):v is JsonObject=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const isUuid=(v:unknown):v is string=>typeof v==='string'&&UUID.test(v);
+// Audit projections are privileged server responses, not general user-authored
+// content. Reject secrets even when a provider accidentally nests them in a
+// JSON payload. Never scan project/source files: author data must be preserved.
+const PRIVATE_AUDIT_FIELD=/^(?:token_sha256|rawToken|access_token|refresh_token|initial_session_id|verified_session_id|session_id|authorization|cookie|password|client_secret|recovery_token)$/i;
+function safeRestrictedAudit(value:unknown):boolean {
+  const pending=[value];let visited=0;
+  while(pending.length){
+    if(++visited>10000)return false;
+    const node=pending.pop();
+    if(Array.isArray(node)){
+      if(node.length>MAX_ROWS)return false;
+      pending.push(...node);
+    }else if(object(node)){
+      const entries=Object.entries(node);
+      if(entries.length>200)return false;
+      for(const [key,child] of entries){
+        if(PRIVATE_AUDIT_FIELD.test(key))return false;
+        if(object(child)||Array.isArray(child))pending.push(child);
+      }
+    }
+  }
+  return true;
+}
 export class PrivateAccountExportError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'PROVIDER_UNAVAILABLE'|
     'INTEGRITY'|'LIMIT_EXCEEDED'|'UNVERIFIED';
@@ -231,13 +254,9 @@ export class SupabasePrivateAccountDataExporter {
         ((raw.categories as JsonObject)[key] as unknown[]).length<=100),
       'UNVERIFIED','Restricted audit export receipt is incomplete or foreign.');
     const data=raw.categories as JsonObject;
-    for(const name of categories)for(const entry of data[name] as unknown[]){
-      requireCondition(object(entry)&&
-        !Object.keys(entry).some(key=>[
-          'token_sha256','rawToken','refresh_token','access_token',
-          'initial_session_id','verified_session_id'
-        ].includes(key)),'INTEGRITY','Restricted audit data contained forbidden credentials.');
-    }
+    for(const name of categories)for(const entry of data[name] as unknown[])
+      requireCondition(object(entry)&&safeRestrictedAudit(entry),'INTEGRITY',
+        'Restricted audit data contained forbidden credentials.');
     return data;
   }
   private async rows(table:typeof TABLES[number][0],column:string,ownerId:string,projection='*'):
@@ -288,8 +307,7 @@ export class SupabasePrivateAccountDataExporter {
     }
     for(const rows of Object.values(envelope.restrictedAudit)){
       requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&
-        rows.every(row=>object(row)&&!Object.keys(row).some(key=>
-          /(?:session_id|access_token|refresh_token|token_sha256|rawToken)/i.test(key))),
+        rows.every(row=>object(row)&&safeRestrictedAudit(row)),
       'INTEGRITY','Application metadata contains invalid restricted audit records.');
     }
     await sameSession();
@@ -471,15 +489,13 @@ export async function verifyBoundedPrivateAccountExport(
   requireCondition(Object.keys(audit).sort().join(',')===
     [...categories].sort().join(','),'INTEGRITY',
     'Private audit categories are missing or unexpected.');
-  const credentials=new Set(['token_sha256','rawToken','refresh_token',
-    'access_token','initial_session_id','verified_session_id']);
+
   for(const category of categories){
     const entries=audit[category];
     requireCondition(Array.isArray(entries)&&entries.length<=MAX_ROWS,
       'INTEGRITY','Partial audit category is invalid.');
     for(const entry of entries)
-      requireCondition(object(entry)&&
-        !Object.keys(entry).some(key=>credentials.has(key)),
+      requireCondition(object(entry)&&safeRestrictedAudit(entry),
         'INTEGRITY','Private audit contains an excluded secret field.');
   }
   const limitations=raw.limitations as JsonObject;
