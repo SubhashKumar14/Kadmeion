@@ -660,7 +660,11 @@ function atomicMetadata():Record<string,unknown>{
     ownerUserId:owner,capturedAt:'2026-11-15T10:20:00.000Z',
     storageBytesIncluded:false,providerDataIncluded:false,deletionAllowed:false,
     records:Object.fromEntries(ATOMIC_TABLE_NAMES.map(name=>[name,baseRows[name]??[]])),
-    restrictedAudit:{reviewerGrants:[{grant_id:'author-owned',activity:{event:'created'}}]},
+    restrictedAudit:{
+      reviewerGrants:[{grant_id:'author-owned',activity:{event:'created'}}],
+      moderationCases:[],moderationEvents:[],accountExitRequests:[],
+      reauthChallenges:[],inventorySnapshots:[],releasePointers:[],releaseEvents:[]
+    },
     verifiedReleaseHistory:[{
       intent_id:'10000000-0000-4000-8000-000000000010',
       portfolio_id:'10000000-0000-4000-8000-000000000011',
@@ -701,6 +705,9 @@ test('B09 atomic metadata export rejects foreign owners, missing records and hid
     (v:any)=>{delete v.records.projects;},
     (v:any)=>{v.records.projects[0].owner_user_id=stranger;},
     (v:any)=>{v.verifiedReleaseHistory[0].html_sha256='invalid';},
+    (v:any)=>{delete v.restrictedAudit.moderationEvents;},
+    (v:any)=>{v.restrictedAudit.unapprovedCategory=[];},
+    (v:any)=>{v.verifiedReleaseHistory[0].payload={credentials:{client_secret:'unsafe'}};},
     (v:any)=>{v.restrictedAudit.reviewerGrants[0].activity.credentials={
       refresh_token:'should-never-leave-server'};},
     (v:any)=>{v.restrictedAudit.reviewerGrants[0].activity.list=[
