@@ -17,11 +17,11 @@
 
 ## Outstanding proof is not B07 migration deployment
 
-- Remote no-credentials HTTP smoke: added to CI, ensure exact-head pass before relying on HTTP denial. No user token/secret permitted in test.
+- **Live hosted negative HTTP smoke: PASSED** on [CI 43695497839](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43695497839) at [commit 168ec73](https://github.com/SubhashKumar14/Kadmeion/commit/168ec73ed6dc2492c3811fd4b39945370094e0e7): no-JWT `publish` POST → **401**, no-JWT `complete-private-asset` POST → **401**, disabled `purge-expired-trash` GET → **405**, unauthenticated POST → **404**. The HTTP checks sent no credentials or user data and made no destructive changes. 426/426 Node tests and database job both passed.
 - Supabase Security Advisors: 40 authenticated-callable SECURITY DEFINER warnings require owner-predicate and ACL review, 14 INFO RLS-no-policy warnings correspond to service-only tables, and one leaked-password-protection warning is still pending Auth controls.
 - B08 external HTML/asset host activation, route/direct-asset cache invalidation, public delivery and privacy evidence **NOT PROVEN**.
 - B09 cross-provider erasure, backup retention, public-release host revocation proof **NOT PROVEN**.
 - B10 authenticated Brevo sending domains and real password-reset email delivery **NOT PROVEN**.
 - B11 production UAT, 90 product decisions, 20 technical gates and approval-controlled public go-live **NOT COMPLETE**.
 
-**Status declaration:** B07 source/database migrations and Edge-function deployment complete; no unrelated production feature or paid service activation implied. Source is still on the backend feature branch, not merged into `main`.
+**B07 final status: COMPLETE — hosted foundation deployment plus negative HTTP verification.** B08–B11 independent production gates remain open. Supabase organization verified **Free**; no new project, paid plan, or deployment branch was created. No unrelated production feature or paid service activation implied. Source is still on the backend feature branch, not merged into `main`.

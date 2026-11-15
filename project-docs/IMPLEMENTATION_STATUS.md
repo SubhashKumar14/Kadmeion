@@ -1,5 +1,7 @@
 # B07 hosted Supabase rollout — 15 November 2026
 
+**Status: B07 DEPLOYMENT COMPLETE**, including live no-credential HTTP proof. [Final B07 CI 43695497839](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43695497839): contracts 426/426 and database job PASS; hosted 401/401/405/404 deny-by-default probes PASS. No hosted feature flags or billable resources enabled.
+
 - Applied 33 source-specified migrations from `20261113163000` through `20261115130000` in order. All 47 hosted migrations now have their original source versions and names. No data/table reset or existing-account deletion. Hosted schema verified against repository list.
 - Deployed `publish`, `complete-private-asset` (both require JWT), and `purge-expired-trash` (JWT gateway disabled, but secret/feature gate remains disabled). All three listed ACTIVE v1. Conditional `Deno.serve` entrypoints fixed in [`d93df80`](https://github.com/SubhashKumar14/Kadmeion/commit/d93df80d527078fe208222c078bfb08161be5b4c); [isolated CI passed](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43694908230).
 - Public, unauthenticated and direct-asset-host operations remain gated, and host/erasure/email provider proofs are B08–B11. `B07_HOSTED_DEPLOYMENT_EVIDENCE.md` documents the rollout and outstanding controls.
