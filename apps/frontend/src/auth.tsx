@@ -373,6 +373,17 @@ export function AuthApp(){
               </aside>}
             {identity&&<p className="auth-identity">Signed in as {identity}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
+            {outcome==='registered'&&auth?.emailAvailable&&<button type="button" className="auth-text-button" disabled={pending}
+              onClick={()=>{
+                if(pending)return;
+                setPending(true);setError('');setNotice('');
+                void auth.service.resendSignupConfirmation(email)
+                  .then(()=>setNotice('If confirmation is required, the provider accepted another request. Email delivery is not confirmed.'))
+                  .catch(reason=>setError(readError(reason)))
+                  .finally(()=>setPending(false));
+              }}>{pending?'Requesting…':'Request another confirmation link'}</button>}
+            {outcome==='registered'&&!auth?.emailAvailable&&
+              <p className="auth-field-hint">Confirmation delivery is not verified in this environment. This page cannot resend a link until email delivery is configured.</p>}
             <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {(outcome === 'email-requested' || (error && !identity)) &&
               <button type="button" className="auth-text-button" disabled={pending}
