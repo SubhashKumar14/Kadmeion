@@ -81,10 +81,10 @@
 .auth-story-signature{display:grid;justify-items:start;gap:4px}
 .auth-story-signature .brand-mark{--brand-symbol-size:45px;--brand-letters-width:132px;--brand-foreground:#f7f5ef}
 .auth-story-signature .auth-brand-role{padding-inline-start:53px;font-size:8px;color:#c9d6dc}
-.auth-story-message{margin-block-start:clamp(55px,14dvh,145px);max-width:400px}
+.auth-story-message{margin-block-start:clamp(55px,14dvh,145px);max-width:490px}
 .auth-story-tagline{color:#f2af87;font-size:10px;letter-spacing:.18em;font-weight:700}
 .auth-story-title{font-family:Georgia,serif;font-size:clamp(32px,3.3vw,49px);line-height:1.08;margin:16px 0}
-.auth-story-title em{color:#f2af87}
+.auth-story-title em{display:block;color:#f2af87}
 .auth-story-copy{color:#cbdae3;font-size:14px;line-height:1.65;max-width:32ch}
 .auth-brand-rings{position:absolute;inset:0;background-image:linear-gradient(90deg,#c5d8f11a 1px,transparent 1px);
   background-size:120px 100%;opacity:.85}
@@ -92,7 +92,7 @@
   border:1px solid #9bbbd928;transform:rotate(-25deg)}
 .auth-brand-rings::after{content:"";position:absolute;bottom:-260px;left:-50%;width:760px;height:620px;border:1px solid #e5a17b75;
   border-radius:50%;transform:rotate(-27deg)}
-.auth-brand-rings span:first-child{position:absolute;left:-30%;bottom:-5%;width:90%;height:19%;
+.auth-brand-rings span:first-child{position:absolute;left:-30%;bottom:-9%;width:85%;height:15%;
   transform:rotate(-45deg);background:#3979b4b3}
 .auth-brand-rings span:nth-child(2){position:absolute;right:-8%;bottom:-50px;width:300px;height:300px;
   border:1px solid #b3d5ed85;border-radius:50%}

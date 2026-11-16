@@ -227,8 +227,10 @@ test('F1 skip links focus the content and auth reflows with reduced motion', asy
     ['/signin', '#auth-main'], ['/signup', '#auth-main'], ['/forgot-password', '#auth-main'],
   ]) {
     await page.goto(route!);
+    const skip = page.getByRole('link', { name: /^Skip to / });
+    await expect(skip).toBeAttached();
     await page.keyboard.press('Tab');
-    await expect(page.getByRole('link', { name: /^Skip to / })).toBeFocused();
+    await expect(skip).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page.locator(target!)).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth), route).toBeLessThanOrEqual(392);
