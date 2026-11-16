@@ -373,8 +373,15 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Source digest</dt><dd><code>{frozen.snapshotSha256.slice(0,16)}…</code></dd>
               <dt>Public URL</dt><dd>Not issued</dd>
             </dl>
-            {mode==='staging' && !grant && <button type="button" className="ws-secondary" disabled={busy}
-              onClick={()=>{setFrozen(null);setResult(null);operation.current=null;}}>Choose another revision or intent</button>}
+            {(mode==='staging'||mode==='publish') && (!grant||grant.status==='REVOKED') &&
+              <button type="button" className="ws-secondary" disabled={busy}
+                onClick={()=>{
+                  // A private preflight may examine another saved revision without
+                  // reusing an old immutable freeze/digest or its idempotency key.
+                  // Revoked grants stay revoked in the stored grant history.
+                  setFrozen(null);setResult(null);setGrant(null);setConfirmRevoke(false);
+                  operation.current=null;grantOperation.current=null;
+                }}>Choose another saved revision or visibility intent</button>}
           </div>}
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
             onSelect={!busy?selectFrozenRequest:undefined} activeRequestId={frozen?.requestId} />
