@@ -44,7 +44,7 @@ export function releaseRoute(path:string):{id:string;mode:ReleaseMode}|undefined
 }
 
 export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id:string;mode:ReleaseMode}) {
-  const [record,setRecord]=useState<OwnerPortfolio|null>(null);
+  const [record,setRecord]=useState<(OwnerPortfolio & {snapshot:PortfolioSnapshot|null})|null>(null);
   const [revisions,setRevisions]=useState<SavedOwnerRevision[]|null>(null);
   const [frozenRequests,setFrozenRequests]=useState<OwnerFrozenRequest[]|null>(null);
   const [frozenListError,setFrozenListError]=useState('');
