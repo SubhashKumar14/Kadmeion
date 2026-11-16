@@ -14,6 +14,48 @@ import {bindPrivateArtifactToPointer, type PrivateBindingContext}
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA=/^[0-9a-f]{64}$/;
 const rec=(v:unknown):v is Record<string,unknown>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+const MAX_STAGE_RECEIPT_BYTES=8192;
+
+/** A storage acknowledgement is small metadata, never a media/source payload.
+ * Bound even a streaming HTTP 200 body before parsing or accepting it. */
+async function readBoundedStageReceipt(response:Response):Promise<unknown>{
+  if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(
+      response.headers.get('content-type')??''))
+    throw new PrivateReviewerStagingError('INVALID_ACK');
+  const claimed=response.headers.get('content-length');
+  if(claimed!==null&&(!/^\d+$/.test(claimed)||Number(claimed)>MAX_STAGE_RECEIPT_BYTES))
+    throw new PrivateReviewerStagingError('INVALID_ACK');
+  if(!response.body)throw new PrivateReviewerStagingError('INVALID_ACK');
+  const reader=response.body.getReader();
+  const chunks:Uint8Array[]=[];
+  let size=0;
+  try{
+    for(;;){
+      const part=await reader.read();
+      if(part.done)break;
+      if(!(part.value instanceof Uint8Array)||size+part.value.byteLength>MAX_STAGE_RECEIPT_BYTES)
+        throw new PrivateReviewerStagingError('INVALID_ACK');
+      size+=part.value.byteLength;
+      chunks.push(part.value);
+    }
+  }catch(error){
+    if(error instanceof PrivateReviewerStagingError)throw error;
+    // An interrupted successful HTTP response is not a confirmed store.
+    throw new PrivateReviewerStagingError('UNCONFIRMED');
+  }finally{
+    await reader.cancel().catch(()=>{});
+    reader.releaseLock();
+  }
+  const encoding=response.headers.get('content-encoding');
+  if(size===0||(claimed!==null&&(!encoding||encoding.toLowerCase()==='identity')&&
+      Number(claimed)!==size))
+    throw new PrivateReviewerStagingError('INVALID_ACK');
+  const bytes=new Uint8Array(size);
+  let offset=0;
+  for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+  try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+  catch{throw new PrivateReviewerStagingError('INVALID_ACK');}
+}
 export class PrivateReviewerStagingError extends Error {
   readonly code:'INVALID_INPUT'|'INTEGRITY'|'UNCONFIRMED'|'INVALID_ACK';
   constructor(code:PrivateReviewerStagingError['code']){
@@ -79,9 +121,11 @@ export class SupabaseTrustedReviewerStageWriter implements TrustedReviewerStageW
         signal:AbortSignal.timeout(10000)
       });
     }catch{throw new PrivateReviewerStagingError('UNCONFIRMED');}
-    if(!response.ok)throw new PrivateReviewerStagingError('UNCONFIRMED');
-    try{return await response.json();}
-    catch{throw new PrivateReviewerStagingError('INVALID_ACK');}
+    if(!response.ok){
+      await response.body?.cancel().catch(()=>{});
+      throw new PrivateReviewerStagingError('UNCONFIRMED');
+    }
+    return readBoundedStageReceipt(response);
   }
 }
 /**
