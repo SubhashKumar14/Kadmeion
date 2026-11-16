@@ -315,6 +315,11 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   function cancelHistoricalSelection(){
     historySelectionEpoch.current+=1;
     setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
+    // Returning to the saved draft requires an explicit, listed selection;
+    // do not leave an older absent-in-list revision silently selected.
+    setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
+      ? record!.revision : null);
+    operation.current=null;
     setError('');setNotice('');
   }
   const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=Date.now();
@@ -473,6 +478,8 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   historySelectionEpoch.current+=1;
                   setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
                   setFrozen(null);setResult(null);setGrant(null);setConfirmRevoke(false);
+                  setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
+                    ? record!.revision : null);
                   operation.current=null;grantOperation.current=null;
                 }}>Choose another saved revision or visibility intent</button>}
           </div>}
