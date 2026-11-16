@@ -1232,3 +1232,21 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .ws-settings-page .ws-settings-hub .ws-setting-card{padding:16px}
   .ws-settings-page .ws-settings-hub-links li{gap:8px}
 }
+
+/* SET-02: actual owner preference matrix beside truthful per-surface boundaries.
+ * This view is not a hosted visitor preview and never implies public exposure. */
+.ws-settings-privacy{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);
+  align-items:start;gap:clamp(14px,2vw,22px)}
+.ws-settings-privacy .ws-setting-card{min-width:0}
+.ws-settings-selection-count{padding:11px 0;margin:14px 0 8px;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:.87rem}
+.ws-settings-selection-count strong{color:var(--ink)}
+.ws-settings-visibility-list{list-style:none;margin:12px 0 0;padding:0}
+.ws-settings-visibility-list li{padding:12px 0;border-top:1px solid var(--line)}
+.ws-settings-visibility-list li strong{font-size:.95rem}
+.ws-settings-visibility-list li p{font-size:.84rem;line-height:1.5;margin:5px 0}
+.ws-settings-visibility-list li a{display:inline-flex;align-items:center;min-height:40px;
+  font-size:.84rem;text-decoration:underline;text-underline-offset:3px}
+.ws-settings-privacy-note{grid-column:1/-1;border-top:1px solid var(--line);
+  padding:14px 0;font-size:.85rem;line-height:1.6;color:var(--body)}
+@media(max-width:850px){.ws-settings-privacy{grid-template-columns:1fr}}

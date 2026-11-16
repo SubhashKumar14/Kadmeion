@@ -68,6 +68,9 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
       case '/app/settings/privacy':
         await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeVisible();
         await expect(page.getByText('Loading sharing preferences…')).toHaveCount(0);
+        await expect(page.getByRole('heading',{name:'Privacy boundaries'})).toBeVisible();
+        await expect(page.getByRole('link',{name:'Review private portfolios'}))
+          .toHaveAttribute('href','/app/portfolios');
         break;
       case '/app/notifications':
         await expect(page.getByRole('heading',{name:'Inbox'})).toBeVisible();

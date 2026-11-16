@@ -146,34 +146,55 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
     finally {setBusy(false);}
   }
 
-  return <SettingsCard title="Profile visibility">
-    <p>Choose eligible fields. Activating public delivery requires a separate publication action.</p>
-    <Status message={message}/>
-    {!prefs && !message && <p role="status">Loading sharing preferences…</p>}
-    {!prefs && message?.error && <button type="button" className="ws-secondary"
-      onClick={() => setReload(value => value + 1)}>Retry sharing preferences</button>}
-    {prefs && <form onSubmit={event => void save(event)}>
-      <fieldset disabled={busy}>
-        <legend>Shareable profile fields</legend>
-        {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
-          <input type="checkbox" checked={prefs[key]} onChange={event => {
-            const next = {...prefs, [key]: event.target.checked};
-            if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
-            setPrefs(next); setConfirmed(false);
-          }}/>{label}
-        </label>)}
-        <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
-          disabled={!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio}
-          onChange={event => {setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
-          Allow a later publication request
-        </label>
-        <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
-          Save these preferences and withdraw any affected public profile projection
-        </label>
-      </fieldset>
-      <button type="submit" className="ws-primary" disabled={!confirmed || busy}>{busy ? 'Saving…' : 'Save sharing preferences'}</button>
-    </form>}
-  </SettingsCard>;
+  const selected=prefs?fields.filter(([key])=>prefs[key]).length:null;
+  return <div className="ws-settings-privacy">
+    <SettingsCard title="Profile visibility">
+      <p>Select fields eligible for a later publication request. Saving these choices does not make a profile or portfolio public.</p>
+      <Status message={message}/>
+      {!prefs && !message && <p role="status">Loading sharing preferences…</p>}
+      {!prefs && message?.error && <button type="button" className="ws-secondary"
+        onClick={() => setReload(value => value + 1)}>Retry sharing preferences</button>}
+      {prefs && <form onSubmit={event => void save(event)}>
+        <p className="ws-settings-selection-count"><strong>{selected} of {fields.length}</strong> profile fields selected in this form.
+          Selection is not publication.</p>
+        <fieldset disabled={busy}>
+          <legend>Shareable profile fields</legend>
+          {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
+            <input type="checkbox" checked={prefs[key]} onChange={event => {
+              const next = {...prefs, [key]: event.target.checked};
+              if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
+              setPrefs(next); setConfirmed(false);
+            }}/>{label}
+          </label>)}
+          <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
+            disabled={!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio}
+            onChange={event => {setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+            Allow a later publication request
+          </label>
+          <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
+            Save these preferences and withdraw any affected public profile projection
+          </label>
+        </fieldset>
+        <button type="submit" className="ws-primary" disabled={!confirmed || busy}>{busy ? 'Saving…' : 'Save sharing preferences'}</button>
+      </form>}
+    </SettingsCard>
+    <SettingsCard title="Privacy boundaries">
+      <p>Profile preferences are only one part of visitor visibility. Review each surface at its authoritative workspace route.</p>
+      <ul className="ws-settings-visibility-list">
+        <li><strong>Developer profile</strong><p>Only explicitly eligible fields can be considered for a later public identity projection.</p>
+          <a href="/app/profile">Review private profile</a></li>
+        <li><strong>Projects and portfolios</strong><p>Drafts stay owner-private. A separate frozen release, consent and verified host determine any visitor delivery.</p>
+          <a href="/app/portfolios">Review private portfolios</a></li>
+        <li><strong>Platform connections</strong><p>Stored profile handles are private links, not provider-verified activity or synchronization.</p>
+          <a href="/app/integrations">Review private connections</a></li>
+        <li><strong>Visitor analytics</strong><p>No visitor measurements are inferred from these checkboxes. Analytics has a separate opt-in gate.</p>
+          <a href="/app/analytics">Review analytics availability</a></li>
+      </ul>
+    </SettingsCard>
+    <p className="ws-settings-privacy-note">Publication safeguards: owner-private projects,
+      unpublished revisions, connection records and provider data never become visitor-visible
+      merely because a profile field is selected. Preview and live delivery require separate verification.</p>
+  </div>;
 }
 
 function Notifications({service}: {service: Services['notifications']}) {
