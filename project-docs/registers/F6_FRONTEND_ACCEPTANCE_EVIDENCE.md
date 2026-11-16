@@ -1,0 +1,67 @@
+# F6 frontend acceptance evidence
+
+The [approved LIGHT register](APPROVED_LIGHT_52_SCREENS_2026-11-15.csv) carries the original PNG name and application source for each screen. The [F0 matrix](F0_SCREEN_SOURCE_MATRIX_2026-11-16.md) links the actor, approved action and brand use. All 52 local PNG SHA-256 prefixes were verified on 16 November 2026.
+
+The browser column records scenario coverage. A contact-sheet comparison paired all 52 reference PNGs with one capture per screen from source commit `6a05f5e`. The reviewer and public delivery routes show guarded unavailable states. A first-pass comparison does not substitute for full-size manual review. Consult the [implementation handoff](../NEXT_SESSION_HANDOFF.md) for the exact source commit and run verdicts. Standard F6 review remains open for each screen and includes a current approved-reference comparison, keyboard and screen-reader review, contrast, zoom/reflow and owner acceptance. Public delivery and deliberately gated provider features require their listed proofs.
+
+- **Public** · [Public and signed-out Chromium scenarios](../../apps/frontend/e2e/public.spec.ts).
+- **Auth, Owner, Growth, Operations** · [Isolated GoTrue/Mailpit, owner, growth and restricted-operator Chromium scenarios](../../apps/frontend/e2e/owner.spec.ts).
+- **Settings** · [Settings reflow, notification persistence and account protection](../../apps/frontend/e2e/settings-owner.spec.ts).
+
+| # | Spec | Route or surface | Approved LIGHT SHA-256 prefix | Browser scenario coverage | Additional acceptance pending |
+|---|---|---|---|---|---|
+| 01 | [PUB-01](../docs/02_design/screens/pub_01_landing.md) | / | `6e57c3ed2d50ed6c` | Public · Owner section order, carousel/FAQ, keyboard skip, reflow | Standard F6 review |
+| 02 | [PUB-02](../docs/02_design/screens/pub_02_explore_portfolios.md) | /explore | `14c73c17b97a4114` | Public · Search and filter controlled examples | Live visitor discovery |
+| 03 | [PUB-03](../docs/02_design/screens/pub_03_public_template_explorer.md) | /templates | `96ac083681d9208c` | Public · Template filters, preview dialog, Escape/focus | Standard F6 review |
+| 04 | [AUTH-01](../docs/02_design/screens/auth_01_sign_in.md) | /signin | `ea8ff27ab1c3f60e` | Public + Auth · GoTrue owner login and signed-out state | Hosted owner sign-in |
+| 05 | [AUTH-02](../docs/02_design/screens/auth_02_sign_up.md) | /signup and /register | `0bb113fee1b18b7b` | Public + Auth · GoTrue registration opens workspace | Hosted immediate-signup configuration |
+| 06 | [AUTH-03](../docs/02_design/screens/auth_03_oauth_callback.md) | /auth/callback | `b1ab30a48a06e5dd` | Public + Auth · Invalid token scrubbing and real recovery callback | Google OAuth provider round trip |
+| 07 | [AUTH-04](../docs/02_design/screens/auth_04_password_recovery_request.md) | /forgot-password | `38ef1debb9609d4a` | Public + Auth · Isolated GoTrue request and Mailpit delivery | Verified real sender delivery |
+| 08 | [AUTH-05](../docs/02_design/screens/auth_05_password_reset.md) | /reset-password | `233c9ae7be9b52c7` | Public + Auth · Recovery grant and new password through GoTrue | Hosted recovery |
+| 09 | [AUTH-06](../docs/02_design/screens/auth_06_recovery_outcome.md) | /auth/recovery-status | `06a1c1cb38fa2d8e` | Public + Auth · Real isolated recovery outcome and neutral direct route | Hosted recovery |
+| 10 | [WORK-01](../docs/02_design/screens/work_01_welcome_and_onboarding.md) | /app/onboarding | `c916e6e20c23738b` | Owner · Owner onboarding and saved selection | Standard F6 review |
+| 11 | [WORK-02](../docs/02_design/screens/work_02_workspace_home.md) | /app | `fa64c9cb4601f8f2` | Owner · Owner workspace and phone navigation | Standard F6 review |
+| 12 | [WORK-03](../docs/02_design/screens/work_03_developer_profile_editor.md) | /app/profile | `d956c492a9d231a8` | Owner · Saved owner-private profile | Standard F6 review |
+| 13 | [WORK-04](../docs/02_design/screens/work_04_project_library.md) | /app/projects | `ad5dec3afc34a7ac` | Owner · Private project library and filtering | Standard F6 review |
+| 14 | [WORK-05](../docs/02_design/screens/work_05_project_quick_add_drawer.md) | /app/projects (drawer) | `c0f8b018091ed19c` | Owner · Quick-add drawer and private create | Standard F6 review |
+| 15 | [WORK-06](../docs/02_design/screens/work_06_project_detailed_editor.md) | /app/projects/:id | `64a2b0b3a976611e` | Owner · Revisions, conflicts, case study and cross-owner denial | Standard F6 review |
+| 16 | [WORK-07](../docs/02_design/screens/work_07_owned_portfolio_library.md) | /app/portfolios | `3e4ee3840fed8519` | Owner · Private portfolio listing and navigation | Standard F6 review |
+| 17 | [WORK-08](../docs/02_design/screens/work_08_template_choice_new_portfolio.md) | /app/portfolios/new | `8164f89a45467c7786` | Owner · Starter selection and initialized private draft | Standard F6 review |
+| 18 | [EDIT-01](../docs/02_design/screens/edit_01_portfolio_editor_workbench.md) | /app/portfolios/:id/edit | `37039ac99afaf8cacc` | Owner · Save, responsive restriction and revision readback | Editor crash recovery |
+| 19 | [EDIT-02](../docs/02_design/screens/edit_02_content_inspector.md) | Editor panel Content | `dc10052440419966fe` | Owner · Keyboard slot selection and invalid-link guard | Complete inspect-and-edit UAT |
+| 20 | [EDIT-03](../docs/02_design/screens/edit_03_components_and_sections.md) | Editor panel Components | `795e61fae4069c8285` | Owner · Section creation, movement and compatible components | Complete slot/drag workflow UAT |
+| 21 | [EDIT-04](../docs/02_design/screens/edit_04_my_components.md) | Editor panel My Components | `34c991e231c6afdb38` | Owner · Private component listing and share boundaries | Trusted catalogue provenance |
+| 22 | [EDIT-05](../docs/02_design/screens/edit_05_theme_and_responsive_inspector.md) | Editor panel Theme | `725c0a38c7e076bb5a` | Owner · Theme panel and responsive canvas | Author theme on independently served release |
+| 23 | [EDIT-06](../docs/02_design/screens/edit_06_asset_manager.md) | Editor panel Assets | `a7183bdb11ee0272c1` | Owner · Private asset registration and readback | External media delivery attestation |
+| 24 | [EDIT-07](../docs/02_design/screens/edit_07_advanced_source.md) | Editor panel Source | `a7f9100a63efc26590` | Owner · Managed file inspection and guarded source actions | Trusted S0-to-S1 and full source preservation |
+| 25 | [EDIT-08](../docs/02_design/screens/edit_08_revision_history_and_problems.md) | Editor bottom drawer | `93ebe12a1e58e0c853` | Owner · Revision comparison/restore flow | Full undo/redo and crash recovery matrix |
+| 26 | [EDIT-09](../docs/02_design/screens/edit_09_preview_modes.md) | /app/portfolios/:id/preview | `e13f8330cbc0149a1e11` | Owner · Owner-only standalone saved preview | Separate live publication theme and HTTP proof |
+| 27 | [PUBLISH-01](../docs/02_design/screens/publish_01_reviewer_staging.md) | /app/portfolios/:id/staging | `a02886e82645fd8f568b` | Owner · Private frozen stage and reviewer registration without serving | Live reviewer delivery and withdrawal |
+| 28 | [PUBLISH-02](../docs/02_design/screens/publish_02_reviewer_only_preview.md) | /r/:token | `0de27fadbe194ddea1f7` | Public · Generic unavailable state and token redaction | External valid/expired/revoked token GET and HEAD |
+| 29 | [PUBLISH-03](../docs/02_design/screens/publish_03_publish_preflight.md) | /app/portfolios/:id/publish | `1f4f4bb54e1a816519a0` | Owner · Private checks with blockers and truthful host status | Authorized live publish |
+| 30 | [PUBLISH-04](../docs/02_design/screens/publish_04_releases_and_rollback.md) | /app/portfolios/:id/releases | `bd5f09c44d45cab3f3e4` | Owner · Private release history and guarded actions | Verified rollback, cache withdrawal and alias revocation |
+| 31 | [PUBLIC-01](../docs/02_design/screens/public_01_developer_identity_hub.md) | /u/:handle | `681d4df04d39c0aef646` | Public · Generic unavailable state with indexing protection | Authorized public identity projection and withdrawal |
+| 32 | [PUBLIC-02](../docs/02_design/screens/public_02_published_case_study.md) | /u/:handle/projects/:projectSlug | `01ad6be230a657428cbc` | Public · Generic unavailable state with indexing protection | Authorized case-study projection and media |
+| 33 | [PUBLIC-03](../docs/02_design/screens/public_03_published_portfolio.md) | /:username/:portfolioSlug (conditional) | `f4269fd3fe8912d8068f` | Public · Generic unavailable state with indexing protection | Public author-theme HTML, direct media and revocation |
+| 34 | [PUBLIC-04](../docs/02_design/screens/public_04_public_share_controls.md) | Portfolio/profile share UI | `b48d575069e1d78f715c` | Owner · Owner share dialog, Escape/focus and gated links | Verified visitor URL and native sharing |
+| 35 | [GROWTH-01](../docs/02_design/screens/growth_01_personal_growth_hub.md) | /app/growth | `14f5ef9261212baebd68` | Owner + Growth · Private growth reflow and links grounded in owner data | Standard F6 review |
+| 36 | [GROWTH-02](../docs/02_design/screens/growth_02_developer_activity.md) | /app/growth/activity | `314d8676e789c3d3dd65` | Owner + Growth · Private activity, provider-sync unavailable state | Deferred provider sync and provenance |
+| 37 | [GROWTH-03](../docs/02_design/screens/growth_03_private_devscore.md) | /app/growth/devscore | `73918f130380efb52844` | Owner + Growth · Private explainable missing-data state | Deferred numeric DevScore |
+| 38 | [GROWTH-04](../docs/02_design/screens/growth_04_goals.md) | /app/growth/goals | `c1e251b7eee9fef97b9f` | Owner + Growth · Private goal creation and persisted progress | Full goals workflow/UAT |
+| 39 | [GROWTH-05](../docs/02_design/screens/growth_05_portfolio_analytics.md) | /app/analytics | `45b7d433cb10eeeef687` | Owner + Growth · Private analytics opt-in gate with no fake visitors | Deferred verified visitor collection and opt-out |
+| 40 | [GROWTH-06](../docs/02_design/screens/growth_06_platform_connections.md) | /app/integrations | `fc8e12541a9ef9e88d44` | Owner + Growth · Owner-private provider-handle linking | Deferred provider OAuth and sync |
+| 41 | [SET-01](../docs/02_design/screens/set_01_settings_hub.md) | /app/settings | `1ccc4ea94d8b3eaef1bb` | Owner + Settings · Four settings sections and actual routes | Standard F6 review |
+| 42 | [SET-02](../docs/02_design/screens/set_02_privacy_sharing.md) | /app/settings/privacy | `86cfb4e1bfa8e0915d0c` | Owner + Settings · Saved sharing preferences and withdrawal intent | External delivery enforcement |
+| 43 | [SET-03](../docs/02_design/screens/set_03_notifications.md) | /app/notifications | `2c340f077a004f428186` | Owner + Settings · Loaded filters and keyboard save, server rejection, rollback and persisted retry | Complete notification pagination and provider cases |
+| 44 | [SET-04](../docs/02_design/screens/set_04_account_security.md) | /app/settings/security | `34d702b35de12a3e59f6` | Owner + Settings · Password reveal and other-session cancellation/confirmation | Hosted session lifecycle |
+| 45 | [SET-05](../docs/02_design/screens/set_05_trash.md) | /app/trash | `e76f5a352d2dbbff1d74` | Owner + Settings · Private Trash route and empty state | Complete restore, deadline and purge browser UAT |
+| 46 | [SET-06](../docs/02_design/screens/set_06_export_center.md) | /app/export | `7917fef784eddd1eef72` | Owner + Settings · Download of real private application metadata | Full owned-file archive and provider-retention UAT |
+| 47 | [SET-07](../docs/02_design/screens/set_07_account_exit.md) | /app/settings/account/delete | `3f8d4e6ac716797842ec` | Owner + Settings · Private inventory and guarded account-exit controls | Erasure propagation and provider backups |
+| 48 | [OPS-01](../docs/02_design/screens/ops_01_admin_users.md) | /app/operations/users | `dfe84e935848f68966cf` | Operations · Restricted role denial and case-scoped operator access | Full operator authorization and audit matrix |
+| 49 | [OPS-02](../docs/02_design/screens/ops_02_portfolio_moderation.md) | /app/operations/moderation | `92e605b5ae3e3ec4200d` | Operations · Operator case views and fail-closed outage | Scoped intervention end-to-end UAT |
+| 50 | [OPS-03](../docs/02_design/screens/ops_03_appeals_and_case_history.md) | /app/operations/appeals | `623724610276f84d3070` | Operations · Case-scoped appeals view | Appeal submission and resolution UAT |
+| 51 | [SYS-01](../docs/02_design/screens/sys_01_not_found_private_expired_offline.md) | Status and error screens | `eb7c074712b8438f8c8b` | Public · Generic unavailable route, offline retention, keyboard retry and reflow | Deployed HTTP status and broader error matrix |
+| 52 | [SYS-02](../docs/02_design/screens/sys_02_unsupported_authoring_device.md) | Owner editor or portfolio creation route on an ineligible device | `1e4de6c5f9e85e88e1ac` | Owner · Touch-only authoring denial, continuation and private read-only preview | Physical-device and assistive-technology acceptance |
+
+The [115 UI decisions](DECISIONS_UI_001_115.csv), [90 decisions](D01_D90_BACKEND_TRACEABILITY.csv), [53 workflows](WORKFLOWS.csv), [138 UAT cases](TEST_CASES.csv) and [20 technical proofs](TECHNICAL_PROOFS.csv) passed inventory validation. Functional acceptance has to be collected per case and proof. The [release gates](../docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md) identify the remaining editor, hosting, privacy, accessibility and provider dependencies.
+
