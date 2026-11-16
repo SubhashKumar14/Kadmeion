@@ -278,7 +278,7 @@ export function PortfolioChooser({port}: {port: SupabaseBrowserAuthPort}) {
     {!allowed ? <DeviceLimit/> : <form className="ws-project-detail ws-owner-columns" onSubmit={event => void create(event)}>
       <fieldset className="ws-project-fields ws-preset-browser" disabled={saving || !!pending}>
         <legend>Curated starting points</legend>
-        <div className="ws-preset-feature" aria-label="Selected layout preview">
+        <div className="ws-preset-feature" role="group" aria-label="Selected layout preview">
           {selected.id === 'blank' ? <div className="ws-blank-template" aria-hidden="true"><Icon name="layers" size={30}/></div>
             : <TemplateGraphic tone={selected.tone}/>}
           <div><h2>{selected.title}</h2><p>{selected.detail}</p></div>
@@ -595,7 +595,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       </aside>
       {contentPreview}
       <aside className="ws-project-fields">
-        {tool === 'Components' && <div className="ws-editor-tool" aria-label="Slot compatibility">
+        {tool === 'Components' && <div className="ws-editor-tool" role="group" aria-label="Slot compatibility">
           <p className="ws-kicker">COMPONENT PLACEMENT</p>
           <h2>Slot compatibility</h2>
           <p>Only compatible, pinned source can be assigned; existing authored content is not silently replaced.</p>

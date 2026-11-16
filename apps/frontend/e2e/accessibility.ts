@@ -6,10 +6,10 @@ import type { AxeResults } from 'axe-core';
 
 const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
 const ruleTags = ['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa'];
-// Gate straightforward name and label regressions. Other reported results
-// require review of context or rendered appearance before sign-off.
+// Gate deterministic regressions in the scanned fixture states. Axe
+// reports ambiguous results separately for manual review.
 const blockingRules = new Set(['button-name','link-name','label','image-alt','html-has-lang','document-title',
-  'dlitem','scrollable-region-focusable']);
+  'dlitem','scrollable-region-focusable','color-contrast','label-content-name-mismatch']);
 
 export async function auditAccessibility(page:Page, state:string, directory?:string) {
   if (!await page.evaluate(()=>!!window.axe)) await page.addScriptTag({path:axePath});

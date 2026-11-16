@@ -75,7 +75,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
 
   const title = settingsLinks.find(([href]) => href === path)?.[1] ?? 'Settings';
   let content: ReactNode = null;
-  if (path === '/app/settings') content = <div className="ws-settings-grid ws-settings-hub" aria-label="Account settings sections">
+  if (path === '/app/settings') content = <div className="ws-settings-grid ws-settings-hub" role="group" aria-label="Account settings sections">
     {settingsSections.map(group=><SettingsCard key={group.title} title={group.title}>
       <p className="ws-settings-group-description">{group.detail}</p>
       <ul className="ws-settings-hub-links">

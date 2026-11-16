@@ -402,7 +402,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           </div>}
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
             onSelect={!busy?selectFrozenRequest:undefined} activeRequestId={frozen?.requestId} />
-          {mode==='staging' && <section className="ws-release-action" aria-labelledby="reviewer-history-title">
+          {mode==='staging' && <section className="ws-release-action" role="group" aria-labelledby="reviewer-history-title">
             <h3 id="reviewer-history-title">Registered reviewer grants</h3>
             <p>Owner-only metadata can be recovered after a reload. Raw reviewer credentials are never returned in this list.</p>
             {grantListError && <p role="alert">{grantListError}</p>}
@@ -418,7 +418,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   setConfirmRevoke(true);}}>Review revocation</button>}
             </li>)}</ul>}
           </section>}
-          {mode==='staging' && (frozen || grant) && <div className="ws-release-action" aria-labelledby="reviewer-grant-title">
+          {mode==='staging' && (frozen || grant) && <div className="ws-release-action" role="group" aria-labelledby="reviewer-grant-title">
             <h3 id="reviewer-grant-title">Reviewer access</h3>
             <p>Register a time-limited owner-private grant. No reviewer URL can be shared until host authorization, expiry and revocation are proven.</p>
             {!grant ? <>
@@ -446,7 +446,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               </div>}
             </>}
           </div>}
-          {mode==='publish' && <div className="ws-release-action" aria-labelledby="publication-controls-title">
+          {mode==='publish' && <div className="ws-release-action" role="group" aria-labelledby="publication-controls-title">
             <h3 id="publication-controls-title">Exposure and publication</h3>
             <p>Visibility above is an intent for a future release, not the current exposure of this private draft.
               No canonical URL or live SEO projection has been issued.</p>
@@ -482,7 +482,7 @@ function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
   requests:OwnerFrozenRequest[]|null;error:string;
   onSelect?:(request:OwnerFrozenRequest)=>void;activeRequestId?:string
 }) {
-  return <section className="ws-release-action" aria-labelledby="frozen-history-title">
+  return <section className="ws-release-action" role="group" aria-labelledby="frozen-history-title">
     <h3 id="frozen-history-title">Frozen private requests</h3>
     <p>Immutable owner-only revision pins. These records do not prove reviewer delivery, public hosting, release history or rollback.</p>
     {error && <p role="alert">{error}</p>}
@@ -509,7 +509,7 @@ function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
 /** A diagnostic is displayed only when emitted by the real frozen-snapshot
  * preflight engine. Never label an unexecuted check as passed. */
 function PreflightResults({result,portfolioId}:{result:SafePreviewResult;portfolioId:string}) {
-  return <section className="ws-release-action" aria-labelledby="preflight-results">
+  return <section className="ws-release-action" role="group" aria-labelledby="preflight-results">
     <h3 id="preflight-results">Preflight results</h3>
     <p role="status">Private renderability check. No published release or host readiness proof.</p>
     <div className="ws-release-summary" role="group" aria-label="Private preflight summary">

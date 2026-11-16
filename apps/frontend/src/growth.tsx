@@ -61,7 +61,7 @@ function GrowthHome({service}: {service:SupabasePrivateGoalsService}){
       <h2>Private progress, not a leaderboard.</h2>
       <p>Track personal development using your own goals. Nothing here is published to your profile or verified by outside providers.</p>
       <LoadingOrError goals={goals} error={error} retry={reload}/>
-      {goals!==null && <div className="ws-growth-facts" aria-label="Loaded private goals">
+      {goals!==null && <div className="ws-growth-facts" role="group" aria-label="Loaded private goals">
         <div><strong>{active}</strong><span>Active goals in loaded records</span></div>
         <div><strong>{completed}</strong><span>Completed goals in loaded records</span></div>
       </div>}

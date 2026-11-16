@@ -113,7 +113,7 @@ function ProductDemo() {
     <figcaption className="demo-caption">Illustrative product preview
     <div className="demo-controls" role="group" aria-label="Product preview controls">
       <button type="button" aria-label="Previous product example" onClick={()=>change(-1)}>‹</button>
-      <span aria-label={'Illustrative product view '+(index+1)+' of 3'}>{index+1} / {DEMO_VIEWS.length}</span>
+      <span>{index+1} / {DEMO_VIEWS.length}</span>
       <button type="button" aria-label="Next product example" onClick={()=>change(1)}>›</button>
       <button className="demo-pause" type="button" aria-label={paused?'Resume automatic preview':'Pause automatic preview'}
         aria-pressed={paused} onClick={()=>setPaused(v=>!v)}><Icon name={paused?'play':'pause'} size={13}/></button>

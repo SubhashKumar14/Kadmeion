@@ -286,7 +286,8 @@ test('F4 gated reviewer and public routes preserve theme, reflow, and never reve
         page:document.documentElement.scrollWidth
       }));
       expect(widthReport.page,route+' at '+width+'px').toBeLessThanOrEqual(widthReport.viewport+1);
-      if(width===320) await auditAccessibility(page,label+'_DARK_320',process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+      if(width!==390)
+        await auditAccessibility(page,label+'_DARK_'+width,process.env.KADMEION_PUBLIC_CAPTURE_DIR);
     }
   }
 
@@ -295,16 +296,18 @@ test('F4 gated reviewer and public routes preserve theme, reflow, and never reve
   await page.goto('/');
   await page.getByRole('button',{name:'Switch to light theme'}).click();
   const captureDir=process.env.KADMEION_PUBLIC_CAPTURE_DIR;
-  await page.setViewportSize({width:1366,height:900});
-  for(const [route,heading,label] of routes){
-    await page.goto(route);
-    await expect(page.getByRole('heading',{name:heading})).toBeVisible();
-    await expect(page.locator('html')).toHaveAttribute('data-theme','light');
-    await auditAccessibility(page,label+'_LIGHT_1366',captureDir);
-    if(captureDir){
-      const {mkdir}=await import('node:fs/promises');
-      await mkdir(captureDir,{recursive:true});
-      await page.screenshot({path:captureDir+'/'+label+'.png',animations:'disabled'});
+  for(const width of [320,1366]){
+    await page.setViewportSize({width,height:900});
+    for(const [route,heading,label] of routes){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+      await auditAccessibility(page,label+'_LIGHT_'+width,captureDir);
+      if(captureDir&&width===1366){
+        const {mkdir}=await import('node:fs/promises');
+        await mkdir(captureDir,{recursive:true});
+        await page.screenshot({path:captureDir+'/'+label+'.png',animations:'disabled'});
+      }
     }
   }
 });
@@ -386,7 +389,7 @@ test('landing keeps its reading scale and controls usable on desktop and narrow 
   }
 });
 
-test('F06 scans public and signed-out surfaces in desktop light and phone dark', async ({page})=>{
+test('F06 scans public and signed-out surfaces at desktop and phone widths in both themes', async ({page})=>{
   test.setTimeout(90_000);
   const states=[
     ['/','01_LANDING'],['/explore','02_EXPLORE'],['/templates','03_TEMPLATES'],
@@ -394,7 +397,7 @@ test('F06 scans public and signed-out surfaces in desktop light and phone dark',
     ['/forgot-password','07_RECOVERY'],['/auth/recovery-status','09_RECOVERY_STATUS'],
     ['/unavailable-f06-test','51_UNAVAILABLE']
   ] as const;
-  for(const [theme,width] of [['light',1600],['dark',320]] as const){
+  for(const [theme,width] of [['light',1600],['light',320],['dark',1600],['dark',320]] as const){
     await page.setViewportSize({width,height:900});
     await page.goto('/');
     const isDark=await page.locator('html').getAttribute('data-theme')==='dark';

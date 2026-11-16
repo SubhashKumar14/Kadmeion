@@ -223,7 +223,7 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
       setNotice('Owned source applied to the unsaved private editor revision. The preview does not execute this code.');
     } else setNotice('Source change was not applied. Your unsaved buffer remains in this editor.');
   }
-  return <div className="ws-source-explorer" aria-label="Advanced source workspace">
+  return <div className="ws-source-explorer" role="group" aria-label="Advanced source workspace">
     <aside className="ws-source-tree">
       <p className="ws-kicker">ADVANCED EDITOR</p>
       <h2>Source explorer</h2>
@@ -254,7 +254,7 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
         <label htmlFor="kd-source-editor">Owned source buffer</label>
         <textarea id="kd-source-editor" spellCheck={false} rows={22} value={buffer}
           onChange={event=>{const next=event.target.value;setBuffers(current=>({...current,[path]:next}));setNotice('');}}/>
-      </div>:<div className="ws-source-code-window ws-source-preview" aria-label="Readonly generated file">
+      </div>:<div className="ws-source-code-window ws-source-preview" role="group" aria-label="Readonly generated file">
         <pre><code>{current}</code></pre>
       </div>:<p>No source file is available.</p>}
       <div className="ws-source-footer">
@@ -392,7 +392,7 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
     }catch(cause){setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
     finally{setBusy(false);}
   }
-  return <div className="ws-asset-library ws-asset-manager" aria-label="Private asset manager">
+  return <div className="ws-asset-library ws-asset-manager" role="group" aria-label="Private asset manager">
     <aside className="ws-asset-collections">
       <p className="ws-kicker">ASSET LIBRARY</p>
       <h2>Collections</h2>
