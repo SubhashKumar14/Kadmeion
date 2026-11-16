@@ -1337,6 +1337,17 @@ test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen p
   await expect(page.locator('.ws-release-visual-canvas')).toHaveCount(0);
   await expect(page.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
   await expect(page.getByRole('button',{name:/Register.*reviewer/i})).toBeDisabled();
+  // Only the S4 pin-retry candidate exposes this control. A first failed
+  // attested pin may be retried without changing frozen request/operation ID.
+  if(process.env.KADMEION_S4_PIN_RETRY_CANDIDATE==='1'){
+    const retryPin=page.getByRole('button',{name:'Retry exact frozen revision'});
+    await expect(retryPin).toBeEnabled();
+    await retryPin.click();
+    await expect(page.locator('.ws-release-visual-canvas')).toBeVisible();
+    await expect(page.getByRole('button',{name:'Register private reviewer grant'})).toBeEnabled();
+    await expect(page.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+    expect(operations).toHaveLength(2);
+  }
   await page.unroute('**/rest/v1/rpc/load_private_frozen_revision');
   await page.unroute('**/rest/v1/rpc/freeze_private_release_request');
 });
