@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary} from '../../auth-web/src/supabase-auth-port.ts';
+import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision} from '../../auth-web/src/supabase-auth-port.ts';
 import type {PrivateFrozenRequest, FrozenVisibilityIntent} from '../../../packages/contracts/src/private-release-service.ts';
 import type {PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
@@ -44,6 +44,9 @@ export function releaseRoute(path:string):{id:string;mode:ReleaseMode}|undefined
 
 export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id:string;mode:ReleaseMode}) {
   const [record,setRecord]=useState<OwnerPortfolio|null>(null);
+  const [revisions,setRevisions]=useState<SavedOwnerRevision[]|null>(null);
+  const [selectedRevision,setSelectedRevision]=useState<number|null>(null);
+  const [revisionError,setRevisionError]=useState('');
   const [pointer,setPointer]=useState<PrivatePointerSnapshot|null>(null);
   const [visibility,setVisibility]=useState<FrozenVisibilityIntent>('UNLISTED');
   const [frozen,setFrozen]=useState<PrivateFrozenRequest|null>(null);
@@ -72,6 +75,16 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!active) return;
         if (!reply.data) {setError(reply.error?.message ?? 'Portfolio unavailable.');return;}
         setRecord(reply.data);
+        if (mode==='staging'||mode==='publish') {
+          const saved=await port.listOwnerPortfolioRevisions(id);
+          if (!active) return;
+          if (saved.data) {
+            setRevisions(saved.data.filter(row=>row.revision<=reply.data!.revision));
+            setSelectedRevision(saved.data.some(row=>row.revision===reply.data!.revision)
+              ? reply.data.revision : null);
+            setRevisionError('');
+          } else setRevisionError(saved.error?.message ?? 'The saved-revision catalogue is unavailable.');
+        }
         if (mode==='staging') {
           const list=await port.listOwnerReviewerGrants(id);
           if (!active) return;
@@ -92,13 +105,13 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   },[port,id,mode,retry]);
 
   async function inspect(){
-    if (!record?.revision || busy) return;
+    if (!record?.revision || selectedRevision===null || busy) return;
     setBusy(true);setError('');setNotice('');setResult(null);
     try {
       let request=frozen;
       if (!request) {
         operation.current ??= crypto.randomUUID();
-        const saved=await port.freezeOwnerRelease(id,operation.current,record.revision,visibility);
+        const saved=await port.freezeOwnerRelease(id,operation.current,selectedRevision,visibility);
         if (!saved.data) {setError(saved.error?.message ?? 'Private freeze could not be confirmed.');return;}
         request=saved.data;
         setFrozen(request);
@@ -236,7 +249,22 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <p>A verified live release timeline and rollback target are unavailable here. No draft or private pointer is presented as a live release.</p>
         </> : <>
           <h2>{mode==='staging'?'Prepare a frozen reviewer revision':'Inspect a saved revision'}</h2>
-          <p>Freeze one saved revision with a content digest. This action does not publish any content.</p>
+          <p>Freeze a selected immutable saved revision with its content digest. Unsaved editor changes are not included.</p>
+          {revisionError && <p role="alert">{revisionError}</p>}
+          <label>Saved revision
+            <select value={selectedRevision??''} disabled={busy||!!frozen||!revisions?.length}
+              onChange={event=>{
+                const next=Number(event.target.value);
+                setSelectedRevision(revisions?.some(row=>row.revision===next)?next:null);
+                operation.current=null;setResult(null);
+              }}>
+              {selectedRevision===null && <option value="">Select a saved revision</option>}
+              {revisions?.map(row=><option key={row.revision} value={row.revision}>
+                Revision {row.revision} · {new Date(row.createdAt).toLocaleString()}
+              </option>)}
+            </select>
+          </label>
+          {revisions?.length===50 && <p className="ws-field-hint">Showing the latest 50 saved revisions.</p>}
           <label>Future visibility intent
             <select value={visibility} disabled={busy||!!frozen} onChange={event=>{
               setVisibility(event.target.value==='PUBLIC'?'PUBLIC':'UNLISTED');
@@ -244,7 +272,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             }}><option value="UNLISTED">Unlisted (not activated)</option>
               <option value="PUBLIC">Public (not activated)</option></select>
           </label>
-          <button type="button" className="ws-primary" disabled={busy||!record.revision||(mode==='staging'&&!!frozen)}
+          <button type="button" className="ws-primary" disabled={busy||selectedRevision===null||(mode==='staging'&&!!frozen)}
             onClick={()=>void inspect()}>{busy?'Checking…':mode==='staging'?'Freeze private revision':'Run private preflight'}</button>
           {frozen && <div className="ws-release-action">
             <p role="status">Private revision {frozen.revision} frozen.</p>

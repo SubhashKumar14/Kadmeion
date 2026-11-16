@@ -7,6 +7,7 @@ import type { FrozenVisibilityIntent, PrivateFrozenRequest } from '../../../pack
 import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
+export type SavedOwnerRevision = {revision:number;createdAt:string;snapshotSha256:string};
 import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
@@ -613,6 +614,34 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if (!this.isCurrentSession(session) || result.revision !== revision + 1)
         throw new Error('The new portfolio revision could not be confirmed.');
       return result.revision;
+    });
+  }
+
+  /** Bounded immutable saved-revision catalogue, with owner RLS as the
+   * authorization boundary; no draft source is sent just to list revisions. */
+  async listOwnerPortfolioRevisions(id:string):Promise<AuthOutcome<SavedOwnerRevision[]>> {
+    return this.outcome(async()=>{
+      if (!PROJECT_ID_PATTERN.test(id)) throw new Error('Portfolio unavailable.');
+      const {session}=await this.ownerSession();
+      const query=new URLSearchParams({select:'revision,created_at,snapshot_sha256',
+        portfolio_id:'eq.'+id,order:'revision.desc',limit:'50'});
+      const rows=await this.ownerRest('portfolio_revisions?'+query,session.access_token);
+      if (!this.isCurrentSession(session)||!Array.isArray(rows)||rows.length>50)
+        throw new Error('Saved portfolio revisions could not be loaded.');
+      const seen=new Set<number>();
+      return rows.map((raw:unknown)=>{
+        if (!raw||typeof raw!=='object'||Array.isArray(raw))
+          throw new Error('Invalid saved revision record.');
+        const row=raw as Record<string,unknown>;
+        if (Object.keys(row).some(key=>!['revision','created_at','snapshot_sha256'].includes(key))||
+          !Number.isSafeInteger(row.revision) || typeof row.revision!=='number' || row.revision<1 ||
+          seen.has(row.revision)||typeof row.created_at!=='string'||
+          !Number.isFinite(Date.parse(row.created_at))||
+          typeof row.snapshot_sha256!=='string'||!/^[a-f0-9]{64}$/.test(row.snapshot_sha256))
+          throw new Error('A saved revision could not be validated.');
+        seen.add(row.revision);
+        return {revision:row.revision,createdAt:row.created_at,snapshotSha256:row.snapshot_sha256};
+      });
     });
   }
 
