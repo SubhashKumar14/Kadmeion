@@ -1236,3 +1236,99 @@ test('F6 failed onboarding skip remains private and is retryable after RPC recov
   await page.reload();
   await expect(page.getByText('Skipped in your private account')).toHaveCount(1);
 });
+
+
+test('S6 S2 project list 503 retries, create conflict preserves fields and private navigation works', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Disposable local Supabase only.');
+  test.setTimeout(90_000);
+  const owner=await localUser('S6 S2 retry');
+  await signIn(page,owner);
+  let readFailed=false, createFailed=false;
+  const requests:{method:string;status:number}[]=[];
+  await page.route('**/rest/v1/projects?*',async route=>{
+    const method=route.request().method();
+    if(method==='GET'&&!readFailed) {
+      readFailed=true;requests.push({method,status:503});
+      await route.fulfill({status:503,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable list outage'})});
+    } else if(method==='POST'&&!createFailed) {
+      createFailed=true;requests.push({method,status:409});
+      await route.fulfill({status:409,contentType:'application/json',
+        body:JSON.stringify({code:'23505',message:'Disposable conflict'})});
+    } else await route.continue();
+  });
+  await page.goto('/app/projects');
+  await expect(page.getByRole('alert')).toContainText('could not be loaded');
+  await expect(page.getByText('Your first project belongs here.')).toHaveCount(0);
+  await page.getByRole('button',{name:'Retry securely'}).click();
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  const opener=page.getByRole('button',{name:'Add first project'});
+  await opener.click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('S6 navigation retry fixture');
+  await drawer.getByLabel('Summary (optional)').fill('Preserve this private form on conflict');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer.getByRole('alert')).toContainText('Choose a different slug');
+  await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
+  await expect(drawer.getByLabel('Summary (optional)')).toHaveValue('Preserve this private form on conflict');
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByRole('status')).toContainText('Saved privately');
+  await expect(page.getByRole('link',{name:'S6 navigation retry fixture'})).toBeVisible();
+  await page.getByRole('link',{name:'S6 navigation retry fixture'}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  await expect(page.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
+  await page.getByRole('link',{name:'Back to project library'}).click();
+  await expect(page.getByRole('heading',{name:'Project library.'})).toBeVisible();
+  expect(requests).toEqual([{method:'GET',status:503},{method:'POST',status:409}]);
+});
+
+test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen pin', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await localUser('S6 S4 freeze retry');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 frozen request fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 frozen request fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.goto(editorPath.replace('/edit','/staging'));
+  await expect(page.getByLabel('Saved revision')).toBeEnabled();
+  const freeze=page.getByRole('button',{name:'Freeze private revision'});
+  const operations:string[]=[];
+  let firstFreeze=true,failedPin=true;
+  await page.route('**/rest/v1/rpc/freeze_private_release_request',async route=>{
+    const args=route.request().postDataJSON() as {p_operation_id?:string};
+    expect(args.p_operation_id).toMatch(/^[0-9a-f-]{36}$/i);
+    operations.push(args.p_operation_id!);
+    if(firstFreeze){
+      firstFreeze=false;
+      await route.fulfill({status:503,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable freeze acknowledgement loss'})});
+    }else await route.continue();
+  });
+  await page.route('**/rest/v1/rpc/load_private_frozen_revision',async route=>{
+    if(failedPin){
+      failedPin=false;
+      await route.fulfill({status:503,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable pinned read outage'})});
+    }else await route.continue();
+  });
+  await freeze.click();
+  await expect(page.getByRole('alert')).toContainText('Freeze could not be confirmed');
+  await expect(freeze).toBeEnabled();
+  await freeze.click();
+  await expect(page.getByRole('status')).toContainText(/Private revision \d+ frozen/);
+  expect(operations).toHaveLength(2);
+  expect(operations[0]).toBe(operations[1]);
+  await expect(page.getByRole('alert')).toContainText('The exact frozen revision could not be verified.');
+  await expect(page.getByText(/Current saved draft · Not yet frozen/)).toHaveCount(0);
+  await expect(page.locator('.ws-release-visual-canvas')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:/Register.*reviewer/i})).toBeDisabled();
+  await page.unroute('**/rest/v1/rpc/load_private_frozen_revision');
+  await page.unroute('**/rest/v1/rpc/freeze_private_release_request');
+});
