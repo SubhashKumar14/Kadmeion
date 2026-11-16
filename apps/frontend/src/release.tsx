@@ -280,7 +280,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         <h2 id="preflight-checks-title">Preflight checks</h2>
         <p>Only checks executed against a verified frozen revision are reported as passed.
           Public delivery is a separate host proof.</p>
-        {result ? <PreflightResults result={result}/> : <div aria-label="Unrun release checks">
+        {result ? <PreflightResults result={result} portfolioId={id}/> : <div aria-label="Unrun release checks">
           <p role="status">Not evaluated. Select a saved revision and run private preflight.</p>
           <ul className="ws-release-unrun-checks">
             {['Revision and snapshot integrity','Content and required slots','Metadata and links',
@@ -480,7 +480,7 @@ function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
 
 /** A diagnostic is displayed only when emitted by the real frozen-snapshot
  * preflight engine. Never label an unexecuted check as passed. */
-function PreflightResults({result}:{result:SafePreviewResult}) {
+function PreflightResults({result,portfolioId}:{result:SafePreviewResult;portfolioId:string}) {
   return <section className="ws-release-action" aria-labelledby="preflight-results">
     <h3 id="preflight-results">Preflight results</h3>
     <p role="status">Private renderability check. No published release or host readiness proof.</p>
@@ -490,7 +490,10 @@ function PreflightResults({result}:{result:SafePreviewResult}) {
     ] as const).map(([heading,items])=><div key={heading} className="ws-release-diagnostics">
       <h4>{heading} ({items.length})</h4>
       {items.length?<ul>{items.map((item,index)=><li key={item.code+':'+index}>
-        <strong>{item.code}</strong>: {item.message}</li>)}</ul>:<p>None in this category.</p>}
+        <strong>{item.code}</strong>: {item.message}
+        {item.code==='SEO_METADATA_REQUIRED'&&<span> · <a href={'/app/portfolios/'+portfolioId+'/edit?panel=Metadata'}>
+          Edit SEO metadata in private editor</a></span>}
+        </li>)}</ul>:<p>None in this category.</p>}
     </div>)}
     {result.previewHtml && <iframe title="Private scriptless preview" className="ws-private-static-preview"
       sandbox="" referrerPolicy="no-referrer" srcDoc={result.previewHtml}/>}

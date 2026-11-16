@@ -26,6 +26,20 @@ const sectionLayouts = [
   ['stepped-hero@1', 'Stepped hero'], ['skills@1', 'Skills'], ['experience@1', 'Experience'], ['contact@1', 'Contact']
 ] as const;
 
+/** Parse known SEO fields without discarding other managed metadata. */
+function readSeoFields(snapshot:PortfolioSnapshot|null|undefined):{title:string;description:string}{
+  try{
+    const parsed:unknown=JSON.parse(snapshot?.files['kadmeion.json']??'null');
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||!('seo' in parsed))
+      return {title:'',description:''};
+    const value=parsed.seo;
+    if(!value||typeof value!=='object'||Array.isArray(value))
+      return {title:'',description:''};
+    return {title:typeof value.title==='string'?value.title:'',
+      description:typeof value.description==='string'?value.description:''};
+  }catch{return {title:'',description:''};}
+}
+
 const contentFields = {
   'title-stacked@1': ['title', 'subtitle'],
   'body-copy@1': ['text'],
@@ -275,6 +289,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   // committing it to the private snapshot or losing it on panel changes.
   const [fieldDrafts,setFieldDrafts]=useState<Record<string,string>>({});
   const [fieldIssues,setFieldIssues]=useState<Record<string,string>>({});
+  const [seoDraft,setSeoDraft]=useState<{title:string;description:string}|null>(null);
   const [operation, setOperation] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -284,7 +299,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const loaded = useRef('');
   const [sectionLayout, setSectionLayout] = useState('arc-hero@1');
   const [sectionPicker, setSectionPicker] = useState(false);
-  const [tool, setTool] = useState('Content');
+  const [tool, setTool] = useState(()=>new URLSearchParams(window.location.search).get('panel')==='Metadata'?'Metadata':'Content');
   const [componentSearch,setComponentSearch]=useState('');
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
@@ -293,7 +308,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
   const [sourceDirty,setSourceDirty]=useState(false);
-  const editorPanels=['Content','Components','My Components','Theme','Assets','Source','History'] as const;
+  const editorPanels=['Content','Components','My Components','Theme','Metadata','Assets','Source','History'] as const;
 
   useEffect(() => {
     const key = id + ':' + attempt;
@@ -314,7 +329,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setSlot(chosen);
       setValue(initial?.content[primaryField(initial.componentId)]??'');
       setOperation('');
-      setFieldDrafts({});setFieldIssues({});
+      setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       setSourceDirty(false);
       setError('');
     }).catch(()=>{if(active)setError('Private portfolio loading failed. Check your connection and retry.');});
@@ -344,7 +359,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setSlot('');
       setValue('');
       setOperation(crypto.randomUUID());
-      setFieldDrafts({});setFieldIssues({});
+      setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       setNotice('Revision restored into the working draft. Save to keep it.');
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not restore the revision.');
@@ -383,12 +398,35 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     id==='external-link@1'?'Links':
     id==='project-card@1'||id==='skills-list@1'||id==='author-metric@1'?'Work':'Text';
   const assigned = Object.entries(head?.snapshot.slots ?? {});
+  const savedSeo=readSeoFields(head?.snapshot);
+  const seoValues=seoDraft??savedSeo;
+  const seoPending=seoDraft!==null&&(seoDraft.title!==savedSeo.title||
+    seoDraft.description!==savedSeo.description);
+  const seoTitleValid=seoValues.title.trim().length>0&&seoValues.title.trim().length<=120;
+  const seoDescriptionValid=seoValues.description.trim().length>0&&seoValues.description.trim().length<=300;
+  function applySeoMetadata(){
+    if(!head||saving||!seoPending||!seoTitleValid||!seoDescriptionValid)return;
+    try{
+      const raw:unknown=JSON.parse(head.snapshot.files['kadmeion.json']??'null');
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))
+        throw new Error('Managed manifest is unavailable. Preserve its source and inspect the draft.');
+      const data=raw as Record<string,unknown>;
+      const previous=data.seo;
+      const prevSeo=previous&&typeof previous==='object'&&!Array.isArray(previous)
+        ?previous as Record<string,unknown>:{};
+      const updated=JSON.stringify({...data,seo:{...prevSeo,
+        title:seoValues.title.trim(),description:seoValues.description.trim()}});
+      if(apply({kind:'WRITE_MANAGED_FILE',path:'kadmeion.json',source:updated}))setSeoDraft(null);
+    }catch(failure){
+      setError(failure instanceof Error?failure.message:'SEO metadata could not be applied.');
+    }
+  }
   const pendingFields=Object.entries(fieldDrafts).some(([key,draft])=>{
     const pivot=key.lastIndexOf(':');
     if(pivot<0)return false;
     const parent=key.slice(0,pivot),field=key.slice(pivot+1);
     return (head?.snapshot.slots[parent]?.content[field]??'')!==draft;
-  });
+  }) || seoPending;
   // Browser navigation must not silently discard the owner's private, unsaved
   // transaction journal or uncommitted secondary fields. This guard never
   // persists draft text to a public origin or external service.
@@ -540,6 +578,30 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           </>}
         </div>}
         {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
+        {tool === 'Metadata' && <section className="ws-editor-tool ws-metadata-inspector" aria-labelledby="metadata-title">
+          <p className="ws-kicker">RELEASE CONTENT</p><h2 id="metadata-title">Page metadata</h2>
+          <p>This author-written information stays private until an independently verified release is explicitly published.</p>
+          <label htmlFor="kd-seo-title">SEO page title</label>
+          <input id="kd-seo-title" type="text" maxLength={120} value={seoValues.title}
+            aria-invalid={seoPending&&!seoTitleValid} onChange={event=>
+              setSeoDraft(previous=>({... (previous??savedSeo),title:event.target.value}))}/>
+          <p className="ws-field-hint">Required, 1–120 characters. No invented rankings or credentials.</p>
+          <label htmlFor="kd-seo-description">SEO description</label>
+          <textarea id="kd-seo-description" rows={5} maxLength={300} value={seoValues.description}
+            aria-invalid={seoPending&&!seoDescriptionValid} onChange={event=>
+              setSeoDraft(previous=>({... (previous??savedSeo),description:event.target.value}))}/>
+          <p className="ws-field-hint">Required, 1–300 characters. Not currently exposed to crawlers.</p>
+          {seoPending&&(!seoTitleValid||!seoDescriptionValid)&&
+            <p role="alert" className="ws-field-error">Enter a nonempty title and description within the limits.</p>}
+          <button type="button" className="ws-secondary"
+            disabled={saving||!seoPending||!seoTitleValid||!seoDescriptionValid}
+            onClick={applySeoMetadata}>Apply SEO metadata to draft</button>
+          {seoPending&&<p role="status">Metadata edits are held in this private editor.
+            Apply them and save the draft to create a new immutable revision.</p>}
+          {!seoPending&&seoTitleValid&&seoDescriptionValid&&
+            <p className="ws-field-hint">Metadata is in your working revision. Save the draft before another frozen preflight.</p>}
+          <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
+        </section>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
 
         {tool === 'Content' && <><h2>Content inspector</h2>

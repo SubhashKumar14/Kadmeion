@@ -531,6 +531,8 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: 'Run private preflight'}).click();
   await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();
   await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toBeVisible();
+  await expect(page.getByRole('link',{name:'Edit SEO metadata in private editor'}))
+    .toHaveAttribute('href',editorPath+'?panel=Metadata');
   await expect(page.getByText('Private · Not published', {exact:true})).toBeVisible();
   await capture('29_PREFLIGHT_BROWSER');
   await page.getByRole('link', {name: 'Releases & rollback'}).click();
@@ -552,6 +554,23 @@ test('real owner onboarding and project revision are private across browser sess
   expect(shareWidths.scroll).toBeLessThanOrEqual(shareWidths.viewport+2);
   await capture('34_SHARING_PHONE_BROWSER');
   await page.setViewportSize({width:1600,height:1000});
+  await page.goto(editorPath+'?panel=Metadata');
+  await expect(page.getByRole('heading',{name:'Page metadata'})).toBeVisible();
+  await page.getByLabel('SEO page title').fill('Saved author portfolio');
+  await page.getByLabel('SEO description').fill('A developer portfolio written by its owner and saved privately.');
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();
+  await page.getByRole('button',{name:'Apply SEO metadata to draft'}).click();
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeEnabled();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByRole('status').filter({hasText:'Private portfolio draft saved.'})).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel('SEO page title')).toHaveValue('Saved author portfolio');
+  await page.goto(editorPath.replace(/\\/edit$/, '/publish'));
+  await expect(page.getByRole('button',{name:'Run private preflight'})).toBeEnabled();
+  await page.getByRole('button',{name:'Run private preflight'}).click();
+  await expect(page.getByText('SEO metadata is derived from the pinned file set.')).toBeVisible();
+  await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Publish unavailable — host proof required'})).toBeDisabled();
   await page.goto(editorPath);
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
