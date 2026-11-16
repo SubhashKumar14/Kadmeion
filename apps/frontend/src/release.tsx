@@ -339,17 +339,24 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         <p className="ws-kicker">REVISION APPEARANCE</p>
         <h2 id="staging-visual-title">What the reviewer would see</h2>
         <p>This is a read-only owner simulation. A shareable reviewer route requires independently verified host delivery.</p>
-        <p className="ws-release-preview-label">{frozen
-          ? 'Frozen revision '+frozen.revision+' · '+(pinnedPreviewPending?'Verifying…':'Pinned private request')
-          : 'Current saved draft · Not yet frozen'}</p>
+        <p className="ws-release-preview-label">{historySelection
+          ? 'Frozen revision '+historySelection.revision+' · Awaiting owner pin readback'
+          : frozen
+            ? 'Frozen revision '+frozen.revision+' · '+(pinnedPreviewPending?'Verifying…':pinnedPreview?'Verified owner-private pin':'Pin verification required')
+            : 'Current saved draft · Not yet frozen'}</p>
+        {historySelectionPending && <p role="status">Verifying the historical frozen revision with the owner service…</p>}
         {pinnedPreviewPending && <p role="status">Verifying the exact private revision…</p>}
         {pinnedPreviewError && <p role="alert">{pinnedPreviewError}</p>}
-        {(!frozen || (pinnedPreview&&!pinnedPreviewPending&&!pinnedPreviewError)) &&
+        {pinnedPreviewError && frozen && !pinnedPreviewPending &&
+          <button type="button" className="ws-secondary" disabled={busy}
+            onClick={()=>setPinReadRetry(value=>value+1)}>Retry exact frozen revision</button>}
+        {!historySelection && (!frozen || (pinnedPreview&&!pinnedPreviewPending&&!pinnedPreviewError)) &&
           (frozen?pinnedPreview:record.snapshot)
           ? <div className="ws-release-visual-canvas">
               <PortfolioCanvas snapshot={frozen?pinnedPreview:record.snapshot} title={record.title} simulation keyboardScroll/>
             </div>
-          : !pinnedPreviewPending&&!pinnedPreviewError && <p>No saved portfolio content is available for this private preview.</p>}
+          : !historySelection&&!pinnedPreviewPending&&!pinnedPreviewError &&
+            <p>No saved portfolio content is available for this private preview.</p>}
         <div className="ws-release-visual-foot">
           <strong>Private preview only</strong>
           <p>No reviewer token or public link is exposed. Custom source is not executed in this canvas.</p>
@@ -432,6 +439,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                 operation.current=null;setResult(null);
               }}>
               {selectedRevision===null && <option value="">Select a saved revision</option>}
+              {frozen && selectedRevision===frozen.revision &&
+                !revisions?.some(row=>row.revision===frozen.revision) &&
+                <option value={frozen.revision}>Frozen revision {frozen.revision} · verified historical pin</option>}
               {revisions?.map(row=><option key={row.revision} value={row.revision}>
                 Revision {row.revision} · {new Date(row.createdAt).toLocaleString()}
               </option>)}
@@ -445,7 +455,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             }}><option value="UNLISTED">Unlisted (not activated)</option>
               <option value="PUBLIC">Public (not activated)</option></select>
           </label>
-          <button type="button" className="ws-primary" disabled={busy||selectedRevision===null||(mode==='staging'&&!!frozen)}
+          <button type="button" className="ws-primary" disabled={busy||historySelection!==null||selectedRevision===null||(mode==='staging'&&!!frozen)}
             onClick={()=>void inspect()}>{busy?'Checking…':mode==='staging'?'Freeze private revision':'Run private preflight'}</button>
           {frozen && <div className="ws-release-action">
             <p role="status">Private revision {frozen.revision} frozen.</p>
@@ -465,7 +475,17 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                 }}>Choose another saved revision or visibility intent</button>}
           </div>}
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
-            onSelect={!busy?selectFrozenRequest:undefined} activeRequestId={frozen?.requestId} />
+            onSelect={request=>void selectFrozenRequest(request)}
+            selectionDisabled={busy||historySelectionPending}
+            activeRequestId={frozen?.requestId} />
+          {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
+            {historySelectionError && <p role="alert">{historySelectionError}</p>}
+            {historySelectionError && !historySelectionPending &&
+              <button type="button" className="ws-secondary" disabled={busy}
+                onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
+            <button type="button" className="ws-secondary" disabled={busy}
+              onClick={cancelHistoricalSelection}>Cancel frozen pin selection</button>
+          </div>}
           {mode==='staging' && <section className="ws-release-action" role="group" aria-labelledby="reviewer-history-title">
             <h3 id="reviewer-history-title">Registered reviewer grants</h3>
             <p>Owner-only metadata can be recovered after a reload. Raw reviewer credentials are never returned in this list.</p>
