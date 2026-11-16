@@ -58,6 +58,36 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
     ['/app/settings/account/delete','Account exit','47_ACCOUNT_EXIT']
   ] as const;
   const capture=process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  // A visible route shell is not a ready screenshot. Wait for confirmed
+  // owner-service data, not just a heading or an ephemeral loading placeholder.
+  async function waitForSettingsContent(route:string){
+    switch(route){
+      case '/app/settings':
+        await expect(page.getByRole('heading',{name:'Your account',level:2})).toBeVisible();
+        break;
+      case '/app/settings/privacy':
+        await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeVisible();
+        await expect(page.getByText('Loading sharing preferences…')).toHaveCount(0);
+        break;
+      case '/app/notifications':
+        await expect(page.getByRole('heading',{name:'Inbox'})).toBeVisible();
+        await expect(page.getByText('Loading notifications…')).toHaveCount(0);
+        break;
+      case '/app/settings/security':
+        await expect(page.getByRole('button',{name:'Sign out other sessions'})).toBeVisible();
+        break;
+      case '/app/trash':
+        await expect(page.getByText('Trash is empty.')).toBeVisible();
+        break;
+      case '/app/export':
+        await expect(page.getByRole('button',{name:'Download application metadata'})).toBeVisible();
+        break;
+      case '/app/settings/account/delete':
+        await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+        await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
+        break;
+    }
+  }
 
   for(const width of [1600,390,320]){
     await page.setViewportSize({width,height:900});
@@ -66,6 +96,7 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
       await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
       await expect(page.locator('.ws-settings-body')).toBeVisible();
+      await waitForSettingsContent(route);
       const dimensions=await page.evaluate(()=>({
         visible:document.documentElement.clientWidth,
         scroll:document.documentElement.scrollWidth
@@ -91,6 +122,7 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
       await page.goto(route);
       await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+      await waitForSettingsContent(route);
       const dimensions=await page.evaluate(()=>({
         viewport:document.documentElement.clientWidth,
         scroll:document.documentElement.scrollWidth
