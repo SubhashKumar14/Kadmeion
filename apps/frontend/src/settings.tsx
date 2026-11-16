@@ -4,6 +4,7 @@ import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-p
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
 import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
+import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
 
 const settingsLinks = [
@@ -463,6 +464,8 @@ function Trash({service}: {service: Services['trash']}) {
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [now, setNow] = useState(Date.now);
+  const [expiredByServer, setExpiredByServer] = useState<Set<string>>(()=>new Set());
   useEffect(() => {
     let active = true;
     setItems(null);
@@ -472,14 +475,40 @@ function Trash({service}: {service: Services['trash']}) {
     return () => {active = false;};
   }, [service, reload]);
 
+  useEffect(()=>{
+    if (!items?.length) return;
+    const next = Math.min(...items.map(item=>Date.parse(item.restore_until)).filter(deadline=>deadline>now));
+    const update = () => setNow(Date.now());
+    const timer = Number.isFinite(next)
+      ? window.setTimeout(update, Math.max(0,next-Date.now()))
+      : undefined;
+    window.addEventListener('focus',update);
+    document.addEventListener('visibilitychange',update);
+    return ()=>{
+      if (timer!==undefined) window.clearTimeout(timer);
+      window.removeEventListener('focus',update);
+      document.removeEventListener('visibilitychange',update);
+    };
+  },[items,now]);
+
   async function restore(item: PrivateTrashEntry) {
-    if (busy) return;
+    const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
+    if (busy || expiredByServer.has(key)) return;
+    if (Date.parse(item.restore_until)<=Date.now()) {
+      setNow(Date.now());
+      setMessage({error:true,text:'The restore deadline has passed.'});
+      return;
+    }
     setBusy(true); setMessage(null);
     try {
       await service.restore(item.item_type, item.item_id);
       setItems(current => current?.filter(row => row.item_id !== item.item_id || row.item_type !== item.item_type) ?? []);
       setMessage({error: false, text: 'Item restored as private.'});
-    } catch (error) {setMessage(failure(error));}
+    } catch (error) {
+      if (error instanceof PrivateTrashError && error.code==='TRASH_EXPIRED')
+        setExpiredByServer(current=>new Set(current).add(key));
+      setMessage(failure(error));
+    }
     finally {setBusy(false);}
   }
 
@@ -490,7 +519,8 @@ function Trash({service}: {service: Services['trash']}) {
       onClick={() => setReload(value => value + 1)}>Retry Trash</button>}
     {items?.length === 0 && <p>Trash is empty.</p>}
     <ul className="ws-settings-records">{items?.map(item => {
-      const expired = Date.parse(item.restore_until) <= Date.now();
+      const expired = Date.parse(item.restore_until)<=now ||
+        expiredByServer.has(item.item_type+':'+item.item_id+':'+item.trashed_at);
       return <li key={item.item_type + ':' + item.item_id}>
         <strong>{item.item_type} · {item.item_id.slice(0, 8)}</strong>
         <p>Moved to Trash <time dateTime={item.trashed_at}>{new Date(item.trashed_at).toLocaleString()}</time></p>

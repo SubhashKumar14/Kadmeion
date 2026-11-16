@@ -86,13 +86,14 @@ function Activity({service}:{service:SupabasePrivateGoalsService}){
   const [id,setId]=useState('');
   const [events,setEvents]=useState<GoalProgress[]|null>(null);
   const [eventError,setEventError]=useState('');
+  const [attempt,setAttempt]=useState(0);
   useEffect(()=>{
     let active=true;setEvents(null);setEventError('');
     if(!id)return;
     void service.listProgress(id).then(items=>{if(active)setEvents(items);})
       .catch(err=>{if(active)setEventError(presentError(err));});
     return ()=>{active=false;};
-  },[service,id]);
+  },[service,id,attempt]);
   return <section className="ws-project-aside">
     <h2>Manual activity history</h2>
     <p>Entries are self-recorded values, not GitHub commits, coding-platform statistics or a verified daily streak.</p>
@@ -102,7 +103,10 @@ function Activity({service}:{service:SupabasePrivateGoalsService}){
       <option value="">Choose a goal to inspect</option>
       {goals.map(goal=><option key={goal.id} value={goal.id}>{goal.title}</option>)}
     </select></label>}
-    {eventError&&<p role="alert">{eventError}</p>}
+    {eventError&&<div><p role="alert">{eventError}</p>
+      <button className="ws-secondary" type="button"
+        onClick={()=>setAttempt(value=>value+1)}>Retry activity history</button>
+    </div>}
     {id&&events===null&&!eventError&&<p role="status">Loading manual progress history…</p>}
     {events?.length===0&&<p>No manual progress has been recorded for this goal.</p>}
     {!!events?.length&&<ol className="ws-growth-events">{events.map(item=><li key={item.id}>

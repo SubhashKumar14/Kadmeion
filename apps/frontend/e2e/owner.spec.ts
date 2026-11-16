@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
-import { importPortfolioSourceZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
+import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
 
@@ -29,10 +29,11 @@ async function localUser(label: string) {
 
 /** Only isolated CI Postgres on loopback: strictly never the hosted project.
  * The privileged SQL is test fixture setup; browser calls remain owner JWT. */
-function grantLocalOperatorRole(userId:string){
+function runLocalFixtureSql(sql:string, userId:string, itemId?:string){
   if(process.env.KADMEION_LOCAL_BROWSER!=='1'||process.env.VITE_SUPABASE_URL!==origin||
-     !/^[0-9a-f]{8}-[0-9a-f-]{27,40}$/i.test(userId))
-    throw new Error('Operator fixture is restricted to disposable local Supabase.');
+     !/^[0-9a-f]{8}-[0-9a-f-]{27,40}$/i.test(userId) ||
+     (itemId!==undefined && !/^[0-9a-f]{8}-[0-9a-f-]{27,40}$/i.test(itemId)))
+    throw new Error('SQL fixtures are restricted to disposable local Supabase.');
   const envText=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:15000});
   const match=/^(?:export )?DB_URL=["']?([^"'\r\n]+)["']?$/m.exec(envText);
   if(!match?.[1])throw new Error('Local PostgreSQL connection unavailable.');
@@ -40,12 +41,16 @@ function grantLocalOperatorRole(userId:string){
   if(url.protocol!=='postgresql:'||!['localhost','127.0.0.1'].includes(url.hostname)||
      url.port!=='54322'||url.username!=='postgres'||url.pathname!=='/postgres')
     throw new Error('Refusing any nonlocal PostgreSQL fixture target.');
-  const sql="insert into kadmeion_private.operator_roles(user_id,role) values (:'actor_id'::uuid,'administrator');";
-  execFileSync('psql',['-X','-q','-v','ON_ERROR_STOP=1','-v','actor_id='+userId],{
+  const variables=['-v','actor_id='+userId,...(itemId===undefined?[]:['-v','item_id='+itemId])];
+  return execFileSync('psql',['-X','-qAt','-v','ON_ERROR_STOP=1',...variables],{
     input:sql,encoding:'utf8',timeout:15000,
     env:{...process.env,PGHOST:url.hostname,PGPORT:url.port,
       PGDATABASE:'postgres',PGUSER:'postgres',PGPASSWORD:decodeURIComponent(url.password)}
-  });
+  }).trim();
+}
+
+function grantLocalOperatorRole(userId:string){
+  runLocalFixtureSql("insert into kadmeion_private.operator_roles(user_id,role) values (:'actor_id'::uuid,'administrator');",userId);
 }
 
 async function signIn(page: Page, user: {email: string; password: string}) {
@@ -189,7 +194,11 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Private progress, not a leaderboard.')).toBeVisible();
   await capture('35_GROWTH_BROWSER');
   await page.goto('/app/growth/activity');
+  await page.route('**/rest/v1/private_goal_progress_events?*',route=>route.abort(),{times:1});
   await page.getByLabel('Activity goal').selectOption({label: 'CI private practice goal'});
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByText('Private self-reported update')).toHaveCount(0);
+  await page.getByRole('button',{name:'Retry activity history'}).click();
   await expect(page.getByText('Private self-reported update')).toBeVisible();
   await capture('36_ACTIVITY_BROWSER');
   await page.goto('/app/growth/devscore');
@@ -1035,4 +1044,92 @@ test('new email/password account can open the workspace immediately', async ({pa
       expect(layout.scrollWidth, route + ' at ' + width).toBeLessThanOrEqual(layout.viewport + 2);
     }
   }
+});
+
+test('eligible private static ZIP and expired Trash remain owner scoped',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase and GoTrue.');
+  test.setTimeout(85_000);
+  const owner=await localUser('F05 private archive owner');
+  await signIn(page,owner);
+  await page.setViewportSize({width:1600,height:1000});
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Blank',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('Offline portfolio fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'Offline portfolio fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const portfolioId=editorPath.split('/')[3]!;
+
+  await page.getByRole('button',{name:'Sections',exact:true}).click();
+  await page.getByLabel('Section layout').selectOption('stepped-hero@1');
+  await page.getByRole('button',{name:'Add section',exact:true}).click();
+  await page.getByRole('button',{name:'New section: title',exact:true}).click();
+  await page.getByRole('button',{name:'Choose compatible component'}).click();
+  await page.getByRole('button',{name:/Heading title-stacked@1/}).click();
+  await page.getByRole('button',{name:'Add to empty slot'}).click();
+  await page.getByLabel('Text content').fill('Private archive example');
+  await page.getByRole('button',{name:'Apply text'}).click();
+  await page.getByRole('button',{name:'Metadata',exact:true}).click();
+  await page.getByLabel('SEO page title').fill('Offline portfolio');
+  await page.getByLabel('SEO description').fill('A saved portfolio rendered as an offline private preview.');
+  await page.getByRole('button',{name:'Apply SEO metadata to draft'}).click();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByText('Private portfolio draft saved.')).toBeVisible();
+
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(portfolioId);
+  await page.getByRole('link',{name:'Open preflight for selected portfolio'}).click();
+  await expect(page).toHaveURL(editorPath.replace('/edit','/publish'));
+  await page.getByRole('button',{name:'Run private preflight'}).click();
+  const archiveButton=page.getByRole('button',{name:'Download offline static preview ZIP'});
+  await expect(archiveButton).toBeEnabled();
+  const [archive]=await Promise.all([page.waitForEvent('download'),archiveButton.click()]);
+  const path=await archive.path();
+  expect(path).toBeTruthy();
+  const files=readStrictStoredZip(new Uint8Array(await readFile(path!)),{
+    maxEntries:3,maxBytes:1024*1024,maxEntryBytes:750000
+  });
+  expect([...files.keys()].sort()).toEqual(['README.txt','index.html','kadmeion-static-preview.json']);
+  const html=files.get('index.html')!;
+  const manifest=JSON.parse(new TextDecoder().decode(files.get('kadmeion-static-preview.json')));
+  expect(manifest).toMatchObject({previewOnly:true,publicUrl:null,
+    files:[{path:'index.html',bytes:html.length,sha256:createHash('sha256').update(html).digest('hex')}]});
+  const markup=new TextDecoder().decode(html);
+  expect(markup).toContain('<h1>Private archive example</h1>');
+  expect(markup).toContain('noindex,nofollow,noarchive');
+  expect(markup).not.toContain('<script');
+  await expect(page.getByRole('button',{name:'Publish unavailable — host proof required'})).toBeDisabled();
+
+  await page.goto('/app/portfolios');
+  await page.getByRole('listitem').filter({hasText:'Offline portfolio fixture'})
+    .getByRole('button',{name:'Move to Trash'}).click();
+  await page.getByRole('button',{name:'Confirm move to Trash'}).click();
+  await expect(page).toHaveURL('/app/trash');
+  const restore=page.getByRole('button',{name:'Restore privately'});
+  await expect(restore).toBeEnabled();
+  // Age only this disposable owner's journal and matching record while the
+  // browser displays the previous deadline. The actual owner RPC rejects it.
+  const changed=runLocalFixtureSql(`
+    with journal as (
+      update public.private_trash_items
+      set trashed_at=statement_timestamp()-interval '16 days',
+          restore_until=statement_timestamp()-interval '1 day'
+      where owner_user_id=:'actor_id'::uuid and item_id=:'item_id'::uuid
+        and item_type='portfolio' and restored_at is null
+      returning item_id,trashed_at
+    ), portfolio as (
+      update public.portfolios item set trashed_at=journal.trashed_at
+      from journal where item.id=journal.item_id and item.owner_user_id=:'actor_id'::uuid
+      returning item.id
+    )
+    select count(*) from portfolio;
+  `,owner.id,portfolioId);
+  expect(changed).toBe('1');
+  await restore.click();
+  await expect(page.getByRole('alert')).toContainText('15-day restoration window has ended');
+  await expect(restore).toBeDisabled();
+  await page.reload();
+  await expect(page.getByText('Recovery window ended. Restore is unavailable.')).toBeVisible();
+  await expect(restore).toBeDisabled();
+  await expect(page.getByRole('button',{name:/permanent/i})).toHaveCount(0);
 });
