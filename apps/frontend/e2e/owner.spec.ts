@@ -1490,10 +1490,9 @@ test('S6 real 135 owner projects preserve microsecond-tie keyset ordering and ow
   expect(empty.data?.items).toEqual([]);
 });
 
-test('S6 S2 candidate paginates 135 projects and searches only the loaded pages',async({page})=>{
-  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1'||
-    process.env.KADMEION_S2_PAGINATION_CANDIDATE!=='1',
-    'Requires integrated S1+S2 candidate and isolated owner service.');
+test('S6 S2 integrated paginates 135 projects and retries a 429 without losing pages',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
+    'Requires integrated S1+S2 and isolated owner service.');
   test.setTimeout(115_000);
   const owner=await localUser('S6 S2 paged browser');
   expect(runLocalFixtureSql(
@@ -1517,9 +1516,24 @@ test('S6 S2 candidate paginates 135 projects and searches only the loaded pages'
   await expect(count).toContainText('Search and sorting apply only to loaded records');
   await search.fill('');
   const more=page.getByRole('button',{name:'Load more projects'});
+  let injected429=false;
+  await page.route('**/rest/v1/projects?*',async route=>{
+    const url=new URL(route.request().url());
+    if(!injected429&&route.request().method()==='GET'&&url.searchParams.has('or')){
+      injected429=true;
+      await route.fulfill({status:429,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable next-page rate limit'})});
+    }else await route.continue();
+  });
   await more.focus();
   await page.keyboard.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('Too many private workspace requests');
+  await expect(count).toContainText('50 loaded private projects');
+  const retryPage=page.getByRole('button',{name:'Retry loading more projects'});
+  await retryPage.focus();
+  await page.keyboard.press('Enter');
   await expect(count).toContainText('100 loaded private projects');
+  expect(injected429).toBe(true);
   await more.click();
   await expect(count).toContainText('135 loaded private projects');
   await expect(more).toHaveCount(0);
