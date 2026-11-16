@@ -83,18 +83,24 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const [confirmed, setConfirmed] = useState(false);
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
   const fields: [keyof SharingPreferences, string][] = [
     ['shareDisplayName', 'Display name'], ['shareHeadline', 'Headline'], ['shareBio', 'About you']
   ];
   useEffect(() => {
     let active = true;
+    setPrefs(null);
+    setConfirmed(false);
+    setMessage(null);
     void port.ownerSharingPreferences().then(result => {
       if (!active) return;
       if (result.data) setPrefs(result.data);
       else setMessage({error: true, text: result.error?.message ?? 'Privacy preferences are unavailable.'});
+    }).catch(() => {
+      if (active) setMessage({error: true, text: 'Privacy preferences could not be loaded.'});
     });
     return () => {active = false;};
-  }, [port]);
+  }, [port, reload]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -118,6 +124,8 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
     <p>Choose eligible fields. Activating public delivery requires a separate publication action.</p>
     <Status message={message}/>
     {!prefs && !message && <p role="status">Loading sharing preferences…</p>}
+    {!prefs && message?.error && <button type="button" className="ws-secondary"
+      onClick={() => setReload(value => value + 1)}>Retry sharing preferences</button>}
     {prefs && <form onSubmit={event => void save(event)}>
       <fieldset disabled={busy}>
         <legend>Shareable profile fields</legend>
@@ -270,12 +278,15 @@ function Trash({service}: {service: Services['trash']}) {
   const [items, setItems] = useState<PrivateTrashEntry[] | null>(null);
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let active = true;
+    setItems(null);
+    setMessage(null);
     void service.list().then(rows => {if (active) setItems(rows);})
       .catch(error => {if (active) setMessage(failure(error));});
     return () => {active = false;};
-  }, [service]);
+  }, [service, reload]);
 
   async function restore(item: PrivateTrashEntry) {
     if (busy) return;
@@ -291,7 +302,9 @@ function Trash({service}: {service: Services['trash']}) {
   return <SettingsCard title="Recoverable items">
     <Status message={message}/>
     {!items && !message && <p role="status">Loading Trash…</p>}
-    {items?.length === 0 && <p>Trash is empty.</p>}
+    {!items && message?.error && <button type="button" className="ws-secondary"
+      onClick={() => setReload(value => value + 1)}>Retry Trash</button>}
+    {items?.length === 0 && <p>Trash is empty.</p>
     <ul className="ws-settings-records">{items?.map(item => {
       const expired = Date.parse(item.restore_until) <= Date.now();
       return <li key={item.item_type + ':' + item.item_id}>
@@ -337,7 +350,7 @@ function AccountExit({service}: {service: Services['account']}) {
   const [busy, setBusy] = useState(false);
   async function check() {
     if (busy) return;
-    setBusy(true); setMessage(null);
+    setBusy(true); setMessage(null); setInventory(null);
     try {setInventory(await service.preflight());}
     catch (error) {setMessage(failure(error));}
     finally {setBusy(false);}
