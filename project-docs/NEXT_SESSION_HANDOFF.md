@@ -1,3 +1,15 @@
+## 16 November 2026 — F05 browser workflows and private appeal review
+
+Continued from `675f8e3` on `feat/b0-backend-foundation`. F05 covers P1 account settings, operations and system states, followed by the approved data-backed or explicitly deferred Growth screens.
+
+- `589924d` closes locally reproducible gaps in private archives, Trash expiry and Growth activity. The browser creates a saved text-only portfolio, downloads its offline ZIP from real private preflight and checks archive contents, HTML SHA-256, noindex and script exclusion. The Trash screen updates at the nearest recovery deadline or when focus returns. A real backend expiry result disables a stale row and reload reports the same recovery boundary. The Activity screen retains the selected goal and retries its private history after a failed read.
+- `5c3d25d` adds owner-private case selection, event history and appeal submission at `/app/settings/cases`, linked from Privacy and moderation notifications. The restricted operator opens the original case summary and latest owner statement before entering a rationale. A forward-only Supabase migration grants access to the selected pending evidence only after a live session and operator role check. Isolated tests also exercise direct denial for a signed-in owner lacking the operator role, and owner readback of the recorded decision.
+- **Evidence at source `5c3d25df45b8b42b28f9685d9001aee28a630209`:** Both exact-source workflows passed. Verified 20 public Chromium checks, eight authenticated Chromium scenarios, 511 pgTAP assertions, 512 Node contract tests, build, and isolated service integrations. [Frontend CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43878681601) · [Application and database CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43878681703). All 52 approved PNG prefixes and the 53 workflow, 138 UAT and 20 proof inventories also passed structural validation. One forward-only security migration brings the authored path count to 263 against the original 200-path proposal.
+- **F05 boundaries:** physical item purge is service-only with its recovery and storage checks. Final account erasure, verified withdrawal/restoration of externally served content, provider notices/sync and hosted deployment of the new appeal-evidence migration retain their documented proof requirements. No new paid service or public-release activation was performed.
+- **Next phase F06:** use the [per-screen evidence matrix](registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md) to run the full desktop and mobile review in both themes, keyboard and assistive-technology acceptance, and case-by-case workflow/UAT verification. Track external hosted delivery and trusted starter source proof separately.
+
+---
+
 ## 16 November 2026 — Private account lifecycle and portable export
 
 Started from `7ecea29` after reconciling the Notion and GitHub checkpoint. Implemented the next F5 account lifecycle slice on `feat/b0-backend-foundation`.
