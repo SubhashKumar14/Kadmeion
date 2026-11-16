@@ -470,6 +470,8 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   // A private preflight may examine another saved revision without
                   // reusing an old immutable freeze/digest or its idempotency key.
                   // Revoked grants stay revoked in the stored grant history.
+                  historySelectionEpoch.current+=1;
+                  setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
                   setFrozen(null);setResult(null);setGrant(null);setConfirmRevoke(false);
                   operation.current=null;grantOperation.current=null;
                 }}>Choose another saved revision or visibility intent</button>}
@@ -516,7 +518,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   A loading or failed preview cannot be used as evidence.
                 </p>}
               <button type="button" className="ws-secondary"
-                disabled={busy || pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError}
+                disabled={busy || historySelection!==null || pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError}
                 onClick={()=>void registerReviewer()}>
                 {busy?'Registering…':'Register private reviewer grant'}</button>
             </> : <>
@@ -569,9 +571,10 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
 }
 
 
-function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
+function FrozenRequestHistory({requests,error,onSelect,activeRequestId,selectionDisabled}:{
   requests:OwnerFrozenRequest[]|null;error:string;
-  onSelect?:(request:OwnerFrozenRequest)=>void;activeRequestId?:string
+  onSelect?:(request:OwnerFrozenRequest)=>void;activeRequestId?:string;
+  selectionDisabled?:boolean
 }) {
   return <section className="ws-release-action" role="group" aria-labelledby="frozen-history-title">
     <h3 id="frozen-history-title">Frozen private requests</h3>
@@ -587,6 +590,7 @@ function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
           <p>Snapshot fingerprint <code>{request.snapshotSha256.slice(0,12)}…</code> · Not published</p>
         </div>
         {onSelect&&<button type="button" className="ws-secondary"
+          disabled={selectionDisabled}
           aria-pressed={activeRequestId===request.requestId}
           onClick={()=>onSelect(request)}>
           {activeRequestId===request.requestId?'Frozen request selected':'Use frozen revision '+request.revision}
