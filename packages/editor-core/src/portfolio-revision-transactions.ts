@@ -280,7 +280,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     if(position<0||target<0||target>=page.sections.length)
       throw new ContractError('VALIDATION','Selected section cannot move in this direction.');
     const moved=page.sections.slice();
-    [moved[position],moved[target]]=[moved[target],moved[position]];
+    [moved[position],moved[target]]=[moved[target]!,moved[position]!];
     next.files[path]=JSON.stringify({...page,sections:moved});
   } else {
     assertSlotKey(intent.slotKey);
