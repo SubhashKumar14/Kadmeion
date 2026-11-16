@@ -553,6 +553,47 @@ test('real owner onboarding and project revision are private across browser sess
     viewport:document.documentElement.clientWidth}));
   expect(shareWidths.scroll).toBeLessThanOrEqual(shareWidths.viewport+2);
   await capture('34_SHARING_PHONE_BROWSER');
+
+  // F4/F6: audit the real authenticated release shell, not a screenshot-sized
+  // mockup. These remain owner-private states; no host URL is enabled here.
+  const releaseStages=[
+    ['staging','Reviewer staging.','27_STAGING'],
+    ['publish','Publish preflight.','29_PREFLIGHT'],
+    ['releases','Releases & rollback.','30_RELEASES'],
+    ['share','Sharing controls.','34_SHARING']
+  ] as const;
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+  for(const width of [390,320]){
+    await page.setViewportSize({width,height:844});
+    for(const [stage,heading,label] of releaseStages){
+      await page.goto(editorPath.replace('/edit','/'+stage));
+      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await expect(page.getByRole('navigation',{name:'Release steps'})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+      const sizes=await page.evaluate(()=>({
+        viewport:document.documentElement.clientWidth,
+        scroll:document.documentElement.scrollWidth
+      }));
+      expect(sizes.scroll,stage+' dark route overflows at '+width+'px')
+        .toBeLessThanOrEqual(sizes.viewport+2);
+      if(width===390)await capture(label+'_DARK_PHONE_BROWSER');
+    }
+  }
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  await page.setViewportSize({width:390,height:844});
+  for(const [stage,heading,label] of releaseStages){
+    await page.goto(editorPath.replace('/edit','/'+stage));
+    await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+    const sizes=await page.evaluate(()=>({
+      viewport:document.documentElement.clientWidth,
+      scroll:document.documentElement.scrollWidth
+    }));
+    expect(sizes.scroll,stage+' light route overflows at 390px')
+      .toBeLessThanOrEqual(sizes.viewport+2);
+    await capture(label+'_LIGHT_PHONE_BROWSER');
+  }
   await page.setViewportSize({width:1600,height:1000});
   await page.goto(editorPath+'?panel=Metadata');
   await expect(page.getByRole('heading',{name:'Page metadata'})).toBeVisible();
