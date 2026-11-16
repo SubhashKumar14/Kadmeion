@@ -584,8 +584,10 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
       event.key==='ArrowLeft'?(index+last)%views.length:
       event.key==='Home'?0:event.key==='End'?last:null;
     if(next===null)return;
+    const nextView=views[next];
+    if(!nextView)return;
     event.preventDefault();
-    setTab(views[next]);
+    setTab(nextView);
     event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]').item(next)?.focus();
   }
   return <div className="ws-revision-workspace">
