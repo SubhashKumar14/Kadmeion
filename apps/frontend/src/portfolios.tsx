@@ -175,22 +175,80 @@ function DeviceLimit({id}: {id?: string}) {
   </section>;
 }
 
+/** Mirrors S1's additive v1 cursor without assuming this isolated S3 branch
+ * already contains S1's auth-port commit. Once S0 integrates both branches the
+ * exact S1 method is used; older adapter instances remain explicitly bounded. */
+type OwnerPortfolioCursor = Readonly<{
+  version: 1; collection: 'projects' | 'portfolios'; ownerUserId: string;
+  updatedAt: string; id: string;
+}>;
+type PortfolioPage = {items: OwnerPortfolio[]; nextCursor: OwnerPortfolioCursor | null};
+type PagedPortfolioPort = SupabaseBrowserAuthPort & {
+  listOwnerPortfoliosPage?: (
+    pageSize?: number, after?: OwnerPortfolioCursor | null
+  ) => Promise<{data: PortfolioPage | null; error: {message: string} | null}>;
+};
+
 export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
   const [items, setItems] = useState<OwnerPortfolio[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<OwnerPortfolioCursor | null>(null);
+  const [isPaged, setIsPaged] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [attempt, setAttempt] = useState(0);
+  const [request, setRequest] = useState<{
+    after: OwnerPortfolioCursor | null; reset: boolean; sequence: number;
+  }>({after: null, reset: true, sequence: 0});
   const [query, setQuery] = useState('');
+
+  // A reset re-reads the first page, including when the owner context
+  // changes via an S0-controlled remount. Load-more requests preserve rows on
+  // failure; stale promises from prior cursor requests never update the view.
   useEffect(() => {
     let active = true;
-    void port.listOwnerPortfolios().then(result => {
+    setError('');
+    setLoading(true);
+    if (request.reset) {setItems(null); setNextCursor(null);}
+    const paged = port as PagedPortfolioPort;
+    const available = typeof paged.listOwnerPortfoliosPage === 'function';
+    setIsPaged(available);
+    const fetchPage = available
+      ? paged.listOwnerPortfoliosPage!(50, request.after)
+      : port.listOwnerPortfolios().then(result => ({
+          data: result.data ? {items: result.data, nextCursor: null} : null,
+          error: result.error
+        }));
+    void fetchPage.then(result => {
       if (!active) return;
-      if (result.data) {setItems(result.data); setError('');}
-      else setError(result.error?.message ?? 'Your portfolios could not be loaded.');
+      if (!result.data) {
+        setError(result.error?.message ?? 'Your portfolios could not be loaded.');
+        return;
+      }
+      const page = result.data;
+      if (!Array.isArray(page.items) || page.nextCursor?.collection !== undefined &&
+          page.nextCursor.collection !== 'portfolios') {
+        setError('The portfolio page could not be verified. Refresh before continuing.');
+        return;
+      }
+      setItems(previous => {
+        if (request.reset || !previous) return page.items;
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.items.filter(item => !seen.has(item.id))];
+      });
+      setNextCursor(page.nextCursor);
+      setError('');
     }).catch(() => {
-      if (active) setError('The private portfolio service is unavailable. Try again.');
-    });
+      if (active) setError('The private portfolio service is unavailable. Retry without losing the loaded rows.');
+    }).finally(() => {if (active) setLoading(false);});
     return () => {active = false;};
-  }, [port, attempt]);
+  }, [port, request]);
+
+  function refresh() {
+    setRequest(previous => ({after: null, reset: true, sequence: previous.sequence + 1}));
+  }
+  function loadMore() {
+    if (loading || !isPaged || !nextCursor) return;
+    setRequest(previous => ({after: nextCursor, reset: false, sequence: previous.sequence + 1}));
+  }
   const displayed = items?.filter(item => item.title.toLowerCase().includes(query.trim().toLowerCase()));
   return <section aria-labelledby="studio-title" className="ws-owner-page">
     <div className="ws-project-head"><div className="ws-heading">
@@ -198,8 +256,13 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
       <h1 id="studio-title">Your portfolios.</h1>
       <p>Create and manage your independent portfolio drafts.</p>
     </div><a className="ws-primary" href={STUDIO + '/new'}>Create portfolio <Icon name="arrow" size={15}/></a></div>
-    {error && <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary"
-      onClick={() => {setError(''); setAttempt(value => value + 1);}}>Retry portfolio library</button></>}
+    {error && <><p role="alert" className="ws-inline-alert">{error}</p><div className="ws-actions">
+      <button type="button" className="ws-secondary" disabled={loading}
+        onClick={() => setRequest(previous => ({...previous, sequence: previous.sequence + 1}))}>
+        Retry {request.reset ? 'portfolio library' : 'next page'}</button>
+      {!request.reset && <button type="button" className="ws-secondary" disabled={loading}
+        onClick={refresh}>Refresh from first page</button>}
+    </div></>}
     {!items && !error && <p role="status">Loading your portfolios…</p>}
     {items && <div className="ws-project-detail ws-owner-columns">
       <div className="ws-studio-list">
@@ -210,7 +273,8 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
           <h2>No portfolios yet.</h2><p>Choose a preset or start with a blank draft.</p>
           <a className="ws-primary" href={STUDIO + '/new'}>Create your first portfolio</a>
         </div>}
-        {displayed?.length === 0 && items.length > 0 && <p>No portfolios match your search.</p>}
+        {displayed?.length === 0 && items.length > 0 &&
+          <p>No loaded portfolios match your search. Load more to search older records.</p>}
         {!!displayed?.length && <ul className="ws-studio-records">{displayed.map(item => {
           const preset = presets.find(candidate => candidate.id === item.templateId);
           return <li key={item.id}>
@@ -224,7 +288,20 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
             </div>
           </li>;
         })}</ul>}
-        {items.length === 100 && <p>Showing the latest 100 portfolios.</p>}
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={loading} onClick={refresh}>
+            Refresh portfolios</button>
+          {isPaged && nextCursor && <button type="button" className="ws-secondary"
+            disabled={loading || !!error} onClick={loadMore}>
+            {loading ? 'Loading…' : 'Load more portfolios'}</button>}
+        </div>
+        {loading && items && <p role="status">Loading private portfolio records…</p>}
+        {isPaged ? <p className="ws-footnote">{items.length} portfolio records loaded.
+          {nextCursor ? ' More records may be available.' : ' No further page is indicated.'}
+          {' '}Search filters loaded records only; refresh after changes in another tab.</p>
+          : <p className="ws-footnote">This editor instance uses the legacy bounded portfolio list.
+            {items.length === 100 ? ' Only the latest 100 records are shown.' : ''}
+            {' '}Pagination becomes available after the updated private adapter is loaded.</p>}
       </div>
       <aside className="ws-project-aside"><h2 className="ws-owner-aside-title">From draft to live.</h2>
         <ol className="ws-project-guide">
