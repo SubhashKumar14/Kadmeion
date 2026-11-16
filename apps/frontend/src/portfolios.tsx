@@ -149,7 +149,7 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
     return () => {active = false;};
   }, [port, attempt]);
   const displayed = items?.filter(item => item.title.toLowerCase().includes(query.trim().toLowerCase()));
-  return <section aria-labelledby="studio-title">
+  return <section aria-labelledby="studio-title" className="ws-owner-page">
     <div className="ws-project-head"><div className="ws-heading">
       <p className="ws-kicker">PORTFOLIO STUDIO</p>
       <h1 id="studio-title">Your portfolios.</h1>
@@ -158,8 +158,8 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
     {error && <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary"
       onClick={() => {setError(''); setAttempt(value => value + 1);}}>Retry portfolio library</button></>}
     {!items && !error && <p role="status">Loading your portfolios…</p>}
-    {items && <div className="ws-project-detail">
-      <div className="ws-project-aside ws-studio-list">
+    {items && <div className="ws-project-detail ws-owner-columns">
+      <div className="ws-studio-list">
         {items.length > 0 && <label className="ws-studio-search">Find a portfolio<input type="search" value={query} onChange={event => setQuery(event.target.value)}/></label>}
         {!items.length && <div className="ws-project-empty">
           <img className="ws-brand-folio" src="/brand/kadmeion-open-folio.svg"
@@ -168,14 +168,18 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
           <a className="ws-primary" href={STUDIO + '/new'}>Create your first portfolio</a>
         </div>}
         {displayed?.length === 0 && items.length > 0 && <p>No portfolios match your search.</p>}
-        {!!displayed?.length && <ul className="ws-studio-records">{displayed.map(item => <li key={item.id}>
-          <div><h2><a href={editorPath(item.id)}>{item.title}</a></h2>
-            <p>{item.revision ? 'Draft revision ' + item.revision : 'Setup pending'}</p></div>
-          <a className="ws-secondary" href={editorPath(item.id)} aria-label={'Open ' + item.title}>Open draft</a>
-        </li>)}</ul>}
+        {!!displayed?.length && <ul className="ws-studio-records">{displayed.map(item => {
+          const preset = presets.find(candidate => candidate.id === item.templateId);
+          return <li key={item.id}>
+            <div className="ws-studio-record-icon" aria-hidden="true"><Icon name="layers" size={23}/></div>
+            <div><h2><a href={editorPath(item.id)}>{item.title}</a></h2>
+              <p>{item.revision ? 'Draft revision ' + item.revision : 'Setup pending'}{preset && ' · ' + preset.title + ' starting layout'}</p></div>
+            <a className="ws-secondary" href={editorPath(item.id)} aria-label={'Open ' + item.title}>Open draft</a>
+          </li>;
+        })}</ul>}
         {items.length === 100 && <p>Showing the latest 100 portfolios.</p>}
       </div>
-      <aside className="ws-project-aside"><p className="ws-kicker">AUTHORING JOURNEY</p><h2>From draft to live.</h2>
+      <aside className="ws-project-aside"><h2 className="ws-owner-aside-title">From draft to live.</h2>
         <ol className="ws-project-guide">
           <li><strong>Choose a foundation</strong> Pick a starter layout or a blank canvas.</li>
           <li><strong>Build and preview</strong> Review your draft before release.</li>
@@ -217,25 +221,28 @@ export function PortfolioChooser({port}: {port: SupabaseBrowserAuthPort}) {
     }
   }
 
-  return <section aria-labelledby="choose-title">
+  return <section aria-labelledby="choose-title" className="ws-owner-page ws-owner-chooser">
     <div className="ws-heading"><a href={STUDIO}>Back to portfolios</a><p className="ws-kicker">NEW PORTFOLIO</p>
       <h1 id="choose-title">Choose your foundation.</h1>
       <p>Compare the curated layouts before creating a private draft.</p>
     </div>
-    {!allowed ? <DeviceLimit/> : <form className="ws-project-detail" onSubmit={event => void create(event)}>
-      <fieldset className="ws-project-fields" disabled={saving || !!pending}>
+    {!allowed ? <DeviceLimit/> : <form className="ws-project-detail ws-owner-columns" onSubmit={event => void create(event)}>
+      <fieldset className="ws-project-fields ws-preset-browser" disabled={saving || !!pending}>
         <legend>Curated starting points</legend>
+        <div className="ws-preset-feature" aria-label="Selected layout preview">
+          {selected.id === 'blank' ? <div className="ws-blank-template" aria-hidden="true"><Icon name="layers" size={30}/></div>
+            : <TemplateGraphic tone={selected.tone}/>}
+          <div><h2>{selected.title}</h2><p>{selected.detail}</p></div>
+        </div>
         <div className="ws-studio-presets">{presets.map(preset => <label key={preset.id} className="ws-studio-preset">
           <input type="radio" name="portfolio-preset" value={preset.id} checked={choice === preset.id} onChange={() => setChoice(preset.id)}/>
-          {preset.id === 'blank' ? <div className="ws-blank-template" aria-hidden="true">＋</div> : <TemplateGraphic tone={preset.tone}/>}
-          <strong>{preset.title}</strong><small>{preset.detail}</small>
+          {preset.id === 'blank' ? <div className="ws-blank-template" aria-hidden="true"><Icon name="layers" size={20}/></div> : <TemplateGraphic tone={preset.tone}/>}
+          <strong>{preset.title}</strong>
         </label>)}</div>
       </fieldset>
       <div className="ws-project-fields">
-        <p className="ws-kicker">SELECTED PRESET</p>
-        <h2>{selected.title}</h2>
-        {selected.id === 'blank' ? <div className="ws-blank-template" aria-hidden="true">＋</div> : <TemplateGraphic tone={selected.tone}/>}
-        <p>{selected.detail}</p>
+        <h2 className="ws-owner-aside-title">Set up your draft</h2>
+        <p className="ws-draft-note">Start with {selected.title}. Your draft stays private until you publish it.</p>
         <fieldset disabled={saving || !!pending}>
           <label>Portfolio name<input required value={title} maxLength={120} onChange={event => {
             setTitle(event.target.value);

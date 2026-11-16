@@ -97,6 +97,15 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('link', {name: 'Create portfolio'})).toHaveAttribute('href', '/app/portfolios/new');
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('button', {name: 'Sign out', exact: true})).toBeVisible();
+  const mobileMenu = page.getByRole('button', {name: 'Menu', exact: true});
+  const workspaceNav = page.getByRole('navigation', {name: 'Workspace navigation'});
+  await expect(workspaceNav).toBeHidden();
+  await mobileMenu.click();
+  await expect(mobileMenu).toHaveAttribute('aria-expanded', 'true');
+  await workspaceNav.getByRole('link', {name: 'Profile'}).focus();
+  await page.keyboard.press('Escape');
+  await expect(mobileMenu).toBeFocused();
+  await expect(workspaceNav).toBeHidden();
   const pageWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   const overflowing = await page.evaluate(() => [...document.querySelectorAll('main *, header *')]
     .filter(element => element.getBoundingClientRect().right > innerWidth + 2)
@@ -119,6 +128,7 @@ test('real owner onboarding and project revision are private across browser sess
     await stale.goto('/app/profile');
     await expect(stale.getByLabel('Display name', {exact: true})).toBeVisible();
     await page.getByLabel('Headline', {exact: true}).fill('Private developer draft');
+    await page.getByRole('button', {name: 'Skills & links', exact: true}).click();
     await page.getByLabel('Add skill', {exact: true}).fill('TypeScript');
     await page.getByRole('button', {name: 'Add skill', exact: true}).click();
     await page.getByRole('button', {name: 'Save profile draft'}).click();
@@ -129,7 +139,15 @@ test('real owner onboarding and project revision are private across browser sess
     await expect(stale.getByLabel('Headline', {exact: true})).toHaveValue('Stale overwritten headline');
     await page.reload();
     await expect(page.getByLabel('Headline', {exact: true})).toHaveValue('Private developer draft');
+    const privatePreview = page.getByRole('complementary', {name: 'Public profile preview'});
+    await expect(privatePreview.getByText('Private developer draft')).toBeVisible();
+    await privatePreview.getByRole('checkbox', {name: 'Headline'}).uncheck();
+    await expect(privatePreview.getByText('Private developer draft')).toBeHidden();
+    await expect(page.getByRole('button', {name: 'Save profile draft'})).toBeDisabled();
+    await privatePreview.getByRole('checkbox', {name: 'Headline'}).check();
+    await page.getByRole('button', {name: 'Skills & links', exact: true}).click();
     await expect(page.getByRole('button', {name: 'Remove TypeScript'})).toBeVisible();
+    await page.getByRole('button', {name: 'Profile', exact: true}).click();
     await capture('12_PROFILE_BROWSER');
   } finally {
     await stale.close();
@@ -204,6 +222,9 @@ test('real owner onboarding and project revision are private across browser sess
   const drawer = page.getByRole('dialog', {name: 'Add a project'});
   await drawer.getByLabel('Project title').fill('Private browser project');
   await drawer.getByLabel('Summary (optional)').fill('Disposable local test project');
+  await drawer.getByText('Edit private URL slug', {exact: true}).click();
+  await expect(drawer.getByRole('textbox', {name: /^Private URL slug/})).toHaveValue('private-browser-project');
+  await drawer.getByText('Edit private URL slug', {exact: true}).click();
   await capture('14_PROJECT_DRAWER_BROWSER');
   await drawer.getByRole('button', {name: 'Save project'}).click();
   await expect(page.getByRole('status')).toContainText('Saved privately');
@@ -240,6 +261,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('link', {name: 'Create portfolio', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Choose your foundation.'})).toBeVisible();
   await capture('17_PORTFOLIO_CHOOSER_BROWSER');
+  const selectedLayout = page.locator('.ws-preset-feature');
+  await page.getByRole('radio', {name: 'Blank', exact: true}).check();
+  await expect(selectedLayout.getByRole('heading', {name: 'Blank'})).toBeVisible();
+  await page.getByRole('radio', {name: 'Arc', exact: true}).check();
+  await expect(selectedLayout.getByRole('heading', {name: 'Arc'})).toBeVisible();
   await page.getByLabel('Portfolio name').fill('Browser portfolio');
   await page.getByRole('button', {name: 'Choose template and create draft'}).click();
   await expect(page.getByRole('heading', {name: 'Browser portfolio', exact: true, level: 1})).toBeVisible();
@@ -637,10 +663,22 @@ test('new email/password account can open the workspace immediately', async ({pa
   await signIn(page, owner);
   await page.getByRole('link', {name:'Open private workspace'}).click();
   await expect(page).toHaveURL('/app');
-  for (const width of [1920, 1366, 390]) {
+  const populatedRoutes = [
+    ['/app', 'A place for what you build next.'],
+    ['/app/onboarding', 'Your developer identity starts here.'],
+    ['/app/profile', 'Your developer profile.'],
+    ['/app/projects', 'Project library.'],
+    ['/app/portfolios', 'Your portfolios.'],
+    ['/app/portfolios/new', 'Choose your foundation.'],
+  ] as const;
+  for (const width of [1920, 1366, 900, 390, 320]) {
     await page.setViewportSize({width, height:768});
-    for (const route of ['/app','/app/onboarding','/app/profile','/app/projects','/app/portfolios','/app/portfolios/new']) {
+    for (const [route, heading] of populatedRoutes) {
       await page.goto(route);
+      await expect(page.getByRole('heading', {name: heading, exact: true, level: 1})).toBeVisible();
+      if (route === '/app/profile') await expect(page.getByLabel('Display name', {exact: true})).toBeVisible();
+      if (route === '/app/portfolios/new' && width < 900)
+        await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
       const layout = await page.locator('.ws-shell').evaluate(element => ({
         width:element.getBoundingClientRect().width, viewport:document.documentElement.clientWidth,
         scrollWidth:document.documentElement.scrollWidth,

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { OwnerProfile, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 
+import { Icon } from './landing.tsx';
+
 type PreviewField = 'displayName' | 'headline' | 'bio';
 const previewFields: {key: PreviewField; label: string}[] = [
   {key: 'displayName', label: 'Display name'}, {key: 'headline', label: 'Headline'}, {key: 'bio', label: 'About you'}
@@ -69,7 +71,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
 
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
 
-  return <section aria-labelledby="profile-title" className="ws-profile">
+  return <section aria-labelledby="profile-title" className="ws-profile ws-owner-page">
     <form onSubmit={event => void save(event)}>
       <div className="ws-project-head">
         <div className="ws-heading">
@@ -93,7 +95,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
         <input type="checkbox" checked={withdrawal} onChange={event => setWithdrawal(event.target.checked)}/>
         Withdraw my current public profile when I save this draft
       </label>}
-      {draft && <div className="ws-project-detail">
+      {draft && <div className="ws-project-detail ws-owner-columns">
         <fieldset className="ws-project-fields" disabled={busy}>
           <legend>{panel}</legend>
           {panel === 'Profile' && <>
@@ -104,7 +106,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             <label>Headline<input value={draft.headline} maxLength={160} onChange={event => edit('headline', event.target.value)} /></label>
             <label>About you<textarea value={draft.bio} rows={4} maxLength={2000} onChange={event => edit('bio', event.target.value)} /></label>
           </>}
-          {(panel === 'Profile' || panel === 'Skills & links') && <>
+          {panel === 'Skills & links' && <>
             <ul className="ws-profile-skills" aria-label="Private skills">{draft.skills.map((item, index) =>
               <li key={index}><button type="button" aria-label={'Remove ' + item}
                 onClick={() => setDraft({...draft, skills: draft.skills.filter((_, pos) => pos !== index)})}>{item} ×</button></li>)}</ul>
@@ -114,10 +116,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             {panel === 'Skills & links' && <p>Project links are managed in the <a href="/app/projects">project library</a>.</p>}
           </>}
           {panel === 'Visibility' && <>
-            <p>Select fields for this private preview. Draft saves do not publish your profile.</p>
-            {previewFields.map(({key, label}) => <label key={key} className="ws-profile-check">
-              <input type="checkbox" checked={visible.includes(key)} onChange={event => setVisible(event.target.checked
-                ? [...visible, key] : visible.filter(field => field !== key))}/>{label}</label>)}
+            <p>Use the preview card to choose which fields to show. These selections apply to this preview only.</p>
+            <a className="ws-secondary" href="/app/settings/privacy">Open privacy settings</a>
           </>}
           {panel === 'Public preview' && <p>The card shows the selected draft fields. The preview is private.</p>}
         </fieldset>
@@ -125,17 +125,21 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           <aside className="ws-project-aside" aria-label="Public profile preview">
             <h2>Public profile preview</h2>
             <div className="ws-profile-card">
-              <p className="ws-kicker">IDENTITY PREVIEW</p>
+              <span className="ws-preview-identity"><Icon name="user" size={22}/></span>
+              <p className="ws-kicker">PREVIEW ONLY</p>
               <h3>{visible.includes('displayName') && draft.displayName.trim() ? draft.displayName : 'Developer profile'}</h3>
               {visible.includes('headline') && <p>{draft.headline}</p>}
               {visible.includes('bio') && <p>{draft.bio}</p>}
             </div>
-            <p>This preview is visible only in your workspace.</p>
-          </aside>
-          <aside className="ws-project-aside">
-            <h2>Sharing controls</h2>
-            <p>Choose the fields to include in the preview. Publishing is a separate action.</p>
-            <button type="button" className="ws-secondary" onClick={() => setPanel('Visibility')}>Preview visibility</button>
+            <fieldset className="ws-preview-fields" disabled={busy}>
+              <legend>Fields to preview</legend>
+              {previewFields.map(({key, label}) => <label key={key} className="ws-profile-check">
+                <input type="checkbox" checked={visible.includes(key)} onChange={event => {
+                  const checked = event.target.checked;
+                  setVisible(current => checked ? [...current, key] : current.filter(field => field !== key));
+                }}/>{label}</label>)}
+            </fieldset>
+            <p>This preview stays in your workspace. Saving updates your private draft.</p>
           </aside>
         </div>
       </div>}

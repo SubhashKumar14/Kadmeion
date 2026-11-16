@@ -77,9 +77,15 @@ All six relevant source archives exist in ChatGPT Library (not GitHub-hosted fil
 `Kadmeion_LIGHT_Batch09_47-52.zip`.
 Retrieve/mount actual PNGs as needed and verify their checksum prefixes from the Notion register before coding. **Screen 26 uses the corrected `26_EDIT-09_Fullscreen_Portfolio_Only_REVISION_LIGHT.png` (SHA-256 prefix `e13f8330cbc0149a1e11`), NEVER the earlier rejected preview.** Recorded `sandbox:/mnt/data/` addresses in Notion were session-local paths, not permanent HTTPS URLs.
 
-Use Kadmeion's original approved angular layered-K mark, Aether Drift C direction, approved pattern/brand materials with confirmed provenance, and the approved 115 UI decisions. Never use rejected Canva *screen mockups*. A specifically approved Canva **brand asset** is acceptable only with clear owner approval and asset provenance, and must not override the approved screen images. Do not fabricate missing precise palette/font values from compressed reference art: verify masters and font licenses. Code the source images directly when possible; editable Canva/Figma recreation is not a prerequisite.
+Use Kadmeion's original approved angular layered-K mark, Aether Drift C direction, approved pattern/brand materials with confirmed provenance, and the approved 115 UI decisions. Never use rejected Canva *screen mockups*. A specifically approved Canva **brand asset** is acceptable only with clear owner approval and asset provenance, and must not override the approved screen images. Do not fabricate missing precise palette/font values from compressed reference art: verify masters and font licenses. Translate the approved visuals into semantic, responsive components. Use their hierarchy, brand, and composition alongside the screen specifications. Allow real content to set the layout height and actual viewport width to drive reflow.
 
-**Exit:** verified asset/approval-to-screen map, original geometry/tokens/typography, light reference image IDs and per-screen visual test fixtures committed without duplicating giant image assets gratuitously.
+**Exit:** verified asset/approval-to-screen map, verified brand masters and responsive typography/tokens, light reference image IDs and per-screen visual test fixtures committed without duplicating giant image assets gratuitously.
+
+### Responsive review for every screen
+
+Complete one implementation phase per response. For every public, auth, workspace, editor, release, settings, operations, growth, and system screen, read the relevant decision and screen spec, compare with the verified LIGHT reference, and implement the real user task. Exercise controls and verify legibility, feedback, scroll boundaries and reflow on a narrow phone, mid-width viewport, and desktop in light and dark. Reserve desktop and qualifying tablet layout for code/portfolio authoring. Log changed routes, sources, tests, limitations, and the next phase in the GitHub handoff and Notion. Visual reference dimensions and pixel-match scores no longer define acceptance.
+
+Keep PUB-01 in this order: Hero, Social proof, Problem statement, Solution or value, How it works, FAQ, CTA. Keep signup confirmation optional until the owner explicitly requests restoration. Immediate sign-in still requires a real provider session and the matching hosted Supabase setting.
 
 ### F1 · Shared shells, route safety, design system and authentication (01–11)
 

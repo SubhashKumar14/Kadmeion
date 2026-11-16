@@ -931,3 +931,94 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .ws-source-explorer .ws-source-code-window{flex:0 0 auto;
     height:min(615px,calc(100dvh - 300px));min-height:310px}
 }
+
+/* WORK-03–08: readable work surfaces and a compact workspace menu. */
+.ws-mobile-menu{display:none}
+.ws-owner-page{max-width:1440px;margin-inline:auto}
+.ws-owner-page .ws-heading h1{font-size:clamp(2.125rem,3.6vw,3.625rem);line-height:1.06}
+.ws-owner-page .ws-heading>p:last-child{font-size:1rem;line-height:1.6}
+.ws-owner-page .ws-heading>a{display:inline-block;margin-bottom:14px;color:var(--accent-strong);text-decoration:underline;text-underline-offset:4px}
+.ws-owner-page .ws-primary,.ws-owner-page .ws-secondary,.ws-project-dialog :is(.ws-primary,.ws-secondary){font-size:.875rem}
+.ws-owner-columns,.ws-owner-page .ws-project-empty-layout{gap:clamp(18px,2.6vw,36px)}
+.ws-owner-columns>.ws-project-fields,.ws-owner-columns>.ws-project-aside,.ws-owner-columns .ws-profile-preview>.ws-project-aside,
+.ws-owner-page .ws-project-empty-layout>.ws-project-aside{padding:clamp(18px,2.4vw,31px)}
+.ws-owner-page .ws-project-fields>legend{float:left;width:100%;margin-bottom:18px}
+.ws-owner-page .ws-project-fields>legend+*{clear:both}
+.ws-owner-page :is(.ws-project-controls,.ws-project-fields) label,.ws-project-dialog form label{font-size:.9375rem}
+.ws-owner-page :is(.ws-project-controls input,.ws-project-controls select,.ws-project-fields input:not([type="radio"]),.ws-studio-search input),
+.ws-project-dialog input{min-height:46px}
+.ws-owner-page :is(.ws-project-controls input,.ws-project-controls select,.ws-project-fields input,.ws-project-fields textarea,.ws-studio-search input),
+.ws-project-dialog label :is(input,textarea){font-size:1rem}
+.ws-owner-page .ws-project-view button{min-height:42px;font-size:.875rem}
+.ws-owner-page .ws-project-count{font-size:.875rem;margin:0}
+.ws-owner-page .ws-project-card{padding:clamp(17px,2.3vw,29px);gap:18px}
+.ws-owner-page .ws-project-card-body{min-width:0;overflow-wrap:anywhere}
+.ws-owner-page .ws-project-mark{width:52px;height:48px;flex:none;border-radius:8px 12px 12px 12px}
+.ws-owner-page .ws-project-card h2{font-size:1.5rem}
+.ws-owner-page :is(.ws-project-card-body>p,.ws-project-empty p,.ws-project-guide,.ws-project-aside>p,.ws-draft-note){font-size:.9375rem;line-height:1.55}
+.ws-owner-page :is(.ws-project-card-body>span,.ws-project-links a){font-size:.875rem}
+.ws-owner-page .ws-project-empty{gap:14px;min-height:clamp(290px,39vh,420px)}
+.ws-owner-page .ws-project-empty h2{margin:0;font-size:clamp(1.625rem,2.6vw,2.375rem)}
+.ws-owner-page .ws-project-empty p{max-width:39ch;margin:0 0 4px}
+.ws-owner-page .ws-project-empty .ws-area-icon{width:60px;height:57px}
+.ws-owner-page .ws-project-guide{gap:20px}
+.ws-owner-aside-title,.ws-profile-preview h2{font-size:clamp(1.375rem,2vw,1.875rem);margin:0 0 16px}
+.ws-owner-page .ws-profile-tabs{gap:4px clamp(6px,1.1vw,16px);margin-top:22px}
+.ws-owner-page .ws-profile-tabs button{padding-inline:clamp(6px,1vw,14px);font-size:.9375rem}
+.ws-owner-page .ws-profile-card{padding:clamp(20px,3vw,36px);min-height:188px;overflow-wrap:anywhere;position:relative}
+.ws-owner-page .ws-profile-card h3{font-size:clamp(1.625rem,2.5vw,2.375rem);line-height:1.13;margin:8px 0}
+.ws-owner-page .ws-profile-card p{line-height:1.55;margin:8px 0 0;color:inherit}
+.ws-owner-page .ws-profile-card .ws-kicker{color:#ffcda4}
+.ws-preview-identity{display:inline-grid;place-items:center;width:42px;height:42px;margin-bottom:8px;border:1px solid #839ba9;border-radius:10px}
+.ws-preview-fields{border:0;border-bottom:1px solid var(--line);padding:15px 0 8px;margin:16px 0 0;min-width:0}
+.ws-preview-fields legend{font-weight:700;padding:0}
+.ws-preview-fields label{min-height:44px;cursor:pointer}
+.ws-profile .ws-profile-check input{accent-color:var(--accent-strong)}
+.ws-project-detail-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ws-project-dialog{inset:0 0 0 auto;height:100dvh;width:min(560px,100vw);border-radius:0}
+.ws-project-dialog::backdrop{clip-path:none}
+.ws-project-dialog form{gap:15px}
+.ws-project-dialog .ws-project-modal-heading h2{font-size:clamp(1.875rem,3vw,2.5rem)}
+.ws-project-dialog .ws-project-privacy{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;background:var(--surface-soft);font-size:.875rem}
+.ws-project-dialog .ws-project-close{width:44px;height:44px;flex:none}
+.ws-project-slug summary{color:var(--accent-strong);cursor:pointer;font-size:.875rem;padding:10px 0}
+.ws-project-slug label{display:grid;gap:6px}
+.ws-owner-page .ws-studio-list .ws-project-empty{border:1px solid var(--line)}
+.ws-owner-page .ws-studio-records li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;overflow-wrap:anywhere}
+.ws-studio-record-icon{display:grid;place-items:center;width:50px;height:50px;border-radius:10px;background:var(--surface-soft);color:var(--accent-strong)}
+.ws-owner-page .ws-studio-records p{color:var(--body);font-size:.875rem}
+.ws-preset-feature{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);align-items:center;gap:clamp(14px,2vw,24px);margin-bottom:20px}
+.ws-preset-feature :is(.template-graphic,.ws-blank-template){height:clamp(143px,15vw,250px)}
+.ws-preset-feature h2{margin:0 0 6px;font-size:clamp(1.5rem,2vw,2rem);overflow-wrap:anywhere}
+.ws-preset-feature p{color:var(--body);font-size:.9375rem;line-height:1.55;margin:0}
+.ws-preset-browser .ws-studio-presets{grid-template-columns:repeat(3,minmax(0,1fr))}
+.ws-preset-browser .ws-studio-preset{grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.ws-preset-browser .ws-studio-preset input{grid-area:2/2;margin:0;accent-color:var(--accent-strong)}
+.ws-preset-browser .ws-studio-preset strong{grid-area:2/1;overflow-wrap:anywhere}
+.ws-preset-browser .ws-studio-preset :is(.template-graphic,.ws-blank-template){grid-area:1/1/2/-1;height:auto;min-height:0;aspect-ratio:16/9}
+.ws-preset-browser .ws-studio-preset:focus-within{outline:2px solid var(--focus);outline-offset:2px}
+@media(max-width:1100px){
+  .ws-project-detail-links,.ws-preset-feature,.ws-owner-chooser .ws-owner-columns{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:900px){
+  .ws-owner-columns,.ws-owner-page .ws-project-empty-layout{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:720px){
+  .ws-rail{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px}
+  .ws-brand{min-width:0;padding:0}
+  .ws-brand small{display:none}
+  .ws-mobile-menu{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 9px;
+    color:inherit;border:1px solid #728797;border-radius:8px;background:transparent}
+  .ws-rail nav{display:none;grid-column:1/-1;grid-row:2;overflow:visible;padding:0;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ws-rail nav.ws-nav-open{display:grid}
+  .ws-rail nav a{min-height:44px;white-space:normal;font-size:.875rem}
+  .ws-rail-bottom{grid-column:3;grid-row:1;padding:0;margin:0;border:0}
+  .ws-rail-bottom button{min-height:44px;padding-inline:9px}
+  .ws-topbar{min-height:56px}
+  .ws-owner-page .ws-project-head>.ws-primary{margin:0}
+  .ws-owner-page .ws-project-controls{padding-top:18px}
+}
+@media(max-width:460px){
+  .ws-owner-page .ws-studio-records li{grid-template-columns:auto minmax(0,1fr)}
+  .ws-owner-page .ws-studio-records li>.ws-secondary{grid-column:2;justify-self:start}
+}

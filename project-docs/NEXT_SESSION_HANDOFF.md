@@ -1,3 +1,15 @@
+## 16 November 2026 — F2 responsive identity and portfolio entry (12–17)
+
+- Verified the six LIGHT source PNGs against the registered SHA-256 prefixes. Applied their dark workspace rail, editorial hierarchy, contextual cards, and practical white space to the working app. The browser review criteria use ordinary screen widths and working UI states.
+- #12 Profile separates identity fields from skills, gives the live preview its own context, and links to real privacy settings. Preview field changes stay local. The saved profile, draft and stale revision stay independently identified.
+- #13–15 Projects improve the folder gallery, list and empty state, move generated slug editing behind a disclosure, label optional links, and show saved details and validated links separately from editable inputs. Retain the native modal’s Escape and focus return and the real case-study revision writer.
+- #16–17 Portfolio Studio clarifies draft revisions and known starting layouts. The chooser gives the selected preset a larger schematic preview and keeps draft setup separate. Blank remains an available choice and the 900px authoring guard remains active.
+- Shared workspace uses a mobile Menu disclosure with Escape focus return and visible sign-out. The test suite checks interaction with preview field controls, the slug disclosure, chooser and responsive reflow. CI and captures for this change are attached to PR #3.
+- Open product gaps: profile avatar and standalone links, real project thumbnail capture, and live publication status provenance on portfolio cards. Profile preview is private. Full accessibility audit and owner review remain open. Keep the hosted signup setting dependency in the earlier checkpoint visible.
+- Next implementation phase **F3** begins with #18 editor canvas, layers and inspector. Continue #19–26 through tools and the corrected fullscreen reference. Prioritize #41–52 P1 settings/system and operations before #35–40 Phase 2 Growth. Run F6 on all 52, including the earlier public/auth/workspace screens.
+
+---
+
 ## 16 November 2026 — Visual reference policy and landing rebuild
 
 - Owner direction for all frontend work: use approved LIGHT images for brand, hierarchy and composition cues. Build responsive UI using the 115 interview decisions and 52 screen mappings. Size content for readability and the user’s task, and let pages scroll. Historical pixel-difference figures and reference-frame dimensions have no acceptance role.

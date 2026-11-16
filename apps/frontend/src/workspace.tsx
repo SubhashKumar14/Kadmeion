@@ -41,17 +41,25 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   owner: Owner; children: ReactNode; onSignOut: () => void; signOutPending: boolean; message: string;
 }) {
   const [theme, toggleTheme] = useTheme();
+  const [menuOpen, setMenuOpen] = useState(false);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const editorOnly=!!portfolioIdFromRoute(route)&&(route.endsWith('/edit')||route.endsWith('/preview'));
   const overview = route === '/app' || route === '/app/onboarding';
   return <div className={'ws-shell' + (editorOnly ? ' ws-editor-shell' : overview ? ' ws-overview-shell' : '')}>
     <a className="skip-link" href="#ws-content">Skip to workspace content</a>
-    <aside className="ws-rail" aria-label="Workspace sidebar">
+    <aside className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
+      if (event.key === 'Escape' && menuOpen) {
+        setMenuOpen(false);
+        event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu')?.focus();
+      }
+    }}>
       <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home">
         <BrandMark/><small>BUILD · SHOWCASE · EVOLVE</small>
       </a>
       <p className="ws-rail-label">YOUR WORKSPACE</p>
-      <nav aria-label="Workspace navigation">
+      <button type="button" className="ws-mobile-menu" aria-expanded={menuOpen} aria-controls="ws-nav"
+        onClick={() => setMenuOpen(open => !open)}>Menu <Icon name="chevron" size={16}/></button>
+      <nav id="ws-nav" className={menuOpen ? 'ws-nav-open' : undefined} aria-label="Workspace navigation">
         {NAV.map(item => <a key={item.href} href={item.href} aria-label={item.title}
           aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) ? 'page' : undefined}>
           <Icon name={item.icon} size={18}/><span>{item.title}</span>

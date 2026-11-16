@@ -82,7 +82,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       setError('Project creation could not be verified. Your form values are retained.');
     } finally {setSaving(false);}
   }
-  return <section className="ws-projects" aria-labelledby="ws-title">
+  return <section className="ws-projects ws-owner-page" aria-labelledby="ws-title">
     <div className="ws-project-head">
       <div className="ws-heading"><p className="ws-kicker">WORKSPACE / PROJECT LIBRARY</p>
         <h1 id="ws-title">Project library.</h1>
@@ -109,7 +109,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
      state.status==='error'?<div role="alert" className="ws-project-state">
        <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>location.reload()}>Retry securely</button></div>:
     <>
-      <p className="ws-project-count">{filtered.length} of {state.items.length} loaded private projects
+      <p className="ws-project-count">{search ? filtered.length + ' of ' : ''}{state.items.length} private {state.items.length === 1 ? 'project' : 'projects'}
         {state.items.length===100?' (latest 100 only; older projects are not shown)':''}</p>
       {filtered.length===0?<div className="ws-project-empty-layout">
         <div className="ws-project-empty">
@@ -135,9 +135,9 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           const liveSite = safeProjectLink(item.liveUrl);
           return <li key={item.id}><article className="ws-project-card">
           <div className="ws-project-mark" aria-hidden="true"><Icon name="folder" size={21}/></div>
-          <div className="ws-project-card-body"><p className="ws-area-meta">PRIVATE PROJECT</p><h2><a href={'/app/projects/' + item.id}>{item.title}</a></h2>
+          <div className="ws-project-card-body"><h2><a href={'/app/projects/' + item.id}>{item.title}</a></h2>
             <p>{item.summary||'No project summary yet.'}</p>
-            <span>Updated {new Date(item.updatedAt).toLocaleDateString()} · Revision {item.revision}</span>
+            <span>Private · Updated {new Date(item.updatedAt).toLocaleDateString()} · Revision {item.revision}</span>
             {(repository || liveSite) && <div className="ws-project-links">
               {repository && <a href={repository} target="_blank" rel="noopener noreferrer">Repository</a>}
               {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live site</a>}
@@ -155,14 +155,19 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <h2 id="ws-project-modal-heading">Add a project</h2></div>
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
             disabled={saving} onClick={()=>modal.current?.close()}>×</button></div>
-        <p className="ws-project-help">Nothing becomes public from this form. Optional links are never required.</p>
+        <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
         <label>Project title<input required autoComplete="off" maxLength={120} value={draft.title}
           onChange={event=>setDraft(old=>({...old,title:event.target.value,
             slug:customSlug?old.slug:suggestSlug(event.target.value)}))}/></label>
+        <details className="ws-project-slug"><summary>Edit private URL slug</summary>
         <label>Private URL slug<input required spellCheck={false} minLength={3} maxLength={64}
           pattern="[a-z0-9]+(-[a-z0-9]+)*" value={draft.slug}
+          onInvalid={event => {
+            const disclosure = event.currentTarget.closest('details');
+            if (disclosure) disclosure.open = true;
+          }}
           onChange={event=>{setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
-          <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label>
+          <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
         <label>Summary (optional)<textarea rows={3} maxLength={360} value={draft.summary}
           onChange={event=>setDraft(old=>({...old,summary:event.target.value}))}/></label>
         <label>Repository URL (optional)<input type="url" maxLength={2048}
@@ -171,7 +176,6 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         <label>Live website URL (optional)<input type="url" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
           onChange={event=>setDraft(old=>({...old,liveUrl:event.target.value||null}))}/></label>
-        <p className="ws-project-privacy">Visibility: <strong>Private</strong>. Sharing requires a separate owner action.</p>
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>modal.current?.close()}>Cancel</button>
@@ -247,7 +251,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const repository = detail.status === 'ready' ? safeProjectLink(detail.saved.repositoryUrl) : undefined;
   const liveSite = detail.status === 'ready' ? safeProjectLink(detail.saved.liveUrl) : undefined;
 
-  return <section aria-labelledby="project-detail-title">
+  return <section aria-labelledby="project-detail-title" className="ws-owner-page">
     <div className="ws-heading">
       <a href="/app/projects">Back to project library</a>
       <h1 id="project-detail-title">Build the case study.</h1>
@@ -262,7 +266,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     {detail.status === 'ready' && openedSections && <div hidden={panel !== 'sections'}><CaseStudyEditor port={port} projectId={projectId}
       onSaved={revision => setDetail(current => current.status === 'ready' && revision === current.saved.revision + 1
         ? {...current, saved: {...current.saved, revision}} : current)}/></div>}
-    {detail.status === 'ready' && panel === 'details' && <div className="ws-project-detail">
+    {detail.status === 'ready' && panel === 'details' && <div className="ws-project-detail ws-owner-columns">
       <form className="ws-project-fields" onSubmit={event => void save(event)}>
         <fieldset disabled={saving || checking}>
           <legend>Project details</legend>
@@ -275,12 +279,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           <label>Project description
             <textarea rows={6} maxLength={12000} value={detail.draft.description} onChange={e => edit('description', e.target.value)}/>
           </label>
+          <div className="ws-project-detail-links">
           <label>Repository URL (optional)
             <input type="url" maxLength={2048} value={detail.draft.repositoryUrl ?? ''} onChange={e => edit('repositoryUrl', e.target.value)}/>
           </label>
           <label>Live website URL (optional)
             <input type="url" maxLength={2048} value={detail.draft.liveUrl ?? ''} onChange={e => edit('liveUrl', e.target.value)}/>
           </label>
+          </div>
         </fieldset>
         {feedback && <p role={feedback.error ? 'alert' : 'status'} className="ws-inline-alert">{feedback.text}</p>}
         <div className="ws-actions">
@@ -290,13 +296,17 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         </div>
       </form>
       <aside className="ws-project-aside" aria-label="Saved project preview">
-        <p className="ws-kicker">SAVED DRAFT · REVISION {detail.saved.revision}</p>
-        <h2>{detail.saved.title}</h2>
-        {detail.saved.summary && <p>{detail.saved.summary}</p>}
-        {repository &&
-          <p><a href={repository} target="_blank" rel="noopener noreferrer">Repository</a></p>}
-        {liveSite &&
-          <p><a href={liveSite} target="_blank" rel="noopener noreferrer">Live website</a></p>}
+        <h2 className="ws-owner-aside-title">Saved project</h2>
+        <div className="ws-profile-card">
+          <span className="ws-preview-identity"><Icon name="folder" size={22}/></span>
+          <p className="ws-kicker">SAVED DRAFT · REVISION {detail.saved.revision}</p>
+          <h3>{detail.saved.title}</h3>
+          {detail.saved.summary && <p>{detail.saved.summary}</p>}
+        </div>
+        {(repository || liveSite) && <div className="ws-project-links">
+          {repository && <a href={repository} target="_blank" rel="noopener noreferrer">Repository</a>}
+          {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live website</a>}
+        </div>}
         {latest && <div className="ws-project-conflict">
           <h3>Saved revision {latest.revision} is newer</h3>
           <dl>
