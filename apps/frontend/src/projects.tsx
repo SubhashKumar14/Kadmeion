@@ -195,6 +195,7 @@ type DetailState =
 
 export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAuthPort; projectId: string}) {
   const [detail, setDetail] = useState<DetailState>({status: 'loading'});
+  const [reload, setReload] = useState(0);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{error: boolean; text: string} | null>(null);
   const [latest, setLatest] = useState<OwnerProject | null>(null);
@@ -211,7 +212,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         : {status: 'unavailable'});
     }).catch(() => {if (active) setDetail({status:'unavailable'});});
     return () => { active = false; };
-  }, [port, projectId]);
+  }, [port, projectId, reload]);
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
     setDetail(current => current.status === 'ready'
@@ -275,7 +276,13 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       <button type="button" aria-pressed={panel === 'sections'} onClick={() => {setOpenedSections(true); setPanel('sections');}}>Case study</button>
     </div>}
     {detail.status === 'loading' && <p role="status">Loading project…</p>}
-    {detail.status === 'unavailable' && <p role="alert">Project unavailable. Check your session or return to the project library.</p>}
+    {detail.status === 'unavailable' && <div className="ws-project-state" role="alert">
+      <p>Project unavailable. Check your connection and session before trying again.</p>
+      <button type="button" className="ws-secondary" onClick={() => {
+        setFeedback(null); setLatest(null); setDetail({status: 'loading'});
+        setReload(current => current + 1);
+      }}>Retry loading project</button>
+    </div>}
     {detail.status === 'ready' && openedSections && <div hidden={panel !== 'sections'}><CaseStudyEditor port={port} projectId={projectId}
       onSaved={revision => setDetail(current => current.status === 'ready' && revision === current.saved.revision + 1
         ? {...current, saved: {...current.saved, revision}} : current)}/></div>}
@@ -365,6 +372,8 @@ function CaseStudyEditor({port, projectId, onSaved}: {
       if (!active) return;
       if (result.data) { setDraft(result.data); setError(''); }
       else setError(result.error?.message ?? 'Case study could not be loaded.');
+    }).catch(() => {
+      if (active) setError('Could not reach your private case study. Your unsaved edits remain available.');
     });
     return () => { active = false; };
   }, [port, projectId, version]);
@@ -400,6 +409,8 @@ function CaseStudyEditor({port, projectId, onSaved}: {
       setDraft(result.data);
       onSaved(result.data.revision);
       setNotice('Private case study saved.');
+    } catch {
+      setError('The case study save could not be verified. Your unsaved sections are retained.');
     } finally {
       setBusy(false);
     }
