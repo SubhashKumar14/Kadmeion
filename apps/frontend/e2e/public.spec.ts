@@ -142,7 +142,9 @@ test('recovery is gated by mail delivery and signup explains missing Auth config
 });
 
 test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
-  for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/portfolios/11111111-1111-4111-8111-111111111111/preview', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
+  for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/portfolios/11111111-1111-4111-8111-111111111111/preview', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals',
+    '/app/settings', '/app/settings/privacy', '/app/notifications', '/app/settings/security',
+    '/app/trash', '/app/export', '/app/settings/account/delete', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
     await page.goto(route);
     await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');
