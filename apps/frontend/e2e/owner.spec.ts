@@ -633,8 +633,10 @@ test('new email/password account can open the workspace immediately', async ({pa
   await expect(page).toHaveURL('/app');
   await expect(page.getByRole('heading', {name:'A place for what you build next.'})).toBeVisible();
   await page.getByRole('button', {name:'Sign out', exact:true}).click();
+  await expect(page).toHaveURL('/signin');
   await signIn(page, owner);
   await page.getByRole('link', {name:'Open private workspace'}).click();
+  await expect(page).toHaveURL('/app');
   for (const width of [1920, 1366, 390]) {
     await page.setViewportSize({width, height:768});
     for (const route of ['/app','/app/onboarding','/app/profile','/app/projects','/app/portfolios','/app/portfolios/new']) {
