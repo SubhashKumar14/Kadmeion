@@ -47,8 +47,12 @@ for(const [i,a] of approved.entries()){
  const spec=read(c.spec);
  for(const h of headings)if(!spec.includes('## '+h))throw Error('Missing '+id+' spec heading '+h);
  if(!/Owner decisions:/.test(spec))throw Error('No trace to owner decisions '+id);
+ // Some audited surfaces legitimately map to both client and protected API files.
+ // Treat each as a separate source path rather than a literal combined filename.
  const code=a['Implementation source reviewed at 6425c277'];
- if(code&&!existsSync(resolve(base,code)))throw Error('Missing actual code trace '+code);
+ for(const trace of code.split(/\s+\+\s+/).map(x=>x.trim()).filter(Boolean)){
+  if(!existsSync(resolve(base,trace)))throw Error('Missing actual code trace '+trace);
+ }
  const fields=mapping[i].split('|').slice(1,-1).map(x=>x.trim());
  if(fields.length!==14||fields[0]!==n||fields[1]!==id||
   fields[6]!==c.spec||fields[7]!==a['Approved PNG archive member']||
