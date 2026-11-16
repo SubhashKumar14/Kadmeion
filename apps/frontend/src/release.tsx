@@ -73,10 +73,10 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const blockOperation=useRef<string|null>(null);
   const base='/app/portfolios/'+id;
 
+  // Reset only when the owner/route identity changes, not on Retry. A retry
+  // must preserve the frozen request and its idempotency key after an
+  // acknowledgement may have been lost over the network.
   useEffect(()=>{
-    let active=true;
-    // A route/owner reload must not retain the preceding portfolio's private
-    // revision, reviewer grant, pointer or preflight result while it loads.
     setRecord(null);setRevisions(null);setFrozenRequests(null);setFrozenListError('');
     setSelectedRevision(null);setRevisionError('');setPointer(null);
     setVisibility('UNLISTED');setFrozen(null);setPinnedPreview(null);
@@ -84,6 +84,11 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setGrant(null);setGrants(null);setGrantListError('');
     setConfirmRevoke(false);setConfirmBlock(false);setNotice('');setError('');
     operation.current=null;grantOperation.current=null;blockOperation.current=null;
+  },[port,id,mode]);
+
+  useEffect(()=>{
+    let active=true;
+    setError('');
     void (async()=>{
       try {
         const reply=await port.readOwnerPortfolio(id);
