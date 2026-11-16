@@ -128,9 +128,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       if (!response.data) {setError(response.error?.message ?? 'Reviewer registration was not confirmed.');return;}
       const {grantId,expiresAt}=response.data;
       setGrant({grantId,expiresAt,status:'REGISTERED_UNSERVABLE'});
-      setGrants(previous=>previous ? [{
-        grantId,requestId:frozen.requestId,portfolioId:id,expiresAt,revokedAt:null,createdAt:new Date().toISOString()
-      },...previous.filter(item=>item.grantId!==grantId)] : previous);
+      const updated=await port.listOwnerReviewerGrants(id);
+      if (updated.data) {setGrants(updated.data);setGrantListError('');}
+      else setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
       grantOperation.current=null;
       setNotice('Private reviewer grant registered. The link remains disabled pending hosted delivery verification.');
     } catch {setError('Reviewer registration failed. Retry the same request.');}
