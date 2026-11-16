@@ -151,6 +151,15 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByLabel('Current password')).toHaveAttribute('type','password');
   await expect(page.getByLabel('Current password')).toBeVisible();
   await expect(page.getByLabel('New password',{exact:true})).toBeVisible();
+  const revokeTrigger=page.getByRole('button',{name:'Sign out other sessions'});
+  await revokeTrigger.click();
+  await expect(page.getByRole('group',{name:'Confirm other-session sign-out'})).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('group',{name:'Confirm other-session sign-out'})).toHaveCount(0);
+  await expect(revokeTrigger).toBeFocused();
+  await revokeTrigger.click();
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  await expect(revokeTrigger).toBeFocused();
   await page.goto('/app/notifications');
   const notificationFilters=page.getByRole('group',{name:'Filter loaded notifications'});
   await expect(notificationFilters).toBeVisible();
@@ -158,6 +167,13 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(notificationFilters.getByRole('button',{name:'Unread'})).toHaveAttribute('aria-pressed','true');
   await notificationFilters.getByRole('button',{name:'All loaded'}).click();
   await expect(notificationFilters.getByRole('button',{name:'All loaded'})).toHaveAttribute('aria-pressed','true');
+  // Actual persisted preference, not optimistic UI state. Disposable local user only.
+  const reviewerPreference=page.getByRole('checkbox',{name:'Reviewer activity'});
+  await expect(reviewerPreference).toBeVisible();
+  await reviewerPreference.check();
+  await expect(page.getByText('Notification preferences saved.')).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
   await page.goto('/app/settings/privacy');
   await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeDisabled();
   await page.goto('/app/settings/account/delete');
