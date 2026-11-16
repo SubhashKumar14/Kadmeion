@@ -1,3 +1,18 @@
+## 16 November 2026 — Private account lifecycle and portable export
+
+Started from `7ecea29` after reconciling the Notion and GitHub checkpoint. Implemented the next F5 account lifecycle slice on `feat/b0-backend-foundation`.
+
+- **#45 Trash.** Projects and portfolios can be moved into private Trash after an owner confirmation. The Trash screen shows the actual move date and restore deadline, explains the 15-day window, and reuses the owner-scoped restore contract. Escape restores dialog trigger focus. Direct permanent item removal remains unavailable in the browser.
+- **#46 Export.** The export center offers saved editable portfolio ZIP, application metadata JSON, and bounded private recovery ZIP. A chosen portfolio opens its own private publish preflight. The offline scriptless ZIP is offered only after eligible preflight, and the download reloads and pins the frozen portfolio, revision and digest. Source export excludes uploaded media. The bounded recovery export verifies the media it includes and excludes provider data and backups. Publication remains independently gated.
+- **#47 Account exit.** Owners can review real inventory and request history, record and withdraw a private deletion request, and verify a fresh same-owner sign-in through the existing password and reauthentication contracts. Application-managed content withdrawal requires its own exact confirmation and reports a scoped receipt. Independent host/cache revocation, storage cleanup, final erasure and third-party retention have separate proof gates.
+- The public entry JavaScript fell from 512 kB to 280 kB before compression by loading the workspace only for workspace paths. Reviewed same-source owner captures of #45–47 against the approved LIGHT originals and checked phone dark reflow. They are representative captures and narrower than full accessibility or visual acceptance.
+
+**Evidence.** Source `8bb8ec076a79f3f2f22c0bdbf42af19141401824` · [Frontend CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43875908018) · [Application and database CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43875908087). Both exact-source workflows passed. Verified 20 public Chromium checks, seven authenticated Chromium scenarios, 511 pgTAP assertions, 512 Node contracts, six frontend behavior checks, production build, and isolated GoTrue, Storage, Edge and PostgreSQL checks. [Authenticated browser captures](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43875908087/artifacts/14230616135).
+
+**Next.** Exercise a preflight-eligible static download in Chromium, expired Trash and permanent-removal workflow, and the remaining per-case accessible F6 workflows. Trusted S0-to-S1 customization needs the pinned starter byte catalogue. Reviewer/public delivery needs independent nonproduction GET/HEAD, direct-media, expiry and withdrawal proof. See [F6 evidence](registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md).
+
+---
+
 ## 16 November 2026 — F5 system-state fixes and F6 acceptance evidence
 
 **Baseline:** GitHub `1ed4531` and the [Notion execution log](https://app.notion.com/p/419b082297c781db810cd756ec0343eb) superseded the attached F3-era checkpoint. F4 private release flows and the F5 settings, operations and growth surfaces already existed in source. Their external delivery and owner acceptance remained open. Baseline [frontend CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43869874005) passed. Its [application/database CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43869874159) passed contracts and pgTAP, then failed the authenticated Draft sync activity checkbox interaction.
