@@ -567,29 +567,43 @@ export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: s
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState<'metadata'|'recovery'|'source'|null>(null);
-  const [portfolios, setPortfolios] = useState<{id:string;title:string}[]|null>(null);
-  const [portfolioError, setPortfolioError] = useState('');
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState('');
+  // A failed retry or owner change must not leave an old saved-portfolio list
+  // or a stale download/preflight target on an otherwise current settings page.
+  const listRequest = useMemo(()=>({port,retry}),[port,retry]);
+  const [listResult,setListResult] = useState<{
+    request:typeof listRequest;items:{id:string;title:string}[]|null;error:string
+  }|null>(null);
+  const currentList = listResult?.request===listRequest ? listResult : null;
+  const portfolios = currentList?.items??null;
+  const portfolioError = currentList?.error??'';
+  const selectedPortfolio = portfolios?.some(item=>item.id===selected) ? selected : '';
   useEffect(()=>{
     let active = true;
     void port.listOwnerPortfolios().then(({data})=>{
       if (!active) return;
       if (!data) throw new Error('Saved portfolios could not be loaded.');
-      setPortfolios(data.filter(item=>item.revision>0));
-    }).catch(()=>{if(active) setPortfolioError('Saved portfolios could not be loaded.');});
+      setListResult({
+        request:listRequest,items:data.filter(item=>item.revision>0),error:''
+      });
+    }).catch(()=>{
+      if(active)setListResult({
+        request:listRequest,items:null,error:'Saved portfolios could not be loaded.'
+      });
+    });
     return ()=>{active=false;};
-  },[port,retry]);
+  },[port,listRequest]);
 
   async function download(kind: NonNullable<typeof busy>) {
     if (busy) return;
     setBusy(kind); setMessage(null);
     try {
       if (kind==='source') {
-        if (!selected) return;
+        if (!selectedPortfolio) return;
         const {exportPortfolioSourceZip} = await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
-        const {data} = await port.readOwnerPortfolio(selected);
-        if (!data?.snapshot || data.id!==selected) throw new Error('Could not verify the saved portfolio revision.');
+        const {data} = await port.readOwnerPortfolio(selectedPortfolio);
+        if (!data?.snapshot || data.id!==selectedPortfolio) throw new Error('Could not verify the saved portfolio revision.');
         downloadPrivateFile('kadmeion-portfolio-revision-'+data.revision+'.zip', exportPortfolioSourceZip(data.snapshot), 'application/zip');
         setMessage({error:false,text:'Portfolio source download prepared.'});
       } else {
@@ -614,15 +628,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     <SettingsCard title="Editable portfolio ZIP">
       <p>Download the saved revision for editing or recovery. This archive contains private source and excludes uploaded media.</p>
       {portfolioError && <><p role="alert">{portfolioError}</p><button type="button" className="ws-secondary"
-        onClick={()=>{setPortfolioError('');setRetry(value=>value+1);}}>Retry portfolio list</button></>}
+        onClick={()=>{setSelected('');setRetry(value=>value+1);}}>Retry portfolio list</button></>}
       {!portfolios && !portfolioError && <p role="status">Loading saved portfolios…</p>}
       {portfolios?.length===0 && <p>No saved portfolio revisions to export.</p>}
+      {portfolios?.length===100 && <p>Showing up to 100 saved portfolios. Older saved revisions may require a later page; this is not a complete account-wide total.</p>}
       {!!portfolios?.length && <><label className="ws-export-select">Portfolio to export
-        <select value={selected} disabled={busy!==null} onChange={event=>setSelected(event.target.value)}>
+        <select value={selectedPortfolio} disabled={busy!==null} onChange={event=>setSelected(event.target.value)}>
           <option value="">Select a portfolio</option>
           {portfolios.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
         </select></label>
-        <button className="ws-primary" type="button" disabled={!selected || busy!==null}
+        <button className="ws-primary" type="button" disabled={!selectedPortfolio || busy!==null}
           onClick={()=>void download('source')}>{busy==='source'?'Preparing portfolio ZIP…':'Download portfolio source ZIP'}</button></>}
     </SettingsCard>
     <SettingsCard title="Private account data">
@@ -636,8 +651,8 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     </SettingsCard>
     <SettingsCard title="Offline static preview">
       <p>Run preflight on a saved revision to download an eligible scriptless HTML preview. The ZIP has no public URL and excludes custom code and private media.</p>
-      {selected
-        ? <a href={'/app/portfolios/'+selected+'/publish'}>Open preflight for selected portfolio</a>
+      {selectedPortfolio
+        ? <a href={'/app/portfolios/'+selectedPortfolio+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
   </div></>;
