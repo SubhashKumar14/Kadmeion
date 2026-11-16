@@ -642,7 +642,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     const revoked=await verifyReleaseWithdrawal({origin:deliveryOrigin,
       canonicalPath:'/'+handle+'/'+slug,candidateDirectPaths:['/'+handle+'/'+slug+'/assets/secret.png'],
       allowLocal:true},servedPublicSha,()=>changeHandle('changed_'+handle));
-    assert.equal(revoked.observedHttpRequests,5);
+    assert.equal(revoked.observedHttpRequests,6);
+    // Canonical live GET+HEAD plus canonical/direct denial GET+HEAD.
     for (const nextHandle of ['changed_'+handle,handle]) {
       if(nextHandle===handle)await changeHandle(handle);
       assert.equal((await fetch(canonical)).status, 404);
