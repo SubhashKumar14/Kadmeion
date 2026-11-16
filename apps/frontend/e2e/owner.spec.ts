@@ -119,9 +119,18 @@ test('real owner onboarding and project revision are private across browser sess
   for (const restricted of ['/app/operations/users', '/app/operations/moderation', '/app/operations/appeals']) {
     await page.goto(restricted);
     await expect(page.getByRole('heading', {name: 'Restricted operations.'})).toBeVisible();
-    await expect(page.getByRole('alert')).toContainText('Only verified operators');
+    await expect(page.getByRole('alert')).toContainText('did not authorize this session');
     await expect(page.getByRole('navigation', {name: 'Restricted operation areas'})).toHaveCount(0);
   }
+  // An infrastructure outage must remain fail-closed without falsely asserting
+  // a role denial. No private case list, user directory or operator UI appears.
+  const operatorRpc='**/rest/v1/rpc/operator_list_moderation_cases*';
+  await page.route(operatorRpc, route => route.abort('failed'));
+  await page.goto('/app/operations/users');
+  await expect(page.getByRole('heading',{name:'Operator verification unavailable.'})).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('not proof your role was denied');
+  await expect(page.getByRole('navigation',{name:'Restricted operation areas'})).toHaveCount(0);
+  await page.unroute(operatorRpc);
   await page.goto('/app');
 
   await page.goto('/app/profile');
