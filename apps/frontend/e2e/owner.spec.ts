@@ -333,6 +333,12 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByLabel('url',{exact:true})).toBeVisible();
   await expect(page.getByLabel('url',{exact:true})).toHaveAttribute('aria-invalid','true');
   await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();
+  await page.setViewportSize({width:390,height:844});
+  await expect(page.getByRole('heading',{name:'Continue on a larger screen.'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save draft'})).toHaveCount(0);
+  await page.setViewportSize({width:1600,height:1000});
+  await expect(page.getByLabel('url',{exact:true})).toHaveValue('javascript:alert(1)');
+  await expect(page.getByLabel('url',{exact:true})).toHaveAttribute('aria-invalid','true');
   await page.getByLabel('url',{exact:true}).fill('https://example.org/portfolio');
   await page.getByLabel('url',{exact:true}).press('Tab');
   await expect(page.getByLabel('url',{exact:true})).toHaveValue('https://example.org/portfolio');
@@ -629,7 +635,37 @@ test('real owner onboarding and project revision are private across browser sess
   await page.goto(editorPath);
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Save draft'})).toHaveCount(0);
   await capture('52_DEVICE_REQUIREMENTS_BROWSER');
+  const touch = await browser.newContext({
+    baseURL: testInfo.project.use.baseURL,
+    viewport: {width:960, height:540},
+    isMobile:true, hasTouch:true,
+    storageState: await page.context().storageState(),
+    permissions:['clipboard-read','clipboard-write']
+  });
+  try {
+    const phone=await touch.newPage();
+    await phone.goto(editorPath);
+    await expect(phone.getByRole('heading',{name:'Continue on a larger screen.'})).toBeVisible();
+    await expect(phone.getByRole('button',{name:'Save draft'})).toHaveCount(0);
+    expect(await phone.evaluate(()=>matchMedia('(min-width: 900px) and (pointer: coarse)').matches)).toBe(true);
+    const privateLink=new URL(editorPath,phone.url()).href;
+    await expect(phone.getByRole('textbox',{name:'Private continuation link'})).toHaveValue(privateLink);
+    await phone.getByRole('button',{name:'Copy continuation link'}).click();
+    await expect(phone.getByRole('region',{name:'Continue on a larger screen.'}).getByRole('status'))
+      .toHaveText('Private workspace link copied.');
+    expect(await phone.evaluate(()=>navigator.clipboard.readText())).toBe(privateLink);
+    await phone.getByRole('link',{name:'View saved portfolio'}).click();
+    await expect(phone).toHaveURL(editorPath.replace('/edit','/preview/fullscreen'));
+    await expect(phone.locator('.ws-studio-editor')).toHaveCount(0);
+    await expect(phone.getByRole('main',{name:'Saved private portfolio author preview'})).toBeVisible();
+    await phone.goto('/app/portfolios/new');
+    await expect(phone.getByRole('heading',{name:'Continue on a larger screen.'})).toBeVisible();
+    await expect(phone.getByRole('button',{name:'Choose template and create draft'})).toHaveCount(0);
+  } finally {
+    await touch.close();
+  }
   await page.setViewportSize({width: 1600, height: 1000});
   await page.goto('/app/settings');
   await expect(page.getByRole('heading', {name: 'Settings', exact: true})).toBeVisible();

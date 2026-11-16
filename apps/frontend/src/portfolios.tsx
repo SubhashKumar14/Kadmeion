@@ -122,7 +122,7 @@ function compatibleComponentsForSlot(key:string){
 
 const STUDIO = '/app/portfolios';
 const editorPath = (id: string) => STUDIO + '/' + id + '/edit';
-const authoringQuery = '(min-width: 900px)';
+const authoringQuery = '(min-width: 900px) and (pointer: fine) and (hover: hover)';
 type PortfolioRecord = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['readOwnerPortfolio']>>['data']>;
 
 export function portfolioIdFromRoute(path: string): string | undefined {
@@ -141,12 +141,37 @@ function useAuthoringViewport() {
   return allowed;
 }
 
-function DeviceLimit() {
-  return <div className="ws-project-aside ws-studio-device" role="status">
-    <h2>Continue on a larger screen.</h2>
-    <p>Open this workspace on a desktop, laptop or a tablet with enough room for the editor.</p>
-    <a className="ws-secondary" href={STUDIO}>Return to your portfolios</a>
-  </div>;
+function DeviceLimit({id}: {id?: string}) {
+  const [copyStatus, setCopyStatus] = useState('');
+  const continuation = new URL(id ? editorPath(id) : STUDIO + '/new', window.location.origin).href;
+  const Heading = id ? 'h1' : 'h2';
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(continuation);
+      setCopyStatus('Private workspace link copied.');
+    } catch {
+      setCopyStatus('Clipboard access is unavailable. Select and copy the private link from the field.');
+    }
+  }
+
+  return <section className="ws-project-aside ws-studio-device" aria-labelledby="ws-device-title">
+    <p className="ws-kicker">PORTFOLIO STUDIO</p>
+    <Heading id="ws-device-title">Continue on a larger screen.</Heading>
+    <p>Use a desktop or laptop with a mouse or trackpad to edit. You can still browse your workspace on this device.</p>
+    {id && <p>Open the saved portfolio in read-only mode. Editing requires the private workspace.</p>}
+    <label className="ws-device-link">
+      Private continuation link
+      <input readOnly value={continuation} onFocus={event=>event.currentTarget.select()}/>
+    </label>
+    <p className="ws-device-hint">The link requires your own Kadmeion sign-in.</p>
+    <div className="ws-actions">
+      <button type="button" className="ws-primary" onClick={()=>void copyLink()}>Copy continuation link</button>
+      {id && <a className="ws-secondary" href={STUDIO+'/'+id+'/preview/fullscreen'}>View saved portfolio</a>}
+      <a className="ws-secondary" href={STUDIO}>Return to your portfolios</a>
+    </div>
+    <p role="status" className="ws-device-hint">{copyStatus}</p>
+  </section>;
 }
 
 export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
@@ -445,8 +470,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       const entry=head?.snapshot.slots[key];
       setSlot(key);setValue(entry?.content[primaryField(entry.componentId)]??'');setTool('Content');
     }}/>;
-  if (!allowed) return <DeviceLimit/>;
-  return <section aria-labelledby="edit-title" className="ws-studio-editor">
+  if (!allowed && !record) return <DeviceLimit id={id}/>;
+  return <>{!allowed && <DeviceLimit id={id}/>}
+    <section aria-labelledby="edit-title" className="ws-studio-editor" hidden={!allowed} inert={!allowed}>
     <div className="ws-project-head"><div className="ws-heading">
       <a href={STUDIO}>Back to portfolios</a><p className="ws-kicker">PORTFOLIO BUILDER</p>
       <h1 id="edit-title">{record?.title ?? 'Portfolio editor'}</h1>
@@ -669,7 +695,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       <SourceInspector key={id+':'+attempt} head={head} slot={slot} apply={apply}
         onBufferDirtyChange={setSourceDirty} back={()=>setTool('Content')}/>
     </div>}</>)}
-  </section>;
+  </section></>;
 }
 
 

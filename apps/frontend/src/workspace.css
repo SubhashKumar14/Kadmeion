@@ -205,7 +205,16 @@
 .ws-case-form .ws-case-check{display:flex;align-items:center;gap:8px}
 .ws-case-form .ws-case-check input{width:20px;min-height:20px}
 
-.ws-studio-device{margin-top:20px}
+.ws-studio-device{margin-top:20px;max-width:640px}
+.ws-studio-device h1,.ws-studio-device h2{margin:0 0 12px}
+.ws-studio-device .ws-device-link{display:grid;gap:6px;margin-top:16px;font-weight:700}
+.ws-device-link input{min-width:0;min-height:44px;padding:8px 12px;border:1px solid var(--line-dark);
+  border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-weight:400}
+.ws-studio-device .ws-device-hint{font-size:.875rem;color:var(--body)}
+.ws-studio-device .ws-device-hint:empty{margin:0}
+.ws-studio-device .ws-actions{margin-top:16px}
+.ws-studio-device .ws-actions>*{min-height:44px}
+.ws-studio-editor[hidden]{display:none}
 .ws-studio-list .ws-project-empty{border:0}
 .ws-studio-search{display:grid;gap:6px}
 .ws-studio-search input{min-height:42px;border:1px solid var(--line-dark);border-radius:8px;padding:8px 12px;background:var(--surface);color:var(--ink)}
