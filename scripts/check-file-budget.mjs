@@ -91,6 +91,10 @@ const justifiedExtra = [
   // a distinct contextual empty-state asset; 200-file cap variance remains.
   'apps/frontend/public/brand/kadmeion-open-folio.svg',
   'apps/frontend/e2e/owner.spec.ts',
+  // F5 isolated authenticated settings 41–47 responsive/theme acceptance:
+  // distinct fixture-driven test to keep owner acceptance auditable.
+  // This is a proposed source-file variance, not owner approval of the cap.
+  'apps/frontend/e2e/settings-owner.spec.ts',
   'apps/frontend/src/profile.tsx',
   'apps/frontend/src/portfolios.tsx',
   'apps/frontend/src/portfolio-tools.tsx',
