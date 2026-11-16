@@ -874,3 +874,68 @@ test('replacement of the recovery session blocks a password update before the pr
   assert.match(result.error?.message ?? '', /expired or changed/);
   assert.equal(JSON.parse(saved.getItem(sessionKey)!).access_token, 'b'.repeat(64));
 });
+
+
+test('S6 owner REST 429 and 409 retain distinct retry and conflict semantics', async () => {
+  const projectId = '11111111-1111-4111-8111-111111111111';
+  let createCalls = 0;
+  let editCalls = 0;
+  const {port} = mock((async (url: string | URL | Request, init?: RequestInit) => {
+    const request = String(url);
+    if (request.includes('grant_type=password')) return json(tokens);
+    if (request.endsWith('/auth/v1/user')) return json(user);
+    if (request.includes('/rest/v1/projects?') && init?.method !== 'POST')
+      return json({code:'TOO_MANY_REQUESTS', message:'private details must not be returned'}, 429);
+    if (request.includes('/rest/v1/projects?') && init?.method === 'POST') {
+      createCalls++;
+      return json({code:'23505',message:'duplicate key'}, 409);
+    }
+    if (request.endsWith('/rest/v1/rpc/update_private_project')) {
+      editCalls++;
+      return json({message:'concurrent request'}, 409);
+    }
+    return json({}, 404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture-password'})).error,null);
+
+  const rateLimited = await port.listOwnerProjects();
+  assert.equal(rateLimited.data,null);
+  assert.equal(rateLimited.error?.message,'Too many private workspace requests. Try again later.');
+  assert.equal(rateLimited.error?.message.includes('private details'),false);
+
+  const created = await port.createPrivateProject({
+    title:'Private conflict fixture',slug:'private-conflict-fixture',
+    summary:'',repositoryUrl:null,liveUrl:null
+  });
+  assert.equal(created.data,null);
+  assert.equal(created.error?.message,'Project conflicts with an existing owner record. Choose a different slug.');
+  assert.equal(createCalls,1);
+
+  const edited = await port.saveOwnerProject(projectId,1,{
+    title:'Private draft',slug:'private-draft',summary:'still private',
+    description:'',repositoryUrl:null,liveUrl:null
+  });
+  assert.equal(edited.data,null);
+  assert.equal(edited.error?.message,'Private workspace conflict. Reload the latest data before trying again.');
+  assert.equal(editCalls,1);
+});
+
+test('S6 SQL 40001 keeps revision-conflict precedence over HTTP 409', async () => {
+  const projectId = '11111111-1111-4111-8111-111111111111';
+  const {port} = mock((async (url: string | URL | Request) => {
+    const request=String(url);
+    if(request.includes('grant_type=password')) return json(tokens);
+    if(request.endsWith('/auth/v1/user')) return json(user);
+    if(request.endsWith('/rest/v1/rpc/update_private_project'))
+      return json({code:'40001', message:'REVISION_CONFLICT'},409);
+    return json({},404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture-password'})).error,null);
+  const stale=await port.saveOwnerProject(projectId,2,{
+    title:'Attempted stale edit',slug:'private-draft',summary:'',
+    description:'',repositoryUrl:null,liveUrl:null
+  });
+  assert.equal(stale.data,null);
+  assert.match(stale.error?.message??'',/changed while you were editing/);
+  assert.doesNotMatch(stale.error?.message??'',/Choose a different slug|Too many requests/);
+});
