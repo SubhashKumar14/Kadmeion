@@ -55,7 +55,9 @@ jobs:
           test -n "$BROWSER"
           mkdir -p /tmp/kadmeion-f1-browser
           while read -r screen route; do
-            "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size=1586,992 --virtual-time-budget=1000 \
+            size=1586,992
+            if [[ "$screen" == 07_* || "$screen" == 51_* ]]; then size=1600,1000; fi
+            "$BROWSER" --headless --no-sandbox --disable-gpu --hide-scrollbars --window-size="$size" --virtual-time-budget=1000 \
               --screenshot="/tmp/kadmeion-f1-browser/${screen}_BROWSER.png" "http://127.0.0.1:4173$route"
           done <<'ROUTES'
           01_LANDING /
@@ -63,10 +65,7 @@ jobs:
           03_TEMPLATES /templates
           04_SIGNIN /signin
           05_SIGNUP /signup
-          06_CALLBACK /auth/callback?code=invalid-capture-example
           07_RECOVERY /forgot-password
-          08_RESET /reset-password
-          09_RECOVERY_STATUS /auth/recovery-status
           51_UNAVAILABLE /missing-public-page
           ROUTES
       - uses: actions/upload-artifact@v7.0.2

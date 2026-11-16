@@ -56,6 +56,9 @@ p{line-height:1.55}
 .skip-link:focus{top:12px}
 .site-shell{max-width:1294px;margin:0 auto 42px;background:var(--surface);border:1px solid var(--line);
   box-shadow:0 20px 80px color-mix(in srgb,var(--ink) 8%,transparent);border-radius:18px;overflow:hidden}
+@media(min-width:1350px){
+  .site-shell.explore-shell,.site-shell.template-shell{max-width:min(1500px,calc(100% - 88px))}
+}
 .site-header{height:63px;padding:0 34px 0 49px;display:flex;align-items:center;justify-content:space-between;gap:20px;
   border-bottom:1px solid var(--line);position:relative;z-index:3}
 .brand{display:inline-flex;flex-direction:column;gap:3px;flex-shrink:0;white-space:nowrap}

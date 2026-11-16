@@ -130,6 +130,7 @@ jobs:
         env:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           KADMEION_LOCAL_BROWSER: '1'
+          VITE_KADMEION_EMAIL_DELIVERY_VERIFIED: 'true'
           KADMEION_BROWSER_CAPTURE_DIR: /tmp/kadmeion-owner-captures
       - uses: actions/upload-artifact@v7.0.2
         if: always()

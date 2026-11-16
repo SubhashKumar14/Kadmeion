@@ -1,7 +1,7 @@
 /* Source-informed AUTH-01..AUTH-06 LIGHT references, runtime dark tokens inherited
    from theme. */
-.auth-page{width:min(1452px,calc(100% - 70px));min-height:calc(100dvh - 74px);margin:36px auto;position:relative;
-  display:grid;grid-template-columns:50% 50%;border:1px solid var(--line);border-radius:22px;
+.auth-page{width:min(1520px,calc(100% - 88px));min-height:calc(100dvh - 74px);margin:36px auto;position:relative;
+  display:grid;grid-template-columns:53% 47%;border:1px solid var(--line);border-radius:22px;
   box-shadow:0 17px 60px #10263832;overflow:hidden;background:var(--panel);isolation:isolate;
   transition:grid-template-columns 300ms cubic-bezier(.22,.75,.22,1)}
 .auth-form-panel,.auth-brand-panel{min-width:0;grid-row:1;min-height:850px;transition:transform 300ms cubic-bezier(.22,.75,.22,1)}
@@ -19,6 +19,8 @@
 .auth-header .theme-button{min-height:38px}
 .auth-form-content{flex:1;display:flex;flex-direction:column;justify-content:center;padding:25px clamp(30px,6.2vw,99px) 32px}
 .auth-form-content section{animation:auth-reveal 250ms ease both}
+.auth-page[data-panel="left"] .auth-form-content section{width:min(100%,555px);margin-inline:auto}
+.auth-page a[aria-disabled="true"]{cursor:wait;color:var(--muted)}
 .auth-form-content h1{font-size:clamp(34px,3.25vw,49px);line-height:1.12;margin:0 0 16px;letter-spacing:-.032em}
 .auth-form-content h1:focus{outline:none}
 .auth-form-content .eyebrow{font-size:11px;letter-spacing:.21em;margin:0 0 24px;color:var(--accent-strong)}
@@ -139,17 +141,21 @@
   .auth-page[data-mode="signup"] .auth-field input{height:47px}
 }
 
-.auth-callback{width:min(1452px,calc(100% - 70px));min-height:calc(100dvh - 74px);margin:36px auto;
+.auth-callback{width:min(1520px,calc(100% - 88px));min-height:calc(100dvh - 74px);margin:36px auto;
   display:grid;grid-template-rows:auto 1fr;border:1px solid var(--line);border-radius:22px;overflow:hidden;
   background:radial-gradient(ellipse at top right,var(--accent-soft),transparent 52%),var(--surface-soft)}
 .auth-callback-header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 24px;
   background:var(--panel);border-bottom:1px solid var(--line)}
-.auth-callback-card{align-self:center;justify-self:center;width:min(100% - 32px,720px);margin:24px 0;padding:clamp(16px,3vw,32px);
+.auth-callback-card{align-self:center;justify-self:center;width:min(100% - 32px,700px);margin:24px 0;padding:clamp(16px,3vw,32px);
   border:1px solid var(--line);border-radius:16px;background:var(--panel);color:var(--ink);overflow-wrap:anywhere}
 .auth-callback-banner{height:clamp(88px,14vw,156px);position:relative;overflow:hidden;border-radius:10px;
   background:#10283b;margin-bottom:22px}
 .auth-callback-card h1{font-size:clamp(30px,4vw,48px);line-height:1.1;margin:12px 0}
 .auth-callback-card>p{color:var(--body)}
+.auth-callback-steps{list-style:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;padding:0;margin:22px 0 0;color:var(--body);font-size:13px}
+.auth-callback-steps li{padding:12px 8px;text-align:center;border-top:2px solid var(--line-dark)}
+.auth-callback-steps [aria-current="step"]{border-color:var(--accent);color:var(--ink);font-weight:700}
 .auth-callback-actions{display:grid;gap:12px;margin-top:22px}
 @media(max-width:720px){
   .auth-callback{width:100%;min-height:100dvh;margin:0;border:0;border-radius:0}

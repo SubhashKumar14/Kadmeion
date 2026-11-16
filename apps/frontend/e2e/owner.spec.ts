@@ -92,8 +92,13 @@ test('real owner onboarding and project revision are private across browser sess
   await page.setViewportSize({width: 1600, height: 1000});
   await signIn(page, owner);
   await page.getByRole('link', {name: 'Open private workspace'}).click();
-  await expect(page.getByRole('heading', {name: /Make room for/})).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'A place for what you build next.'})).toBeVisible();
   await capture('11_WORKSPACE_BROWSER');
+  await expect(page.getByRole('link', {name: 'Create portfolio'})).toHaveAttribute('href', '/app/portfolios/new');
+  await page.setViewportSize({width: 390, height: 844});
+  await expect(page.getByRole('button', {name: 'Sign out', exact: true})).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(392);
+  await page.setViewportSize({width: 1600, height: 1000});
 
   for (const restricted of ['/app/operations/users', '/app/operations/moderation', '/app/operations/appeals']) {
     await page.goto(restricted);
@@ -170,6 +175,12 @@ test('real owner onboarding and project revision are private across browser sess
   await page.goto('/app/onboarding');
   await expect(page.getByRole('group', {name: 'Choose your next step'})).toBeVisible();
   await capture('10_ONBOARDING_BROWSER');
+  const initialChoice = page.getByRole('radio', {name: /Create a portfolio/});
+  await initialChoice.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('radio', {name: /Connect developer accounts/})).toBeChecked();
+  await page.keyboard.press('ArrowLeft');
+  await expect(initialChoice).toBeChecked();
   await page.getByRole('button', {name: 'Skip selected step'}).click();
   await expect(page.getByRole('status')).toContainText('saved as skipped');
   await page.reload();
@@ -528,4 +539,76 @@ test('verified local operator can read case-scoped views without impersonation o
   if(dir)await page.screenshot({path:dir+'/50_APPEALS_BROWSER.png',animations:'disabled'});
   // An administrator's private-case permissions are not public host authority.
   await expect(page.getByText('This does not republish content.',{exact:false})).toBeVisible();
+});
+
+test('F1 recovery request and password reset use isolated GoTrue and Mailpit', async ({ page }) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
+  test.setTimeout(60_000);
+  const user = await localUser('CI Recovery');
+  const directory = process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  async function capture(screen: string) {
+    if (!directory) return;
+    await mkdir(directory, { recursive: true });
+    await page.screenshot({ path: directory + '/' + screen + '_BROWSER.png', animations: 'disabled' });
+  }
+
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto('/forgot-password');
+  await page.getByRole('textbox', { name: 'Email address' }).fill(user.email);
+  await page.getByRole('button', { name: 'Request recovery link' }).click();
+  await expect(page.getByRole('heading', { name: 'Check your inbox' })).toBeFocused();
+  await expect(page.getByRole('status')).toContainText('Delivery is not confirmed');
+  await capture('09_RECOVERY_OUTCOME');
+
+  const mailpit = 'http://127.0.0.1:54324';
+  let messageId: string | undefined;
+  await expect.poll(async () => {
+    const response = await fetch(mailpit + '/api/v1/messages?limit=100', { redirect: 'error' });
+    if (!response.ok) return false;
+    const inbox = await response.json() as { messages?: { ID: string; To?: { Address: string }[] }[] };
+    messageId = inbox.messages?.find(message => message.To?.some(to => to.Address === user.email))?.ID;
+    return !!messageId;
+  }, { timeout: 12_000 }).toBe(true);
+  const messageResponse = await fetch(mailpit + '/api/v1/message/' + encodeURIComponent(messageId!), { redirect: 'error' });
+  expect(messageResponse.ok).toBe(true);
+  const message = await messageResponse.json() as { Text?: string; HTML?: string };
+  const rawLinks = ((message.Text ?? '') + '\n' + (message.HTML ?? '')).match(/https?:\/\/[^\s"'<>]+/g) ?? [];
+  const verification = rawLinks.map(link => URL.parse(link.replaceAll('&amp;', '&').replace(/[).,;]+$/, '')))
+    .find(link => link?.origin === origin && link.pathname === '/auth/v1/verify' &&
+      link.searchParams.get('type') === 'recovery' && link.searchParams.has('token'));
+  if (!verification) throw new Error('Mailpit did not return a local recovery link.');
+  const redeemed = await fetch(verification, { redirect: 'manual' });
+  if (![302, 303].includes(redeemed.status)) throw new Error('Local GoTrue rejected the recovery link.');
+  const redirect = URL.parse(redeemed.headers.get('location') ?? '');
+  const fragment = new URLSearchParams(redirect?.hash.slice(1));
+  if (redirect?.origin !== 'http://127.0.0.1:5173' || redirect.pathname !== '/reset-password' ||
+      !fragment.has('access_token') || fragment.get('type') !== 'recovery')
+    throw new Error('Local GoTrue did not return the expected recovery redirect.');
+
+  let resumeVerification!: () => void;
+  const verificationHeld = new Promise<void>(resolve => { resumeVerification = resolve; });
+  await page.route(origin + '/auth/v1/user', async (route, request) => {
+    if (request.method() === 'GET') await verificationHeld;
+    await route.continue();
+  });
+  try {
+    await page.setViewportSize({ width: 1586, height: 992 });
+    await page.evaluate(hash => window.location.assign('/reset-password' + hash), redirect.hash);
+    await expect(page.getByRole('heading', { name: 'Verifying your session.' })).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Verification steps' })).toBeVisible();
+    expect(new URL(page.url()).hash).toBe('');
+    await capture('06_CALLBACK_RECOVERY_VERIFICATION');
+  } finally {
+    resumeVerification();
+  }
+
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await expect(page.getByRole('heading', { name: 'Choose a new password.' })).toBeFocused();
+  await capture('08_RESET');
+  const newPassword = 'LocalChanged!' + randomUUID();
+  await page.getByLabel('New password', { exact: true }).fill(newPassword);
+  await page.getByLabel('Confirm new password', { exact: true }).fill(newPassword);
+  await page.getByRole('button', { name: 'Save new password' }).click();
+  await expect(page.getByRole('heading', { name: 'Password updated' })).toBeFocused();
+  await signIn(page, {email: user.email, password: newPassword});
 });

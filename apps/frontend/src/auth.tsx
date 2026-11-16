@@ -116,8 +116,9 @@ export function AuthApp(){
   const stillMounted=useRef(true);
   const auth=config.value;
   function setAuthMode(next:Mode,route?:string,clearSecrets=true){
+    if(pending)return;
     if(clearSecrets){setPassword('');setConfirm('');}
-    setError('');setNotice('');setOutcome(null);
+    setError('');setNotice('');setOutcome(null);setIdentity(null);
     setMode(next);
     const target=route??('/'+next);
     history.replaceState(null,'',target);
@@ -207,6 +208,10 @@ export function AuthApp(){
   // Authentication callback must run at most once: auth instance fixed for mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
+  useEffect(() => {
+    if (mode === 'outcome' || mode === 'set-password') heading.current?.focus();
+  }, [mode]);
+
   if (mode === 'callback' || (enteredCallback.current && mode === 'outcome')) {
     const checking = mode === 'callback';
     return <main className="auth-callback" id="auth-main">
@@ -228,7 +233,14 @@ export function AuthApp(){
           {checking ? 'Verifying your session.' : error ? 'Action not completed' :
             outcome === 'session-verified' ? 'Session verified' : 'Account status'}
         </h1>
-        {checking ? <p role="status">Checking your link with the authentication service…</p> :
+        {checking ? <>
+          <p role="status">Checking your link with the authentication service…</p>
+          <ol className="auth-callback-steps" aria-label="Verification steps">
+            <li aria-current="step">Check your session</li>
+            <li>Verify access</li>
+            <li>Continue to Kadmeion</li>
+          </ol>
+        </> :
           error ? <p className="auth-error" role="alert">{error}</p> :
           notice && <p role="status">{notice}</p>}
         {!checking && <div className="auth-callback-actions">
@@ -243,10 +255,10 @@ export function AuthApp(){
   const storyPanel = !!authStories[mode];
   return <>
     <a className="skip-link" href="#auth-main">Skip to account form</a>
-    <main className="auth-page" id="auth-main" data-mode={mode} data-panel={storyPanel ? 'left' : 'right'}>
+    <main className="auth-page" id="auth-main" tabIndex={-1} data-mode={mode} data-panel={storyPanel ? 'left' : 'right'}>
       <section className="auth-form-panel" aria-label="Account access">
         <div className="auth-header">
-          {storyPanel ? <a href="/signin" className="auth-home" onClick={event => {
+          {storyPanel ? <a href="/signin" className="auth-home" aria-disabled={pending || undefined} onClick={event => {
             event.preventDefault();
             if (mode === 'signup') swapMode('signin');
             else setAuthMode('signin', '/signin');
@@ -258,7 +270,7 @@ export function AuthApp(){
         </div>
         <div className="auth-form-content">
           {error && mode!=='outcome' && <div className="auth-error" role="alert">{error}</div>}
-          {notice && <div className="auth-notice" role="status">{notice}</div>}
+          {notice && mode !== 'outcome' && <div className="auth-notice" role="status">{notice}</div>}
           {mode==='signin' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Welcome to Kadmeion</p>
             <h1 id="auth-heading" tabIndex={-1} ref={heading}>Sign in to your account.</h1>
@@ -274,7 +286,7 @@ export function AuthApp(){
               </AuthInput>
               <AuthPassword id="signin-password" label="Password" value={password} setValue={setPassword} autoComplete="current-password"/>
               <div className="auth-row"><span className="auth-privacy-note">Local session on this device</span>
-                <a href="/forgot-password" onClick={event=>{event.preventDefault();setAuthMode('forgot-password','/forgot-password');}}>Forgot password? <span aria-hidden="true">→</span></a></div>
+                <a href="/forgot-password" aria-disabled={pending || undefined} onClick={event=>{event.preventDefault();setAuthMode('forgot-password','/forgot-password');}}>Forgot password? <span aria-hidden="true">→</span></a></div>
               <button type="submit" className="auth-submit" disabled={pending||!auth}>Sign in <span aria-hidden="true">→</span></button>
             </form>
             <div className="auth-or"><span>Or</span></div>
@@ -283,7 +295,7 @@ export function AuthApp(){
               setPending(true);setError('');
               void auth.service.googleLogin().then(url=>{window.location.assign(url);}).catch(reason=>{setError(readError(reason));setPending(false);});
             }}>{auth?.allowGoogle?'Continue with Google':'Google sign-in not configured'}</button>
-            <p className="auth-switch">Don't have an account? <a href="/signup" onClick={event=>{event.preventDefault();swapMode('signup');}}>Create an account <span aria-hidden="true">→</span></a></p>
+            <p className="auth-switch">Don't have an account? <a href="/signup" aria-disabled={pending || undefined} onClick={event=>{event.preventDefault();swapMode('signup');}}>Create an account <span aria-hidden="true">→</span></a></p>
             <div className="auth-advisory">Drafts remain private until you explicitly choose what to share. Switching sign-in and sign-up preserves your entries.</div>
           </section>}
           {mode==='signup' && <section aria-labelledby="auth-heading">
@@ -313,7 +325,7 @@ export function AuthApp(){
               <button type="submit" className="auth-submit" disabled={!auth||!auth.emailAvailable||pending}>Create account <span aria-hidden="true">→</span></button>
             </form>
             {!auth?.emailAvailable&&<p className="auth-field-hint">Registration remains unavailable until sender delivery is verified.</p>}
-            <p className="auth-switch">Already have an account? <a href="/signin" onClick={event=>{event.preventDefault();swapMode('signin');}}>Sign in <span aria-hidden="true">→</span></a></p>
+            <p className="auth-switch">Already have an account? <a href="/signin" aria-disabled={pending || undefined} onClick={event=>{event.preventDefault();swapMode('signin');}}>Sign in <span aria-hidden="true">→</span></a></p>
           </section>}
           {mode==='forgot-password' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Account recovery</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>Reset your password.</h1>
@@ -327,7 +339,7 @@ export function AuthApp(){
               <button type="submit" className="auth-submit" disabled={pending||!auth?.emailAvailable}>Request recovery link <span aria-hidden="true">→</span></button>
             </form>
             {!auth?.emailAvailable&&<p className="auth-field-hint">Email recovery is not available until provider delivery is verified.</p>}
-            <p className="auth-switch"><button type="button" className="auth-text-button" onClick={()=>setAuthMode('signin','/signin')}>Return to sign in</button></p>
+            <p className="auth-switch"><button type="button" className="auth-text-button" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in</button></p>
           </section>}
           {mode==='set-password' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Secure access</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>Choose a new password.</h1>
@@ -348,16 +360,16 @@ export function AuthApp(){
           {mode==='outcome' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Account update</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>
               {error?'Action not completed':outcome==='password-updated'?'Password updated':
-                outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Request submitted':outcome==='session-verified'?'Session verified':'Account recovery status'}
+                outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Check your inbox':outcome==='session-verified'?'Session verified':'Account recovery status'}
             </h1>
-            <p className="auth-description" role={error?'alert':undefined}>{notice||error||'Check your account details before continuing.'}</p>
+            <p className="auth-description" role={error?'alert':notice?'status':undefined}>{notice||error||'Check your account details before continuing.'}</p>
             {identity&&<p className="auth-identity">Verified account email: {identity}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
-            <button type="button" className="auth-submit" onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
+            <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {identity&&auth&&<button type="button" className="auth-text-button" disabled={pending} onClick={()=>{
               setPending(true);
               void auth.service.logout('local').then(()=>{
-                setIdentity(null);setAuthMode('signin','/signin');
+                setAuthMode('signin','/signin');
               }).catch(reason=>setError(readError(reason))).finally(()=>setPending(false));
             }}>Sign out of this device</button>}
           </section>}

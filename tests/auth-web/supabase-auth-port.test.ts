@@ -856,3 +856,21 @@ test('a delayed rejection from user verification leaves a newer session intact',
   assert.deepEqual([...saved.data.values()], before);
   assert.equal((await port.getUser()).data.user?.id, secondUser.id);
 });
+
+test('replacement of the recovery session blocks a password update before the provider call', async () => {
+  const saved = storage();
+  const { port } = mock(async (_url, options) => {
+    assert.equal(options?.method, 'GET', 'The stale session must not send a password update.');
+    return json(user);
+  }, saved);
+  await port.acceptTokens(new URLSearchParams({
+    access_token: tokens.access_token, refresh_token: tokens.refresh_token, type: 'recovery',
+  }));
+  const sessionKey = [...saved.data.keys()][0]!;
+  saved.setItem(sessionKey, JSON.stringify({
+    ...tokens, access_token: 'b'.repeat(64), expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const result = await port.updateUser({password: 'a-long-new-password'});
+  assert.match(result.error?.message ?? '', /expired or changed/);
+  assert.equal(JSON.parse(saved.getItem(sessionKey)!).access_token, 'b'.repeat(64));
+});

@@ -1,3 +1,13 @@
+## 16 November 2026 — F1 implementation and verification checkpoint
+
+- Starting point: `f76d46445f0c429a0fea81719900d688e429d527` on [PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3), branch `feat/b0-backend-foundation`. Rechecked both starting-head workflows as successful. Hosted Supabase inventory matches all 57 migration versions and reports three active Edge Functions.
+- F1 changes cover screens 01–11. Public galleries use the approved wide composition; public/auth/workspace skip targets can receive keyboard focus. Auth uses the approved left/right proportions, announces actual callback verification, focuses reset/outcome headings, blocks in-place switching during submissions, and refuses stale password changes before sending a provider request. Workspace welcome and overview follow the approved headings, expose real owner actions, retain mobile sign-out, and show static glyph text only while data is loading.
+- All eleven original LIGHT files passed archive CRC and per-image SHA-256-prefix checks. Local checks passed: 504 root tests, five frontend tests, both typechecks, frontend build and 52/52 source contract mappings. Local Chromium could not start due to its process singleton socket restriction. Vite still reports one ineffective dynamic import.
+- GitHub Actions exercise public keyboard/reduced-motion and owner workspace behavior. The isolated GoTrue/Mailpit browser flow captures screen 06 while awaiting a real **recovery** session check, 08 after successful grant verification, and 09 after the recovery request. This checks the shared callback UI and local mail processing. Hosted Google OAuth and Brevo delivery still need separate proof.
+- **Next verification:** Check both workflows at current HEAD, compare the 11 captures to the approved LIGHT PNGs, and log results in the [Notion execution ledger](https://app.notion.com/p/419b082297c781db810cd756ec0343eb). Close material F1 differences before starting **F2 screens 12–17**. Keep visual parity, complete accessibility/UAT and production authorization as separate evidence fields.
+
+---
+
 ## 16 November 2026 — F0 PHASE SOURCE / READINESS AUDIT CLOSED IN CODE
 
 **Phase chosen under owner's new execution rule:** One F0–F6 phase per response; this response completes **F0 audit / source-readiness gate**, not the 52-screen UI product, owner acceptance, or production deployment. **Next phase is F1 (approved LIGHT screens 01–11)**. Continue direct implementation, not another planning-only exchange.

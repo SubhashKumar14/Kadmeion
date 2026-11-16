@@ -316,7 +316,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
     return this.outcome(async () => {
       const session = await this.refreshed();
-      if (!session) throw new Error('Session expired.');
+      if (!session || !this.isCurrentSession(session)) throw new Error('Session expired or changed.');
       const result = await this.request('/user', 'PUT', { password }, session.access_token);
       const updated = userFrom(result.user ?? result);
       if (!updated || updated.id !== session.user.id || !this.isCurrentSession(session)) {

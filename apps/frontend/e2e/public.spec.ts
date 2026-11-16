@@ -134,7 +134,7 @@ test('private workspace routes deny unverified access without exposing account d
     await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');
     await expect(page.getByRole('link',{name:/Go to sign in/})).toHaveAttribute('href','/signin');
-    await expect(page.getByRole('heading',{name:/Shape your portfolio/})).toHaveCount(0);
+    await expect(page.getByRole('heading',{name:'A place for what you build next.'})).toHaveCount(0);
     await expect(page.getByRole('group',{name:'Choose your next step'})).toHaveCount(0);
     await page.getByRole('button',{name:'Retry verification'}).focus();
     await expect(page.getByRole('button',{name:'Retry verification'})).toBeFocused();
@@ -217,4 +217,25 @@ test('reviewer and public candidate addresses disclose no records, no token and 
   await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
   await page.goto('/private-or-expired-example');
   await expect(page.getByRole('heading',{name:'This page is unavailable.'})).toBeVisible();
+});
+
+test('F1 skip links focus the content and auth reflows with reduced motion', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const [route, target] of [
+    ['/', '#main'], ['/explore', '#explore-main'], ['/templates', '#templates-main'],
+    ['/signin', '#auth-main'], ['/signup', '#auth-main'], ['/forgot-password', '#auth-main'],
+  ]) {
+    await page.goto(route!);
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('link', { name: /^Skip to / })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator(target!)).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), route).toBeLessThanOrEqual(392);
+  }
+  await page.goto('/signin');
+  await page.getByRole('link', { name: /Create an account/ }).click();
+  await expect(page.getByRole('heading', { name: 'Create your account.' })).toBeFocused();
+  await expect(page.locator('.auth-form-panel')).toHaveCSS('transition-property', 'none');
+  await expect(page.locator('.auth-form-content section')).toHaveCSS('animation-name', 'none');
 });

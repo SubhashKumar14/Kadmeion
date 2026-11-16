@@ -91,7 +91,7 @@ export function TemplateExplorer(){
           <a className="header-signin" href={getAuthHref()}>Sign in <Icon name="arrow" size={15}/></a>
         </div>
       </header>
-      <main id="templates-main" className="templates-main">
+      <main id="templates-main" tabIndex={-1} className="templates-main">
         <section className="templates-hero" aria-labelledby="templates-title">
           <div className="templates-geometry" aria-hidden="true"/>
           <p className="eyebrow"><span/> Templates</p>

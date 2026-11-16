@@ -39,7 +39,7 @@ export function ExplorePortfolios(){
           <a className="header-signin" href={getAuthHref()}><Icon name="user" size={15}/> Sign in</a>
         </div>
       </header>
-      <main id="explore-main" className="explore-main">
+      <main id="explore-main" tabIndex={-1} className="explore-main">
         <section className="explore-hero" aria-labelledby="explore-title">
           <div className="explore-copy">
             <p className="eyebrow"><span/> Public Showcase</p>

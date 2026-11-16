@@ -84,7 +84,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
           </span>
         </div>
       </header>
-      <main id="ws-content" className="ws-content">
+      <main id="ws-content" className="ws-content" tabIndex={-1}>
         {message && <p role="alert" className="ws-inline-alert">{message}</p>}
         {children}
       </main>
@@ -108,16 +108,16 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
   }
   return <section className="ws-onboarding" aria-labelledby="ws-title">
     <div className="ws-heading"><p className="ws-kicker">WELCOME / FIRST STEPS</p>
-      <h1 id="ws-title">Build your space,<br/><em>at your pace.</em></h1>
+      <h1 id="ws-title">Your developer identity starts here.</h1>
       <p>Choose where to begin. Your projects and portfolio stay private unless you explicitly publish them.</p>
     </div>
     <fieldset className="ws-choice-set">
       <legend>Choose your next step</legend>
       <div className="ws-choice-grid">
-        {cards.map((card, i) => <label key={card.key} className={'ws-choice' + (choice === card.key ? ' selected' : '')}>
+        {cards.map(card => <label key={card.key} className={'ws-choice' + (choice === card.key ? ' selected' : '')}>
           <input type="radio" name="start-choice" value={card.key} checked={choice === card.key}
             onChange={() => { setChoice(card.key); setNote(''); }}/>
-          <span className="ws-choice-index">0{i + 1} / START HERE</span>
+          <span className="ws-area-icon"><Icon name={card.key === 'profile' ? 'user' : card.key === 'portfolio' ? 'layers' : 'target'} size={20}/></span>
           <strong>{card.title}</strong><span>{card.description}</span>
           <small>{steps.find(saved=>saved.step===card.key)?.status === 'skipped' ? 'Skipped in your private account' : steps.find(saved=>saved.step===card.key)?.status === 'completed' ? 'Completed in your private account' : card.state}</small>
         </label>)}
@@ -135,18 +135,18 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
       <a href="/app" className="ws-secondary">Open workspace without saving</a>
     </div>
-    <p className="ws-footnote">Your selection is temporary; only confirmed step skips are persisted through the owner-scoped Supabase RPC. No provider connection is required.</p>
+    <p className="ws-footnote">You can get started without connecting a developer account.</p>
   </section>;
 }
 
 function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
-  return <section aria-labelledby="ws-title">
+  return <section className="ws-home" aria-labelledby="ws-title">
     <div className="ws-home-intro">
       <div className="ws-heading"><p className="ws-kicker">YOUR WORKSPACE / OVERVIEW</p>
-        <h1 id="ws-title">Make room for<br/><em>what comes next.</em></h1>
+        <h1 id="ws-title">A place for what you build next.</h1>
         <p>One private place for portfolios, projects and your development journey. {snapshot.profile?.displayName ? 'Welcome back, ' + snapshot.profile.displayName + '.' : 'Your verified private workspace is ready.'}</p>
       </div>
-      <a href="/app/projects" className="ws-primary">Continue work — your projects <Icon name="arrow" size={16}/></a>
+      <a href="/app/portfolios/new" className="ws-primary">Create portfolio <Icon name="arrow" size={16}/></a>
     </div>
     <div className="ws-section-head"><h2>Workspace areas</h2><span>Owner-only access verified</span></div>
     <div className="ws-area-grid">
@@ -155,23 +155,23 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
         <p className="ws-area-meta">01 / PORTFOLIO STUDIO</p>
         <h3>Shape your portfolio.</h3>
         <p>{snapshot.portfolios.length ? 'Your latest private portfolio drafts are shown below.' :
-          'No private portfolios were returned by your owner-scoped account query.'}</p>
+          'No portfolios yet. Start a private draft when you’re ready.'}</p>
         <a href="/app/portfolios">Open portfolio studio <Icon name="arrow" size={15}/></a>
       </article>
       <article className="ws-area">
         <div className="ws-area-icon"><Icon name="folder" size={20}/></div>
         <p className="ws-area-meta">02 / PROJECTS</p>
-        <h3>Your work, on your terms.</h3>
+        <h3>Your projects live here.</h3>
         <p>{snapshot.projects.length ? 'Your latest private projects are shown below.' :
-          'No active private projects were returned by your owner-scoped account query.'}</p>
+          'Add a project to keep its details in one place.'}</p>
         <a href="/app/projects">Open private project library <Icon name="arrow" size={15}/></a>
       </article>
       <article className="ws-area">
         <div className="ws-area-icon"><Icon name="target" size={20}/></div>
         <p className="ws-area-meta">03 / PERSONAL GROWTH</p>
-        <h3>Progress without the noise.</h3>
-        <p>Growth and analytics are Phase 2 features. No scores or activity have been invented.</p>
-        <p className="ws-unavailable">Planned for Phase 2</p>
+        <h3>Build today. Grow next.</h3>
+        <p>Manage private goals and see which growth features are available.</p>
+        <a href="/app/growth">Open Growth <Icon name="arrow" size={15}/></a>
       </article>
     </div>
     <div className="ws-recent-grid" aria-label="Private recent work">
@@ -183,7 +183,7 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
       <section><h2>Recent private projects</h2>
         {snapshot.projects.length ? <ul>{snapshot.projects.map(item=><li key={item.id}>
           <strong>{item.title}</strong><span>Private project</span></li>)}</ul> :
-          <p>No active private projects found. The project editor is still being integrated.</p>}
+          <p>No active projects yet.</p>}
       </section>
     </div>
     <div className="ws-bottom-strip">
@@ -299,8 +299,12 @@ export function WorkspaceApp() {
       isGrowthRoute(route) && authRef.current ? <GrowthApp port={authRef.current} path={route}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
-      <div className="ws-skeleton-heading" aria-hidden="true"/>
-      <div className="ws-skeleton-grid" aria-hidden="true"><span/><span/><span/></div>
+      <div aria-hidden="true">
+        <div className="ws-skeleton-heading">◩ ◿ ◬ ◜ ◩ ◿ ◬</div>
+        <div className="ws-skeleton-grid">
+          {[0, 1, 2].map(index => <span key={index}>◩ ◿ ◬<br/>◜ ◩ ◿ ◬ ◜</span>)}
+        </div>
+      </div>
     </section> : snapshot.status === 'error' ? <section className="ws-error">
       <h1>Private records unavailable.</h1><p role="alert">{snapshot.message}</p>
       <button type="button" className="ws-secondary" onClick={()=>window.location.reload()}>Retry securely</button>

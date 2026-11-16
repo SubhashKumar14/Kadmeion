@@ -160,7 +160,7 @@ export function Landing() {
         </div>
       </header>
 
-      <main id="main">
+      <main id="main" tabIndex={-1}>
         <section className="hero" aria-labelledby="hero-title">
           <div className="hero-decoration" aria-hidden="true"><span/><span/><span/></div>
           <div className="hero-copy">
