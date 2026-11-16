@@ -1265,7 +1265,7 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   });
   await page.reload();
   await expect.poll(()=>readFailed).toBe(true);
-  await expect(page.getByRole('alert')).toContainText('could not be loaded');
+  await expect(page.getByRole('alert')).toContainText('Private workspace request failed.');
   await expect(page.getByText('Your first project belongs here.')).toHaveCount(0);
   failRead=false;
   await page.getByRole('button',{name:'Retry securely'}).click();
