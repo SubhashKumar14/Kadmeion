@@ -1339,7 +1339,7 @@ test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen p
   await expect(page.getByRole('button',{name:/Register.*reviewer/i})).toBeDisabled();
   // Only the S4 pin-retry candidate exposes this control. A first failed
   // attested pin may be retried without changing frozen request/operation ID.
-  if(process.env.KADMEION_S4_PIN_RETRY_CANDIDATE==='1'){
+  {
     const retryPin=page.getByRole('button',{name:'Retry exact frozen revision'});
     await expect(retryPin).toBeEnabled();
     await retryPin.click();
@@ -1354,9 +1354,8 @@ test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen p
 
 
 test('S6 S3 pending inspector and SEO buffers block Restore until resolved', async ({page}) => {
-  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1' ||
-    process.env.KADMEION_S3_CANDIDATE !== '1',
-    'Requires isolated Supabase and S3 candidate integrated into the tested source.');
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1',
+    'Requires S3 integrated editor and disposable local Supabase.');
   test.setTimeout(110_000);
   const owner=await localUser('S6 S3 checkpoint buffers');
   await signIn(page,owner);
@@ -1544,9 +1543,8 @@ test('S6 S2 integrated paginates 135 projects and retries a 429 without losing p
 });
 
 test('S6 S3 candidate paginates 111 owner portfolios with truthful partial search',async({page})=>{
-  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1'||
-    process.env.KADMEION_S3_PAGINATION_CANDIDATE!=='1',
-    'Requires integrated S1+S3 cursor consumer and isolated owner service.');
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
+    'Requires S1+S3 integrated cursor consumer and disposable local Supabase.');
   test.setTimeout(115_000);
   const owner=await localUser('S6 S3 portfolio paging');
   expect(runLocalFixtureSql(
