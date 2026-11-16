@@ -142,7 +142,7 @@ export function Landing() {
   const [theme,toggleTheme]=useTheme();
   return <>
     <a className="skip-link" href="#main">Skip to content</a>
-    <div className="site-shell">
+    <div className="site-shell landing-shell">
       <header className="site-header">
         <Brand/>
         <nav aria-label="Primary navigation" className="site-navigation">

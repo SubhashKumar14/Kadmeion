@@ -60,11 +60,8 @@ export function ExplorePortfolios(){
           </div>
         </section>
         <section aria-labelledby="browse-title" className="explore-browse">
-          <div className="explore-browse-top"><div>
-            <p className="eyebrow"><span/> Preview Gallery</p>
-            <h2 id="browse-title">Browse layout examples.</h2>
-            <p className="explore-disclosure">Example cards from the approved visual design, not live published accounts, verified developers or publicly accessible portfolios.</p>
-          </div></div>
+          <h2 id="browse-title" className="sr-only">Browse layout examples</h2>
+          <p className="explore-disclosure">Layout examples, not live published accounts.</p>
           <form className="explore-filters" role="search" onSubmit={event=>event.preventDefault()}>
             <label className="sr-only" htmlFor="explore-search">Search concept examples</label>
             <div className="template-query"><Icon name="target" size={18}/>
@@ -83,7 +80,7 @@ export function ExplorePortfolios(){
             {(['All','Full-Stack','Frontend','AI / ML','Product'] as const).map(item=>
               <button key={item} type="button" aria-pressed={category===item} onClick={()=>setCategory(item)}>{item}</button>)}
           </div>
-          <p className="showcase-result-count" role="status">{filtered.length} illustrative {filtered.length===1?'example':'examples'} match. Public-directory results are not yet connected.</p>
+          <p className="showcase-result-count" role="status">{filtered.length} illustrative {filtered.length===1?'example':'examples'} match.</p>
           {filtered.length===0?<div className="no-template-results">
             <h2>No matching concepts</h2><p>Clear the search or try another category.</p>
             <button type="button" className="outline-small" onClick={()=>{setQuery('');setCategory('All');setOrder('Featured');}}>Clear filters</button>

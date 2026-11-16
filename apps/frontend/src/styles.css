@@ -413,7 +413,9 @@ p{line-height:1.55}
 .explore-copy>p:not(.eyebrow){font-size:17px;max-width:430px;color:var(--body);margin-bottom:23px}
 .explore-featured{display:grid;grid-template-columns:47% minmax(0,1fr);gap:28px;min-height:290px;padding:17px;border-radius:15px;
   border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 90%,var(--surface));box-shadow:0 6px 15px #101f2a0c}
-.explore-featured-art{position:relative;overflow:hidden;background:linear-gradient(145deg,#112d3d 40%,#2268a5 41% 59%,#092a37 60%);
+.explore-featured-art{position:relative;overflow:hidden;background:
+  linear-gradient(90deg,transparent 49%,#10283b 49%),
+  linear-gradient(139deg,#112d3d 28%,#2c67ae 28% 52%,#10283b 52%);
   border-radius:12px;min-height:240px;isolation:isolate}
 .explore-featured-art::before{content:"";position:absolute;top:-70px;right:-120px;width:330px;height:330px;border:1px solid #e7bd9c;border-radius:50%}
 .explore-featured-art::after{content:"";position:absolute;bottom:-170px;right:-140px;width:310px;height:310px;background:#d1845f;border:1px solid #fbc29b;border-radius:50%}
@@ -426,8 +428,6 @@ p{line-height:1.55}
 .explore-featured-info>p:not(.eyebrow){font-size:14px;line-height:1.45;color:var(--body);margin:0 0 12px}
 .explore-featured-info .tag{font-size:11px;padding:4px 11px}
 .explore-featured-info .action-link{margin-top:auto;align-self:flex-end}
-.explore-browse-top h2{font-size:26px;margin:0}
-.explore-browse-top .eyebrow{margin:0 0 5px}
 .explore-disclosure{font-size:12px;color:var(--body);margin:3px 0 12px}
 .explore-filters{display:grid;grid-template-columns:minmax(240px,1fr) 190px 190px;gap:16px;margin-bottom:15px}
 .explore-filters select{padding:0 14px;height:43px;border:1px solid var(--line-dark);border-radius:9px;
@@ -607,3 +607,11 @@ p{line-height:1.55}
   .sys51-art{height:205px;min-height:205px}
   .sys51-art-fold{height:180px;width:180px}}
 @media(prefers-reduced-motion:reduce){.sys51-art *{animation:none!important;transition:none!important}}
+
+@media(min-width:1350px){
+  .landing-shell .hero{min-height:255px;padding-top:26px;padding-bottom:16px}
+  .landing-shell .template-strip,.landing-shell .connections-strip{margin-bottom:12px}
+  .landing-shell .template-strip{margin-top:12px}
+  .landing-shell .faq{margin-bottom:12px}
+  .explore-hero{padding-bottom:20px}
+}

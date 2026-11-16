@@ -366,6 +366,9 @@ export function AuthApp(){
             {identity&&<p className="auth-identity">Verified account email: {identity}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
             <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
+            {(outcome === 'email-requested' || (error && !identity)) &&
+              <button type="button" className="auth-text-button" disabled={pending}
+                onClick={()=>setAuthMode('forgot-password','/forgot-password')}>Request another link</button>}
             {identity&&auth&&<button type="button" className="auth-text-button" disabled={pending} onClick={()=>{
               setPending(true);
               void auth.service.logout('local').then(()=>{

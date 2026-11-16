@@ -80,7 +80,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
             <span>{theme === 'light' ? 'Dark' : 'Light'}</span>
           </button>
           <span className="ws-owner" title="Verified with Supabase Auth">
-            <Icon name="user" size={15}/>{owner.email || 'Authenticated owner'}
+            <Icon name="user" size={15}/><span>{owner.email || 'Authenticated owner'}</span>
           </span>
         </div>
       </header>

@@ -97,7 +97,11 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('link', {name: 'Create portfolio'})).toHaveAttribute('href', '/app/portfolios/new');
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('button', {name: 'Sign out', exact: true})).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(392);
+  const pageWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  const overflowing = await page.evaluate(() => [...document.querySelectorAll('main *, header *')]
+    .filter(element => element.getBoundingClientRect().right > innerWidth + 2)
+    .slice(0, 10).map(element => element.tagName + '.' + element.getAttribute('class')));
+  expect(pageWidth, 'Workspace overflow: ' + overflowing.join(', ')).toBeLessThanOrEqual(392);
   await page.setViewportSize({width: 1600, height: 1000});
 
   for (const restricted of ['/app/operations/users', '/app/operations/moderation', '/app/operations/appeals']) {
@@ -559,6 +563,8 @@ test('F1 recovery request and password reset use isolated GoTrue and Mailpit', a
   await expect(page.getByRole('heading', { name: 'Check your inbox' })).toBeFocused();
   await expect(page.getByRole('status')).toContainText('Delivery is not confirmed');
   await capture('09_RECOVERY_OUTCOME');
+  await page.getByRole('button', {name: 'Request another link'}).click();
+  await expect(page.getByRole('heading', {name: 'Reset your password.'})).toBeFocused();
 
   const mailpit = 'http://127.0.0.1:54324';
   let messageId: string | undefined;
