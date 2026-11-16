@@ -19,6 +19,14 @@ import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+
+/** Auth-state invalidation broadcasts never carry access tokens or identity claims. */
+type OwnerSessionWriteNotice = (storage: StorageLike, source: SupabaseBrowserAuthPort) => void;
+const ownerSessionWriteNotices = new Set<OwnerSessionWriteNotice>();
+function sameSession(a:StoredSession|null,b:StoredSession|null):boolean {
+  return a===b || Boolean(a && b && a.user.id===b.user.id &&
+    a.access_token===b.access_token && a.refresh_token===b.refresh_token);
+}
 export type ProfileDraft = { displayName: string; headline: string; bio: string; skills: string[] };
 export type OwnerProfile = ProfileDraft & { handle: string | null };
 
@@ -88,10 +96,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private readonly fetcher: typeof fetch;
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
+  private ownerSessionEpoch = 0;
+  private readonly ownerSessionEpochListeners = new Set<(epoch:number)=>void>();
   // Last-started explicit Auth action wins; old network responses cannot
   // replace a newer login or reinstate a session after explicit logout.
   private authAttempt = 0;
   private assertCurrentAuthAttempt(attempt:number):void {
+    // An unfocused tab may have missed another port's write. Never let an
+    // older successful Auth response overwrite a different persisted principal.
+    this.reconcileOwnerSessionEpoch();
     if (attempt !== this.authAttempt)
       throw new Error('This authentication attempt was superseded.');
   }
@@ -115,6 +128,71 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.session = this.readSession();
   }
 
+  /**
+   * S0 shell contract: epoch is local to this port, strictly an invalidation
+   * sequence, NEVER proof of an owner. Live /auth/v1/user must verify identity.
+   * Each sign-in/logout/session replacement increments it, including A→B→A.
+   */
+  getOwnerSessionEpoch():number { return this.ownerSessionEpoch; }
+
+  private invalidateOwnerSessionEpoch():void {
+    ++this.ownerSessionEpoch;
+    for (const listener of this.ownerSessionEpochListeners) {
+      // UI listener errors must not roll back an already-persisted auth change.
+      try { listener(this.ownerSessionEpoch); } catch { /* isolated subscriber */ }
+    }
+  }
+
+  /**
+   * Reconcile mutations made by another tab or a different port instance.
+   * A persisted owner ID is unverified input, not a grant of private access.
+   */
+  reconcileOwnerSessionEpoch():number {
+    const persisted=this.readSession();
+    if (!sameSession(this.session,persisted)) {
+      this.session=persisted;
+      ++this.authAttempt; // Prevent an earlier sign-in response replacing it.
+      this.refreshPromise=null;
+      this.invalidateOwnerSessionEpoch();
+    }
+    return this.ownerSessionEpoch;
+  }
+
+  /**
+   * Subscribe BEFORE the shell's initial getUser call. Every emission makes
+   * the existing private subtree untrusted until fresh /auth/v1/user succeeds.
+   * Includes same-tab distinct auth ports, cross-tab storage and window return.
+   */
+  subscribeOwnerSessionEpoch(listener:(epoch:number)=>void):()=>void {
+    this.ownerSessionEpochListeners.add(listener);
+    const sameTab:OwnerSessionWriteNotice=(storage,source)=>{
+      if(source!==this && storage===this.storage)this.reconcileOwnerSessionEpoch();
+    };
+    const storageChanged=(event:StorageEvent)=>{
+      if(event.key===STORAGE_KEY||event.key===null)this.reconcileOwnerSessionEpoch();
+    };
+    const resumed=()=>{this.reconcileOwnerSessionEpoch();};
+    const visible=()=>{
+      if(typeof document!=='undefined'&&document.visibilityState==='visible')resumed();
+    };
+    ownerSessionWriteNotices.add(sameTab);
+    if(typeof window!=='undefined'){
+      window.addEventListener('storage',storageChanged);
+      window.addEventListener('focus',resumed);
+      if(typeof document!=='undefined')document.addEventListener('visibilitychange',visible);
+    }
+    this.reconcileOwnerSessionEpoch();
+    return ()=>{
+      this.ownerSessionEpochListeners.delete(listener);
+      ownerSessionWriteNotices.delete(sameTab);
+      if(typeof window!=='undefined'){
+        window.removeEventListener('storage',storageChanged);
+        window.removeEventListener('focus',resumed);
+        if(typeof document!=='undefined')document.removeEventListener('visibilitychange',visible);
+      }
+    };
+  }
+
   private readSession(): StoredSession | null {
     try {
       const raw = this.storage.getItem(STORAGE_KEY);
@@ -128,6 +206,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   private store(value: StoredSession | null): void {
+    const previous=this.session;
     this.session = value;
     try {
       if (value) this.storage.setItem(STORAGE_KEY, JSON.stringify(value));
@@ -135,7 +214,14 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     } catch {
       // Failure to persist must never be mistaken for a durable browser session.
       if (value) this.session = null;
+      if (!sameSession(previous,this.session)) this.invalidateOwnerSessionEpoch();
       throw new Error('Browser storage is unavailable. Enable storage to sign in.');
+    }
+    if (!sameSession(previous,value)) {
+      this.invalidateOwnerSessionEpoch();
+      for (const notify of ownerSessionWriteNotices) {
+        try { notify(this.storage,this); } catch { /* isolated subscriber */ }
+      }
     }
   }
 
@@ -188,12 +274,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   private async refreshed(): Promise<StoredSession | null> {
+    this.reconcileOwnerSessionEpoch(); // Recheck even without a mounted observer.
     const starting = this.session;
     if (!starting) return null;
     if (starting.expires_at > Math.floor(Date.now() / 1000) + 45) return starting;
     if (!this.refreshPromise) {
       const token = starting.refresh_token;
-      this.refreshPromise = (async () => {
+      const pending = (async () => {
         try {
           const response = await this.request('/token?grant_type=refresh_token', 'POST', { refresh_token: token });
           const updated = this.decodeSession(response);
@@ -209,7 +296,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           }
           return null;
         }
-      })().finally(() => { this.refreshPromise = null; });
+      })();
+      const tracked = pending.finally(() => {
+        if (this.refreshPromise === tracked) this.refreshPromise = null;
+      });
+      this.refreshPromise = tracked;
     }
     return this.refreshPromise;
   }
@@ -343,6 +434,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
     return this.outcome(async () => {
+      // Password updates must not silently adopt a different persisted owner.
+      // The shell must reverify that principal before any protected mutation.
+      const starting = this.session;
+      this.reconcileOwnerSessionEpoch();
+      if (starting !== this.session) throw new Error('Session expired or changed.');
       const session = await this.refreshed();
       if (!session || !this.isCurrentSession(session)) throw new Error('Session expired or changed.');
       const result = await this.request('/user', 'PUT', { password }, session.access_token);
