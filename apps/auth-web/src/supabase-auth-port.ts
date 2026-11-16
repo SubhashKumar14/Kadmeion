@@ -277,7 +277,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if (starting.expires_at > Math.floor(Date.now() / 1000) + 45) return starting;
     if (!this.refreshPromise) {
       const token = starting.refresh_token;
-      this.refreshPromise = (async () => {
+      const pending = (async () => {
         try {
           const response = await this.request('/token?grant_type=refresh_token', 'POST', { refresh_token: token });
           const updated = this.decodeSession(response);
@@ -293,7 +293,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           }
           return null;
         }
-      })().finally(() => { this.refreshPromise = null; });
+      })();
+      const tracked = pending.finally(() => {
+        if (this.refreshPromise === tracked) this.refreshPromise = null;
+      });
+      this.refreshPromise = tracked;
     }
     return this.refreshPromise;
   }
