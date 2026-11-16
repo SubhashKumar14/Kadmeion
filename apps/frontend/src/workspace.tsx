@@ -161,6 +161,8 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
         void onSkip(choice).then(saved => {
           setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
             'The server did not confirm this skipped step. Nothing was marked saved.');
+        }).catch(() => {
+          setNote('The private onboarding update could not be completed. Nothing was marked skipped; retry when the connection is available.');
         }).finally(()=>setSaving(false));
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
       <a href="/app" className="ws-secondary">Open workspace without saving</a>
