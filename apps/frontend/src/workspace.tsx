@@ -43,7 +43,8 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   const [theme, toggleTheme] = useTheme();
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const editorOnly=!!portfolioIdFromRoute(route)&&(route.endsWith('/edit')||route.endsWith('/preview'));
-  return <div className={'ws-shell'+(editorOnly?' ws-editor-shell':'')}>
+  const overview = route === '/app' || route === '/app/onboarding';
+  return <div className={'ws-shell' + (editorOnly ? ' ws-editor-shell' : overview ? ' ws-overview-shell' : '')}>
     <a className="skip-link" href="#ws-content">Skip to workspace content</a>
     <aside className="ws-rail" aria-label="Workspace sidebar">
       <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home">
@@ -174,22 +175,27 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
         <a href="/app/growth">Open Growth <Icon name="arrow" size={15}/></a>
       </article>
     </div>
-    <div className="ws-recent-grid" aria-label="Private recent work">
-      <section><h2>Recent private portfolios</h2>
-        {snapshot.portfolios.length ? <ul>{snapshot.portfolios.map(item=><li key={item.id}>
-          <strong>{item.title}</strong><span>Draft · revision {item.revision}</span></li>)}</ul> :
-          <p>No private portfolios found. Template exploration is available without publishing.</p>}
+    <div className="ws-recent-grid">
+      <section aria-labelledby="ws-recent-title">
+        <h2 id="ws-recent-title">Recent work</h2>
+        <ul>
+          {snapshot.portfolios.map(item=><li key={'portfolio-' + item.id}>
+            <a href={'/app/portfolios/' + item.id + '/edit'}>{item.title}</a>
+            <span>Draft · revision {item.revision}</span></li>)}
+          {snapshot.projects.map(item=><li key={'project-' + item.id}>
+            <a href={'/app/projects/' + item.id}>{item.title}</a><span>Private project</span></li>)}
+        </ul>
+        {!snapshot.portfolios.length && !snapshot.projects.length &&
+          <p>Nothing to show yet. Your recent private projects and portfolios will appear here.</p>}
       </section>
-      <section><h2>Recent private projects</h2>
-        {snapshot.projects.length ? <ul>{snapshot.projects.map(item=><li key={item.id}>
-          <strong>{item.title}</strong><span>Private project</span></li>)}</ul> :
-          <p>No active projects yet.</p>}
-      </section>
-    </div>
-    <div className="ws-bottom-strip">
-      <div><p className="ws-kicker">START SIMPLE</p><h2>Prefer a guided start?</h2>
-        <p>Return to your welcome choices. You can skip all connections and create later.</p></div>
-      <a href="/app/onboarding" className="ws-secondary">Open welcome steps <Icon name="arrow" size={16}/></a>
+      <nav aria-labelledby="ws-next-title">
+        <h2 id="ws-next-title">Next steps</h2>
+        <ul>
+          <li><a href="/app/profile">Complete your profile <Icon name="arrow" size={15}/></a></li>
+          <li><a href="/app/projects">Add a project <Icon name="arrow" size={15}/></a></li>
+          <li><a href="/app/onboarding">Open welcome steps <Icon name="arrow" size={15}/></a></li>
+        </ul>
+      </nav>
     </div>
   </section>;
 }

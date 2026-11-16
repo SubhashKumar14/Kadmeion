@@ -234,12 +234,14 @@ export function AuthApp(){
             outcome === 'session-verified' ? 'Session verified' : 'Account status'}
         </h1>
         {checking ? <>
-          <p role="status">Checking your link with the authentication service…</p>
+          <p>We check the return link and the account session before continuing.</p>
           <ol className="auth-callback-steps" aria-label="Verification steps">
             <li aria-current="step">Check your session</li>
             <li>Verify access</li>
             <li>Continue to Kadmeion</li>
           </ol>
+          <p className="auth-callback-progress" role="status">Checking your link with the authentication service…</p>
+          <p className="auth-advisory">If verification fails, you can return to sign in or request a fresh recovery link.</p>
         </> :
           error ? <p className="auth-error" role="alert">{error}</p> :
           notice && <p role="status">{notice}</p>}
@@ -270,7 +272,7 @@ export function AuthApp(){
         </div>
         <div className="auth-form-content">
           {error && mode!=='outcome' && <div className="auth-error" role="alert">{error}</div>}
-          {notice && mode !== 'outcome' && <div className="auth-notice" role="status">{notice}</div>}
+          {notice && mode !== 'outcome' && mode !== 'set-password' && <div className="auth-notice" role="status">{notice}</div>}
           {mode==='signin' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Welcome to Kadmeion</p>
             <h1 id="auth-heading" tabIndex={-1} ref={heading}>Sign in to your account.</h1>
@@ -354,6 +356,7 @@ export function AuthApp(){
             })}>
               <AuthPassword id="new-password" label="New password" value={password} setValue={setPassword} autoComplete="new-password"/>
               <AuthPassword id="confirm-password" label="Confirm new password" value={confirm} setValue={setConfirm} autoComplete="new-password"/>
+              {notice && <p className="auth-notice auth-reset-note" role="status">{notice}</p>}
               <button className="auth-submit" type="submit" disabled={pending||!auth}>Save new password <span aria-hidden="true">→</span></button>
             </form>
           </section>}
@@ -363,6 +366,11 @@ export function AuthApp(){
                 outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Check your inbox':outcome==='session-verified'?'Session verified':'Account recovery status'}
             </h1>
             <p className="auth-description" role={error?'alert':notice?'status':undefined}>{notice||error||'Check your account details before continuing.'}</p>
+            {outcome === 'email-requested' &&
+              <aside className="auth-recovery-help">
+                <strong>Waiting for the recovery email?</strong>
+                <ul><li>Check your spam or junk folder.</li><li>Use the most recent link if you requested more than one.</li></ul>
+              </aside>}
             {identity&&<p className="auth-identity">Verified account email: {identity}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
             <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>

@@ -146,9 +146,9 @@
   background:radial-gradient(ellipse at top right,var(--accent-soft),transparent 52%),var(--surface-soft)}
 .auth-callback-header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 24px;
   background:var(--panel);border-bottom:1px solid var(--line)}
-.auth-callback-card{align-self:center;justify-self:center;width:min(100% - 32px,700px);margin:24px 0;padding:clamp(16px,3vw,32px);
+.auth-callback-card{align-self:center;justify-self:center;width:min(100% - 32px,780px);margin:24px 0;padding:clamp(16px,3vw,32px);
   border:1px solid var(--line);border-radius:16px;background:var(--panel);color:var(--ink);overflow-wrap:anywhere}
-.auth-callback-banner{height:clamp(88px,14vw,156px);position:relative;overflow:hidden;border-radius:10px;
+.auth-callback-banner{height:clamp(88px,14vw,178px);position:relative;overflow:hidden;border-radius:10px;
   background:#10283b;margin-bottom:22px}
 .auth-callback-card h1{font-size:clamp(30px,4vw,48px);line-height:1.1;margin:12px 0}
 .auth-callback-card>p{color:var(--body)}
@@ -156,6 +156,13 @@
   gap:10px;padding:0;margin:22px 0 0;color:var(--body);font-size:13px}
 .auth-callback-steps li{padding:12px 8px;text-align:center;border-top:2px solid var(--line-dark)}
 .auth-callback-steps [aria-current="step"]{border-color:var(--accent);color:var(--ink);font-weight:700}
+.auth-callback-progress{padding:14px 16px;margin:15px 0 0;border-radius:8px;background:var(--nav);
+  color:var(--on-nav)!important;text-align:center;font-size:13px;font-weight:700}
+.auth-callback-card .auth-advisory{margin:17px 0 0}
+.auth-reset-note{margin:0}
+.auth-recovery-help{padding:14px 16px;margin:0 0 18px;border:1px solid var(--line);
+  border-radius:10px;color:var(--body);font-size:13px;line-height:1.6}
+.auth-recovery-help ul{padding-inline-start:18px;margin:6px 0 0}
 .auth-callback-actions{display:grid;gap:12px;margin-top:22px}
 @media(max-width:720px){
   .auth-callback{width:100%;min-height:100dvh;margin:0;border:0;border-radius:0}

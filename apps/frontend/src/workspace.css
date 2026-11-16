@@ -49,6 +49,13 @@
 .ws-home .ws-heading,.ws-onboarding .ws-heading{max-width:100%;min-width:0}
 .ws-home .ws-heading h1,.ws-onboarding .ws-heading h1{font-size:clamp(34px,3.15vw,50px)}
 .ws-home .ws-area{min-height:210px}
+@media(min-width:1101px){
+  .ws-overview-shell{width:min(1520px,calc(100% - 80px));min-height:calc(100dvh - 72px);margin:36px auto;
+    border:1px solid var(--line);border-radius:20px;box-shadow:0 16px 45px #1026381c}
+  .ws-overview-shell .ws-rail{border-radius:19px 0 0 19px}
+  .ws-overview-shell .ws-content{padding-block:36px}
+  .ws-home .ws-section-head{margin-top:28px}
+}
 .ws-section-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin:42px 0 17px}
 .ws-section-head h2{font-size:22px;margin:0}.ws-section-head span{color:var(--muted);font-size:11px}
 .ws-area-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
@@ -59,11 +66,8 @@
 .ws-area-meta{margin:20px 0 10px!important;font-size:9px;color:var(--accent-strong);letter-spacing:.13em;font-weight:800}
 .ws-area h3{font-size:21px;line-height:1.2;margin-bottom:11px}
 .ws-area>p:not(.ws-area-meta){font-size:12px;color:var(--body)}
-.ws-area a,.ws-unavailable{margin-top:auto!important;display:inline-flex;align-items:center;gap:8px;font-size:11px!important;font-weight:700}
-.ws-area a{color:var(--accent-strong)}.ws-unavailable{color:var(--muted)!important}
-.ws-bottom-strip{margin-top:20px;border-top:1px solid var(--line);padding-top:27px;display:flex;align-items:center;
-  justify-content:space-between;gap:24px}.ws-bottom-strip h2{font-size:22px;margin:0}
-.ws-bottom-strip p:not(.ws-kicker){font-size:12px;color:var(--body)}
+.ws-area a{margin-top:auto!important;display:inline-flex;align-items:center;gap:8px;font-size:11px!important;font-weight:700}
+.ws-area a{color:var(--accent-strong)}
 .ws-gate{min-height:100dvh;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;
   padding:clamp(28px,10vw,100px);max-width:800px;margin:auto}
 .ws-gate h1{font-size:clamp(38px,5vw,57px)}.ws-gate>p:not(.ws-kicker){color:var(--body);font-size:15px}
@@ -75,7 +79,7 @@
   .ws-rail nav a{white-space:nowrap;min-height:40px;font-size:12px;gap:7px;padding:8px}
   .ws-topbar{padding:12px 18px;align-items:flex-start;flex-direction:column}.ws-owner{max-width:min(100%,275px)}
   .ws-content{padding:27px 18px}.ws-area-grid{grid-template-columns:1fr}.ws-area:last-child{grid-column:auto}
-  .ws-bottom-strip{flex-direction:column;align-items:flex-start}.ws-section-head{align-items:flex-start;flex-direction:column}
+  .ws-section-head{align-items:flex-start;flex-direction:column}
   .ws-choice-grid{grid-template-columns:1fr}.ws-choice{min-height:0}.ws-heading h1{font-size:38px}}
 @media(prefers-reduced-motion:reduce){.ws-choice{transition:none}}
 
@@ -86,11 +90,11 @@
 .ws-skeleton-grid>span{min-height:130px;padding:22px;border-radius:13px;border:1px solid var(--line);color:var(--line-dark);font-size:22px;line-height:1.8}
 .ws-error{max-width:650px}.ws-error h1{font-size:36px}.ws-error p{color:var(--body)}
 .ws-recent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;margin-top:30px}
-.ws-recent-grid section{border-top:1px solid var(--line);padding-top:20px;min-width:0}
+.ws-recent-grid>section,.ws-recent-grid>nav{border-top:1px solid var(--line);padding-top:20px;min-width:0}
 .ws-recent-grid h2{font-size:19px}.ws-recent-grid p{color:var(--body);font-size:12px}
 .ws-recent-grid ul{list-style:none;margin:0;padding:0;display:grid;gap:9px}
 .ws-recent-grid li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
-.ws-recent-grid li strong{font-size:13px;font-weight:700;overflow-wrap:anywhere}
+.ws-recent-grid li a{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;overflow-wrap:anywhere;color:var(--blue)}.ws-recent-grid li a:hover{text-decoration:underline}
 .ws-recent-grid li span{flex:none;color:var(--muted);font-size:10px}
 @media(max-width:720px){.ws-recent-grid,.ws-skeleton-grid{grid-template-columns:1fr}}
 
