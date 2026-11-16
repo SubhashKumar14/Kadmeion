@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrandMark, Landing } from './landing.tsx';
+import { BrandMark, Landing, useTheme } from './landing.tsx';
 import { TemplateExplorer } from './templates.tsx';
 import { ExplorePortfolios } from './explore.tsx';
 import { AuthApp, isAuthRoute } from './auth.tsx';
@@ -31,6 +31,9 @@ function visitorSurface(path:string):VisitorSurface|null {
 /** These are no-data, no-token-echo states only, NEVER a delivery API.
  * Host GET/HEAD and CDN revocation remain server-only authorization gates. */
 function VisitorDeliveryGate({surface}:{surface:VisitorSurface}) {
+  // Even disabled visitor routes must respect the saved Kadmeion runtime theme.
+  // This is a Kadmeion status surface, never an author-published portfolio theme.
+  useTheme();
   const type=surface==='reviewer'?'REVIEWER ACCESS':'PUBLIC DELIVERY';
   const headline=surface==='reviewer'?'Reviewer preview unavailable.':
     surface==='identity'?'Developer identity unavailable.':
@@ -75,6 +78,7 @@ function VisitorDeliveryGate({surface}:{surface:VisitorSurface}) {
  * response hides whether a private, removed or mistyped resource exists.
  * Offline is a different browser-reported state, never a false 404 claim. */
 function UnavailableRoute() {
+  useTheme();
   const [offline, setOffline] = useState(() => !navigator.onLine);
   useEffect(() => {
     const update = () => setOffline(!navigator.onLine);
