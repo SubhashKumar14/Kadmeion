@@ -203,6 +203,7 @@ function Notifications({service}: {service: Services['notifications']}) {
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [inboxFilter, setInboxFilter] = useState<'ALL'|'UNREAD'|'HIGH'>('ALL');
   useEffect(() => {
     let active = true;
     setInbox(null);
@@ -252,15 +253,25 @@ function Notifications({service}: {service: Services['notifications']}) {
     finally {setBusy(false);}
   }
 
+  const visibleNotices=inbox?.items.filter(item=>inboxFilter==='ALL' ||
+    (inboxFilter==='UNREAD'&&!item.read_at) || (inboxFilter==='HIGH'&&item.priority==='HIGH'));
   return <div className="ws-settings-grid"><SettingsCard title="Inbox">
     <Status message={message}/>
     {!inbox && !message && <p role="status">Loading notifications…</p>}
     {!inbox && message?.error && <button type="button" className="ws-secondary"
       onClick={() => setReload(value => value + 1)}>Retry notifications</button>}
+    {inbox && <div className="ws-notification-filters" role="group" aria-label="Filter loaded notifications">
+      {([['ALL','All loaded'],['UNREAD','Unread'],['HIGH','High priority']] as const).map(([key,label])=>
+        <button type="button" key={key} className="ws-secondary" aria-pressed={inboxFilter===key}
+          onClick={()=>setInboxFilter(key)}>{label}</button>)}
+    </div>}
     {inbox?.items.length === 0 && <p>You’re caught up.</p>}
-    <ul className="ws-settings-records">{inbox?.items.map(item => <li key={item.id}>
+    {inbox && inbox.items.length>0 && visibleNotices?.length===0 &&
+      <p>No matching notices in the currently loaded records. Load older records to look further.</p>}
+    <ul className="ws-settings-records">{visibleNotices?.map(item => <li key={item.id}>
       <strong>{item.event_type.toLowerCase().replaceAll('_', ' ')}</strong>
-      <p>{new Date(item.created_at).toLocaleString()} · {item.read_at ? 'Read' : 'Unread'}</p>
+      <p>{new Date(item.created_at).toLocaleString()} · {item.read_at ? 'Read' : 'Unread'} ·
+        {item.priority==='HIGH'?' High priority':' Routine'} · {item.category.toLowerCase()}</p>
       <div className="ws-actions">{!item.read_at && <button className="ws-secondary" type="button" disabled={busy}
         onClick={() => void acknowledge(item, false)}>Mark as read</button>}
         <button className="ws-secondary" type="button" disabled={busy} onClick={() => void acknowledge(item, true)}>Dismiss</button></div>

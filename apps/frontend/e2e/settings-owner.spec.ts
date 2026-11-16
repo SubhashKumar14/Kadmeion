@@ -75,6 +75,7 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
       case '/app/notifications':
         await expect(page.getByRole('heading',{name:'Inbox'})).toBeVisible();
         await expect(page.getByText('Loading notifications…')).toHaveCount(0);
+        await expect(page.getByRole('group',{name:'Filter loaded notifications'})).toBeVisible();
         break;
       case '/app/settings/security':
         await expect(page.getByRole('button',{name:'Sign out other sessions'})).toBeVisible();
@@ -150,6 +151,13 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByLabel('Current password')).toHaveAttribute('type','password');
   await expect(page.getByLabel('Current password')).toBeVisible();
   await expect(page.getByLabel('New password',{exact:true})).toBeVisible();
+  await page.goto('/app/notifications');
+  const notificationFilters=page.getByRole('group',{name:'Filter loaded notifications'});
+  await expect(notificationFilters).toBeVisible();
+  await notificationFilters.getByRole('button',{name:'Unread'}).click();
+  await expect(notificationFilters.getByRole('button',{name:'Unread'})).toHaveAttribute('aria-pressed','true');
+  await notificationFilters.getByRole('button',{name:'All loaded'}).click();
+  await expect(notificationFilters.getByRole('button',{name:'All loaded'})).toHaveAttribute('aria-pressed','true');
   await page.goto('/app/settings/privacy');
   await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeDisabled();
   await page.goto('/app/settings/account/delete');

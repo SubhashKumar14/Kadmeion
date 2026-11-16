@@ -1258,3 +1258,10 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-security-guidance p{font-size:.875rem;line-height:1.65;color:var(--body);max-width:78ch}
 .ws-security-guidance a{display:inline-flex;align-items:center;min-height:44px;
   font-weight:650;text-decoration:underline;text-underline-offset:3px}
+
+/* SET-03: scoped client filters for loaded owner notifications only.
+ * No lifetime totals, unread badge counts or fabricated priority. */
+.ws-notification-filters{display:flex;flex-wrap:wrap;gap:8px;margin:15px 0 12px}
+.ws-notification-filters button{min-height:44px}
+.ws-notification-filters button[aria-pressed="true"]{border-color:var(--accent-strong);
+  background:var(--surface-soft);font-weight:750}
