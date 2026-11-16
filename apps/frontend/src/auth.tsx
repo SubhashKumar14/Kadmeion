@@ -11,10 +11,10 @@ import './auth.css';
 type Mode = 'signin' | 'signup' | 'forgot-password' | 'set-password' | 'outcome' | 'callback' | 'workspace';
 type Outcome = 'email-requested' | 'registered' | 'password-updated' | 'session-verified';
 type AuthState = { auth: SupabaseBrowserAuthPort; service: AuthService; allowGoogle: boolean; emailAvailable: boolean };
-const authRoutes = new Set(['/signin','/signup','/forgot-password','/reset-password','/set-password','/auth/callback','/workspace','/auth/outcome','/auth/recovery-status']);
+const authRoutes = new Set(['/signin','/login','/signup','/register','/forgot-password','/reset-password','/set-password','/auth/callback','/workspace','/auth/outcome','/auth/recovery-status']);
 export function isAuthRoute(path: string): boolean { return authRoutes.has(path); }
 function initialMode(path: string): Mode {
-  if (path==='/signup') return 'signup';
+  if (path==='/signup'||path==='/register') return 'signup';
   if (path==='/forgot-password') return 'forgot-password';
   if (path==='/set-password'||path==='/reset-password') return 'set-password';
   if (path==='/auth/callback') return 'callback';
@@ -314,8 +314,8 @@ export function AuthApp(){
               if(created.status==='signed_in'){
                 const verified=await auth.auth.getUser();
                 if(verified.error||!verified.data?.user)throw new Error('Could not verify the new account session.');
-                await signedIn(verified.data.user.email??null);
-              } else result('registered','The registration request was accepted. A confirmation email may be sent if the provider is working.');
+                window.location.replace('/app');
+              } else result('registered','This environment requires email confirmation before sign-in. If the confirmation email arrives, open its link to continue.');
             })}>
               <AuthInput id="signup-name" label="Display name"><input id="signup-name" required maxLength={80} autoComplete="name" value={displayName} onChange={event=>setDisplayName(event.target.value)}/></AuthInput>
               <AuthInput id="signup-handle" label="Preferred handle"><input id="signup-handle" required minLength={3} maxLength={30} spellCheck={false} autoComplete="off" value={handle}
@@ -324,9 +324,9 @@ export function AuthApp(){
               <AuthInput id="signup-email" label="Email address"><input id="signup-email" required type="email" autoComplete="email" value={email} onChange={event=>setEmail(event.target.value)}/></AuthInput>
               <AuthPassword id="signup-password" label="Create password" value={password} setValue={setPassword} autoComplete="new-password"/>
               <AuthPassword id="signup-confirm" label="Confirm password" value={confirm} setValue={setConfirm} autoComplete="new-password"/>
-              <button type="submit" className="auth-submit" disabled={!auth||!auth.emailAvailable||pending}>Create account <span aria-hidden="true">→</span></button>
+              <button type="submit" className="auth-submit" disabled={!auth||pending}>Create account <span aria-hidden="true">→</span></button>
             </form>
-            {!auth?.emailAvailable&&<p className="auth-field-hint">Registration remains unavailable until sender delivery is verified.</p>}
+            {!auth&&<p className="auth-field-hint">Account creation is unavailable in this environment.</p>}
             <p className="auth-switch">Already have an account? <a href="/signin" aria-disabled={pending || undefined} onClick={event=>{event.preventDefault();swapMode('signin');}}>Sign in <span aria-hidden="true">→</span></a></p>
           </section>}
           {mode==='forgot-password' && <section aria-labelledby="auth-heading">
@@ -371,7 +371,7 @@ export function AuthApp(){
                 <strong>Waiting for the recovery email?</strong>
                 <ul><li>Check your spam or junk folder.</li><li>Use the most recent link if you requested more than one.</li></ul>
               </aside>}
-            {identity&&<p className="auth-identity">Verified account email: {identity}</p>}
+            {identity&&<p className="auth-identity">Signed in as {identity}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
             <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {(outcome === 'email-requested' || (error && !identity)) &&

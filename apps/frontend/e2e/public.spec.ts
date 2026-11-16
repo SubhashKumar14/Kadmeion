@@ -107,7 +107,7 @@ test('direct recovery status never implies a verified session', async ({ page })
   await expect(page.locator('.auth-page')).toHaveAttribute('data-panel', 'left');
 });
 
-test('auth recovery and registration remain disabled until actual sender proof', async ({ page }) => {
+test('recovery is gated by mail delivery and signup explains missing Auth configuration', async ({ page }) => {
   await page.goto('/signin');
   await page.getByRole('link',{name:/Forgot password/}).click();
   await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
@@ -120,12 +120,8 @@ test('auth recovery and registration remain disabled until actual sender proof',
   expect(recoveryNotice!.y).toBeGreaterThanOrEqual(recoveryBounds!.y + recoveryBounds!.height);
   await page.goto('/signup');
   await expect(page.getByRole('button',{name:/Create account/})).toBeDisabled();
-  await expect(page.getByText(/until sender delivery is verified/)).toBeVisible();
-  const createButton=await page.getByRole('button',{name:/Create account/}).boundingBox();
-  const deliveryNotice=await page.getByText(/until sender delivery is verified/).boundingBox();
-  expect(createButton).not.toBeNull();
-  expect(deliveryNotice).not.toBeNull();
-  expect(deliveryNotice!.y).toBeGreaterThanOrEqual(createButton!.y+createButton!.height);
+  await expect(page.getByText('Account creation is unavailable in this environment.')).toBeVisible();
+  await expect(page.getByText(/until sender delivery is verified/)).toHaveCount(0);
 });
 
 test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
@@ -240,4 +236,26 @@ test('F1 skip links focus the content and auth reflows with reduced motion', asy
   await expect(page.getByRole('heading', { name: 'Create your account.' })).toBeFocused();
   await expect(page.locator('.auth-form-panel')).toHaveCSS('transition-property', 'none');
   await expect(page.locator('.auth-form-content section')).toHaveCSS('animation-name', 'none');
+});
+
+test('public and auth shells span the window across desktop and phone widths',async ({page}) => {
+  const routes = [
+    ['/', '.site-shell'], ['/explore', '.site-shell'], ['/templates', '.site-shell'],
+    ['/signin', '.auth-page'], ['/register', '.auth-page'], ['/forgot-password', '.auth-page'],
+    ['/auth/callback', '.auth-callback'], ['/unavailable-viewport-test', '.system-status-editorial'],
+  ] as const;
+  for (const width of [1920, 1366, 768, 390]) {
+    await page.setViewportSize({width, height:768});
+    for (const [route, selector] of routes) {
+      await page.goto(route);
+      const layout = await page.locator(selector).evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        return {left:bounds.left, right:bounds.right, viewport:document.documentElement.clientWidth,
+          scrollWidth:document.documentElement.scrollWidth};
+      });
+      expect(layout.left, route + ' at ' + width).toBeLessThanOrEqual(1);
+      expect(layout.right, route + ' at ' + width).toBeGreaterThanOrEqual(layout.viewport - 1);
+      expect(layout.scrollWidth, route + ' at ' + width).toBeLessThanOrEqual(layout.viewport + 1);
+    }
+  }
 });

@@ -151,7 +151,7 @@ jobs:
         run: node --test tests/integration/local-publish-edge.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
-      - name: Test local signup confirmation and recovery through Mailpit
+      - name: Test local immediate signup and recovery through Mailpit
         run: node --test tests/integration/local-auth-email.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'

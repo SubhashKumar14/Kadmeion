@@ -1,6 +1,6 @@
 /* Private workspace shell using semantic light/dark tokens. */
-.ws-shell{width:min(1500px,100%);min-height:100dvh;margin:auto;display:grid;grid-template-columns:245px minmax(0,1fr);
-  background:var(--surface);border-inline:1px solid var(--line)}
+.ws-shell{width:100%;min-height:100dvh;display:grid;grid-template-columns:245px minmax(0,1fr);
+  background:var(--surface)}
 .ws-rail{background:#102639;color:#f7f8f6;display:flex;flex-direction:column;padding:32px 19px;min-width:0}
 .ws-brand{display:flex;flex-direction:column;gap:6px;padding:4px 12px 46px;letter-spacing:.21em}
 .ws-brand .brand-mark{--brand-foreground:#f7f5ef;--brand-letters-width:108px}.ws-brand small{font-size:8px;letter-spacing:.13em;color:#afc3d0}
@@ -50,9 +50,6 @@
 .ws-home .ws-heading h1,.ws-onboarding .ws-heading h1{font-size:clamp(34px,3.15vw,50px)}
 .ws-home .ws-area{min-height:210px}
 @media(min-width:1101px){
-  .ws-overview-shell{width:min(1520px,calc(100% - 80px));min-height:calc(100dvh - 72px);margin:36px auto;
-    border:1px solid var(--line);border-radius:20px;box-shadow:0 16px 45px #1026381c}
-  .ws-overview-shell .ws-rail{border-radius:19px 0 0 19px}
   .ws-overview-shell .ws-content{padding-block:36px}
   .ws-home .ws-section-head{margin-top:28px}
 }
@@ -147,11 +144,11 @@
   border-radius:0;background:var(--panel);color:var(--ink);box-shadow:-20px 0 60px #08192748;overflow:auto}
 .ws-project-dialog::backdrop{background:#09182475}
 @media(min-width:901px){
-  .ws-project-dialog{inset:71px max(16px,calc((100vw - 1500px)/2 + 16px)) 16px auto;
+  .ws-project-dialog{inset:71px 16px 16px auto;
     height:calc(100dvh - 87px);width:min(500px,45vw);
     border:1px solid var(--line);border-radius:12px}
-  .ws-project-dialog::backdrop{clip-path:inset(70px max(0px,calc((100vw - 1500px)/2))
-    0 max(245px,calc((100vw - 1500px)/2 + 245px)))}
+  .ws-project-dialog::backdrop{clip-path:inset(70px 0
+    0 245px)}
 }
 @media(max-width:850px){.ws-project-empty-layout{grid-template-columns:1fr}}
 .ws-project-dialog form{min-height:100%;padding:clamp(20px,3vw,34px);
@@ -402,7 +399,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 /* EDIT-01: compact, approved-reference-inspired three-pane editor shell.
  * Dashboard and public shells remain unchanged. */
 @media (min-width:901px){
-.ws-editor-shell{grid-template-columns:76px minmax(0,1fr);width:min(1640px,100%)}
+.ws-editor-shell{grid-template-columns:76px minmax(0,1fr)}
 .ws-editor-shell .ws-rail{padding:22px 8px 16px}
 .ws-editor-shell .ws-brand{padding:0 8px 35px;align-items:center}
 .ws-editor-shell .ws-brand .brand-letters,.ws-editor-shell .ws-brand small{display:none}

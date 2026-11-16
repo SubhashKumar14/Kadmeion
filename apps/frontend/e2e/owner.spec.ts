@@ -618,3 +618,32 @@ test('F1 recovery request and password reset use isolated GoTrue and Mailpit', a
   await expect(page.getByRole('heading', { name: 'Password updated' })).toBeFocused();
   await signIn(page, {email: user.email, password: newPassword});
 });
+
+test('new email/password account can open the workspace immediately', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
+  const owner = {email:'instant-' + randomUUID() + '@testing.invalid', password:'LocalFixture!' + randomUUID()};
+  await page.goto('/signup');
+  await page.getByLabel('Display name', {exact:true}).fill('Instant Signup');
+  await page.getByLabel('Preferred handle', {exact:true}).fill('instant_' + randomUUID().slice(0, 8));
+  await page.getByLabel('Email address', {exact:true}).fill(owner.email);
+  await page.getByLabel('Create password', {exact:true}).fill(owner.password);
+  await page.getByLabel('Confirm password', {exact:true}).fill(owner.password);
+  await page.getByRole('button', {name:'Create account', exact:true}).click();
+  await expect(page).toHaveURL('/app');
+  await expect(page.getByRole('heading', {name:'A place for what you build next.'})).toBeVisible();
+  await page.getByRole('button', {name:'Sign out', exact:true}).click();
+  await signIn(page, owner);
+  await page.getByRole('link', {name:'Open private workspace'}).click();
+  for (const width of [1920, 1366, 390]) {
+    await page.setViewportSize({width, height:768});
+    for (const route of ['/app','/app/onboarding','/app/profile','/app/projects','/app/portfolios','/app/portfolios/new']) {
+      await page.goto(route);
+      const layout = await page.locator('.ws-shell').evaluate(element => ({
+        width:element.getBoundingClientRect().width, viewport:document.documentElement.clientWidth,
+        scrollWidth:document.documentElement.scrollWidth,
+      }));
+      expect(layout.width, route + ' at ' + width).toBeGreaterThanOrEqual(layout.viewport - 1);
+      expect(layout.scrollWidth, route + ' at ' + width).toBeLessThanOrEqual(layout.viewport + 2);
+    }
+  }
+});

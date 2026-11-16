@@ -6,7 +6,7 @@
 html[data-theme=dark]{--page:#111b28;--form:#172337;--ink:#f5f7fa;--body:#c5d0dc;--muted:#a8b9c9;--line:#53647a;--focus:#ffad64;--soft:#24344a;--action:#ffb06b;--on-action:#142235;--error:#ffacaf;--error-bg:#4e262e;color-scheme:dark}
 *{box-sizing:border-box}html{background:var(--page)}body{margin:0;color:var(--ink);background:radial-gradient(circle at 100% 0%,color-mix(in srgb,var(--amber) 14%,var(--page)),var(--page) 55%);min-width:320px}
 a{color:var(--ink);text-underline-offset:4px}button,input{font:inherit}button{cursor:pointer}
-.auth-shell{width:min(1490px,calc(100% - 72px));height:calc(100dvh - 72px);max-width:1490px;min-height:600px;position:relative;margin:36px auto;background:var(--form);overflow:hidden;border-radius:23px;border:1px solid color-mix(in srgb,var(--line) 48%,transparent);box-shadow:0 14px 44px #10263820}
+.auth-shell{width:100%;height:100dvh;min-height:600px;position:relative;background:var(--form);overflow:hidden}
 .form-side,.brand-side{position:absolute;top:0;bottom:0;width:50%;transition:transform 300ms cubic-bezier(.22,.75,.22,1)}
 .form-side{left:0;background:var(--form);z-index:1;overflow-y:auto;overflow-x:hidden}.brand-side{left:50%;background:#0b1a21;color:#f2f6fa;overflow:hidden}
 .auth-shell[data-auth-mode=register] .form-side{transform:translateX(100%)}

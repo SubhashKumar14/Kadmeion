@@ -15,9 +15,11 @@ function mockPort(): AuthPort {
   };
 }
 
-test('registration is fail-closed until email delivery is proven', async () => {
+test('registration is available without mail delivery while recovery remains gated', async () => {
   const service = new AuthService(mockPort(),{siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false});
-  await assert.rejects(service.register({email:'user@example.com',password:'strong-password-123',displayName:'Dev',handle:'developer'}),AuthFlowError);
+  assert.deepEqual(await service.register({email:'user@example.com',password:'strong-password-123',displayName:'Dev',handle:'developer'}),{
+    status:'confirmation_required',handleCandidate:'developer'
+  });
   await assert.rejects(service.requestPasswordReset('user@example.com'),AuthFlowError);
   await assert.rejects(service.googleLogin(),AuthFlowError);
 });
@@ -180,7 +182,7 @@ test('B10 password sign-in refuses concurrent account switch or mismatched provi
 });
 
 test('B10 immediate registration session must be verified for the same user',async()=>{
-  const options={siteOrigin:'https://app.example',emailDeliveryVerified:true,googleOAuthConfigured:false};
+  const options={siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false};
   const signup={email:'dev@example.com',password:'strong-password',
     displayName:'Developer',handle:'developer'};
   const port=mockPort();
