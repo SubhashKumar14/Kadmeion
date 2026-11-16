@@ -1,3 +1,16 @@
+## 16 November 2026 — F06 accessibility and acceptance
+
+Continued after the F05 handoff on `feat/b0-backend-foundation`. F06 remains open for manual review and complete end-to-end acceptance.
+
+- `30ce4b1` adds dev-only axe-core and sanitized Chromium reports to public and authenticated fixtures. It also gives Explore and Templates task-specific document titles and keeps the public keyboard skip link visible after scrolling.
+- `38a97c2` includes visible branding and slot text in accessible names, restores revision comparison list semantics, makes staging and history previews keyboard-scrollable, and fixes History Problems navigation to reach private Publish preflight. Browser assertions cover workspace skip, real keyboard scrolling in revision history and clearing the in-memory sign-in password on reload.
+- `64e67cf` fixes muted light text, narrow auth contrast and the separation between the workspace frame and author canvas colors. It removes low-opacity author preview text and includes visible editor theme and layer text in control names. Both exact-source workflows passed. All 95 sampled states reported zero automated axe violations.
+- `3d25001` gives labeled settings, growth, editor and release sections group semantics and removes a name from a plain carousel counter. It adds contrast and label-content names to the CI gates and scans the 13 public and gated surfaces at both desktop and 320 CSS pixels in both themes.
+- **Exact code evidence.** [Frontend CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43929207094) and [application and database CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43929207125) both passed, including 22 public and eight authenticated Chromium scenarios, 511 pgTAP assertions, production build, dependency audit and isolated service integrations. Verified 121 sampled states across 52 screen IDs, with zero automated axe violations. Forty-nine states still include contextual review items. [Per-screen screenshot and accessibility scope](registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md) · [Automated results](registers/F6_AUTOMATED_ACCESSIBILITY_RESULTS.md) · [UAT and workflows](registers/F6_FRONTEND_UAT_EVIDENCE.md). UAT links 36 of 138 cases across 26 of 53 workflows. Twelve cases passed within the isolated scope and 24 have partial evidence.
+- **Next work.** Review the contextual axe items, run assistive technology and native desktop zoom on critical auth and authoring paths, verify actual tablet input, and complete full-size visual comparisons and remaining UAT case evidence. Reviewer and delivery screens are covered by access guards. Successful browser delivery, provider email/OAuth, independent revocation, physical erasure and trusted starter source still require their documented proof.
+
+---
+
 ## 16 November 2026 — F05 browser workflows and private appeal review
 
 Continued from `675f8e3` on `feat/b0-backend-foundation`. F05 covers P1 account settings, operations and system states, followed by the approved data-backed or explicitly deferred Growth screens.
