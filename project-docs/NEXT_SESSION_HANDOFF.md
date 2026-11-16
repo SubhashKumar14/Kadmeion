@@ -1,3 +1,15 @@
+## 16 November 2026 — F4 SEO and tenant isolation final CI closure
+
+**Fully verified source:** `cccad5741a25819a14472df539699e3b3e2faa83` (owner-authored SEO metadata editor plus all four owner-only F4 route negative browser tests). **Fully verified documentation/checkpoint HEAD:** [`627fda8`](https://github.com/SubhashKumar14/Kadmeion/commit/627fda87037f3698424f2994143e787bba11a640). [Frontend CI #43849702295](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43849702295) and [Application/Database CI #43849702302](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43849702302) both completed **SUCCESS** at exact `627fda8` HEAD. The latter's contracts and database jobs succeeded, with **511 pgTAP assertions**, local SQL lint and **4 authenticated Chromium owner/operator/authentication scenarios** passing; the owner scenario includes the Metadata form → typed managed-file update → new saved revision → SEO preflight rerun, and cross-account direct-link denials for `staging`, `publish`, `releases`, `share`. Other local GoTrue, PostgREST, Storage, Edge gateway and trusted-host negative checks also passed. No source code was changed between the tested `cccad57` and `627fda8` documentation head.
+
+**Changed source within this closure:** `apps/frontend/src/portfolios.tsx`, `apps/frontend/src/release.tsx`, `apps/frontend/e2e/owner.spec.ts`; handoff document only thereafter. The earlier [`00b47f4`](https://github.com/SubhashKumar14/Kadmeion/commit/00b47f46968422c7398bcabdeca32ee9bafc2e89) preflight findings-first design was also fully green before this work.
+
+**What these results do NOT establish:** no public visitor/reviewer URL, no production host or direct media revocation proof, no verified rollback/CDN withdrawal, no F4 100% acceptance, no full 52-screen visual/light/dark/a11y owner signoff. Do not mutate `main`, hosted environment, paid services or the immutable approval matrix without appropriate owner authority.
+
+**Next exact engineering action:** Continue server-side, isolated, fail-closed F4 reviewer/public delivery and direct-asset revocation proofs; build only what passes real host checks. In parallel audit actual owner screenshots of the new Metadata and preflight panels against the approved LIGHT references, then proceed through F5 and F6 acceptance. Keep this handoff and Notion execution record synchronized after each verified phase.
+
+---
+
 ## 16 November 2026 — F4 SEO repair and direct-route tenant isolation
 
 **Branch:** `feat/b0-backend-foundation`. **Previous implemented / fully green checkpoint:** [`00b47f4`](https://github.com/SubhashKumar14/Kadmeion/commit/00b47f46968422c7398bcabdeca32ee9bafc2e89) ([Frontend CI #43847369386](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43847369386); [App/Database CI #43847369487](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43847369487)). Existing documentation-only commit [`d22b280`](https://github.com/SubhashKumar14/Kadmeion/commit/d22b2801bae0068c1b31ffccff1e191595abfd44) was reconciled before applying new code. `main` was not merged or pushed.
