@@ -256,7 +256,7 @@ test('real owner onboarding and project revision are private across browser sess
   await drawer.getByText('Edit private URL slug', {exact: true}).click();
   await capture('14_PROJECT_DRAWER_BROWSER');
   await drawer.getByRole('button', {name: 'Save project'}).click();
-  await expect(page.getByRole('status')).toContainText('Saved privately');
+  await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
   await page.getByRole('link', {name: 'Private browser project', exact: true}).click();
   await expect(page.getByLabel('Project title')).toHaveValue('Private browser project');
   const projectPath = new URL(page.url()).pathname;
@@ -1247,12 +1247,13 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   // be tied to one explicit reload, not incidental startup requests.
   await page.goto('/app/projects');
   await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
-  let readFailed=false, createFailed=false;
+  let readFailed=false, failRead=true, createFailed=false;
   const requests:{method:string;status:number}[]=[];
   await page.route('**/rest/v1/projects?*',async route=>{
     const method=route.request().method();
-    if(method==='GET'&&!readFailed) {
-      readFailed=true;requests.push({method,status:503});
+    if(method==='GET'&&failRead) {
+      if(!readFailed) requests.push({method,status:503});
+      readFailed=true;
       await route.fulfill({status:503,contentType:'application/json',
         body:JSON.stringify({message:'Disposable list outage'})});
     } else if(method==='POST'&&!createFailed) {
@@ -1265,6 +1266,7 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   await expect.poll(()=>readFailed).toBe(true);
   await expect(page.getByRole('alert')).toContainText('could not be loaded');
   await expect(page.getByText('Your first project belongs here.')).toHaveCount(0);
+  failRead=false;
   await page.getByRole('button',{name:'Retry securely'}).click();
   await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
   const opener=page.getByRole('button',{name:'Add first project'});
@@ -1279,7 +1281,7 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   await expect(drawer).toBeVisible();
   await drawer.getByRole('button',{name:'Save project'}).click();
   await expect(drawer).toBeHidden();
-  await expect(page.getByRole('status')).toContainText('Saved privately');
+  await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
   await expect(page.getByRole('link',{name:'S6 navigation retry fixture'})).toBeVisible();
   await page.getByRole('link',{name:'S6 navigation retry fixture'}).click();
   await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
