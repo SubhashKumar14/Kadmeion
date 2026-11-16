@@ -73,6 +73,19 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const blockOperation=useRef<string|null>(null);
   const base='/app/portfolios/'+id;
 
+  // Reset only when the owner/route identity changes, not on Retry. A retry
+  // must preserve the frozen request and its idempotency key after an
+  // acknowledgement may have been lost over the network.
+  useEffect(()=>{
+    setRecord(null);setRevisions(null);setFrozenRequests(null);setFrozenListError('');
+    setSelectedRevision(null);setRevisionError('');setPointer(null);
+    setVisibility('UNLISTED');setFrozen(null);setPinnedPreview(null);
+    setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
+    setGrant(null);setGrants(null);setGrantListError('');
+    setConfirmRevoke(false);setConfirmBlock(false);setNotice('');setError('');
+    operation.current=null;grantOperation.current=null;blockOperation.current=null;
+  },[port,id,mode]);
+
   useEffect(()=>{
     let active=true;
     setError('');
@@ -187,7 +200,10 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
    * Raw tokens are intentionally discarded, never placed in React state or
    * web storage, while host delivery remains unproven. */
   async function registerReviewer(){
-    if (!frozen || grant || busy || mode!=='staging') return;
+    // A registration must never run before the owner has verified the exact
+    // frozen revision. The draft or an unverifiable pin is not a substitute.
+    if (!frozen || grant || busy || mode!=='staging' ||
+        pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError) return;
     setBusy(true);setError('');setNotice('');
     try {
       grantOperation.current ??= crypto.randomUUID();
@@ -426,7 +442,14 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                 onChange={event=>{setValidMinutes(Number(event.target.value));grantOperation.current=null;}}>
                 <option value={30}>30 minutes</option><option value={60}>1 hour</option>
                 <option value={1440}>24 hours</option></select></label>
-              <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void registerReviewer()}>
+              {(!pinnedPreview || pinnedPreviewPending || !!pinnedPreviewError) &&
+                <p role="status" className="ws-field-hint">
+                  Verify the exact frozen revision above before registering a reviewer grant.
+                  A loading or failed preview cannot be used as evidence.
+                </p>}
+              <button type="button" className="ws-secondary"
+                disabled={busy || pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError}
+                onClick={()=>void registerReviewer()}>
                 {busy?'Registering…':'Register private reviewer grant'}</button>
             </> : <>
               <dl className="ws-release-facts">
