@@ -537,7 +537,7 @@ test('real owner onboarding and project revision are private across browser sess
   await savedRevision.selectOption('2');
   await page.getByRole('button', {name: 'Freeze private revision'}).click();
   await expect(page.getByRole('status').filter({hasText:'Private revision 2 frozen.'})).toBeVisible();
-  await expect(page.getByText('Frozen revision 2 · Pinned private request')).toBeVisible();
+  await expect(page.getByText('Frozen revision 2 · Verified owner-private pin')).toBeVisible();
   await expect(page.locator('.ws-release-visual .pv-site')).toBeVisible();
   await expect(page.getByRole('heading',{name:'Frozen private requests'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Frozen request selected'})).toHaveAttribute('aria-pressed','true');
@@ -550,7 +550,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('heading', {name:'Frozen private requests'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Use frozen revision 2'})).toBeVisible();
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
-  await expect(page.getByRole('status').filter({hasText:'Loaded an existing owner-private frozen request.'})).toBeVisible();
+  await expect(page.getByRole('status').filter({hasText:'Exact owner-private frozen revision verified.'})).toBeVisible();
   await expect(page.getByRole('heading', {name:'Registered reviewer grants'})).toBeVisible();
   await expect(page.getByText('Registered (not servable)', {exact:true})).toBeVisible();
   await page.getByRole('button', {name:'Review revocation'}).click();
@@ -566,6 +566,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('button',{name:'Publish unavailable — host proof required'})).toBeDisabled();
   await expect(page.getByRole('button',{name:'Use frozen revision 2'})).toBeVisible();
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
+  await expect(page.getByRole('status').filter({hasText:'Exact owner-private frozen revision verified.'})).toBeVisible();
   await page.getByRole('button', {name: 'Run private preflight'}).click();
   await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();
   const preflightSummary=page.getByRole('group',{name:'Private preflight summary'});
@@ -1377,6 +1378,7 @@ test('S6 S3 pending inspector and SEO buffers block Restore until resolved', asy
   await expect(textField).toHaveValue('Unsaved S3 primary text must survive History');
   await page.getByRole('button',{name:'Discard unapplied text'}).click();
   await page.getByRole('button',{name:'Metadata',exact:true}).click();
+  const storedSeoTitle=await page.getByLabel('SEO page title').inputValue();
   await page.getByLabel('SEO page title').fill('Unapplied S3 SEO title');
   await page.getByRole('button',{name:'History',exact:true}).click();
   await expect(restore).toBeDisabled();
@@ -1384,8 +1386,9 @@ test('S6 S3 pending inspector and SEO buffers block Restore until resolved', asy
   await page.getByRole('button',{name:'Metadata',exact:true}).click();
   await expect(page.getByLabel('SEO page title')).toHaveValue('Unapplied S3 SEO title');
 
-  // Deliberate discard is the only allowed escape from these unsaved buffers.
-  await page.getByRole('button',{name:'Discard changes and load saved draft'}).click();
+  // Return the buffered SEO field to its exact last-saved value. The global
+  // reload/discard action is error-only, not a general pending-input control.
+  await page.getByLabel('SEO page title').fill(storedSeoTitle);
   await expect(page.getByLabel('SEO page title')).not.toHaveValue('Unapplied S3 SEO title');
   await page.getByRole('button',{name:'History',exact:true}).click();
   await page.getByRole('button',{name:/Revision 1/}).click();
