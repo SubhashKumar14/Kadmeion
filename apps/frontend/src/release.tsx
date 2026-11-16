@@ -273,7 +273,14 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     const visible=revisions?.find(item=>item.revision===request.revision);
     if (request.portfolioId!==id||request.status!=='FROZEN'||
         (visible!==undefined&&visible.snapshotSha256!==request.snapshotSha256)) {
-      setError('Frozen request conflicts with the saved revision digest. Nothing was published.');
+      // Reject even before the RPC when owner-listed metadata is inconsistent.
+      // Retain an explicit failed selection so the current HEAD is not shown
+      // as the requested historical pin after this rejection.
+      historySelectionEpoch.current+=1;
+      setHistorySelection(request);setHistorySelectionPending(false);
+      setHistorySelectionError('The frozen request conflicts with owner revision metadata. No draft was substituted.');
+      setFrozen(null);setPinnedPreview(null);setPinnedPreviewError('');
+      setResult(null);setGrant(null);setError('');setNotice('');
       return;
     }
     const epoch=++historySelectionEpoch.current;
@@ -490,6 +497,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
             {historySelectionError && <p role="alert">{historySelectionError}</p>}
             {historySelectionError && !historySelectionPending &&
+              historySelection.portfolioId===id&&historySelection.status==='FROZEN'&&
+              !revisions?.some(row=>row.revision===historySelection.revision&&
+                row.snapshotSha256!==historySelection.snapshotSha256) &&
               <button type="button" className="ws-secondary" disabled={busy}
                 onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy}
