@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { importPortfolioSourceZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
 
@@ -551,6 +552,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(preflightSummary).toContainText('Warnings');
   await expect(preflightSummary).toContainText('Passed checks');
   await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Download offline static preview ZIP'})).toHaveCount(0);
   await expect(page.getByRole('link',{name:'Edit SEO metadata in private editor'}))
     .toHaveAttribute('href',editorPath+'?panel=Metadata');
   await expect(page.getByText('Private · Not published', {exact:true})).toBeVisible();
@@ -718,7 +720,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
   const sourceDownload=page.waitForEvent('download');
   await page.getByRole('button',{name:'Download portfolio source ZIP'}).click();
-  expect((await sourceDownload).suggestedFilename()).toMatch(/^kadmeion-portfolio-revision-\d+\.zip$/);
+  const sourceArchive=await sourceDownload;
+  expect(sourceArchive.suggestedFilename()).toMatch(/^kadmeion-portfolio-revision-\d+\.zip$/);
+  const portable=importPortfolioSourceZip(new Uint8Array(await readFile((await sourceArchive.path())!)));
+  expect(portable.files['pages/home.page.json']).toBeTruthy();
+  expect(Object.values(portable.files).some(text=>text.includes('Saved author portfolio'))).toBe(true);
   await expect(page.getByText('Portfolio source download prepared.')).toBeVisible();
   const download = page.waitForEvent('download');
   await page.getByRole('button', {name: 'Download application metadata'}).click();

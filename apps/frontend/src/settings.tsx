@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountExitPreflight, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { AccountExitPreflight, AccountExitReauthChallenge, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
 
@@ -93,7 +93,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path === '/app/settings/security') content = <Security port={port}/>;
   else if (path === '/app/trash') content = <Trash service={services.trash}/>;
   else if (path === '/app/export') content = <ExportCenter port={port} services={services}/>;
-  else content = <AccountExit service={services.account}/>;
+  else content = <AccountExit port={port} service={services.account}/>;
 
   return <section className="ws-settings-page" aria-labelledby="settings-title">
     <div className="ws-heading">
@@ -593,13 +593,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   </div></>;
 }
 
-function AccountExit({service}: {service: Services['account']}) {
+function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
   const [inventory, setInventory] = useState<AccountExitPreflight | null>(null);
   const [requests, setRequests] = useState<PrivateAccountErasureEntry[] | null>(null);
   const [confirmation, setConfirmation] = useState('');
   const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
   const operation = useRef<{key:string;id:string} | null>(null);
+  const challenge = useRef<AccountExitReauthChallenge|null>(null);
+  const challengeOperation = useRef<string|null>(null);
+  const [reauthExpires, setReauthExpires] = useState('');
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
 
   async function check() {
@@ -633,9 +636,45 @@ function AccountExit({service}: {service: Services['account']}) {
       // Hide old actions until a fresh read confirms the current request state.
       setRequests(null);
       setConfirmation('');
+      setReauthExpires('');
+      challenge.current=null;
+      challengeOperation.current=null;
       operation.current=null;
       setRequests(await service.list());
       setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
+    } catch (error) {
+      setMessage(failure(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyIdentity(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !activeRequest) return;
+    const form=event.currentTarget;
+    const password=new FormData(form).get('current-password');
+    if (typeof password!=='string' || !password) return;
+    form.reset();
+    setBusy(true);
+    setMessage(null);
+    setReauthExpires('');
+    try {
+      if (challenge.current && Date.parse(challenge.current.expiresAt)<=Date.now()) {
+        challenge.current=null;
+        challengeOperation.current=null;
+      }
+      challengeOperation.current ??= crypto.randomUUID();
+      challenge.current ??= await service.beginReauth(challengeOperation.current);
+      const reauth=await port.reauthenticateCurrentOwner(password);
+      if (reauth.error) throw new Error(reauth.error.message);
+      const challengeId=challenge.current.challengeId;
+      // The next verification must begin a new challenge if this new session
+      // cannot be confirmed. A consumed challenge is bound to one session.
+      challenge.current=null;
+      challengeOperation.current=null;
+      const receipt=await service.completeReauth(challengeId);
+      setReauthExpires(receipt.expiresAt);
     } catch (error) {
       setMessage(failure(error));
     } finally {
@@ -666,6 +705,13 @@ function AccountExit({service}: {service: Services['account']}) {
         <p>Request pending verification. Your account and private data are still available.</p>
         <button type="button" className="ws-secondary" disabled={busy}
           onClick={()=>void changeRequest(activeRequest.id)}>Withdraw deletion request</button>
+        <form onSubmit={event=>void verifyIdentity(event)}>
+          <label className="ws-export-select">Current password for identity verification
+            <input type="password" name="current-password" autoComplete="current-password" required maxLength={128} disabled={busy}/>
+          </label>
+          <button type="submit" className="ws-secondary" disabled={busy}>Verify identity for account exit</button>
+        </form>
+        {reauthExpires && <p role="status">Fresh sign-in verified. Proof expires at <time dateTime={reauthExpires}>{new Date(reauthExpires).toLocaleTimeString()}</time>. Deletion remains gated.</p>}
       </>}
       {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
         <label className="ws-export-select">Type DELETE MY ACCOUNT to record the request

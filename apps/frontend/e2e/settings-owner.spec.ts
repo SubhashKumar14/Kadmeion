@@ -203,6 +203,11 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByRole('checkbox',{name:'Draft sync activity'})).toBeChecked();
   await page.goto('/app/settings/privacy');
   await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeDisabled();
+  await page.goto('/app/export');
+  const recoveryDownload=page.waitForEvent('download');
+  await page.getByRole('button',{name:'Download private recovery ZIP'}).click();
+  expect((await recoveryDownload).suggestedFilename()).toBe('kadmeion-private-account-partial.zip');
+  await expect(page.getByText('Private recovery download prepared.')).toBeVisible();
   await page.goto('/app/settings/account/delete');
   await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
   await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
@@ -213,6 +218,15 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByText('Deletion request recorded. No data has been erased.')).toBeVisible();
   await page.reload();
   await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  const identity=page.getByRole('button',{name:'Verify identity for account exit'});
+  const password=page.getByLabel('Current password for identity verification');
+  await password.fill('Wrong fixture password');
+  await identity.click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(password).toHaveValue('');
+  await password.fill(owner.password);
+  await identity.click();
+  await expect(page.getByText('Fresh sign-in verified.',{exact:false})).toBeVisible();
   await page.getByRole('button',{name:'Withdraw deletion request'}).click();
   await expect(page.getByText('Account deletion request withdrawn.')).toBeVisible();
   await expect(page.getByRole('list',{name:'Recent deletion requests'})).toContainText('Withdrawn');

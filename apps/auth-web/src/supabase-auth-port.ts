@@ -294,29 +294,41 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }): Promise<AuthOutcome<{ user: AuthUser }>> {
     return this.outcome(async () => {
       const attempt = ++this.authAttempt;
-      const { session, userId } = await this.ownerSession();
-      const email = session.user.email;
-      if (!email) throw new Error('Sign in with a verified email account first.');
-      this.assertCurrentAuthAttempt(attempt);
-
-      // Keep the password-grant session private until both provider responses
-      // confirm the current owner and the initiating browser session is current.
-      const verified = this.decodeSession(await this.request('/token?grant_type=password', 'POST', {
-        email, password: currentPassword
-      }));
-      this.assertCurrentAuthAttempt(attempt);
-      if (!this.isCurrentSession(session) || verified.user.id !== userId ||
-          verified.user.email?.trim().toLowerCase() !== email.trim().toLowerCase())
-        throw new Error('Current password verification did not match the active account.');
+      const {session,verified}=await this.verifyCurrentOwnerPassword(currentPassword,attempt);
 
       const result = await this.request('/user', 'PUT', { password: newPassword }, verified.access_token);
       const updated = userFrom(result.user ?? result);
       this.assertCurrentAuthAttempt(attempt);
-      if (!this.isCurrentSession(session) || !updated || updated.id !== userId)
+      if (!this.isCurrentSession(session) || !updated || updated.id !== session.user.id)
         throw new Error('Password update could not be confirmed for the active account.');
 
       this.store({ ...verified, user: { ...verified.user, ...updated } });
       return { user: updated };
+    });
+  }
+
+  private async verifyCurrentOwnerPassword(password: string,attempt: number) {
+    const {session,userId}=await this.ownerSession();
+    const email=session.user.email;
+    if (!email) throw new Error('Sign in with a verified email account first.');
+    this.assertCurrentAuthAttempt(attempt);
+    const verified=this.decodeSession(await this.request('/token?grant_type=password','POST',{email,password}));
+    this.assertCurrentAuthAttempt(attempt);
+    if (!this.isCurrentSession(session) || verified.user.id!==userId ||
+        verified.user.email?.trim().toLowerCase()!==email.trim().toLowerCase())
+      throw new Error('Current password verification did not match the active account.');
+    return {session,verified};
+  }
+
+  async reauthenticateCurrentOwner(password: string): Promise<AuthOutcome<{verified:true}>> {
+    return this.outcome(async () => {
+      const attempt=++this.authAttempt;
+      const {session,verified}=await this.verifyCurrentOwnerPassword(password,attempt);
+      this.assertCurrentAuthAttempt(attempt);
+      if (!this.isCurrentSession(session) || verified.access_token===session.access_token)
+        throw new Error('A fresh sign-in could not be confirmed.');
+      this.store(verified);
+      return {verified:true};
     });
   }
 
