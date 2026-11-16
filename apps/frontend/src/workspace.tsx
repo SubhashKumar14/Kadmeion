@@ -37,6 +37,27 @@ export function isWorkspaceRoute(path: string): boolean {
   return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || isOperatorRoute(path) || isGrowthRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
 }
 
+/** Contextual browser titles are part of accessible navigation: a generic
+ * "Workspace" label hides the task after opening another owner-only screen. */
+function workspacePageTitle(path: string): string {
+  if (path === '/app') return 'Workspace overview';
+  if (path === '/app/onboarding') return 'Welcome';
+  if (path === '/app/profile') return 'Developer profile';
+  if (path === '/app/projects') return 'Private project library';
+  if (projectIdFromRoute(path)) return 'Private project details';
+  if (path === '/app/portfolios') return 'Private portfolio library';
+  if (path === '/app/portfolios/new') return 'Choose a portfolio template';
+  const portfolio = portfolioIdFromRoute(path);
+  if (portfolio && path.endsWith('/preview/fullscreen')) return 'Fullscreen portfolio preview';
+  if (portfolio && path.endsWith('/preview')) return 'Portfolio preview';
+  if (releaseRoute(path)) return 'Portfolio release';
+  if (portfolio) return 'Portfolio editor';
+  if (isSettingsRoute(path)) return 'Account settings';
+  if (isOperatorRoute(path)) return 'Restricted operations';
+  if (isGrowthRoute(path)) return 'Personal growth';
+  return 'Workspace';
+}
+
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
   owner: Owner; children: ReactNode; onSignOut: () => void; signOutPending: boolean; message: string;
 }) {
@@ -61,7 +82,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
         onClick={() => setMenuOpen(open => !open)}>Menu <Icon name="chevron" size={16}/></button>
       <nav id="ws-nav" className={menuOpen ? 'ws-nav-open' : undefined} aria-label="Workspace navigation">
         {NAV.map(item => <a key={item.href} href={item.href} aria-label={item.title}
-          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) ? 'page' : undefined}>
+          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) || (item.href === '/app/growth' && isGrowthRoute(route)) ? 'page' : undefined}>
           <Icon name={item.icon} size={18}/><span>{item.title}</span>
         </a>)}
       </nav>
@@ -219,7 +240,7 @@ export function WorkspaceApp() {
   const portfolioId = portfolioIdFromRoute(route);
   const release = releaseRoute(route);
   useEffect(() => {
-    document.title = 'Kadmeion — ' + (route === '/app/onboarding' ? 'Welcome' : 'Workspace');
+    document.title = workspacePageTitle(route) + ' · Kadmeion';
     let cancelled = false;
     const url = import.meta.env.VITE_SUPABASE_URL?.trim();
     const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
