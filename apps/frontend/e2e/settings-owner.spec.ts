@@ -167,13 +167,20 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(notificationFilters.getByRole('button',{name:'Unread'})).toHaveAttribute('aria-pressed','true');
   await notificationFilters.getByRole('button',{name:'All loaded'}).click();
   await expect(notificationFilters.getByRole('button',{name:'All loaded'})).toHaveAttribute('aria-pressed','true');
-  // Actual persisted preference, not optimistic UI state. Disposable local user only.
-  const reviewerPreference=page.getByRole('checkbox',{name:'Reviewer activity'});
-  await expect(reviewerPreference).toBeVisible();
-  await reviewerPreference.check();
+  // A missing preference row must reflect effective PostgreSQL defaults:
+  // reviewer/publishing notices on, draft-sync notices off. Then persist a
+  // real change under the disposable owner JWT and read it back after reload.
+  await expect(page.getByText(/No saved preference record was returned/)).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
+  await expect(page.getByRole('checkbox',{name:'Publishing activity'})).toBeChecked();
+  const syncPreference=page.getByRole('checkbox',{name:'Draft sync activity'});
+  await expect(syncPreference).not.toBeChecked();
+  await syncPreference.check();
   await expect(page.getByText('Notification preferences saved.')).toBeVisible();
   await page.reload();
   await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
+  await expect(page.getByRole('checkbox',{name:'Publishing activity'})).toBeChecked();
+  await expect(page.getByRole('checkbox',{name:'Draft sync activity'})).toBeChecked();
   await page.goto('/app/settings/privacy');
   await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeDisabled();
   await page.goto('/app/settings/account/delete');
