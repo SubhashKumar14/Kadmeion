@@ -1199,3 +1199,17 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media(max-width:1150px){.ws-settings-hub{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:440px){.ws-settings-hub-links li{flex-direction:column;align-items:stretch}
   .ws-settings-hub-links a{align-self:flex-start}}
+
+
+/* F4: surface measured preflight outcomes before the detailed diagnostics.
+ * Counts come only from the exact private preflight result; no host readiness
+ * or fabricated passed state is implied. */
+.ws-release-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;margin:18px 0;padding:0}
+.ws-release-summary>div{min-width:0;border-top:2px solid var(--line-dark);
+  padding:12px 8px 9px;display:grid;gap:5px}
+.ws-release-summary span{color:var(--body);font-size:.79rem;line-height:1.4}
+.ws-release-summary strong{font-size:clamp(1.4rem,2.6vw,2rem);
+  font-variant-numeric:tabular-nums;font-weight:750;line-height:1.1}
+@media(max-width:420px){.ws-release-summary{gap:5px}
+  .ws-release-summary>div{padding:10px 3px}.ws-release-summary span{font-size:.7rem}}

@@ -491,6 +491,11 @@ function PreflightResults({result,portfolioId}:{result:SafePreviewResult;portfol
   return <section className="ws-release-action" aria-labelledby="preflight-results">
     <h3 id="preflight-results">Preflight results</h3>
     <p role="status">Private renderability check. No published release or host readiness proof.</p>
+    <div className="ws-release-summary" role="group" aria-label="Private preflight summary">
+      <div><span>Blocking errors</span><strong>{result.blockers.length}</strong></div>
+      <div><span>Warnings</span><strong>{result.warnings.length}</strong></div>
+      <div><span>Passed checks</span><strong>{result.passed.length}</strong></div>
+    </div>
     {([
       ['Blocking errors',result.blockers],['Warnings',result.warnings],
       ['Checks performed and passed',result.passed]

@@ -530,6 +530,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
   await page.getByRole('button', {name: 'Run private preflight'}).click();
   await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();
+  const preflightSummary=page.getByRole('group',{name:'Private preflight summary'});
+  await expect(preflightSummary).toBeVisible();
+  await expect(preflightSummary).toContainText('Blocking errors');
+  await expect(preflightSummary).toContainText('Warnings');
+  await expect(preflightSummary).toContainText('Passed checks');
   await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toBeVisible();
   await expect(page.getByRole('link',{name:'Edit SEO metadata in private editor'}))
     .toHaveAttribute('href',editorPath+'?panel=Metadata');
