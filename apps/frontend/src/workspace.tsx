@@ -238,7 +238,7 @@ export function WorkspaceApp() {
   const [signOutPending, setSignOutPending] = useState(false);
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
   const portGenerationRef = useRef(0);
-  const route = window.location.pathname.replace(/\\/$/, '') || '/';
+  const route = window.location.pathname.replace(/\/$/, '') || '/';
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
   const release = releaseRoute(route);
