@@ -293,13 +293,16 @@ test('landing keeps its reading scale and controls usable on desktop and narrow 
         viewport:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth,
         heroSize:parseFloat(getComputedStyle(hero.querySelector('h1')!).fontSize),
         bodySize:parseFloat(getComputedStyle(story).fontSize),
-        controlHeight:hero.querySelector('.demo-controls button')!.getBoundingClientRect().height
+        controlHeight:hero.querySelector('.demo-controls button')!.getBoundingClientRect().height,
+        copyBottom:hero.querySelector('.hero-copy > p')!.getBoundingClientRect().bottom,
+        artworkTop:hero.querySelector('.hero-decoration')!.getBoundingClientRect().top
       };
     });
     expect(layout.heroSize).toBeGreaterThanOrEqual(width === 1440 ? 64 : 40);
     expect(layout.bodySize).toBeGreaterThanOrEqual(16);
     expect(layout.controlHeight).toBeGreaterThanOrEqual(44);
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewport + 1);
+    if (width <= 390) expect(layout.artworkTop).toBeGreaterThanOrEqual(layout.copyBottom);
     if (captures && width !== 320) {
       await page.screenshot({path:captures + '/01_LANDING_' + width + '_FULL.png', fullPage:true, animations:'disabled'});
     }
