@@ -145,6 +145,8 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
       if (!active) return;
       if (result.data) {setItems(result.data); setError('');}
       else setError(result.error?.message ?? 'Your portfolios could not be loaded.');
+    }).catch(() => {
+      if (active) setError('The private portfolio service is unavailable. Try again.');
     });
     return () => {active = false;};
   }, [port, attempt]);
@@ -216,6 +218,8 @@ export function PortfolioChooser({port}: {port: SupabaseBrowserAuthPort}) {
       const initialized = await port.initializeOwnerPortfolio(current.id, current.operation, selected.id);
       if (!initialized.data) {setError(initialized.error?.message ?? 'Draft created. Retry initialization to continue.'); return;}
       window.location.assign(editorPath(current.id));
+    } catch {
+      setError('Portfolio setup could not be confirmed. Your chosen name and layout are retained.');
     } finally {
       setSaving(false);
     }

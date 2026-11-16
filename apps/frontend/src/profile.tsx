@@ -30,6 +30,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       setDraft(data);
       setError('');
       setWithdrawal(false);
+    }).catch(() => {
+      if (active) setError('Could not reach your private profile. Retry when your connection is restored.');
     });
     return () => { active = false; };
   }, [port, retry]);
@@ -64,11 +66,17 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       setDraft(result.data);
       setWithdrawal(false);
       setNotice('Private profile draft saved.');
+    } catch {
+      setError('Private profile save could not be verified. Your edits are still here.');
     } finally {
       setBusy(false);
     }
   }
 
+  const dirty = !!(saved && draft && (
+    saved.displayName !== draft.displayName || saved.headline !== draft.headline ||
+    saved.bio !== draft.bio || saved.skills.join('\u0000') !== draft.skills.join('\u0000')
+  ));
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
 
   return <section aria-labelledby="profile-title" className="ws-profile ws-owner-page">
@@ -79,7 +87,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           <h1 id="profile-title">Your developer profile.</h1>
           <p>Edit your draft and preview the fields visitors could see.</p>
         </div>
-        <button type="submit" className="ws-primary" disabled={busy || !draft || draft === saved}>{busy ? 'Saving…' : 'Save profile draft'}</button>
+        <button type="submit" className="ws-primary" disabled={busy || !draft || !dirty}>{busy ? 'Saving…' : 'Save profile draft'}</button>
       </div>
       <div className="ws-profile-tabs" role="group" aria-label="Profile sections">
         {['Profile', 'Skills & links', 'Visibility', 'Public preview'].map(item =>
@@ -87,6 +95,13 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       </div>
       {error && <div role="alert" className="ws-inline-alert">{error}</div>}
       {notice && <div role="status" className="ws-inline-alert">{notice}</div>}
+      {dirty && <div className="ws-unsaved-line" role="status">
+        <span>Unsaved private changes</span>
+        <button type="button" className="ws-text-action" disabled={busy} onClick={() => {
+          if (saved) setDraft({...saved, skills:[...saved.skills]});
+          setWithdrawal(false); setError(''); setNotice('');
+        }}>Discard changes</button>
+      </div>}
       {!draft && !error && <p role="status">Loading your private profile…</p>}
       {!draft && error && <button type="button" className="ws-secondary" onClick={() => setRetry(value => value + 1)}>Retry profile</button>}
       {error.includes('another session') && <button type="button" className="ws-secondary"
@@ -134,7 +149,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             <fieldset className="ws-preview-fields" disabled={busy}>
               <legend>Fields to preview</legend>
               {previewFields.map(({key, label}) => <label key={key} className="ws-profile-check">
-                <input type="checkbox" checked={visible.includes(key)} onChange={event => {
+                <input type="checkbox" aria-label={'Include ' + label + ' in preview'} checked={visible.includes(key)} onChange={event => {
                   const checked = event.target.checked;
                   setVisible(current => checked ? [...current, key] : current.filter(field => field !== key));
                 }}/>{label}</label>)}

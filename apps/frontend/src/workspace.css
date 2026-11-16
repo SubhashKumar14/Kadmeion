@@ -1022,3 +1022,34 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .ws-owner-page .ws-studio-records li{grid-template-columns:auto minmax(0,1fr)}
   .ws-owner-page .ws-studio-records li>.ws-secondary{grid-column:2;justify-self:start}
 }
+
+
+/* F2: reference-led, content-sized owner surfaces. No fixed mockup canvas heights. */
+.ws-owner-page :is(.ws-project-fields,.ws-project-aside,.ws-profile-preview,.ws-studio-list,.ws-project-card){min-width:0}
+.ws-owner-page :is(h1,h2,h3,p,dd){overflow-wrap:anywhere}
+.ws-owner-page .ws-project-detail{align-items:start}
+.ws-owner-page .ws-project-fields{min-width:0}
+.ws-unsaved-line{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px 0;border-top:1px solid var(--line);color:var(--body);font-size:.875rem}
+.ws-text-action{border:0;border-bottom:1px solid currentColor;background:none;padding:5px 0;
+  color:var(--accent-strong);font:inherit;font-weight:700;cursor:pointer}
+.ws-text-action:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.ws-owner-page .ws-profile-preview{position:relative}
+.ws-owner-page .ws-studio-search{max-width:100%}
+.ws-owner-page .ws-project-fields :is(textarea,input){max-width:100%}
+@media(min-width:1101px){
+  .ws-owner-page .ws-project-detail.ws-owner-columns{grid-template-columns:minmax(0,1.48fr) minmax(285px,.78fr)}
+  .ws-owner-chooser .ws-project-detail.ws-owner-columns{grid-template-columns:minmax(0,1.5fr) minmax(285px,.84fr)}
+  .ws-profile .ws-project-detail.ws-owner-columns{grid-template-columns:minmax(0,1.45fr) minmax(285px,.8fr)}
+}
+@media(max-width:1100px){
+  .ws-owner-page .ws-project-detail.ws-owner-columns{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:460px){
+  .ws-owner-page .ws-project-head>.ws-primary{width:100%}
+  .ws-owner-page .ws-project-controls>*{min-width:0}
+  .ws-owner-page .ws-project-search{flex-basis:100%}
+  .ws-owner-page .ws-profile-tabs button{flex:1 1 auto}
+  .ws-owner-page .ws-project-empty{padding:clamp(17px,5vw,26px)}
+  .ws-owner-page .ws-preset-browser .ws-studio-presets{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

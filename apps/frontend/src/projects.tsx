@@ -25,6 +25,7 @@ function safeProjectLink(value: string | null): string | undefined {
 
 export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [state,setState]=useState<LoadState>({status:'loading'});
+  const [reload,setReload]=useState(0);
   const [search,setSearch]=useState('');
   const [view,setView]=useState<'gallery'|'list'>('gallery');
   const [sort,setSort]=useState<'recent'|'name'>('recent');
@@ -47,7 +48,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       if (active)setState({status:'error',message:'The private project service is unavailable.'});
     });
     return ()=>{active=false;};
-  },[port]);
+  },[port,reload]);
   const filtered=useMemo(()=>{
     if(state.status!=='ready')return [];
     const term=search.trim().toLocaleLowerCase('en');
@@ -107,7 +108,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
      state.status==='error'?<div role="alert" className="ws-project-state">
-       <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>location.reload()}>Retry securely</button></div>:
+       <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>{setState({status:'loading'});setReload(value=>value+1);}}>Retry securely</button></div>:
     <>
       <p className="ws-project-count">{search ? filtered.length + ' of ' : ''}{state.items.length} private {state.items.length === 1 ? 'project' : 'projects'}
         {state.items.length===100?' (latest 100 only; older projects are not shown)':''}</p>
@@ -207,7 +208,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       setDetail(result.data
         ? {status: 'ready', saved: result.data, draft: result.data}
         : {status: 'unavailable'});
-    });
+    }).catch(() => {if (active) setDetail({status:'unavailable'});});
     return () => { active = false; };
   }, [port, projectId]);
 
@@ -225,6 +226,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       setLatest(data && data.revision !== baseRevision ? data : null);
       if (!data) setFeedback({error: true, text: 'Could not check the latest revision. Your edits are still here.'});
       else if (data.revision === baseRevision) setFeedback({error: false, text: 'You have the latest saved revision.'});
+    } catch {
+      setFeedback({error:true,text:'Latest revision check failed. Your private draft is preserved.'});
     } finally {
       setChecking(false);
     }
@@ -243,11 +246,20 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       }
       setDetail({status: 'ready', saved: result.data, draft: result.data});
       setFeedback({error: false, text: 'Private draft saved.'});
+    } catch {
+      setFeedback({error:true,text:'Project save could not be verified. Your edits remain available.'});
     } finally {
       setSaving(false);
     }
   }
 
+  const dirty = detail.status === 'ready' && (
+    detail.saved.title !== detail.draft.title ||
+    detail.saved.summary !== detail.draft.summary ||
+    detail.saved.description !== detail.draft.description ||
+    (detail.saved.repositoryUrl ?? '') !== (detail.draft.repositoryUrl ?? '') ||
+    (detail.saved.liveUrl ?? '') !== (detail.draft.liveUrl ?? '')
+  );
   const repository = detail.status === 'ready' ? safeProjectLink(detail.saved.repositoryUrl) : undefined;
   const liveSite = detail.status === 'ready' ? safeProjectLink(detail.saved.liveUrl) : undefined;
 
@@ -290,9 +302,15 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         </fieldset>
         {feedback && <p role={feedback.error ? 'alert' : 'status'} className="ws-inline-alert">{feedback.text}</p>}
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={saving || checking || !!latest}>{saving ? 'Saving…' : 'Save changes'}</button>
+          <button type="submit" className="ws-primary" disabled={saving || checking || !!latest || !dirty}>{saving ? 'Saving…' : 'Save changes'}</button>
           <button type="button" className="ws-secondary" disabled={saving || checking}
             onClick={() => void compareLatest(detail.saved.revision)}>{checking ? 'Checking…' : 'Check latest revision'}</button>
+          {dirty && <button type="button" className="ws-secondary" disabled={saving || checking}
+            onClick={() => {
+              setDetail({status:'ready',saved:detail.saved,draft:detail.saved});
+              setLatest(null);
+              setFeedback({error:false,text:'Unsaved changes discarded; your saved revision is unchanged.'});
+            }}>Discard changes</button>}
         </div>
       </form>
       <aside className="ws-project-aside" aria-label="Saved project preview">

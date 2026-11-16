@@ -141,10 +141,11 @@ test('real owner onboarding and project revision are private across browser sess
     await expect(page.getByLabel('Headline', {exact: true})).toHaveValue('Private developer draft');
     const privatePreview = page.getByRole('complementary', {name: 'Public profile preview'});
     await expect(privatePreview.getByText('Private developer draft')).toBeVisible();
-    await privatePreview.getByRole('checkbox', {name: 'Headline'}).uncheck();
+    await expect(privatePreview.getByRole('checkbox', {name: 'Include Display name in preview'})).toBeChecked();
+    await privatePreview.getByRole('checkbox', {name: 'Include Headline in preview'}).uncheck();
     await expect(privatePreview.getByText('Private developer draft')).toBeHidden();
     await expect(page.getByRole('button', {name: 'Save profile draft'})).toBeDisabled();
-    await privatePreview.getByRole('checkbox', {name: 'Headline'}).check();
+    await privatePreview.getByRole('checkbox', {name: 'Include Headline in preview'}).check();
     await page.getByRole('button', {name: 'Skills & links', exact: true}).click();
     await expect(page.getByRole('button', {name: 'Remove TypeScript'})).toBeVisible();
     await page.getByRole('button', {name: 'Profile', exact: true}).click();
