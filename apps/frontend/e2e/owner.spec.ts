@@ -348,11 +348,18 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button', {name: 'History', exact: true}).click();
   await expect(page.getByRole('heading',{name:'Revisions',level:2})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Diagnostics',level:2})).toBeVisible();
-  await page.getByRole('tab',{name:'Problems'}).click();
+  // WAI-ARIA tabs must support keyboard-only traversal and a named panel.
+  await page.getByRole('tab',{name:'History'}).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab',{name:'Problems'})).toBeFocused();
   await expect(page.getByRole('heading',{name:'Validation has not been run here.'})).toBeVisible();
-  await page.getByRole('tab',{name:'Conflicts'}).click();
+  await expect(page.getByRole('tabpanel',{name:'Problems'})).toBeVisible();
+  await page.keyboard.press('End');
+  await expect(page.getByRole('tab',{name:'Conflicts'})).toBeFocused();
   await expect(page.getByRole('heading',{name:'Concurrent-save checks happen on save.'})).toBeVisible();
-  await page.getByRole('tab',{name:'History'}).click();
+  await page.keyboard.press('Home');
+  await expect(page.getByRole('tab',{name:'History'})).toBeFocused();
+  await expect(page.getByRole('tabpanel',{name:'History'})).toBeVisible();
   await expect(page.getByRole('button', {name: /Revision 2/})).toBeVisible();
   await page.getByRole('button',{name:/Revision 2/}).click();
   await page.getByRole('button',{name:'Compare to working copy'}).click();
