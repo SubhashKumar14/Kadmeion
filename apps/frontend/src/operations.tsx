@@ -378,29 +378,36 @@ const ownerEventTitle = {OPENED:'Case opened',OWNER_APPEAL:'Appeal submitted',
   OPERATOR_DECISION:'Decision recorded',OPERATOR_HOLD_LIFT:'Private hold lifted'} as const;
 
 export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
-  const [records,setRecords]=useState<{
-    service:SupabasePrivateModerationService;cases:OwnerModerationCase[];events:OwnerModerationEvent[];
-  }|null>(null);
   const [attempt,setAttempt]=useState(0);
+  const scope=useMemo(()=>({port,attempt}),[port,attempt]);
+  const [loaded,setLoaded]=useState<{
+    scope:typeof scope;service:SupabasePrivateModerationService;
+    cases:OwnerModerationCase[];events:OwnerModerationEvent[];
+  }|null>(null);
+  const records=loaded?.scope===scope?loaded:null;
   const [selected,setSelected]=useState('');
   const [statement,setStatement]=useState('');
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
   const [busy,setBusy]=useState(false);
-  const [loadError,setLoadError]=useState(false);
+  const [failedScope,setFailedScope]=useState<typeof scope|null>(null);
+  const loadError=failedScope===scope;
   const [message,setMessage]=useState<{error:boolean;text:string}|null>(null);
   const current=records?.cases.find(item=>item.id===selected);
   useEffect(()=>{
     let active=true;
-    setRecords(null);
-    setLoadError(false);
+    setLoaded(null);
+    setFailedScope(null);
+    setSelected('');
+    setStatement('');
+    setMessage(null);
     void (async()=>{
       const {data:service}=await port.privateModeration();
       if (!service) throw new Error('Owner moderation service unavailable.');
       const [cases,events]=await Promise.all([service.listOwnerCases(),service.listOwnerEvents()]);
-      if (active) setRecords({service,cases,events});
-    })().catch(()=>{if(active) setLoadError(true);});
+      if (active) setLoaded({scope,service,cases,events});
+    })().catch(()=>{if(active) setFailedScope(scope);});
     return ()=>{active=false;};
-  },[port,attempt]);
+  },[scope,port]);
 
   async function appeal(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -411,7 +418,7 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       await records.service.appeal(current.id,operation,statement);
       setStatement('');
       setOperation(crypto.randomUUID());
-      setRecords(null);
+      setLoaded(null);
       setAttempt(value=>value+1);
       setMessage({error:false,text:'Private appeal submitted for review.'});
     } catch {
