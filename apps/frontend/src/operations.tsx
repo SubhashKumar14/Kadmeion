@@ -391,7 +391,8 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   const [busy,setBusy]=useState(false);
   const [failedScope,setFailedScope]=useState<typeof scope|null>(null);
   const loadError=failedScope===scope;
-  const [message,setMessage]=useState<{error:boolean;text:string}|null>(null);
+  const [messageState,setMessage]=useState<{port:SupabaseBrowserAuthPort;error:boolean;text:string}|null>(null);
+  const message=messageState?.port===port?messageState:null;
   const current=records?.cases.find(item=>item.id===selected);
   useEffect(()=>{
     let active=true;
@@ -399,7 +400,6 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
     setFailedScope(null);
     setSelected('');
     setStatement('');
-    setMessage(null);
     void (async()=>{
       const {data:service}=await port.privateModeration();
       if (!service) throw new Error('Owner moderation service unavailable.');
@@ -420,9 +420,9 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       setOperation(crypto.randomUUID());
       setLoaded(null);
       setAttempt(value=>value+1);
-      setMessage({error:false,text:'Private appeal submitted for review.'});
+      setMessage({port,error:false,text:'Private appeal submitted for review.'});
     } catch {
-      setMessage({error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
+      setMessage({port,error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
     } finally {
       setBusy(false);
     }
