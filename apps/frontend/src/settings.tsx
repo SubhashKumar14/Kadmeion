@@ -101,7 +101,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path==='/app/settings/cases') content = <OwnerCaseHistory port={port}/>;
   else if (!services) content = error
     ? <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary" onClick={() => {
-      setError(''); setRetry(value => value + 1);
+      setRetry(value => value + 1);
     }}>Retry account settings</button></>
     : <p role="status">Loading private account settings…</p>;
   else if (path === '/app/settings/privacy') content = <Privacy key={current!.viewKey} port={port} services={services}/>;
