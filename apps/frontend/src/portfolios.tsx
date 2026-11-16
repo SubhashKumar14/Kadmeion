@@ -315,7 +315,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [record, setRecord] = useState<PortfolioRecord | null>(null);
   const [head, setHead] = useState<EditorHead | null>(null);
   const [slot, setSlot] = useState('');
-  const [value, setValue] = useState('');
   // Secondary controls preserve malformed user input without silently
   // committing it to the private snapshot or losing it on panel changes.
   const [fieldDrafts,setFieldDrafts]=useState<Record<string,string>>({});
@@ -356,9 +355,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       // JSONB map key happened to deserialize first; never insert sample bytes.
       const chosen=orderedLayerGroups(snapshot).flatMap(group=>group.slots)
         .find(item=>item.name==='title')?.key??'';
-      const initial=chosen?snapshot?.slots[chosen]:undefined;
       setSlot(chosen);
-      setValue(initial?.content[primaryField(initial.componentId)]??'');
       setOperation('');
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       setSourceDirty(false);
@@ -372,8 +369,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     try {
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
       setHead(next);
-      const selected = next.snapshot.slots[slot];
-      setValue(selected?.content[primaryField(selected.componentId)] ?? '');
       setOperation(crypto.randomUUID()); setError(''); setNotice('Unsaved changes');
       return true;
     } catch (failure) {
@@ -388,7 +383,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       const next = restoreHistoricalSnapshot(head, snapshot, crypto.randomUUID());
       setHead(next);
       setSlot('');
-      setValue('');
       setOperation(crypto.randomUUID());
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       setNotice('Revision restored into the working draft. Save to keep it.');
@@ -422,6 +416,16 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
+  // Every inspector field, including the primary textarea, uses a per-slot
+  // buffer. Selecting another slot cannot silently discard typed content.
+  const primaryInputKey = slot && active ? slot + ':' + primaryField(active.componentId) : '';
+  const savedPrimary = active?.content[primaryField(active.componentId)] ?? '';
+  const value = primaryInputKey && Object.hasOwn(fieldDrafts, primaryInputKey)
+    ? fieldDrafts[primaryInputKey] : savedPrimary;
+  const selectedSlotHasPendingDrafts = !!slot && Object.entries(fieldDrafts).some(([key, draft]) => {
+    if (!key.startsWith(slot + ':')) return false;
+    return draft !== (active?.content[key.slice(slot.length + 1)] ?? '');
+  });
   const layerGroups=orderedLayerGroups(head?.snapshot);
   const compatible=compatibleComponentsForSlot(slot);
   const chosenComponent=compatible.find(item=>item.id===pickedComponent)??compatible[0];
@@ -472,8 +476,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{
-      const entry=head?.snapshot.slots[key];
-      setSlot(key);setValue(entry?.content[primaryField(entry.componentId)]??'');setTool('Content');
+      setSlot(key);setTool('Content');
     }}/>;
   if (!allowed && !record) return <DeviceLimit id={id}/>;
   return <>{!allowed && <DeviceLimit id={id}/>}
@@ -498,7 +501,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {error && <button type="button" className="ws-secondary" onClick={() => {
       setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
-    }}>{operation ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
+    }}>{operation || pendingFields || sourceDirty ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
     {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
@@ -577,8 +580,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               aria-label={section+label+' '+state}
               onClick={()=>{
                 setSlot(item.key);
-                const assignment=head?.snapshot.slots[item.key];
-                setValue(assignment?.content[primaryField(assignment.componentId)]??'');
                 setTool('Content');
               }}>
               <span className="ws-editor-layer-name">{label}</span>{' '}
@@ -649,9 +650,19 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
                 placeholder={active.componentId==='title-stacked@1'&&value===''?
                   'Example: Build things that make a difference. (not saved)':'Enter your own content'}
-                onChange={event => setValue(event.target.value)}/></label>
-              <button type="button" className="ws-secondary" disabled={saving || value === (active.content[primaryField(active.componentId)] ?? '')}
-                onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})}>Apply text</button>
+                onChange={event => setFieldDrafts(drafts => ({...drafts, [primaryInputKey]: event.target.value}))}/></label>
+              <button type="button" className="ws-secondary" disabled={saving || value === savedPrimary}
+                onClick={() => {
+                  if (apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})) {
+                    setFieldDrafts(drafts => {
+                      const next = {...drafts}; delete next[primaryInputKey]; return next;
+                    });
+                  }
+                }}>Apply text</button>
+              {value !== savedPrimary && <button type="button" className="ws-secondary"
+                disabled={saving} onClick={() => setFieldDrafts(drafts => {
+                  const next = {...drafts}; delete next[primaryInputKey]; return next;
+                })}>Discard unapplied text</button>}
               {active.componentId && Object.hasOwn(contentFields, active.componentId) &&
                 contentFields[active.componentId as keyof typeof contentFields].slice(1).map(field => {
                   const inputKey=slot+':'+field;
@@ -683,9 +694,10 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                     }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</div>;
                 })}
               {pendingFields&&<p className="ws-field-hint" role="status">
-                One or more secondary fields have uncommitted edits. Correct or apply them before saving this draft.
+                One or more content fields have unapplied edits. Apply or discard them before saving this draft.
               </p>}
-              <button type="button" className="ws-secondary" disabled={saving}
+              <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts}
+                title={selectedSlotHasPendingDrafts ? 'Apply or discard edits in this slot before moving its component.' : undefined}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
             <button type="button" className="ws-secondary" disabled={saving}
