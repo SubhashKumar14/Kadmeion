@@ -35,8 +35,9 @@ function readSeoFields(snapshot:PortfolioSnapshot|null|undefined):{title:string;
     const value=parsed.seo;
     if(!value||typeof value!=='object'||Array.isArray(value))
       return {title:'',description:''};
-    return {title:typeof value.title==='string'?value.title:'',
-      description:typeof value.description==='string'?value.description:''};
+    const seo=value as Record<string,unknown>;
+    return {title:typeof seo.title==='string'?seo.title:'',
+      description:typeof seo.description==='string'?seo.description:''};
   }catch{return {title:'',description:''};}
 }
 
