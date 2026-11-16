@@ -1213,3 +1213,22 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   font-variant-numeric:tabular-nums;font-weight:750;line-height:1.1}
 @media(max-width:420px){.ws-release-summary{gap:5px}
   .ws-release-summary>div{padding:10px 3px}.ws-release-summary span{font-size:.7rem}}
+
+/* SET-01 reference comparison at 1600x900: keep all four genuine workflow
+ * groups visible without scaling a fixed-size mockup. Mobile scroll remains
+ * natural; touch controls retain >=44px height. */
+.ws-settings-page>.ws-heading h1{font-size:clamp(2.1rem,3vw,2.75rem);line-height:1.12}
+.ws-settings-page .ws-settings-body{margin-top:16px}
+.ws-settings-page .ws-settings-hub{gap:14px}
+.ws-settings-page .ws-settings-hub .ws-setting-card{padding:17px 21px}
+.ws-settings-page .ws-settings-hub .ws-setting-card h2{
+  font-size:clamp(1.3rem,1.7vw,1.55rem);line-height:1.2;margin:0 0 3px}
+.ws-settings-page .ws-settings-hub .ws-settings-group-description{
+  margin:0 0 11px;font-size:.835rem;line-height:1.45}
+.ws-settings-page .ws-settings-hub-links li{padding:8px 0;gap:12px}
+.ws-settings-page .ws-settings-hub-links p{margin:3px 0 0;font-size:.785rem}
+.ws-settings-page .ws-settings-hub-links a{min-height:44px;padding:8px 11px}
+@media(max-width:440px){
+  .ws-settings-page .ws-settings-hub .ws-setting-card{padding:16px}
+  .ws-settings-page .ws-settings-hub-links li{gap:8px}
+}

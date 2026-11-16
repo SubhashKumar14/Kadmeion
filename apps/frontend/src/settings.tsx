@@ -95,7 +95,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path === '/app/export') content = <ExportCenter services={services}/>;
   else content = <AccountExit service={services.account}/>;
 
-  return <section aria-labelledby="settings-title">
+  return <section className="ws-settings-page" aria-labelledby="settings-title">
     <div className="ws-heading">
       {path !== '/app/settings' && <a href="/app/settings">Back to settings</a>}
       <p className="ws-kicker">YOUR ACCOUNT</p><h1 id="settings-title">{title}</h1>

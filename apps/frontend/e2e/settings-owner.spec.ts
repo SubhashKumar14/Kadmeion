@@ -41,6 +41,10 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
     .toHaveAttribute('href','/app/settings/privacy');
   await expect(page.getByRole('link',{name:'Open export center'}))
     .toHaveAttribute('href','/app/export');
+  const hub=await page.locator('.ws-settings-hub').boundingBox();
+  expect(hub).not.toBeNull();
+  expect(hub!.y+hub!.height,'All four settings groups should fit within the 1600x900 desktop workspace')
+    .toBeLessThanOrEqual(901);
   await page.getByRole('button',{name:'Switch to dark theme'}).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
 
