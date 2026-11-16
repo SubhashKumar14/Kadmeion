@@ -84,6 +84,7 @@ function DemoWorkspace({ view }: { view: DemoView }) {
 }
 function ProductDemo() {
   const [index,setIndex] = useState(0);
+  const [manualAnnouncement,setManualAnnouncement] = useState('');
   const [reduced,setReduced] = useState(initialReducedMotion);
   const [paused,setPaused] = useState(false);
   const [hovered,setHovered] = useState(false);
@@ -105,12 +106,17 @@ function ProductDemo() {
     const timer=window.setInterval(() => setIndex(current=>nextPreviewIndex(current,1)),7000);
     return () => window.clearInterval(timer);
   },[reduced,paused,hovered,focused,visible]);
-  const change=(step:-1|1) => setIndex(current=>nextPreviewIndex(current,step));
+  const change=(step:-1|1) => {
+    const next=nextPreviewIndex(index,step);
+    setIndex(next);
+    setManualAnnouncement(`${DEMO_VIEWS[next]} preview, ${next+1} of ${DEMO_VIEWS.length}`);
+  };
   return <figure className="hero-demo" onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}
     onFocusCapture={()=>setFocused(true)}
     onBlurCapture={event=>{ if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFocused(false); }}>
     <DemoWorkspace view={DEMO_VIEWS[index] ?? DEMO_VIEWS[0]} />
     <figcaption className="demo-caption">Illustrative product preview
+    <span className="sr-only" role="status">{manualAnnouncement}</span>
     <div className="demo-controls" role="group" aria-label="Product preview controls">
       <button type="button" aria-label="Previous product example" onClick={()=>change(-1)}>‹</button>
       <span>{index+1} / {DEMO_VIEWS.length}</span>
@@ -139,7 +145,7 @@ export function Landing() {
         <nav aria-label="Primary navigation" className="site-navigation">
           <a href="/" aria-current="page">Home</a>
           <a href="#showcase">Showcase</a>
-          <a href="#templates">Templates</a>
+          <a href="/templates">Templates</a>
           <a href="https://github.com/SubhashKumar14/Kadmeion/tree/main/project-docs" target="_blank" rel="noopener noreferrer">Docs <span aria-hidden="true">↗</span></a>
         </nav>
         <div className="header-actions">
