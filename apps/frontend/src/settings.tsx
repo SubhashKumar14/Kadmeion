@@ -41,10 +41,14 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   useEffect(() => {
     if (path === '/app/settings') return;
     let active = true;
+    setServices(null);
+    setError('');
     void port.ownerSettings().then(result => {
       if (!active) return;
       if (result.data) {setServices(result.data); setError('');}
       else setError(result.error?.message ?? 'Account settings are unavailable.');
+    }).catch(() => {
+      if (active) setError('Account settings could not be loaded. Retry when the connection is available.');
     });
     return () => {active = false;};
   }, [port, path, retry]);
@@ -98,6 +102,12 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
     setBusy(true); setMessage(null);
     try {
       await services.identity.requestPublicIdentity(prefs);
+      // A mutation acknowledgement alone is not a fresh owner-visible state.
+      const saved = await port.ownerSharingPreferences();
+      if (!saved.data || fields.some(([key]) => saved.data![key] !== prefs[key]) ||
+          saved.data.publicationRequested !== prefs.publicationRequested)
+        throw new Error('Sharing preferences could not be read back. Review the saved state before retrying.');
+      setPrefs(saved.data);
       setConfirmed(false);
       setMessage({error: false, text: 'Sharing preferences saved privately.'});
     } catch (error) {setMessage(failure(error));}
@@ -137,13 +147,17 @@ function Notifications({service}: {service: Services['notifications']}) {
   const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let active = true;
+    setInbox(null);
+    setPrefs(undefined);
+    setMessage(null);
     void Promise.all([service.listPage(), service.getPreferences()]).then(([items, settings]) => {
       if (active) {setInbox(items); setPrefs(settings);}
     }).catch(error => {if (active) setMessage(failure(error));});
     return () => {active = false;};
-  }, [service]);
+  }, [service, reload]);
 
   async function acknowledge(item: PrivateNotification, dismiss: boolean) {
     if (busy) return;
@@ -158,10 +172,15 @@ function Notifications({service}: {service: Services['notifications']}) {
 
   async function more() {
     if (!inbox?.nextCursor || busy) return;
-    setBusy(true);
+    const requestedCursor = inbox.nextCursor;
+    setBusy(true); setMessage(null);
     try {
-      const next = await service.listPage(50, inbox.nextCursor);
-      setInbox({...next, items: [...inbox.items, ...next.items]});
+      const next = await service.listPage(50, requestedCursor);
+      setInbox(current => {
+        if (!current || current.nextCursor !== requestedCursor) return current;
+        const seen = new Set(current.items.map(item => item.id));
+        return {...next, items: [...current.items, ...next.items.filter(item => !seen.has(item.id))]};
+      });
     } catch (error) {setMessage(failure(error));}
     finally {setBusy(false);}
   }
@@ -181,6 +200,8 @@ function Notifications({service}: {service: Services['notifications']}) {
   return <div className="ws-settings-grid"><SettingsCard title="Inbox">
     <Status message={message}/>
     {!inbox && !message && <p role="status">Loading notifications…</p>}
+    {!inbox && message?.error && <button type="button" className="ws-secondary"
+      onClick={() => setReload(value => value + 1)}>Retry notifications</button>}
     {inbox?.items.length === 0 && <p>You’re caught up.</p>}
     <ul className="ws-settings-records">{inbox?.items.map(item => <li key={item.id}>
       <strong>{item.event_type.toLowerCase().replaceAll('_', ' ')}</strong>
@@ -271,11 +292,16 @@ function Trash({service}: {service: Services['trash']}) {
     <Status message={message}/>
     {!items && !message && <p role="status">Loading Trash…</p>}
     {items?.length === 0 && <p>Trash is empty.</p>}
-    <ul className="ws-settings-records">{items?.map(item => <li key={item.item_type + ':' + item.item_id}>
-      <strong>{item.item_type} · {item.item_id.slice(0, 8)}</strong>
-      <p>Restore by {new Date(item.restore_until).toLocaleString()}</p>
-      <button type="button" className="ws-secondary" disabled={busy} onClick={() => void restore(item)}>Restore privately</button>
-    </li>)}</ul>
+    <ul className="ws-settings-records">{items?.map(item => {
+      const expired = Date.parse(item.restore_until) <= Date.now();
+      return <li key={item.item_type + ':' + item.item_id}>
+        <strong>{item.item_type} · {item.item_id.slice(0, 8)}</strong>
+        <p>Restore by {new Date(item.restore_until).toLocaleString()}</p>
+        {expired && <p>Recovery window ended. Restore is unavailable.</p>}
+        <button type="button" className="ws-secondary" disabled={busy || expired}
+          onClick={() => void restore(item)}>Restore privately</button>
+      </li>;
+    })}</ul>
   </SettingsCard>;
 }
 
