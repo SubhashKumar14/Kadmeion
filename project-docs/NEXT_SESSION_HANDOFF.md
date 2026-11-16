@@ -1,3 +1,19 @@
+## 16 November 2026 — F4 guarded visitor routes: persisted theme and real browser regression
+
+**Starting branch HEAD:** [`fc87abf`](https://github.com/SubhashKumar14/Kadmeion/commit/fc87abfae8bccaccbaa32153785a24a2e674fea5) on `feat/b0-backend-foundation`. Its previous code-side public GET+HEAD withdrawal proof was [`9960371`](https://github.com/SubhashKumar14/Kadmeion/commit/99603711b67da0d44f6330e518c9e2f81134b0a6) with separately recorded green CI. This continuation made **no main merge**, no hosted configuration changes and no publication activation.
+
+**Implemented source commits:**
+- [`05045e7`](https://github.com/SubhashKumar14/Kadmeion/commit/05045e7271b2c6dbaf2c73192434afda1820cfc1) — `apps/frontend/src/main.tsx` now restores the saved Kadmeion runtime light/dark preference on privacy-preserving reviewer/public unavailable surfaces and the generic unavailable state. These are Kadmeion status shells, **not** author-configured public portfolio themes. No private/public data is fetched, revealed or activated.
+- [`2bfc790`](https://github.com/SubhashKumar14/Kadmeion/commit/2bfc790e69b95fc78a76dd134b0aeb77d503b385) — `apps/frontend/e2e/public.spec.ts` adds an actual Chromium regression for screens #28 and #31–33 in dark and light preferences, 320/390/1366px reflow, noindex, absent workspace UI and no token/body echo. Optional screenshot artifact names explicitly end in `_GATE` and cannot be substituted for actual published content/reference acceptance.
+
+**Exact code SHA verification:** [Frontend React/Vite #43856213373](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43856213373) completed **SUCCESS**, with the new F4 Chromium scenario passing and **20/20 public browser cases** passing. Typecheck and Vite production build also succeeded. [Application/Database #43856213232](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43856213232) contracts job succeeded; **database job was still running at this handoff drafting** and must be checked at the exact `2bfc790` SHA before claiming entire CI green. Public browser capture artifact [on the frontend run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43856213373) is not equivalent to owner visual approval.
+
+**Remaining F4 and gates:** The fail-closed staging registration state is still `REGISTERED_UNSERVABLE`. Real independently authorized *nonproduction* host/service grant expiry and revocation, live immutable public/unlisted serving, all direct asset/CDN alias withdrawal, rollback propagation, complete screen #28/#31–34 approved-reference UX checks and end-to-end accessibility/UAT remain **unverified**. No public URL is issued or copyable. 52 approved LIGHT references and 12 approved Canva branding pages remain unchanged.
+
+**Next exact implementable action:** Check final exact-SHA application/database CI and diagnose failures if any. Continue non-host F4 owner release/rollback and visitor fallbacks, then security-first F5 account/privacy flows. For actual host delivery, use an expressly authorized independent nonproduction environment and require real GET+HEAD, token/consent and media-revocation proof before enabling any reviewer/public link. Refresh this handoff and Notion with verified results; do not commit the conversation master prompt.
+
+---
+
 ## 16 November 2026 — F4 public/unlisted withdrawal hardened: live GET+HEAD proof
 
 **Current verified code SHA:** [`9960371`](https://github.com/SubhashKumar14/Kadmeion/commit/99603711b67da0d44f6330e518c9e2f81134b0a6), `feat/b0-backend-foundation`. This continuation follows the separately fully verified reviewer-host lifecycle implementation [`d46692b`](https://github.com/SubhashKumar14/Kadmeion/commit/d46692b523ae3b42c91b8785748037be5e722752) and its handoff [`4d609af`](https://github.com/SubhashKumar14/Kadmeion/commit/4d609af98359b350a0944e8f447ce6cafbf428dc).
