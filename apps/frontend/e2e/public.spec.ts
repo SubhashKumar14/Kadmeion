@@ -163,7 +163,13 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
   await page.goto('/private-or-expired-example');
   await expect(page.getByRole('heading', { name: 'This page is unavailable.' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('do not confirm whether a private record exists');
+  await expect(page.locator('.sys51-code')).toHaveText('404');
+  await expect(page.locator('.sys51-art')).toBeVisible();
   await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
+  await page.setViewportSize({width:390,height:844});
+  await expect(page.locator('.system-status-editorial')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth+1)).toBe(true);
+  await page.setViewportSize({width:1600,height:1000});
   const retry = page.getByRole('button', {name: 'Retry this address'});
   await retry.focus();
   await expect(retry).toBeFocused();

@@ -529,3 +529,78 @@ p{line-height:1.55}
 .visitor-delivery-gate .system-status-disclosure{font-size:13px;line-height:1.65;
   max-width:590px;color:var(--body);padding:13px 0;border-block:1px solid var(--line)}
 .visitor-delivery-gate .system-status-actions{margin-bottom:24px}
+
+/* SYS-01: owner-approved LIGHT editorial public-safe status composition.
+ * Use original Kadmeion geometry only as decoration; no private data is read. */
+.system-status-editorial-shell{display:flex;justify-content:flex-start;align-items:stretch;
+  padding:36px 40px 76px;min-height:100dvh}
+.system-status-editorial{width:min(100%,1456px);max-width:none;min-height:884px;
+  display:flex;flex-direction:column;padding:0;border-radius:23px;background:var(--panel)}
+.system-status-editorial::before{display:none}
+.sys51-header{display:flex;justify-content:space-between;align-items:center;gap:20px;
+  min-height:89px;border-bottom:1px solid var(--line);padding:14px clamp(24px,4vw,59px)}
+.sys51-brand{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
+.sys51-brand .brand-mark{--brand-symbol-size:47px;--brand-letters-width:148px}
+.sys51-brand .brand-symbol{background:#102c3b;padding:3px}
+.sys51-brand small{font-size:8px;letter-spacing:.13em;font-weight:700;color:var(--body)}
+.sys51-privacy-label{font-size:10px;font-weight:750;letter-spacing:.06em;
+  border:1px solid var(--line);border-radius:999px;padding:9px 12px;
+  color:var(--body);background:var(--surface-soft)}
+.sys51-body{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,1fr);
+  align-items:center;gap:74px;padding:40px 7% 18px;flex:1;min-width:0}
+.sys51-copy{min-width:0}
+.sys51-copy .system-status-kicker{margin-bottom:10px}
+.sys51-copy .system-status-kicker::before{content:"";display:inline-block;width:23px;
+  height:2px;background:var(--accent);vertical-align:middle;margin-right:11px}
+.sys51-code{font:400 clamp(70px,8vw,118px)/.98 Georgia,serif;
+  letter-spacing:-.06em;color:var(--ink);margin-bottom:12px}
+.system-status-editorial[data-state="offline"] .sys51-code{
+  font:650 clamp(34px,4vw,48px)/1.12 Inter,Arial,sans-serif;
+  letter-spacing:-.02em;padding:30px 0}
+.sys51-copy h1{font-size:clamp(25px,2.4vw,38px);margin-bottom:16px}
+.sys51-copy .system-status-description{font-size:14px;line-height:1.75;max-width:560px}
+.sys51-copy .system-status-actions{margin:22px 0 24px;gap:10px}
+.sys51-copy .system-status-primary,.sys51-copy .system-status-secondary{
+  min-height:42px;padding:9px 15px;font-size:12px}
+.sys51-disclosure{font-size:12px;line-height:1.65;background:var(--surface-soft);
+  border:1px solid var(--line);border-radius:9px;padding:14px 15px;
+  max-width:545px;color:var(--body)}
+.sys51-art{position:relative;isolation:isolate;width:100%;max-width:540px;
+  height:440px;min-height:350px;overflow:hidden;border-radius:17px;
+  background:#102c3b;box-shadow:0 14px 27px #061b2930,0 0 0 8px color-mix(in srgb,var(--surface-soft) 80%,transparent);
+  transform:translateY(-20px)}
+.sys51-art-label{position:absolute;top:35px;left:40px;color:#c9d9de;
+  letter-spacing:.23em;font-size:10px;z-index:1}
+.sys51-art-orbit{position:absolute;top:114px;left:13%;width:268px;height:268px;
+  border:1px solid #466174;border-radius:50%}
+.sys51-art-wave{position:absolute;left:-115px;bottom:-235px;width:550px;height:505px;
+  border:1px solid #426175;border-radius:50%;transform:rotate(-22deg);
+  background:color-mix(in srgb,#31647a 22%,transparent)}
+.sys51-art-diamond{position:absolute;top:53%;left:39%;width:52px;height:52px;
+  border:5px solid #b3d2db;transform:translate(-50%,-50%) rotate(45deg)}
+.sys51-art-fold{position:absolute;right:-48px;bottom:-46px;width:270px;height:270px;
+  transform:rotate(45deg);background:linear-gradient(90deg,#dc956f 0 38%,#20516a 38% 55%,transparent 55%);
+  clip-path:polygon(0 0,100% 0,100% 100%,0 100%)}
+.sys51-art-tagline{position:absolute;bottom:27px;left:29px;color:#e7a47d;
+  font-size:11px;z-index:1}
+.sys51-footer{padding:23px clamp(24px,5%,68px) 60px;color:var(--muted);font-size:10px;line-height:1.65}
+@media(max-width:1050px){.sys51-body{gap:30px;padding:35px 5% 20px}
+  .sys51-art{height:350px;min-height:300px}}
+@media(max-width:760px){.system-status-editorial-shell{padding:14px 12px 24px}
+  .system-status-editorial{min-height:calc(100dvh - 38px);border-radius:14px}
+  .sys51-header{min-height:73px;padding:12px 17px}
+  .sys51-brand .brand-mark{--brand-symbol-size:36px;--brand-letters-width:102px}
+  .sys51-brand small{font-size:7px}
+  .sys51-privacy-label{font-size:9px;max-width:120px;text-align:center}
+  .sys51-body{grid-template-columns:1fr;gap:25px;padding:35px 22px 18px}
+  .sys51-code{font-size:clamp(70px,20vw,102px)}
+  .sys51-copy h1{font-size:clamp(26px,8vw,34px)}
+  .sys51-art{height:235px;min-height:235px;max-width:none;transform:none}
+  .sys51-art-orbit{top:40px}.sys51-art-label{top:22px;left:22px}
+  .sys51-footer{padding:14px 22px 30px}
+}
+@media(max-width:450px){.sys51-copy .system-status-actions{flex-direction:column;align-items:stretch}
+  .sys51-copy .system-status-actions>*{width:100%}
+  .sys51-art{height:205px;min-height:205px}
+  .sys51-art-fold{height:180px;width:180px}}
+@media(prefers-reduced-motion:reduce){.sys51-art *{animation:none!important;transition:none!important}}

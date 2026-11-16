@@ -71,7 +71,9 @@ function VisitorDeliveryGate({surface}:{surface:VisitorSurface}) {
   </main>;
 }
 
-/** SYS-01: do not confirm whether a missing address identifies a private resource. */
+/** SYS-01: a privacy-preserving editorial error screen. The same generic
+ * response hides whether a private, removed or mistyped resource exists.
+ * Offline is a different browser-reported state, never a false 404 claim. */
 function UnavailableRoute() {
   const [offline, setOffline] = useState(() => !navigator.onLine);
   useEffect(() => {
@@ -84,21 +86,43 @@ function UnavailableRoute() {
       window.removeEventListener('offline', update);
     };
   }, []);
-  return <main id="main" className="system-status-shell">
-    <section className="system-status" aria-labelledby="system-status-title" data-state={offline ? 'offline' : 'unavailable'}>
-      <a href="/" aria-label="Kadmeion home" className="system-status-brand"><BrandMark/></a>
-      <p className="system-status-kicker">{offline ? 'CONNECTION STATUS' : 'PAGE STATUS'}</p>
-      <h1 id="system-status-title">{offline ? 'Your browser reports no connection.' : 'This page is unavailable.'}</h1>
-      <p role="status" className="system-status-description">{offline
-        ? 'You appear to be offline. Reconnect and retry; the browser connection indicator cannot verify whether this address exists.'
-        : 'The address may be incorrect, private, or no longer accessible. For privacy, we do not confirm whether a private record exists.'}</p>
-      <div className="system-status-actions">
-        <button type="button" className="system-status-primary" onClick={() => window.location.reload()}>
-          Retry this address
-        </button>
-        <a href="/" className="system-status-secondary">Return to home</a>
+  return <main id="main" className="system-status-shell system-status-editorial-shell">
+    <section className="system-status system-status-editorial"
+      aria-labelledby="system-status-title" data-state={offline ? 'offline' : 'unavailable'}>
+      <header className="sys51-header">
+        <a href="/" aria-label="Kadmeion home" className="sys51-brand"><BrandMark/>
+          <small>DEVELOPER IDENTITY &amp; PORTFOLIO BUILDER</small>
+        </a>
+        <span className="sys51-privacy-label">PUBLIC ROUTE · CONTENT WITHHELD</span>
+      </header>
+      <div className="sys51-body">
+        <div className="sys51-copy">
+          <p className="system-status-kicker">SYSTEM STATUS · SAFE RECOVERY</p>
+          <div className="sys51-code" aria-hidden="true">{offline?'OFFLINE':'404'}</div>
+          <h1 id="system-status-title">{offline ? 'Your browser reports no connection.' : 'This page is unavailable.'}</h1>
+          <p role="status" className="system-status-description">{offline
+            ? 'You appear to be offline. Reconnect and retry; the browser connection indicator cannot verify whether this address exists.'
+            : 'The address may be incorrect, private, or no longer accessible. For privacy, we do not confirm whether a private record exists.'}</p>
+          <div className="system-status-actions">
+            <a href="/" className="system-status-primary">Return to home</a>
+            <button type="button" className="system-status-secondary" onClick={() => window.location.reload()}>
+              Retry this address
+            </button>
+          </div>
+          <p className="sys51-disclosure">Private and unpublished portfolios do not disclose their existence.
+            If you own this content, sign in to review its status.</p>
+        </div>
+        <div className="sys51-art" aria-hidden="true">
+          <span className="sys51-art-label">NO CONTENT DISCLOSED</span>
+          <span className="sys51-art-orbit"/>
+          <span className="sys51-art-wave"/>
+          <span className="sys51-art-diamond"/>
+          <span className="sys51-art-fold"/>
+          <span className="sys51-art-tagline">Build · Showcase · Evolve</span>
+        </div>
       </div>
-      <p className="system-status-note">No private account information is shown on this page.</p>
+      <footer className="sys51-footer">This is a privacy-preserving public status page.
+        It does not verify whether an account, project or private link exists.</footer>
     </section>
   </main>;
 }
