@@ -421,7 +421,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const primaryInputKey = slot && active ? slot + ':' + primaryField(active.componentId) : '';
   const savedPrimary = active?.content[primaryField(active.componentId)] ?? '';
   const value = primaryInputKey && Object.hasOwn(fieldDrafts, primaryInputKey)
-    ? fieldDrafts[primaryInputKey] : savedPrimary;
+    ? fieldDrafts[primaryInputKey]! : savedPrimary;
   const selectedSlotHasPendingDrafts = !!slot && Object.entries(fieldDrafts).some(([key, draft]) => {
     if (!key.startsWith(slot + ':')) return false;
     return draft !== (active?.content[key.slice(slot.length + 1)] ?? '');
