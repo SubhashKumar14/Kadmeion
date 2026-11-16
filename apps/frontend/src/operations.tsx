@@ -271,7 +271,7 @@ function Appeals({service, cases, committed}: Props) {
 }
 
 export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; path: string}) {
-  const [access, setAccess] = useState<'checking'|'denied'|'allowed'>('checking');
+  const [access, setAccess] = useState<'checking'|'denied'|'unavailable'|'allowed'>('checking');
   const [service, setService] = useState<SupabasePrivateModerationService | null>(null);
   const [cases, setCases] = useState<OperatorModerationCase[]>([]);
   const [reports, setReports] = useState<OperatorPortfolioAbuseReport[]>([]);
@@ -290,9 +290,14 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
         setCases(verifiedCases);setReports(verifiedReports);
         setService(connected.data);setAccess('allowed');
       }
-    })().catch(() => {
+    })().catch((error: unknown) => {
       if (active) {
-        setService(null);setCases([]);setReports([]);setAccess('denied');
+        // Only a definitive authorization failure is a denial. A timeout or
+        // provider outage must not be represented as a negative role decision.
+        const code = error instanceof Error && error.name === 'PrivateModerationError' &&
+          'code' in error ? String(error.code) : '';
+        setService(null);setCases([]);setReports([]);
+        setAccess(code === 'FORBIDDEN' || code === 'AUTH_EXPIRED' ? 'denied' : 'unavailable');
       }
     });
     return () => {active = false;};
@@ -305,9 +310,11 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
   if (access === 'checking') return <section className="ws-ops-lock" aria-busy="true">
     <h1>Checking operator authorization.</h1><p role="status">Verifying restricted case access with the server…</p>
   </section>;
-  if (access === 'denied' || !service) return <section className="ws-ops-lock">
-    <h1>Restricted operations.</h1>
-    <p role="alert">Only verified operators may inspect moderation cases. No case or user records were loaded.</p>
+  if (access !== 'allowed' || !service) return <section className="ws-ops-lock">
+    <h1>{access === 'denied' ? 'Restricted operations.' : 'Operator verification unavailable.'}</h1>
+    <p role="alert">{access === 'denied'
+      ? 'The server did not authorize this session to inspect moderation cases. No private case or user records were loaded.'
+      : 'Operator authorization or private case records could not be verified. Access stays closed until a successful server response; this is not proof your role was denied.'}</p>
     <button type="button" className="ws-secondary" onClick={() => setAttempt(value => value + 1)}>Retry operator verification</button>
     <p><a href="/app">Return to your private workspace</a></p>
   </section>;
