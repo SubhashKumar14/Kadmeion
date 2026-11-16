@@ -197,6 +197,13 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   </div>;
 }
 
+/** Notification target IDs are never interpreted as navigation URLs. */
+function notificationDestination(item: PrivateNotification): string {
+  if (item.event_type === 'ACCOUNT_EXIT_REQUESTED') return '/app/settings/account/delete';
+  if (item.category === 'SECURITY') return '/app/settings/security';
+  return '/app/portfolios';
+}
+
 function Notifications({service}: {service: Services['notifications']}) {
   const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
   const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
@@ -224,6 +231,18 @@ function Notifications({service}: {service: Services['notifications']}) {
         : current.items.map(row => row.id === item.id ? {...row, read_at: receipt.read_at} : row)});
     } catch (error) {setMessage(failure(error));}
     finally {setBusy(false);}
+  }
+
+  async function review(item: PrivateNotification) {
+    if (busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      if (!item.read_at) await service.acknowledge(item.id, false);
+      window.location.assign(notificationDestination(item));
+    } catch (error) {
+      setMessage(failure(error));
+      setBusy(false);
+    }
   }
 
   async function more() {
@@ -272,12 +291,17 @@ function Notifications({service}: {service: Services['notifications']}) {
       <strong>{item.event_type.toLowerCase().replaceAll('_', ' ')}</strong>
       <p>{new Date(item.created_at).toLocaleString()} · {item.read_at ? 'Read' : 'Unread'} ·
         {item.priority==='HIGH'?' High priority':' Routine'} · {item.category.toLowerCase()}</p>
-      <div className="ws-actions">{!item.read_at && <button className="ws-secondary" type="button" disabled={busy}
+      <div className="ws-actions">
+        <button className="ws-secondary" type="button" disabled={busy}
+          onClick={() => void review(item)}>Review related area</button>
+        {!item.read_at && <button className="ws-secondary" type="button" disabled={busy}
         onClick={() => void acknowledge(item, false)}>Mark as read</button>}
         <button className="ws-secondary" type="button" disabled={busy} onClick={() => void acknowledge(item, true)}>Dismiss</button></div>
     </li>)}</ul>
+    {inbox?.items.length ? <p>Review opens an owner-only area. Unread notices are marked read only after the server acknowledges the action.</p> : null}
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
+    {prefs === null && <p role="status">No saved optional notification preferences were returned. Switches are off by default until you save a choice.</p>}
     {prefs !== undefined && <>
       <label className="ws-settings-check"><input type="checkbox" checked={prefs?.reviewer_enabled ?? false}
         disabled={busy} onChange={event => void preference('reviewerEnabled', event.target.checked)}/> Reviewer activity</label>
@@ -299,6 +323,18 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   const otherSessionsTrigger = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<Message>(emptyMessage);
+  useEffect(() => {
+    if (!confirmOthers || busy) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setConfirmOthers(false);
+        otherSessionsTrigger.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [confirmOthers, busy]);
   async function change(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
