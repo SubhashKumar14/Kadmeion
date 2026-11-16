@@ -776,7 +776,7 @@ test('real owner onboarding and project revision are private across browser sess
 });
 
 
-test('verified local operator can read case-scoped views without impersonation or public release',async({page})=>{
+test('verified local operator can read case-scoped views without impersonation or public release',async({page,browser},testInfo)=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
     'Privileged operator role is granted only in an ephemeral Supabase CI database.');
   test.setTimeout(95_000);
@@ -812,6 +812,53 @@ test('verified local operator can read case-scoped views without impersonation o
   if(dir)await page.screenshot({path:dir+'/50_APPEALS_BROWSER.png',animations:'disabled'});
   // An administrator's private-case permissions are not public host authority.
   await expect(page.getByText('This does not republish content.',{exact:false})).toBeVisible();
+
+  const ownerContext=await browser.newContext({baseURL:testInfo.project.use.baseURL});
+  try {
+    const ownerPage=await ownerContext.newPage();
+    await signIn(ownerPage,subject);
+    await ownerPage.goto('/app/settings/privacy');
+    await ownerPage.getByRole('link',{name:'Your cases and appeals'}).click();
+    const [caseId]=await ownerPage.getByLabel('Case to review').selectOption({index:1});
+    expect(caseId).toBeTruthy();
+    await expect(ownerPage.getByText(rationale).first()).toBeVisible();
+    const statement='Please review the original case within this isolated owner appeal fixture.';
+    await ownerPage.getByLabel('Appeal statement').fill(statement);
+    await ownerPage.getByRole('button',{name:'Submit private appeal'}).click();
+    await expect(ownerPage.getByText('Private appeal submitted for review.')).toBeVisible();
+    await expect(ownerPage.getByRole('heading',{name:'Appeal pending'})).toBeVisible();
+    const apiKey=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    if(!apiKey) throw new Error('Local publishable key is unavailable.');
+    const login=await ownerPage.request.post(origin+'/auth/v1/token?grant_type=password',{
+      headers:{apikey:apiKey},data:{email:subject.email,password:subject.password}
+    });
+    expect(login.ok()).toBe(true);
+    const {access_token:ownerToken}=await login.json();
+    const denied=await ownerPage.request.post(origin+'/rest/v1/rpc/operator_read_appeal_evidence',{
+      headers:{apikey:apiKey,Authorization:'Bearer '+ownerToken},data:{p_case_id:caseId}
+    });
+    expect(denied.status()).toBe(403);
+    expect((await denied.json()).message).toBe('OPERATOR_REQUIRED');
+    await ownerPage.goto('/app/operations/appeals');
+    await expect(ownerPage.getByRole('heading',{name:'Restricted operations.'})).toBeVisible();
+
+    await page.reload();
+    await page.getByRole('button',{name:'Select for decision'}).click();
+    await expect(page.getByText(statement)).toBeVisible();
+    await expect(page.getByText(rationale)).toBeVisible();
+    const decision='Closed after reviewing the simulated evidence and the owner appeal statement.';
+    await page.getByLabel('Decision rationale').fill(decision);
+    await page.getByLabel('Close only the selected audited case.').check();
+    await page.getByRole('button',{name:'Record case decision'}).click();
+    await expect(page.getByText('Case closed with an audit decision.',{exact:false})).toBeVisible();
+    await ownerPage.goto('/app/settings/cases');
+    await ownerPage.getByLabel('Case to review').selectOption({index:1});
+    await expect(ownerPage.getByRole('heading',{name:'Closed'})).toBeVisible();
+    await expect(ownerPage.getByText(decision)).toBeVisible();
+    await expect(ownerPage.getByRole('button',{name:'Submit private appeal'})).toHaveCount(0);
+  } finally {
+    await ownerContext.close();
+  }
 });
 
 test('F6 owner Growth 35–40 remains private and reflows in dark and light',async({page})=>{

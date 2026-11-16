@@ -12,6 +12,8 @@ const planned = 200;
 // They are justified departures from the *proposed* 200-path inventory,
 // NOT evidence that the owner has approved a new design/file budget.
 const justifiedExtra = [
+  // WF-052 case evidence uses a narrow, forward-only operator RPC.
+  'supabase/migrations/20261116134114_operator_appeal_evidence.sql',
   'supabase/migrations/20261115043831_portfolio_abuse_intake.sql',
   'supabase/migrations/20261115121000_public_release_indexing_ack_gate.sql',
   'supabase/migrations/20261115122000_public_projection_content_privacy_invalidation.sql',

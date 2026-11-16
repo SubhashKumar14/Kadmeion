@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type {
   SupabasePrivateModerationService, OperatorModerationCase,
-  OperatorPortfolioAbuseReport, ModerationReason
+  OperatorPortfolioAbuseReport, ModerationReason, OwnerModerationCase, OwnerModerationEvent, OperatorAppealEvidence
 } from '../../../packages/contracts/src/private-moderation-service.ts';
 
 /** Only these known paths can load the restricted operations shell. */
@@ -190,6 +190,9 @@ function Moderation({service, cases, reports, committed}: Props & {
 
 function Appeals({service, cases, committed}: Props) {
   const [chosen, setChosen] = useState('');
+  const [evidence,setEvidence]=useState<OperatorAppealEvidence|null>(null);
+  const [evidenceError,setEvidenceError]=useState(false);
+  const [evidenceAttempt,setEvidenceAttempt]=useState(0);
   const [rationale, setRationale] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [operation, setOperation] = useState(() => crypto.randomUUID());
@@ -199,9 +202,18 @@ function Appeals({service, cases, committed}: Props) {
   const [liftCase, setLiftCase] = useState('');
   const [liftReason, setLiftReason] = useState('');
   const [liftConfirm, setLiftConfirm] = useState(false);
+  useEffect(()=>{
+    let active=true;
+    setEvidence(null);
+    setEvidenceError(false);
+    if (chosen) void service.readAppealEvidence(chosen)
+      .then(data=>{if(active) setEvidence(data);})
+      .catch(()=>{if(active) setEvidenceError(true);});
+    return ()=>{active=false;};
+  },[service,chosen,evidenceAttempt]);
   async function close(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!chosen || !confirmed || rationale.trim().length < 20 || busy) return;
+    if (!chosen || evidence?.caseId!==chosen || !confirmed || rationale.trim().length < 20 || busy) return;
     setBusy(true);setError('');
     try {
       const receipt = await service.closeCase(chosen, operation, rationale);
@@ -227,16 +239,27 @@ function Appeals({service, cases, committed}: Props) {
   return <div className="ws-ops-grid">
     <section className="ws-project-aside">
       <h2>Appeals awaiting review</h2>
-      <p>Only case metadata is provided by the restricted API. Owner appeal statements and full event histories are not exposed to this view; do not infer their content.</p>
+      <p>Select a pending case to review its original summary and latest owner statement.</p>
       {cases.filter(item => item.status === 'APPEAL_PENDING').length === 0 && <p>No pending appeals were returned.</p>}
       <ul className="ws-ops-records">{cases.filter(item => item.status === 'APPEAL_PENDING').map(item => <li key={item.caseId}>
         <strong>{item.reasonCode} · Appeal pending</strong><span>Case {item.caseId}</span>
         <span>Owner ID {item.targetUserId}</span>
-        <button type="button" className="ws-secondary" onClick={() => {setChosen(item.caseId);setConfirmed(false);}}>
+        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{
+          if(chosen===item.caseId)return;
+          setChosen(item.caseId);setEvidence(null);setEvidenceError(false);
+          setConfirmed(false);setRationale('');setError('');setOperation(crypto.randomUUID());
+        }}>
           Select for decision</button>
       </li>)}</ul>
-      {chosen && <form className="ws-ops-form" onSubmit={event => void close(event)}>
+      {chosen && !evidence && (evidenceError ? <div>
+        <p role="alert">Evidence could not be verified. A decision requires the owner statement.</p>
+        <button type="button" className="ws-secondary" onClick={()=>setEvidenceAttempt(value=>value+1)}>Retry appeal evidence</button>
+      </div> : <p role="status">Loading private appeal evidence…</p>)}
+      {evidence?.caseId===chosen && <form className="ws-ops-form" onSubmit={event => void close(event)}>
         <h3>Resolve a verified case</h3>
+        <dl><dt>Original reason</dt><dd>{evidence.reasonCode}</dd><dt>Case summary</dt><dd>{evidence.summary}</dd>
+          <dt>Owner statement</dt><dd>{evidence.statement}</dd>
+          <dt>Submitted</dt><dd><time dateTime={evidence.submittedAt}>{dateText(evidence.submittedAt)}</time></dd></dl>
         <label className="ws-ops-field">Decision rationale<textarea required rows={4} minLength={20} maxLength={2000}
           value={rationale} onChange={event => {setRationale(event.target.value);setOperation(crypto.randomUUID());}}/></label>
         <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed}
@@ -281,7 +304,7 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
     let active = true;
     setAccess('checking');
     void (async () => {
-      const connected = await port.operatorModeration();
+      const connected = await port.privateModeration();
       if (!connected.data) throw new Error('Operator service unavailable.');
       const verifiedCases = await connected.data.listOperatorCases(25);
       const verifiedReports = path === '/app/operations/moderation' ?
@@ -334,4 +357,95 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
       <Moderation service={service} cases={cases} reports={reports} committed={committed}/>}
     {path === '/app/operations/appeals' && <Appeals service={service} cases={cases} committed={committed}/>}
   </section>;
+}
+
+const ownerCaseStatus = {OPEN:'Open',APPEAL_PENDING:'Appeal pending',CLOSED:'Closed'} as const;
+const ownerEventTitle = {OPENED:'Case opened',OWNER_APPEAL:'Appeal submitted',
+  OPERATOR_DECISION:'Decision recorded',OPERATOR_HOLD_LIFT:'Private hold lifted'} as const;
+
+export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
+  const [records,setRecords]=useState<{
+    service:SupabasePrivateModerationService;cases:OwnerModerationCase[];events:OwnerModerationEvent[];
+  }|null>(null);
+  const [attempt,setAttempt]=useState(0);
+  const [selected,setSelected]=useState('');
+  const [statement,setStatement]=useState('');
+  const [operation,setOperation]=useState(()=>crypto.randomUUID());
+  const [busy,setBusy]=useState(false);
+  const [loadError,setLoadError]=useState(false);
+  const [message,setMessage]=useState<{error:boolean;text:string}|null>(null);
+  const current=records?.cases.find(item=>item.id===selected);
+  useEffect(()=>{
+    let active=true;
+    setRecords(null);
+    setLoadError(false);
+    void (async()=>{
+      const {data:service}=await port.privateModeration();
+      if (!service) throw new Error('Owner moderation service unavailable.');
+      const [cases,events]=await Promise.all([service.listOwnerCases(),service.listOwnerEvents()]);
+      if (active) setRecords({service,cases,events});
+    })().catch(()=>{if(active) setLoadError(true);});
+    return ()=>{active=false;};
+  },[port,attempt]);
+
+  async function appeal(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !records || current?.status!=='OPEN' || statement.trim().length<20) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await records.service.appeal(current.id,operation,statement);
+      setStatement('');
+      setOperation(crypto.randomUUID());
+      setRecords(null);
+      setAttempt(value=>value+1);
+      setMessage({error:false,text:'Private appeal submitted for review.'});
+    } catch {
+      setMessage({error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="ws-ops-grid">
+    <section className="ws-project-aside">
+      <h2>Private case history</h2>
+      {message && <p role={message.error?'alert':'status'}>{message.text}</p>}
+      {!records && !loadError && <p role="status">Loading your private cases…</p>}
+      {loadError && <><p role="alert">Your cases could not be verified.</p>
+        <button className="ws-secondary" type="button" onClick={()=>setAttempt(value=>value+1)}>Retry cases</button></>}
+      {records?.cases.length===0 && <p>There are no cases for this account.</p>}
+      {!!records?.cases.length && <label className="ws-ops-field">Case to review
+        <select value={selected} disabled={busy} onChange={event=>{
+          setSelected(event.target.value);setStatement('');setMessage(null);setOperation(crypto.randomUUID());
+        }}>
+          <option value="">Choose a case</option>
+          {records.cases.map(item=><option key={item.id} value={item.id}>
+            {item.reason_code} · {ownerCaseStatus[item.status]} · {dateText(item.created_at)}
+          </option>)}
+        </select>
+      </label>}
+      {current && <>
+        <h3>{ownerCaseStatus[current.status]}</h3>
+        <p>{current.summary}</p>
+        <ol className="ws-ops-records" aria-label="Case events">
+          {records?.events.filter(item=>item.case_id===current.id).map(item=><li key={item.id}>
+            <strong>{ownerEventTitle[item.event_type]}</strong>
+            <time dateTime={item.created_at}>{dateText(item.created_at)}</time><p>{item.detail}</p>
+          </li>)}
+        </ol>
+      </>}
+    </section>
+    {current?.status==='OPEN' && <section className="ws-project-aside">
+      <h2>Appeal this case</h2>
+      <p>Your statement is available for restricted case review.</p>
+      <form className="ws-ops-form" onSubmit={event=>void appeal(event)}>
+        <label className="ws-ops-field">Appeal statement
+          <textarea required rows={5} minLength={20} maxLength={2000} value={statement} disabled={busy}
+            onChange={event=>{setStatement(event.target.value);setOperation(crypto.randomUUID());}}/>
+        </label>
+        <button className="ws-primary" type="submit" disabled={busy || statement.trim().length<20}>Submit private appeal</button>
+      </form>
+    </section>}
+  </div>;
 }

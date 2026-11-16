@@ -6,6 +6,7 @@ import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReaut
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
+import { OwnerCaseHistory } from './operations.tsx';
 
 const settingsLinks = [
   ['/app/settings/privacy', 'Privacy & sharing', 'Choose which profile fields are eligible for sharing.'],
@@ -13,7 +14,8 @@ const settingsLinks = [
   ['/app/settings/security', 'Account security', 'Update your password or sign out other sessions.'],
   ['/app/trash', 'Trash', 'Review items you can restore privately.'],
   ['/app/export', 'Export center', 'Download private account records or portfolio source.'],
-  ['/app/settings/account/delete', 'Account exit', 'Review prerequisites for account deletion.']
+  ['/app/settings/account/delete', 'Account exit', 'Review prerequisites for account deletion.'],
+  ['/app/settings/cases', 'Your cases and appeals', 'Review owner-private moderation records.']
 ] as const;
 const settingsSections = [
   {title:'Your account',detail:'Identity and sign-in controls.',items:[
@@ -84,6 +86,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
       </ul>
     </SettingsCard>)}
   </div>;
+  else if (path==='/app/settings/cases') content = <OwnerCaseHistory port={port}/>;
   else if (!services) content = error
     ? <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary" onClick={() => {
       setError(''); setRetry(value => value + 1);
@@ -190,6 +193,8 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
           <a href="/app/integrations">Review private connections</a></li>
         <li><strong>Visitor analytics</strong><p>No visitor measurements are inferred from these checkboxes. Analytics has a separate opt-in gate.</p>
           <a href="/app/analytics">Review analytics availability</a></li>
+        <li><strong>Moderation</strong><p>Review notices and appeal a case involving your account.</p>
+          <a href="/app/settings/cases">Your cases and appeals</a></li>
       </ul>
     </SettingsCard>
     <p className="ws-settings-privacy-note">Publication safeguards: owner-private projects,
@@ -202,6 +207,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
 function notificationDestination(item: PrivateNotification): string {
   if (item.event_type === 'ACCOUNT_EXIT_REQUESTED') return '/app/settings/account/delete';
   if (item.category === 'SECURITY') return '/app/settings/security';
+  if (item.category === 'MODERATION') return '/app/settings/cases';
   return '/app/portfolios';
 }
 

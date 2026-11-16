@@ -985,9 +985,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  /** The caller must subsequently obtain server-RPC operator authorization.
-   * The token alone never grants an operator role. */
-  async operatorModeration() {
+  /** Owner reads rely on RLS. Operator RPCs independently check the role. */
+  async privateModeration() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
       const {SupabasePrivateModerationService} = await import('../../../packages/contracts/src/private-moderation-service.ts');

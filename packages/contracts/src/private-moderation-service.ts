@@ -38,6 +38,13 @@ export interface OperatorModerationCase {
   status: ModerationCaseStatus;
   createdAt: string;
 }
+export interface OperatorAppealEvidence {
+  caseId:string;
+  reasonCode:ModerationReason;
+  summary:string;
+  statement:string;
+  submittedAt:string;
+}
 /** Operator-only private intake. Evidence is untrusted plain text; never render as HTML. */
 export interface OperatorPortfolioAbuseReport {
   id:string;target_path:string;reason_code:ModerationReason;
@@ -351,6 +358,16 @@ export class SupabasePrivateModerationService {
       return {caseId:entry.caseId,targetUserId:entry.targetUserId,
         reasonCode:entry.reasonCode,status:entry.status,createdAt:entry.createdAt};
     });
+  }
+  async readAppealEvidence(caseId:string):Promise<OperatorAppealEvidence> {
+    const raw=await this.request('rpc/operator_read_appeal_evidence',{p_case_id:requireUUID(caseId)});
+    if (!isRecord(raw) || raw.caseId!==caseId || !isEnum(raw.reasonCode,REASONS) ||
+        !isDate(raw.submittedAt) || typeof raw.summary!=='string' || typeof raw.statement!=='string' ||
+        raw.summary.trim().length<20 || raw.summary.length>500 ||
+        raw.statement.trim().length<20 || raw.statement.length>2000)
+      throw new PrivateModerationError('INVALID_ACK','Appeal evidence could not be verified.');
+    return {caseId,reasonCode:raw.reasonCode,summary:raw.summary,
+      statement:raw.statement,submittedAt:raw.submittedAt};
   }
   async listOwnerCases(): Promise<OwnerModerationCase[]> {
     const raw = await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at&order=created_at.desc&limit=50');
