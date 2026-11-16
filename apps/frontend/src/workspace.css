@@ -1135,3 +1135,8 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   gap:10px;padding:14px 0;border-top:1px solid var(--line)}
 .ws-release-grant-list p{margin:5px 0;font-size:.875rem;overflow-wrap:anywhere}
 .ws-release-grant-list button{min-height:44px}
+
+/* F4: frozen request history uses readable metadata and no public-release badges. */
+.ws-release-grant-list ol{margin:0}
+.ws-release-grant-list button[aria-pressed="true"]{border-color:var(--accent-strong);font-weight:750}
+.ws-release-grant-list code{overflow-wrap:anywhere;font-size:.83em}

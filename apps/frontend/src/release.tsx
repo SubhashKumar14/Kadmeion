@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision} from '../../auth-web/src/supabase-auth-port.ts';
+import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision, OwnerFrozenRequest} from '../../auth-web/src/supabase-auth-port.ts';
 import type {PrivateFrozenRequest, FrozenVisibilityIntent} from '../../../packages/contracts/src/private-release-service.ts';
 import type {PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
@@ -45,6 +45,8 @@ export function releaseRoute(path:string):{id:string;mode:ReleaseMode}|undefined
 export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id:string;mode:ReleaseMode}) {
   const [record,setRecord]=useState<OwnerPortfolio|null>(null);
   const [revisions,setRevisions]=useState<SavedOwnerRevision[]|null>(null);
+  const [frozenRequests,setFrozenRequests]=useState<OwnerFrozenRequest[]|null>(null);
+  const [frozenListError,setFrozenListError]=useState('');
   const [selectedRevision,setSelectedRevision]=useState<number|null>(null);
   const [revisionError,setRevisionError]=useState('');
   const [pointer,setPointer]=useState<PrivatePointerSnapshot|null>(null);
@@ -85,6 +87,12 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             setRevisionError('');
           } else setRevisionError(saved.error?.message ?? 'The saved-revision catalogue is unavailable.');
         }
+        if (mode==='staging'||mode==='publish'||mode==='releases') {
+          const history=await port.listOwnerFrozenRequests(id);
+          if (!active) return;
+          if (history.data) {setFrozenRequests(history.data);setFrozenListError('');}
+          else setFrozenListError(history.error?.message ?? 'Frozen request history could not be loaded.');
+        }
         if (mode==='staging') {
           const list=await port.listOwnerReviewerGrants(id);
           if (!active) return;
@@ -115,6 +123,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!saved.data) {setError(saved.error?.message ?? 'Private freeze could not be confirmed.');return;}
         request=saved.data;
         setFrozen(request);
+        const refreshed=await port.listOwnerFrozenRequests(id);
+        if (refreshed.data) {setFrozenRequests(refreshed.data);setFrozenListError('');}
+        else setFrozenListError('Private freeze succeeded, but its history could not be refreshed.');
       }
       if (mode==='staging') return;
       const evidence=await port.loadOwnerFrozenRelease(request.requestId);
@@ -182,6 +193,23 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     finally {setBusy(false);}
   }
 
+  /** A saved private freeze can be reopened without spending another quota slot.
+   * The digest must still match the owner-restricted revision journal. */
+  function selectFrozenRequest(request:OwnerFrozenRequest){
+    if (busy) return;
+    const revision=revisions?.find(item=>item.revision===request.revision);
+    if (!revision||revision.snapshotSha256!==request.snapshotSha256) {
+      setError('Frozen request no longer matches a visible saved revision. Nothing was published.');
+      return;
+    }
+    setError('');setNotice('');setResult(null);setConfirmRevoke(false);setGrant(null);
+    setSelectedRevision(request.revision);setVisibility(request.visibilityIntent);
+    setFrozen({requestId:request.requestId,portfolioId:id,revision:request.revision,
+      snapshotSha256:request.snapshotSha256,visibilityIntent:request.visibilityIntent,
+      status:'FROZEN',publicUrl:null,alreadyFrozen:true});
+    operation.current=null;grantOperation.current=null;
+    setNotice('Loaded an existing owner-private frozen request. Public delivery is still disabled.');
+  }
   const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=Date.now();
   return <section aria-labelledby="release-title" className="ws-owner-page ws-release-page">
     <div className="ws-heading">
@@ -246,7 +274,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             </div>}
           </> : !error && <p role="status">Checking the release pointer…</p>}
           <h3>Release history and rollback</h3>
-          <p>A verified live release timeline and rollback target are unavailable here. No draft or private pointer is presented as a live release.</p>
+          <p>A verified live release timeline and rollback target are unavailable here. Private frozen requests below are not published releases.</p>
+          <FrozenRequestHistory requests={frozenRequests} error={frozenListError} />
+          <p className="ws-field-hint">A rollback requires a previously host-attested live release, a guarded pointer change and new GET/HEAD plus media verification. None is inferred from a private frozen request.</p>
         </> : <>
           <h2>{mode==='staging'?'Prepare a frozen reviewer revision':'Inspect a saved revision'}</h2>
           <p>Freeze a selected immutable saved revision with its content digest. Unsaved editor changes are not included.</p>
@@ -265,6 +295,8 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             </select>
           </label>
           {revisions?.length===50 && <p className="ws-field-hint">Showing the latest 50 saved revisions.</p>}
+          <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
+            onSelect={!busy?selectFrozenRequest:undefined} activeRequestId={frozen?.requestId} />
           <label>Future visibility intent
             <select value={visibility} disabled={busy||!!frozen} onChange={event=>{
               setVisibility(event.target.value==='PUBLIC'?'PUBLIC':'UNLISTED');
@@ -318,6 +350,8 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               </dl>
               {grant.status!=='REVOKED' && !confirmRevoke && <button type="button" className="ws-secondary"
                 onClick={()=>setConfirmRevoke(true)}>Revoke private reviewer grant</button>}
+              {grant.status==='REVOKED' && frozen && <button type="button" className="ws-secondary"
+                onClick={()=>{setGrant(null);grantOperation.current=null;}}>Register another reviewer grant</button>}
               {confirmRevoke && grant.status!=='REVOKED' && <div className="ws-release-confirm">
                 <p>Revoke this private grant? The saved snapshot will remain available to its owner.</p>
                 <button type="button" className="ws-primary" disabled={busy} onClick={()=>void revokeReviewer()}>
@@ -356,5 +390,33 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         <p className="ws-field-hint">Nothing on this page activates external sharing. Private, unlisted and public are delivery policies, not just labels.</p>
       </aside>
     </div>}
+  </section>;
+}
+
+
+function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
+  requests:OwnerFrozenRequest[]|null;error:string;
+  onSelect?:(request:OwnerFrozenRequest)=>void;activeRequestId?:string
+}) {
+  return <section className="ws-release-action" aria-labelledby="frozen-history-title">
+    <h3 id="frozen-history-title">Frozen private requests</h3>
+    <p>Immutable owner-only revision pins. These records do not prove reviewer delivery, public hosting, release history or rollback.</p>
+    {error && <p role="alert">{error}</p>}
+    {requests===null&&!error&&<p role="status">Loading frozen private requests…</p>}
+    {requests?.length===0&&<p>No private revisions have been frozen.</p>}
+    {!!requests?.length&&<ol className="ws-release-grant-list">{requests.map(request=>
+      <li key={request.requestId}>
+        <div>
+          <strong>Private revision {request.revision} · {request.visibilityIntent==='PUBLIC'?'Public intent':'Unlisted intent'}</strong>
+          <p>Frozen <time dateTime={request.createdAt}>{new Date(request.createdAt).toLocaleString()}</time></p>
+          <p>Snapshot fingerprint <code>{request.snapshotSha256.slice(0,12)}…</code> · Not published</p>
+        </div>
+        {onSelect&&<button type="button" className="ws-secondary"
+          aria-pressed={activeRequestId===request.requestId}
+          onClick={()=>onSelect(request)}>
+          {activeRequestId===request.requestId?'Frozen request selected':'Use frozen revision '+request.revision}
+        </button>}
+      </li>)}</ol>}
+    {requests?.length===100&&<p className="ws-field-hint">Showing the newest 100 private freeze records.</p>}
   </section>;
 }

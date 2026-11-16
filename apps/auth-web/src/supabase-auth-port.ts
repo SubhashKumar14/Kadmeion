@@ -8,6 +8,10 @@ import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../pac
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
 export type SavedOwnerRevision = {revision:number;createdAt:string;snapshotSha256:string};
+export type OwnerFrozenRequest = {
+  requestId:string; portfolioId:string; revision:number; snapshotSha256:string;
+  visibilityIntent:FrozenVisibilityIntent; createdAt:string; status:'FROZEN';
+};
 import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
@@ -641,6 +645,44 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           throw new Error('A saved revision could not be validated.');
         seen.add(row.revision);
         return {revision:row.revision,createdAt:row.created_at,snapshotSha256:row.snapshot_sha256};
+      });
+    });
+  }
+
+  /** Owner-scoped metadata only; a FROZEN row is never an externally
+   * delivered artifact. Existing grants and private source are excluded. */
+  async listOwnerFrozenRequests(portfolioId:string):Promise<AuthOutcome<OwnerFrozenRequest[]>> {
+    return this.outcome(async()=>{
+      if (!PROJECT_ID_PATTERN.test(portfolioId)) throw new Error('Portfolio unavailable.');
+      const {session,userId}=await this.ownerSession();
+      const params=new URLSearchParams({
+        select:'id,portfolio_id,owner_user_id,revision,snapshot_sha256,visibility_intent,status,created_at',
+        portfolio_id:'eq.'+portfolioId,owner_user_id:'eq.'+userId,
+        order:'created_at.desc',limit:'100'
+      });
+      const rawRows=await this.ownerRest('private_release_requests?'+params,session.access_token);
+      if (!this.isCurrentSession(session)||!Array.isArray(rawRows)||rawRows.length>100)
+        throw new Error('Private frozen request history could not be loaded.');
+      const seen=new Set<string>();
+      return rawRows.map((raw:unknown)=>{
+        if (!raw||typeof raw!=='object'||Array.isArray(raw))
+          throw new Error('Invalid frozen request record.');
+        const row=raw as Record<string,unknown>;
+        if (Object.keys(row).some(key=>!['id','portfolio_id','owner_user_id','revision','snapshot_sha256',
+          'visibility_intent','status','created_at'].includes(key)) ||
+          typeof row.id!=='string'||!PROJECT_ID_PATTERN.test(row.id)||seen.has(row.id)||
+          row.portfolio_id!==portfolioId||row.owner_user_id!==userId||
+          typeof row.revision!=='number'||!Number.isSafeInteger(row.revision)||row.revision<1||
+          typeof row.snapshot_sha256!=='string'||!/^[a-f0-9]{64}$/.test(row.snapshot_sha256)||
+          (row.visibility_intent!=='UNLISTED'&&row.visibility_intent!=='PUBLIC')||
+          row.status!=='FROZEN'||typeof row.created_at!=='string'||
+          !Number.isFinite(Date.parse(row.created_at)))
+          throw new Error('Frozen request metadata failed owner or schema validation.');
+        seen.add(row.id);
+        return {requestId:row.id,portfolioId,revision:row.revision,
+          snapshotSha256:row.snapshot_sha256,
+          visibilityIntent:row.visibility_intent as FrozenVisibilityIntent,
+          createdAt:row.created_at,status:'FROZEN' as const};
       });
     });
   }
