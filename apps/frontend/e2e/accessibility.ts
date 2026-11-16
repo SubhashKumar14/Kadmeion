@@ -14,6 +14,13 @@ const blockingRules = new Set(['button-name','link-name','label','image-alt','ht
 export async function auditAccessibility(page:Page, state:string, directory?:string) {
   if (!await page.evaluate(()=>!!window.axe)) await page.addScriptTag({path:axePath});
   const evidence=await page.evaluate(async tags=>{
+    await document.fonts.ready;
+    const animations=document.getAnimations().filter(animation=>{
+      const endTime=animation.effect?.getComputedTiming().endTime;
+      return animation.playState==='running'&&typeof endTime==='number'&&endTime<=500;
+    });
+    await Promise.allSettled(animations.map(animation=>animation.finished));
+
     const result:AxeResults=await window.axe.run(document,{
       runOnly:{type:'tag',values:tags},
       resultTypes:['violations','incomplete','passes']

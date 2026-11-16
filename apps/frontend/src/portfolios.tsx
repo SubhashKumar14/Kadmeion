@@ -581,7 +581,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                 setValue(assignment?.content[primaryField(assignment.componentId)]??'');
                 setTool('Content');
               }}>
-              <span className="ws-editor-layer-name">{label}</span>
+              <span className="ws-editor-layer-name">{label}</span>{' '}
               <span className="ws-editor-layer-state">{state}</span>
             </button>
           </li>;})}</ul></details>

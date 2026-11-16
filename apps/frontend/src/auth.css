@@ -112,6 +112,7 @@
 }
 @media(max-width:520px){
   .auth-brand-panel{height:110px}
+  .auth-brand-panel .auth-brand-rings{opacity:.55}
   .auth-form-panel{min-height:calc(100dvh - 110px)}
   .auth-header{padding:19px 20px}
   .auth-form-content{padding:26px 22px 38px}

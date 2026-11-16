@@ -102,7 +102,8 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   selectedSlot?:string; onSelectSlot?:(key:string)=>void;
 }) {
   const theme=readTheme(snapshot);
-  const style:CSSProperties={
+  const style:CSSProperties & {'--portfolio-surface': string}={
+    '--portfolio-surface':theme.surface,
     background:theme.surface,color:theme.text,colorScheme:theme.mode,
     borderTopColor:theme.accent,maxWidth:width
   };

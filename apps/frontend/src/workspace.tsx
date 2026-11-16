@@ -66,7 +66,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
         </a>)}
       </nav>
       {editorOnly&&<button type="button" className="ws-editor-theme-switch" onClick={toggleTheme}
-        aria-label={theme==='light'?'Switch to dark theme':'Switch to light theme'}
+        aria-label={theme==='light'?'Switch to dark theme · Dark mode':'Switch to light theme · Light mode'}
         aria-pressed={theme==='dark'}>
         <Icon name={theme==='light'?'moon':'sun'} size={18}/>
         <span>{theme==='light'?'Dark':'Light'} mode</span>
