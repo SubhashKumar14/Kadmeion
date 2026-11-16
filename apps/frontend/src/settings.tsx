@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
@@ -55,23 +55,35 @@ function SettingsCard({title, children}: {title: string; children: ReactNode}) {
 }
 
 export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path: string}) {
-  const [services, setServices] = useState<Services | null>(null);
-  const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
+  // A new route, adapter or retry must never render the old account's settings
+  // while the current owner request is still pending.
+  const scope = useMemo(() => ({port, path, retry}), [port, path, retry]);
+  const [loaded, setLoaded] = useState<{
+    scope: typeof scope; services: Services | null; error: string; viewKey: string
+  } | null>(null);
+  const current = loaded?.scope === scope ? loaded : null;
+  const services = current?.services ?? null;
+  const error = current?.error ?? '';
   useEffect(() => {
     if (path === '/app/settings') return;
     let active = true;
-    setServices(null);
-    setError('');
     void port.ownerSettings().then(result => {
       if (!active) return;
-      if (result.data) {setServices(result.data); setError('');}
-      else setError(result.error?.message ?? 'Account settings are unavailable.');
+      setLoaded({
+        scope, services: result.data ?? null,
+        error: result.data ? '' : result.error?.message ?? 'Account settings are unavailable.',
+        viewKey: crypto.randomUUID()
+      });
     }).catch(() => {
-      if (active) setError('Account settings could not be loaded. Retry when the connection is available.');
+      if (active) setLoaded({
+        scope, services: null,
+        error: 'Account settings could not be loaded. Retry when the connection is available.',
+        viewKey: crypto.randomUUID()
+      });
     });
     return () => {active = false;};
-  }, [port, path, retry]);
+  }, [scope, port, path]);
 
   const title = settingsLinks.find(([href]) => href === path)?.[1] ?? 'Settings';
   let content: ReactNode = null;
@@ -92,12 +104,12 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
       setError(''); setRetry(value => value + 1);
     }}>Retry account settings</button></>
     : <p role="status">Loading private account settings…</p>;
-  else if (path === '/app/settings/privacy') content = <Privacy port={port} services={services}/>;
-  else if (path === '/app/notifications') content = <Notifications service={services.notifications}/>;
-  else if (path === '/app/settings/security') content = <Security port={port}/>;
-  else if (path === '/app/trash') content = <Trash service={services.trash}/>;
-  else if (path === '/app/export') content = <ExportCenter port={port} services={services}/>;
-  else content = <AccountExit port={port} service={services.account}/>;
+  else if (path === '/app/settings/privacy') content = <Privacy key={current!.viewKey} port={port} services={services}/>;
+  else if (path === '/app/notifications') content = <Notifications key={current!.viewKey} service={services.notifications}/>;
+  else if (path === '/app/settings/security') content = <Security key={current!.viewKey} port={port}/>;
+  else if (path === '/app/trash') content = <Trash key={current!.viewKey} service={services.trash}/>;
+  else if (path === '/app/export') content = <ExportCenter key={current!.viewKey} port={port} services={services}/>;
+  else content = <AccountExit key={current!.viewKey} port={port} service={services.account}/>;
 
   return <section className="ws-settings-page" aria-labelledby="settings-title">
     <div className="ws-heading">
