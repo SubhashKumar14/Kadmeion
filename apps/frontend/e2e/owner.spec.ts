@@ -595,6 +595,8 @@ test('real owner onboarding and project revision are private across browser sess
   await page.goto('/app/settings/security');
   await expect(page.getByRole('heading', {name: 'Account security'})).toBeVisible();
   await page.getByRole('button', {name: 'Sign out other sessions'}).click();
+  await expect(page.getByRole('group',{name:'Confirm other-session sign-out'})).toBeVisible();
+  await page.getByRole('button',{name:'Confirm sign out other sessions'}).click();
   await expect(page.getByRole('status')).toHaveText('Other sessions were signed out.');
   await capture('44_SECURITY_BROWSER');
 

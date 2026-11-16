@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
@@ -236,6 +236,8 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [confirmOthers, setConfirmOthers] = useState(false);
+  const otherSessionsTrigger = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<Message>(emptyMessage);
   async function change(event: FormEvent<HTMLFormElement>) {
@@ -252,11 +254,13 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
     finally {setBusy(false);}
   }
   async function revoke() {
-    if (busy) return;
+    if (busy || !confirmOthers) return;
     setBusy(true); setMessage(null);
     try {
       const result = await port.signOut({scope: 'others'});
       if (result.error) throw new Error('Sign-out for other sessions could not be confirmed.');
+      setConfirmOthers(false);
+      otherSessionsTrigger.current?.focus();
       setMessage({error: false, text: 'Other sessions were signed out.'});
     } catch (error) {setMessage(failure(error));}
     finally {setBusy(false);}
@@ -269,8 +273,20 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
       <label>Confirm new password<input type="password" required minLength={8} maxLength={128} autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
       <button className="ws-primary" type="submit" disabled={busy}>Update password</button>
     </form></SettingsCard>
-    <SettingsCard title="Other sessions"><p>Revoke access on other signed-in browsers and devices.</p>
-      <button type="button" className="ws-secondary" disabled={busy} onClick={() => void revoke()}>Sign out other sessions</button></SettingsCard>
+    <SettingsCard title="Other sessions"><p>Revoke access on other signed-in browsers and devices.
+      This does not erase their browser storage or claim every already-issued access token has expired.</p>
+      <button ref={otherSessionsTrigger} type="button" className="ws-secondary"
+        disabled={busy} aria-expanded={confirmOthers} aria-controls="other-session-confirmation"
+        onClick={() => setConfirmOthers(value => !value)}>Sign out other sessions</button>
+      {confirmOthers && <div id="other-session-confirmation" role="group"
+        aria-label="Confirm other-session sign-out" className="ws-release-confirm">
+        <p>Sign out other sessions? This asks the authentication provider to revoke other sessions;
+          this browser stays signed in. It cannot prove that already-issued tokens stop instantly.</p>
+        <button type="button" className="ws-primary" disabled={busy}
+          onClick={() => void revoke()}>{busy ? 'Signing out…' : 'Confirm sign out other sessions'}</button>
+        <button type="button" className="ws-secondary" disabled={busy}
+          onClick={() => {setConfirmOthers(false); otherSessionsTrigger.current?.focus();}}>Cancel</button>
+      </div>}</SettingsCard>
     </div></>;
 }
 
