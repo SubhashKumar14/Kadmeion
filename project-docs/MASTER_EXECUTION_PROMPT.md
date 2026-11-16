@@ -134,3 +134,8 @@ Per screen verify brand and hierarchy at responsive viewports against the approv
 5. Outstanding owner-gated actions, with Brevo manual sender/inbox proof explicitly **deferred until later**; public host and irreversible operations cannot be silently enabled. State next implementable step; do not stop after reporting if code work remains.
 
 Do not ask repeated questions already answered by owner-approved records. Do not mark source-only, local-only or mocked behavior as production accepted.
+
+
+### F2 checkpoint — 16 November 2026
+
+F2 screens 12–17 have a source-level implementation plus independently green CI at `553406e` ([frontend run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43830366542), [application/database run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43830366593)). This does **not** certify screenshot fidelity, entire frontend completion or owner visual acceptance. For every F3–F6 screen, explicitly inspect actual rendered viewport hierarchy and interactions, never import reference-frame pixel dimensions into CSS just to match a PNG. Preserve F2 known gaps and continue the next incomplete phase with code before reports. See `FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md`.

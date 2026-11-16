@@ -103,3 +103,8 @@ Also update `project-docs/NEXT_SESSION_HANDOFF.md` (or append a dated companion 
 Give a concise verified backlog, **real changed files and commit URLs**, same-SHA CI/test results, screen and asset acceptance deltas, accurate backend/external gate statuses, and durable Notion/GitHub handoff confirmation. No invented 100% metrics, no repeated planning-only cycles, no changes to unapproved source visuals, no production activation without permission.
 
 **First action in a new session:** open this exact file, `MASTER_EXECUTION_PROMPT.md`, `NEXT_SESSION_HANDOFF.md`, the Notion log, the 12-page Canva deck and the 52-image register; reconcile HEAD, then implement the highest-priority safe code item.
+
+
+### F2 checkpoint — 16 November 2026
+
+F2 screens 12–17 have a source-level implementation plus independently green CI at `553406e` ([frontend run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43830366542), [application/database run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43830366593)). This does **not** certify screenshot fidelity, entire frontend completion or owner visual acceptance. For every F3–F6 screen, explicitly inspect actual rendered viewport hierarchy and interactions, never import reference-frame pixel dimensions into CSS just to match a PNG. Preserve F2 known gaps and continue the next incomplete phase with code before reports. See `FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md`.
