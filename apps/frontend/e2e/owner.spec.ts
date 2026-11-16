@@ -288,6 +288,15 @@ test('real owner onboarding and project revision are private across browser sess
     .toContainText('Build things that make a difference.');
   await expect(page.getByRole('button',{name:'arc hero title'})).toBeVisible();
   await capture('18_PORTFOLIO_EDITOR_BROWSER');
+  const beforeOrder=await page.locator('.ws-editor-layers>li summary').allTextContents();
+  expect(beforeOrder[0]).toContain('Arc hero');
+  await page.getByRole('button',{name:'Move Arc hero down'}).click();
+  const afterOrder=await page.locator('.ws-editor-layers>li summary').allTextContents();
+  expect(afterOrder[0]).toContain('Project showcase');
+  expect(afterOrder[1]).toContain('Arc hero');
+  await page.getByRole('button',{name:'Undo'}).click();
+  const restoredOrder=await page.locator('.ws-editor-layers>li summary').allTextContents();
+  expect(restoredOrder[0]).toContain('Arc hero');
   await page.getByRole('button', {name: /arc hero title/i}).click();
   await page.getByLabel('Text content').fill('Portfolio draft title');
   await page.getByRole('button', {name: 'Apply text'}).click();

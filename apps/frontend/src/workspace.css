@@ -1090,3 +1090,13 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 }
 @media(max-width:900px){.ws-editor-modebar{display:none}}
 @media(prefers-reduced-motion:reduce){.ws-editor-modebar{scroll-behavior:auto}}
+ 
+/* F3 keyboard-first section order; no inaccessible drag-only control. */
+.ws-editor-layer-reorder{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;padding:2px 2px 5px;color:var(--body);font-size:12px}
+.ws-editor-layer-reorder>[role="group"]{display:flex;gap:4px}
+.ws-editor-reorder-action{min-height:34px;min-width:42px;border-radius:6px;
+  padding:5px 8px;color:var(--ink);border:1px solid var(--line-dark);
+  background:var(--panel);font-size:12px}
+.ws-editor-reorder-action:disabled{opacity:.45;cursor:not-allowed}
+.ws-editor-reorder-action:focus-visible{outline:3px solid var(--focus);outline-offset:2px}

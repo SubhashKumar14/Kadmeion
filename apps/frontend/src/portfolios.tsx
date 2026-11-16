@@ -486,6 +486,16 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
         <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}>
+          <div className="ws-editor-layer-reorder">
+            <span>Section {index+1} / {layerGroups.length}</span>
+            <div role="group" aria-label={'Reorder '+group.title}>
+              <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' up'}
+                disabled={index===0||saving} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
+              <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' down'}
+                disabled={index===layerGroups.length-1||saving}
+                onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'down'})}>Down</button>
+            </div>
+          </div>
           <details className="ws-editor-layer-group" open={index===0||group.id.startsWith('section-')}>
           <summary>{group.title}<small>{group.slots.length} slots</small></summary>
           <ul className="ws-editor-slots">{group.slots.map(item=><li key={item.key}>

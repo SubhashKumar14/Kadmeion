@@ -348,3 +348,27 @@ test('WF-025 capture My Component from a committed owned source without losing b
   ])assert.throws(()=>savedComponentInputFromOwnedSlot(changed.snapshot,'arc-hero-title',bad),
     {code:'VALIDATION'});
 });
+ 
+
+test('owner section reorder preserves slot ownership, is undoable, and rejects invalid boundaries',()=>{
+  const original=createEditorHead(createPortfolioPresetDraft('arc'));
+  const initial=JSON.parse(original.snapshot.files['pages/home.page.json']).sections as Array<{id:string}>;
+  assert.ok(initial.length>2);
+  const first=initial[0].id;
+  const second=initial[1].id;
+  const moved=applyEditorTransaction(original,op(original,{kind:'MOVE_SECTION',sectionId:first,direction:'down'}));
+  const order=JSON.parse(moved.snapshot.files['pages/home.page.json']).sections as Array<{id:string}>;
+  assert.equal(order[0].id,second);
+  assert.equal(order[1].id,first);
+  assert.deepEqual(moved.snapshot.slots,original.snapshot.slots);
+  assert.deepEqual(moved.snapshot.stashes,original.snapshot.stashes);
+  assert.equal(JSON.parse(original.snapshot.files['pages/home.page.json']).sections[0].id,first);
+  const undone=applyEditorTransaction(moved,op(moved,{kind:'UNDO'}));
+  assert.deepEqual(undone.snapshot.files['pages/home.page.json'],original.snapshot.files['pages/home.page.json']);
+  assert.throws(()=>applyEditorTransaction(original,op(original,{
+    kind:'MOVE_SECTION',sectionId:first,direction:'up'})),{code:'VALIDATION'});
+  assert.throws(()=>applyEditorTransaction(original,op(original,{
+    kind:'MOVE_SECTION',sectionId:'not-present',direction:'down'})),{code:'VALIDATION'});
+  assert.throws(()=>applyEditorTransaction(original,op(original,{
+    kind:'MOVE_SECTION',sectionId:first,direction:'sideways' as never})),{code:'VALIDATION'});
+});

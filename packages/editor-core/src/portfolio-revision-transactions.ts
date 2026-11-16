@@ -31,6 +31,7 @@ export interface EditorHead {
 export type EditorIntent =
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
   | { kind:'ADD_SECTION'; layout:string }
+  | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
   | { kind:'CLEAR_SLOT'; slotKey:string }
   | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
@@ -166,6 +167,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
   const fields:Record<string,readonly string[]>={
     WRITE_MANAGED_FILE:['kind','path','source'],
     ADD_SECTION:['kind','layout'],
+    MOVE_SECTION:['kind','sectionId','direction'],
     CLEAR_SLOT:['kind','slotKey'],
     ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
     UPDATE_CONTENT:['kind','slotKey','content'],
@@ -262,6 +264,24 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
       next.slots[key]={state:'EMPTY',content:{}};
     }
     next.files[path]=JSON.stringify({...page,sections:[...page.sections,{id,layout:intent.layout,slotKeys:layout.slots}]});
+  } else if (intent.kind==='MOVE_SECTION') {
+    const path='pages/home.page.json';
+    const original=next.files[path];
+    if(typeof original!=='string'||typeof intent.sectionId!=='string'||
+       !/^[a-z0-9_-]{1,64}$/.test(intent.sectionId)||
+       !['up','down'].includes(intent.direction))
+      throw new ContractError('VALIDATION','Invalid section reorder request.');
+    validateManagedJson(path,original);
+    const page=JSON.parse(original) as {sections?:Array<{id:string;layout:string}>;[key:string]:unknown};
+    if(!Array.isArray(page.sections))
+      throw new ContractError('VALIDATION','No authored sections can be reordered.');
+    const position=page.sections.findIndex(section=>section.id===intent.sectionId);
+    const target=position+(intent.direction==='up'?-1:1);
+    if(position<0||target<0||target>=page.sections.length)
+      throw new ContractError('VALIDATION','Selected section cannot move in this direction.');
+    const moved=page.sections.slice();
+    [moved[position],moved[target]]=[moved[target],moved[position]];
+    next.files[path]=JSON.stringify({...page,sections:moved});
   } else {
     assertSlotKey(intent.slotKey);
     const slot = Object.hasOwn(next.slots,intent.slotKey) ? next.slots[intent.slotKey] : undefined;
