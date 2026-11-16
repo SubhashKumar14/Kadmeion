@@ -304,7 +304,7 @@ function Trash({service}: {service: Services['trash']}) {
     {!items && !message && <p role="status">Loading Trash…</p>}
     {!items && message?.error && <button type="button" className="ws-secondary"
       onClick={() => setReload(value => value + 1)}>Retry Trash</button>}
-    {items?.length === 0 && <p>Trash is empty.</p>
+    {items?.length === 0 && <p>Trash is empty.</p>}
     <ul className="ws-settings-records">{items?.map(item => {
       const expired = Date.parse(item.restore_until) <= Date.now();
       return <li key={item.item_type + ':' + item.item_id}>
