@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import type {SupabaseBrowserAuthPort, OwnerPortfolio} from '../../auth-web/src/supabase-auth-port.ts';
+import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary} from '../../auth-web/src/supabase-auth-port.ts';
 import type {PrivateFrozenRequest, FrozenVisibilityIntent} from '../../../packages/contracts/src/private-release-service.ts';
 import type {PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
@@ -49,6 +49,8 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [frozen,setFrozen]=useState<PrivateFrozenRequest|null>(null);
   const [result,setResult]=useState<SafePreviewResult|null>(null);
   const [grant,setGrant]=useState<SafeGrant|null>(null);
+  const [grants,setGrants]=useState<OwnerReviewerGrantSummary[]|null>(null);
+  const [grantListError,setGrantListError]=useState('');
   const [validMinutes,setValidMinutes]=useState(60);
   const [confirmRevoke,setConfirmRevoke]=useState(false);
   const [confirmBlock,setConfirmBlock]=useState(false);
@@ -70,6 +72,13 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!active) return;
         if (!reply.data) {setError(reply.error?.message ?? 'Portfolio unavailable.');return;}
         setRecord(reply.data);
+        if (mode==='staging') {
+          const list=await port.listOwnerReviewerGrants(id);
+          if (!active) return;
+          if (list.data) {setGrants(list.data);setGrantListError('');}
+          else setGrantListError(list.error?.message ?? 'Existing reviewer grants are unavailable.');
+          return;
+        }
         if (mode!=='releases' && mode!=='share') return;
         const status=await port.readOwnerRelease(id);
         if (!active) return;
@@ -119,6 +128,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       if (!response.data) {setError(response.error?.message ?? 'Reviewer registration was not confirmed.');return;}
       const {grantId,expiresAt}=response.data;
       setGrant({grantId,expiresAt,status:'REGISTERED_UNSERVABLE'});
+      setGrants(previous=>previous ? [{
+        grantId,requestId:frozen.requestId,portfolioId:id,expiresAt,revokedAt:null,createdAt:new Date().toISOString()
+      },...previous.filter(item=>item.grantId!==grantId)] : previous);
       grantOperation.current=null;
       setNotice('Private reviewer grant registered. The link remains disabled pending hosted delivery verification.');
     } catch {setError('Reviewer registration failed. Retry the same request.');}
@@ -132,6 +144,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       const response=await port.revokeOwnerReviewerGrant(grant.grantId);
       if (!response.data) {setError(response.error?.message ?? 'Reviewer revocation was not confirmed.');return;}
       setGrant(previous=>previous ? {...previous,status:'REVOKED'} : previous);
+      const refreshed=await port.listOwnerReviewerGrants(id);
+      if (refreshed.data) {setGrants(refreshed.data);setGrantListError('');}
+      else setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
       setConfirmRevoke(false);
       setNotice('Private reviewer grant revoked. External delivery revocation has not been independently verified.');
     } catch {setError('Reviewer revocation could not be checked. Retry safely.');}
@@ -241,6 +256,22 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {mode==='staging' && !grant && <button type="button" className="ws-secondary" disabled={busy}
               onClick={()=>{setFrozen(null);setResult(null);operation.current=null;}}>Choose another revision or intent</button>}
           </div>}
+          {mode==='staging' && <section className="ws-release-action" aria-labelledby="reviewer-history-title">
+            <h3 id="reviewer-history-title">Registered reviewer grants</h3>
+            <p>Owner-only metadata can be recovered after a reload. Raw reviewer credentials are never returned in this list.</p>
+            {grantListError && <p role="alert">{grantListError}</p>}
+            {grants===null && !grantListError && <p role="status">Loading private reviewer grant records…</p>}
+            {grants?.length===0 && <p>No reviewer grants have been registered.</p>}
+            {!!grants?.length && <ul className="ws-release-grant-list">{grants.map(item=><li key={item.grantId}>
+              <div><strong>{item.revokedAt?'Revoked':Date.parse(item.expiresAt)<=Date.now()?'Expired':'Registered (not servable)'}</strong>
+                <p>Created <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>.
+                  Expires <time dateTime={item.expiresAt}>{new Date(item.expiresAt).toLocaleString()}</time>.</p>
+                <p>Private frozen request {item.requestId.slice(0,8)}…</p></div>
+              {!item.revokedAt && <button type="button" className="ws-secondary" disabled={busy}
+                onClick={()=>{setGrant({grantId:item.grantId,expiresAt:item.expiresAt,status:'REGISTERED_UNSERVABLE'});
+                  setConfirmRevoke(true);}}>Review revocation</button>}
+            </li>)}</ul>}
+          </section>}
           {mode==='staging' && frozen && <div className="ws-release-action" aria-labelledby="reviewer-grant-title">
             <h3 id="reviewer-grant-title">Reviewer access</h3>
             <p>Register a time-limited owner-private grant. No reviewer URL can be shared until host authorization, expiry and revocation are proven.</p>

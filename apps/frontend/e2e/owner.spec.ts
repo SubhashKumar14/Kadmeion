@@ -498,7 +498,11 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Disabled pending host verification')).toBeVisible();
   await page.getByRole('button', {name:'Revoke private reviewer grant'}).click();
   await page.getByRole('button', {name:'Confirm reviewer revocation'}).click();
+  await expect(page.getByText('Revoked', {exact:true}).first()).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', {name:'Registered reviewer grants'})).toBeVisible();
   await expect(page.getByText('Revoked', {exact:true})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Review revocation'})).toHaveCount(0);
   await page.getByRole('link', {name: 'Publish preflight', exact: true}).click();
   await page.getByRole('button', {name: 'Run private preflight'}).click();
   await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();

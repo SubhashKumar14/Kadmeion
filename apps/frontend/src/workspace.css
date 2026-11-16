@@ -1128,3 +1128,10 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-release-page :is(a,button,select):focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 @media(max-width:500px){.ws-release-facts{grid-template-columns:minmax(0,1fr);gap:4px}
   .ws-release-facts dd{margin:0 0 9px}.ws-release-steps a{flex:1 1 auto}}
+
+/* F4 safe review-grant inventory. Metadata never includes an access token. */
+.ws-release-grant-list{list-style:none;padding:0;margin:15px 0;display:grid;gap:10px}
+.ws-release-grant-list li{display:flex;align-items:start;justify-content:space-between;flex-wrap:wrap;
+  gap:10px;padding:14px 0;border-top:1px solid var(--line)}
+.ws-release-grant-list p{margin:5px 0;font-size:.875rem;overflow-wrap:anywhere}
+.ws-release-grant-list button{min-height:44px}

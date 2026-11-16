@@ -6,6 +6,7 @@ import type { MyComponentInput, MyComponentVersion } from '../../../packages/con
 import type { FrozenVisibilityIntent, PrivateFrozenRequest } from '../../../packages/contracts/src/private-release-service.ts';
 import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
+export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
 import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
@@ -665,6 +666,39 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const receipt = await service.issue(requestId,operationId,validMinutes);
       if (!this.isCurrentSession(session)) throw new Error('Account changed while registering a private reviewer.');
       return receipt;
+    });
+  }
+
+
+  /** RLS-limited metadata listing. Only the six explicitly granted safe
+   * columns are selected; token digests and credentials never leave SQL. */
+  async listOwnerReviewerGrants(portfolioId:string):Promise<AuthOutcome<OwnerReviewerGrantSummary[]>> {
+    return this.outcome(async () => {
+      if (!PROJECT_ID_PATTERN.test(portfolioId)) throw new Error('Portfolio unavailable.');
+      const {session}=await this.ownerSession();
+      const params=new URLSearchParams({select:'id,request_id,portfolio_id,expires_at,revoked_at,created_at',
+        portfolio_id:'eq.'+portfolioId,order:'created_at.desc',limit:'50'});
+      const rows=await this.ownerRest('private_reviewer_grants?'+params,session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length>50)
+        throw new Error('Private reviewer grant list is unavailable.');
+      const validTime=(value:unknown):value is string=>
+        typeof value==='string' && Number.isFinite(Date.parse(value));
+      const list:OwnerReviewerGrantSummary[]=rows.map((row:unknown)=>{
+        if (!row || typeof row!=='object' || Array.isArray(row)) throw new Error('Invalid grant record.');
+        const data=row as Record<string,unknown>;
+        if (Object.keys(data).some(key=>!['id','request_id','portfolio_id','expires_at','revoked_at','created_at'].includes(key)) ||
+          typeof data.id!=='string' || !PROJECT_ID_PATTERN.test(data.id) ||
+          typeof data.request_id!=='string' || !PROJECT_ID_PATTERN.test(data.request_id) ||
+          data.portfolio_id!==portfolioId || !validTime(data.expires_at) ||
+          !validTime(data.created_at) ||
+          !(data.revoked_at===null || validTime(data.revoked_at)))
+          throw new Error('Private reviewer metadata did not match the owner request.');
+        return {grantId:data.id,requestId:data.request_id,portfolioId,
+          expiresAt:data.expires_at,revokedAt:data.revoked_at,createdAt:data.created_at};
+      });
+      if (new Set(list.map(row=>row.grantId)).size!==list.length)
+        throw new Error('Duplicate private reviewer grants were rejected.');
+      return list;
     });
   }
 
