@@ -300,7 +300,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   setConfirmRevoke(true);}}>Review revocation</button>}
             </li>)}</ul>}
           </section>}
-          {mode==='staging' && frozen && <div className="ws-release-action" aria-labelledby="reviewer-grant-title">
+          {mode==='staging' && (frozen || grant) && <div className="ws-release-action" aria-labelledby="reviewer-grant-title">
             <h3 id="reviewer-grant-title">Reviewer access</h3>
             <p>Register a time-limited owner-private grant. No reviewer URL can be shared until host authorization, expiry and revocation are proven.</p>
             {!grant ? <>
