@@ -588,7 +588,9 @@ function PrivateShareDialog({onClose}:{onClose:()=>void}) {
   },[]);
   return <dialog ref={dialog} className="ws-share-dialog" aria-modal="true"
     aria-labelledby="kd-share-title" aria-describedby="kd-share-description"
-    onClose={onClose}>
+    // StrictMode may close/reopen the same dialog during effect replay.
+    // Ignore a queued close event if the dialog is open again.
+    onClose={event=>{if(!event.currentTarget.open)onClose();}}>
     <header className="ws-share-heading">
       <div><p className="ws-kicker">SHARE PORTFOLIO</p><h2 id="kd-share-title">Share your work</h2></div>
       <button type="button" className="ws-share-close" aria-label="Close share dialog"
