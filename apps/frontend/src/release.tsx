@@ -295,8 +295,6 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             </select>
           </label>
           {revisions?.length===50 && <p className="ws-field-hint">Showing the latest 50 saved revisions.</p>}
-          <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
-            onSelect={!busy?selectFrozenRequest:undefined} activeRequestId={frozen?.requestId} />
           <label>Future visibility intent
             <select value={visibility} disabled={busy||!!frozen} onChange={event=>{
               setVisibility(event.target.value==='PUBLIC'?'PUBLIC':'UNLISTED');
@@ -316,6 +314,8 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {mode==='staging' && !grant && <button type="button" className="ws-secondary" disabled={busy}
               onClick={()=>{setFrozen(null);setResult(null);operation.current=null;}}>Choose another revision or intent</button>}
           </div>}
+          <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
+            onSelect={!busy?selectFrozenRequest:undefined} activeRequestId={frozen?.requestId} />
           {mode==='staging' && <section className="ws-release-action" aria-labelledby="reviewer-history-title">
             <h3 id="reviewer-history-title">Registered reviewer grants</h3>
             <p>Owner-only metadata can be recovered after a reload. Raw reviewer credentials are never returned in this list.</p>
