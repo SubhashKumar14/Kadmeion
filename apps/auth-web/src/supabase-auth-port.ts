@@ -434,6 +434,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
     return this.outcome(async () => {
+      // Password updates must not silently adopt a different persisted owner.
+      // The shell must reverify that principal before any protected mutation.
+      const starting = this.session;
+      this.reconcileOwnerSessionEpoch();
+      if (starting !== this.session) throw new Error('Session expired or changed.');
       const session = await this.refreshed();
       if (!session || !this.isCurrentSession(session)) throw new Error('Session expired or changed.');
       const result = await this.request('/user', 'PUT', { password }, session.access_token);
