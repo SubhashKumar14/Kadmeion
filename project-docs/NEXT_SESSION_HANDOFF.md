@@ -1,3 +1,13 @@
+## 16 November 2026 — Owner-directed signup and viewport correction
+
+- Owner supersession: allow account creation and sign-in without an inbox challenge until the owner explicitly asks to restore confirmation. The shared auth contract now submits valid signup independently of email-delivery verification. The React signup uses a verified provider session to open the private workspace. Supabase still decides whether a session is issued. The UI handles confirmation-required configurations honestly.
+- Local Supabase now uses `enable_confirmations = false`. Recovery and confirmation resend still depend on a working sender. The isolated browser and API suites cover immediate signup, password sign-in, and separately delivered Mailpit recovery. The app does not label the account email as ownership-verified based on an authenticated session.
+- Hosted settings check: email signup is enabled, but GoTrue reports `mailer_autoconfirm: false`. An authenticated Supabase project operator must turn off **Confirm email** under **Authentication → Sign In / Providers → User Signups** and save. The connected database API does not expose the Auth configuration operation and the dashboard opens at sign-in here. No hosted setting was changed.
+- Public, auth, system and private workspace outer shells use the full viewport. Forms and readable content retain their own width controls. The Chromium regression sweeps desktop, tablet and phone widths and signs up through isolated GoTrue. An intermediate test caught a remaining mobile inset on the unavailable page, which was removed.
+- This corrective pass supersedes F1 notes claiming registration depends on mail delivery. Continue F2 profile, projects and portfolio entry after verification. Do not restore mandatory confirmation unless the owner instructs it.
+
+---
+
 ## 16 November 2026 — F1 implementation and browser verification
 
 - **Scope:** One phase per response. F1 screens 01–11 received a full implementation and comparison pass on [PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3). Verified code SHA [`f78fee91ef99dad330dac05647d6c61a330b6816`](https://github.com/SubhashKumar14/Kadmeion/commit/f78fee91ef99dad330dac05647d6c61a330b6816).

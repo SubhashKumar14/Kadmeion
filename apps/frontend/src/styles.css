@@ -581,8 +581,7 @@ p{line-height:1.55}
 .sys51-footer{padding:23px clamp(24px,5%,68px) 60px;color:var(--muted);font-size:10px;line-height:1.65}
 @media(max-width:1050px){.sys51-body{gap:30px;padding:35px 5% 20px}
   .sys51-art{height:350px;min-height:300px}}
-@media(max-width:760px){.system-status-editorial-shell{padding:14px 12px 24px}
-  .system-status-editorial{min-height:calc(100dvh - 38px);border-radius:14px}
+@media(max-width:760px){
   .sys51-header{min-height:73px;padding:12px 17px}
   .sys51-brand .brand-mark{--brand-symbol-size:36px;--brand-letters-width:102px}
   .sys51-brand small{font-size:7px}

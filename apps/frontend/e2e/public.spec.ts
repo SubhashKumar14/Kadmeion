@@ -239,6 +239,7 @@ test('F1 skip links focus the content and auth reflows with reduced motion', asy
 });
 
 test('public and auth shells span the window across desktop and phone widths',async ({page}) => {
+  test.setTimeout(60_000);
   const routes = [
     ['/', '.site-shell'], ['/explore', '.site-shell'], ['/templates', '.site-shell'],
     ['/signin', '.auth-page'], ['/register', '.auth-page'], ['/forgot-password', '.auth-page'],

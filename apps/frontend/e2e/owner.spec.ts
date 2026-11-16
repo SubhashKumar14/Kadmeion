@@ -620,6 +620,7 @@ test('F1 recovery request and password reset use isolated GoTrue and Mailpit', a
 });
 
 test('new email/password account can open the workspace immediately', async ({page}) => {
+  test.setTimeout(60_000);
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
   const owner = {email:'instant-' + randomUUID() + '@testing.invalid', password:'LocalFixture!' + randomUUID()};
   await page.goto('/signup');
