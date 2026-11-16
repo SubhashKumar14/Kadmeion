@@ -872,3 +872,29 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-revision-honest-state p{color:var(--body);font-size:11px;line-height:1.6}
 .ws-revision-honest-state a{font-size:11px;text-decoration:underline}
 @media(max-width:900px){.ws-revision-canvas{height:300px}}
+
+/* PUBLIC-04: fail-closed native share dialog. No unverified public link is copied. */
+.ws-preview-header-status{flex-wrap:wrap;justify-content:flex-end}
+.ws-share-dialog{color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;box-shadow:0 24px 72px #111e3150;padding:30px 32px;
+  width:min(550px,calc(100vw - 32px));max-height:min(90dvh,850px);overflow:auto}
+.ws-share-dialog::backdrop{background:rgba(15,31,44,.42)}
+.ws-share-heading{display:flex;justify-content:space-between;align-items:start;gap:20px}
+.ws-share-heading h2{font:500 clamp(26px,3vw,34px)/1.12 Georgia,serif;margin:14px 0 8px}
+.ws-share-dialog>p:not(.ws-share-gate){color:var(--body);font-size:12px;line-height:1.65}
+.ws-share-close{border:0;background:none;color:var(--body);font-size:26px;min-width:40px;min-height:40px;cursor:pointer}
+.ws-share-dialog label{display:block;color:var(--ink);font-size:11px;font-weight:750;margin:24px 0 7px}
+.ws-share-address{display:flex;align-items:center;border:1px solid var(--line-dark);
+  border-radius:9px;gap:8px;padding:6px;background:var(--surface);min-width:0}
+.ws-share-address input{flex:1;min-width:0;border:0;outline-offset:2px;padding:6px 8px;
+  background:transparent;color:var(--body);font-size:12px}
+.ws-share-address button{min-height:35px;padding:6px 12px;border:1px solid var(--line);
+  border-radius:7px;background:var(--surface-soft);color:var(--body)}
+.ws-share-dialog button:disabled{opacity:.6;cursor:not-allowed}
+.ws-share-gate{padding:14px 16px;background:var(--accent-soft);border:1px solid var(--line);
+  border-radius:9px;font-size:12px;line-height:1.6;color:var(--ink)}
+.ws-share-actions{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:22px 0}
+.ws-share-footer{border-top:1px solid var(--line);padding-top:20px;font-size:12px}
+.ws-share-footer p{color:var(--body);line-height:1.6}
+@media(max-width:580px){.ws-share-dialog{padding:22px 18px}
+  .ws-share-address{flex-wrap:wrap}.ws-share-address input{flex-basis:100%}}

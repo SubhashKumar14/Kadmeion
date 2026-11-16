@@ -382,6 +382,20 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByLabel('Simulated visitor portfolio appearance')).toBeVisible();
   await page.getByLabel('Preview device').selectOption('390');
   await expect(page.getByText('Saved revision · No public delivery')).toBeVisible();
+  await page.getByRole('button',{name:'Share portfolio'}).click();
+  const shareDialog=page.getByRole('dialog',{name:'Share your work'});
+  await expect(shareDialog).toBeVisible();
+  await expect(shareDialog.getByRole('button',{name:'Copy link'})).toBeDisabled();
+  await expect(shareDialog.getByRole('button',{name:'Native Share unavailable'})).toBeDisabled();
+  await expect(shareDialog.getByRole('textbox',{name:'Verified public link'}))
+    .toHaveValue('No verified public URL');
+  await page.keyboard.press('Escape');
+  await expect(shareDialog).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Share portfolio'})).toBeFocused();
+  await page.getByRole('button',{name:'Share portfolio'}).click();
+  await capture('34_SHARE_GATE_BROWSER');
+  await shareDialog.getByRole('button',{name:'Done'}).click();
+  await expect(shareDialog).toHaveCount(0);
   await page.getByRole('button',{name:/^Author preview/}).click();
   await expect(page.locator('.ws-preview-caution')).toContainText('Private author preview.');
   await page.goto(editorPath);

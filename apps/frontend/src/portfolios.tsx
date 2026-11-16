@@ -577,12 +577,53 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 
 /** EDIT-09: an owner-only visual simulation. This route cannot activate
  * publishing, obtain reviewer grants or create consented public projections. */
+/** PUBLIC-04 share-state preview. No owner-private draft has a public URL here. */
+function PrivateShareDialog({onClose}:{onClose:()=>void}) {
+  const dialog=useRef<HTMLDialogElement|null>(null);
+  useEffect(()=>{
+    const element=dialog.current;
+    if(!element)return;
+    element.showModal();
+    return ()=>{if(element.open)element.close();};
+  },[]);
+  return <dialog ref={dialog} className="ws-share-dialog" aria-modal="true"
+    aria-labelledby="kd-share-title" aria-describedby="kd-share-description"
+    onClose={onClose}>
+    <header className="ws-share-heading">
+      <div><p className="ws-kicker">SHARE PORTFOLIO</p><h2 id="kd-share-title">Share your work</h2></div>
+      <button type="button" className="ws-share-close" aria-label="Close share dialog"
+        onClick={()=>dialog.current?.close()}>×</button>
+    </header>
+    <p id="kd-share-description">This is a saved, owner-private preview. No publicly verified shareable URL is available.</p>
+    <label htmlFor="kd-share-address">Verified public link</label>
+    <div className="ws-share-address">
+      <input id="kd-share-address" type="text" value="No verified public URL" readOnly
+        aria-describedby="kd-share-gate"/>
+      <button type="button" disabled>Copy link</button>
+    </div>
+    <p id="kd-share-gate" className="ws-share-gate">
+      Sharing remains disabled until an approved public host confirms release visibility,
+      direct-asset revocation and an authentic visitor URL. Private source and editor
+      controls are never exposed through this dialog.
+    </p>
+    <div className="ws-share-actions">
+      <button type="button" className="ws-secondary" disabled>Native Share unavailable</button>
+      <button type="button" className="ws-primary" onClick={()=>dialog.current?.close()}>Done</button>
+    </div>
+    <footer className="ws-share-footer">
+      <strong>Visitor experience</strong>
+      <p>A verified released URL would open the independent portfolio, without the Kadmeion workspace shell.</p>
+    </footer>
+  </dialog>;
+}
+
 export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
   const [record,setRecord]=useState<PortfolioRecord|null>(null);
   const [error,setError]=useState('');
   const [view,setView]=useState<'author'|'visitor'>('visitor');
   const [device,setDevice]=useState<0|390|768>(0);
   const [attempt,setAttempt]=useState(0);
+  const [shareOpen,setShareOpen]=useState(false);
   useEffect(()=>{
     let active=true;
     setRecord(null);setError('');
@@ -606,6 +647,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
       {record&&<div className="ws-preview-header-status">
         <span>Private preview</span>
         <span>{device===390?'Phone':device===768?'Tablet':'Desktop'}</span>
+        <button type="button" className="ws-secondary" onClick={()=>setShareOpen(true)}>Share portfolio</button>
       </div>}
     </header>
     {error&&<div className="ws-inline-alert" role="alert">
@@ -671,6 +713,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         </div>
       </aside>
     </div>}
+    {record&&shareOpen&&<PrivateShareDialog onClose={()=>setShareOpen(false)}/>}
   </section>;
 }
 
