@@ -1231,3 +1231,18 @@ Previous new three-pane RevisionWorkspace `962d3b4` passed both [frontend CI 437
 **Phase decision:** F2's currently scoped *code/integration and responsive-browser pass* is complete. Global 52-screen design acceptance and per-screen owner sign-off are not complete; no percentage is assigned.
 
 **Exact next action:** Start F3 screens 18–26: editor workbench, content, components, personal components, theme/responsive, assets, source, revision/problems and fullscreen preview. Read each owner-approved reference spec and the corrected screen 26 filename `26_EDIT-09_Fullscreen_Portfolio_Only_REVISION_LIGHT.png`; inspect native captures, fix visual hierarchy and keyboard/function defects, rerun same-SHA CI, update this handoff plus Notion, and preserve production authorization gates.
+
+
+---
+
+## 16 November 2026 — F3 verified editor correction and handoff
+
+**Source:** [F3 evidence note](FRONTEND_F3_IMPLEMENTATION_NOTES_2026-11-16.md); confirmed original LIGHT PNG SHA prefixes 18–26, including corrected fullscreen #26; Canva 12 branding pages remain approved.
+
+**Latest application code:** [9af4968579e8796a298cec7c27893e643ddca2ef](https://github.com/SubhashKumar14/Kadmeion/commit/9af4968579e8796a298cec7c27893e643ddca2ef). F3 added the accessible horizontal editor mode bar, natural vertical page layout and readable inspector inputs, strict local owned-source buffer preservation with discard/recovery, typed section Up/Down + Undo transactions, unit and real authenticated Chromium coverage, and normalized light + genuine runtime dark screenshot captures. Protected code origins, private saves and public release gates remain unchanged.
+
+**Both CI workflows at exact application SHA are green:** [Frontend 43834927446](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43834927446) (19 public Chromium checks, TS, build, production audit); [Application/Database 43834927534](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43834927534) (505 Node tests, 511 pgTAP assertions, 4 isolated authenticated Chromium scenarios). Native F3 owner screenshots are in the latter run's `kadmeion-owner-browser-captures` artifact. Original approved LIGHT image CRC/SHA prefixes checked for 9/9; visual similarity metrics are diagnostic, never a pixel-match release gate.
+
+**Not closed:** Owner visual acceptance, independent complete WCAG/screen-reader audits, verified S0→S1 trusted source copy provenance, hosted release/CDN and public custom-code isolation proofs. This is F3 code/integration *pass*, not full 52-screen product acceptance or 100% of all specialized editing features. No hosted production action, destructive change, paid dependency or main merge.
+
+**Next exact step:** F4 screens 27–34: review original references, check source authority/consent/delivery gates, implement and test secure reviewer/public flows, then same-SHA CI and Notion/GitHub handoff. Continue one phase per response, preserving user-approved screenshot references as design direction rather than fixed-size CSS frames.
