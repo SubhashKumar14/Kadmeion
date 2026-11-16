@@ -78,6 +78,7 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
         break;
       case '/app/settings/security':
         await expect(page.getByRole('button',{name:'Sign out other sessions'})).toBeVisible();
+        await expect(page.getByRole('heading',{name:'Security confirmations'})).toBeVisible();
         break;
       case '/app/trash':
         await expect(page.getByText('Trash is empty.')).toBeVisible();
@@ -142,6 +143,11 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await page.setViewportSize({width:1366,height:900});
   await page.goto('/app/settings/security');
   await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+  await page.getByRole('button',{name:'Show password entries'}).click();
+  await expect(page.getByLabel('Current password')).toHaveAttribute('type','text');
+  await expect(page.getByLabel('New password',{exact:true})).toHaveAttribute('type','text');
+  await page.getByRole('button',{name:'Hide password entries'}).click();
+  await expect(page.getByLabel('Current password')).toHaveAttribute('type','password');
   await expect(page.getByLabel('Current password')).toBeVisible();
   await expect(page.getByLabel('New password',{exact:true})).toBeVisible();
   await page.goto('/app/settings/privacy');

@@ -1250,3 +1250,11 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-settings-privacy-note{grid-column:1/-1;border-top:1px solid var(--line);
   padding:14px 0;font-size:.85rem;line-height:1.6;color:var(--body)}
 @media(max-width:850px){.ws-settings-privacy{grid-template-columns:1fr}}
+
+/* SET-04: plain, truthful security guidance; no fabricated provider/session status. */
+.ws-security-guidance{margin-top:18px;padding:18px 0;border-top:1px solid var(--line);
+  max-width:900px}
+.ws-security-guidance h2{font-size:clamp(1.1rem,1.8vw,1.4rem);margin:0 0 8px}
+.ws-security-guidance p{font-size:.875rem;line-height:1.65;color:var(--body);max-width:78ch}
+.ws-security-guidance a{display:inline-flex;align-items:center;min-height:44px;
+  font-weight:650;text-decoration:underline;text-underline-offset:3px}

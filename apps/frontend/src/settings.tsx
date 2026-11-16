@@ -283,6 +283,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [showPasswords, setShowPasswords] = useState(false);
   const [confirmOthers, setConfirmOthers] = useState(false);
   const otherSessionsTrigger = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
@@ -295,7 +296,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
     try {
       const outcome = await port.changePasswordWithCurrentPassword({ currentPassword: current, newPassword: next });
       if (outcome.error) throw new Error(outcome.error.message);
-      setCurrent(''); setNext(''); setConfirm('');
+      setCurrent(''); setNext(''); setConfirm(''); setShowPasswords(false);
       setMessage({error: false, text: 'Password updated.'});
     } catch (error) {setMessage(failure(error));}
     finally {setBusy(false);}
@@ -315,9 +316,11 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
 
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Change password"><form className="ws-settings-form" onSubmit={event => void change(event)}>
-      <label>Current password<input type="password" required maxLength={128} autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)}/></label>
-      <label>New password<input type="password" required minLength={8} maxLength={128} autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)}/></label>
-      <label>Confirm new password<input type="password" required minLength={8} maxLength={128} autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
+      <label>Current password<input type={showPasswords?'text':'password'} required maxLength={128} autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)}/></label>
+      <label>New password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)}/></label>
+      <label>Confirm new password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
+      <button type="button" className="ws-secondary" aria-pressed={showPasswords} disabled={busy}
+        onClick={() => setShowPasswords(value => !value)}>{showPasswords?'Hide password entries':'Show password entries'}</button>
       <button className="ws-primary" type="submit" disabled={busy}>Update password</button>
     </form></SettingsCard>
     <SettingsCard title="Other sessions"><p>Revoke access on other signed-in browsers and devices.
@@ -334,7 +337,14 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
         <button type="button" className="ws-secondary" disabled={busy}
           onClick={() => {setConfirmOthers(false); otherSessionsTrigger.current?.focus();}}>Cancel</button>
       </div>}</SettingsCard>
-    </div></>;
+    </div>
+    <section className="ws-security-guidance" aria-labelledby="security-guidance-title">
+      <h2 id="security-guidance-title">Security confirmations</h2>
+      <p>Password changes require the current password. Signing out other sessions requires a separate
+        confirmation; a per-device session directory is not available in this interface. Neither action
+        should be mistaken for immediate expiry of previously issued access tokens.</p>
+      <a href="/forgot-password">Check password recovery availability</a>
+    </section></>;
 }
 
 function Trash({service}: {service: Services['trash']}) {
