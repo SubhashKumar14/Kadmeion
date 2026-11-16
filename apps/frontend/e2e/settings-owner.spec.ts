@@ -227,6 +227,11 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await password.fill(owner.password);
   await identity.click();
   await expect(page.getByText('Fresh sign-in verified.',{exact:false})).toBeVisible();
+  const appWithdrawal=page.getByRole('button',{name:'Withdraw app-managed public content'});
+  await expect(appWithdrawal).toBeDisabled();
+  await page.getByRole('textbox',{name:'Type WITHDRAW PUBLIC CONTENT to confirm'}).fill('WITHDRAW PUBLIC CONTENT');
+  await appWithdrawal.click();
+  await expect(page.getByText('Application withdrawal confirmed.',{exact:false})).toBeVisible();
   await page.getByRole('button',{name:'Withdraw deletion request'}).click();
   await expect(page.getByText('Account deletion request withdrawn.')).toBeVisible();
   await expect(page.getByRole('list',{name:'Recent deletion requests'})).toContainText('Withdrawn');

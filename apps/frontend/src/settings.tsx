@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountExitPreflight, AccountExitReauthChallenge, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
 
@@ -588,7 +588,9 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     </SettingsCard>
     <SettingsCard title="Offline static preview">
       <p>Run preflight on a saved revision to download an eligible scriptless HTML preview. The ZIP has no public URL and excludes custom code and private media.</p>
-      <a href="/app/portfolios">Choose a portfolio to preview</a>
+      {selected
+        ? <a href={'/app/portfolios/'+selected+'/publish'}>Open preflight for selected portfolio</a>
+        : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
   </div></>;
 }
@@ -602,7 +604,9 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
-  const [reauthExpires, setReauthExpires] = useState('');
+  const [reauth, setReauth] = useState<AccountExitReauthVerification|null>(null);
+  const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
+  const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
 
   async function check() {
@@ -612,6 +616,9 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     setInventory(null);
     setRequests(null);
     setConfirmation('');
+    setReauth(null);
+    setWithdrawConfirmation('');
+    withdrawalOperation.current=null;
     try {
       const [result, history] = await Promise.all([service.preflight(),service.list()]);
       setInventory(result);
@@ -636,7 +643,9 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       // Hide old actions until a fresh read confirms the current request state.
       setRequests(null);
       setConfirmation('');
-      setReauthExpires('');
+      setReauth(null);
+      setWithdrawConfirmation('');
+      withdrawalOperation.current=null;
       challenge.current=null;
       challengeOperation.current=null;
       operation.current=null;
@@ -658,7 +667,9 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     form.reset();
     setBusy(true);
     setMessage(null);
-    setReauthExpires('');
+    setReauth(null);
+    setWithdrawConfirmation('');
+    withdrawalOperation.current=null;
     try {
       if (challenge.current && Date.parse(challenge.current.expiresAt)<=Date.now()) {
         challenge.current=null;
@@ -674,7 +685,33 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       challenge.current=null;
       challengeOperation.current=null;
       const receipt=await service.completeReauth(challengeId);
-      setReauthExpires(receipt.expiresAt);
+      setReauth(receipt);
+    } catch (error) {
+      setMessage(failure(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function withdrawAppContent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !activeRequest || !reauth || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
+    if (Date.parse(reauth.expiresAt)<=Date.now()) {
+      setReauth(null);
+      setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
+      return;
+    }
+    withdrawalOperation.current ??= crypto.randomUUID();
+    setBusy(true);
+    setMessage(null);
+    try {
+      const receipt=await service.withdrawPublicContent(activeRequest.id,reauth.challengeId,
+        withdrawalOperation.current,'WITHDRAW PUBLIC CONTENT');
+      setWithdrawConfirmation('');
+      setReauth(null);
+      withdrawalOperation.current=null;
+      setMessage({error:false,text:'Application withdrawal confirmed. Reviewer grants revoked: '+
+        receipt.revokedReviewerGrants+'. Independent host withdrawal remains unverified.'});
     } catch (error) {
       setMessage(failure(error));
     } finally {
@@ -687,7 +724,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       <p>Account deletion requires fresh identity verification, public revocation and storage checks. You can record or withdraw a request while these checks are pending.</p>
       <button className="ws-primary" type="button" disabled={busy}
         onClick={()=>void check()}>Review deletion prerequisites</button>
-      {inventory && <section aria-label="Private inventory">
+      {inventory && <section aria-label="Private inventory" className="ws-exit-inventory">
         <h3>Private inventory</h3>
         <dl><dt>Projects</dt><dd>{inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.counts.portfolios}</dd>
           <dt>Portfolio revisions</dt><dd>{inventory.counts.portfolioRevisions}</dd>
@@ -711,7 +748,19 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
           </label>
           <button type="submit" className="ws-secondary" disabled={busy}>Verify identity for account exit</button>
         </form>
-        {reauthExpires && <p role="status">Fresh sign-in verified. Proof expires at <time dateTime={reauthExpires}>{new Date(reauthExpires).toLocaleTimeString()}</time>. Deletion remains gated.</p>}
+        {reauth && <>
+          <p role="status">Fresh sign-in verified. Proof expires at <time dateTime={reauth.expiresAt}>{new Date(reauth.expiresAt).toLocaleTimeString()}</time>. Deletion remains gated.</p>
+          <form onSubmit={event=>void withdrawAppContent(event)}>
+            <p>Withdraw app-managed profile and case-study projections and revoke reviewer grants. External host and cache withdrawal require separate proof.</p>
+            <label className="ws-export-select">Type WITHDRAW PUBLIC CONTENT to confirm
+              <input autoComplete="off" value={withdrawConfirmation} disabled={busy}
+                onChange={event=>setWithdrawConfirmation(event.target.value)}/>
+            </label>
+            <button type="submit" className="ws-secondary" disabled={busy || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT'}>
+              Withdraw app-managed public content
+            </button>
+          </form>
+        </>}
       </>}
       {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
         <label className="ws-export-select">Type DELETE MY ACCOUNT to record the request

@@ -1,10 +1,9 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, Suspense, lazy, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrandMark, Landing, useTheme } from './landing.tsx';
 import { TemplateExplorer } from './templates.tsx';
 import { ExplorePortfolios } from './explore.tsx';
 import { AuthApp, isAuthRoute } from './auth.tsx';
-import { WorkspaceApp, isWorkspaceRoute } from './workspace.tsx';
 import './styles.css';
 
 
@@ -152,10 +151,19 @@ function UnavailableRoute() {
 
 const mount = document.getElementById('root');
 if (!mount) throw new Error('Kadmeion frontend root is missing.');
+const WorkspaceRoute=lazy(async()=>{
+  const {WorkspaceApp,isWorkspaceRoute}=await import('./workspace.tsx');
+  return {default:function WorkspaceEntry({path}:{path:string}) {
+    return isWorkspaceRoute(path) ? <WorkspaceApp/> : <UnavailableRoute/>;
+  }};
+});
 const path = window.location.pathname.replace(/\/$/, '') || '/';
 const page = path === '/templates' ? <TemplateExplorer/> :
   path === '/explore' ? <ExplorePortfolios/> :
-  isWorkspaceRoute(path) ? <WorkspaceApp/> :
+  (path === '/app' || path.startsWith('/app/')) ?
+    <Suspense fallback={<main id="main"><p role="status">Loading workspace…</p></main>}>
+      <WorkspaceRoute path={path}/>
+    </Suspense> :
   isAuthRoute(path) ? <AuthApp/> :
   path === '/' ? <Landing/> :
   visitorSurface(path) ? <VisitorDeliveryGate surface={visitorSurface(path)!}/> :

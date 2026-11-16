@@ -1280,3 +1280,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-export-select{display:grid;gap:6px;margin:12px 0;font-weight:700}
 .ws-export-select input,.ws-export-select select{width:100%;min-height:44px;min-width:0;
   padding:8px 12px;border:1px solid var(--line-dark);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit}
+.ws-exit-inventory{margin-top:16px}
+.ws-exit-inventory dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:12px;
+  border:1px solid var(--line);border-radius:8px;background:var(--surface-soft)}
+.ws-exit-inventory dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
