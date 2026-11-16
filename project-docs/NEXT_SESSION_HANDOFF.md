@@ -1,3 +1,12 @@
+## F4 latest correction — protected matrix and saved-revision accessibility (16 November 2026)
+
+- [`143487a`](https://github.com/SubhashKumar14/Kadmeion/commit/143487aaece8bb59b553dbb0a650e619720dafb0) restored the immutable F0 screen-source matrix row 34 to its approved canonical form. Previous change to matrix runtime route/status at `e764456` was rejected by the F0 integrity verifier (`F0 matrix not synced to current approval PUBLIC-04`). Implementation progress must be recorded in this handoff, **not** by modifying approved source-of-truth rows.
+- The application/database run [#43842622649](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43842622649) then passed contracts and 511 local pgTAP assertions but had an authenticated Chromium failure because the saved-revision dropdown was not found by its exact accessible label. [`5b3bcd1`](https://github.com/SubhashKumar14/Kadmeion/commit/5b3bcd1d41fff13217e04b93d4e802a2e15de714) adds explicit `aria-label="Saved revision"` and checks loaded portfolio head separately before resolving the named combobox. **This fix requires fresh exact-SHA browser verification; do not claim the failure resolved until CI passes.**
+- Reviewed actual browser screenshots for an earlier commit `7846e7c`: 27 Reviewer Staging and 29 Private Preflight render responsive workspace panels, with correct owner-private warnings and no published URL; no authentic owner PNG side-by-side comparison was possible. Screenshots are dated earlier than the final saved-revision/grant-list UI and are not final visual acceptance.
+- Next exact action: validate latest React build, F0 integrity, 511 pgTAP assertions, isolated authenticated Chromium (especially revision chooser and post-reload grant revocation); correct if failing. Owner approval is still required to enable verified hosted reviewer/public delivery and production.
+
+---
+
 ## F4 continuation — owner-scoped saved revision selection and reviewer recovery (16 November 2026)
 
 **Code commits since initial F4 handoff:**
