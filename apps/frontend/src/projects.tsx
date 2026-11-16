@@ -65,6 +65,19 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const modal=useRef<HTMLDialogElement>(null);
   const opener=useRef<HTMLButtonElement>(null);
   const topOpener=useRef<HTMLButtonElement>(null);
+  function invalidateOwner() {
+    requestEpoch.current++;
+    pageInFlight.current=false;
+    setLoadingMore(false);
+    setPageError('');
+    setSearch('');
+    setDraft(freshDraft());
+    setCustomSlug(false);
+    setError('');
+    setNotice('');
+    modal.current?.close();
+    setState({status:'error',message:accountChangedMessage});
+  }
   useEffect(()=>{
     let active=true;
     const epoch=++requestEpoch.current;
@@ -77,7 +90,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       if (!active || epoch!==requestEpoch.current) return;
       const ownerId=identity.data?.user?.id;
       if (identity.error || !ownerId) {
-        setState({status:'error',message:accountChangedMessage});
+        invalidateOwner();
         return;
       }
       const pageReader=(port as ProjectPagePort).listOwnerProjectsPage;
@@ -90,7 +103,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       const check=await port.getUser();
       if (!active || epoch!==requestEpoch.current) return;
       if (check.error || check.data?.user?.id!==ownerId) {
-        setState({status:'error',message:accountChangedMessage});
+        invalidateOwner();
       } else if (!reply.data || reply.error) {
         setState({status:'error',message:reply.error?.message??'Your private project page could not be loaded.'});
       } else if (!validProjectPage(reply.data,ownerId,null)) {
@@ -118,19 +131,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         const result=await port.getUser();
         if (active && epoch===requestEpoch.current &&
             (result.error || result.data?.user?.id!==ownerId)) {
-          requestEpoch.current++;
-          pageInFlight.current=false;
-          setLoadingMore(false);
-          setPageError('');
-          setState({status:'error',message:accountChangedMessage});
+          invalidateOwner();
         }
       } catch {
         if (active && epoch===requestEpoch.current) {
-          requestEpoch.current++;
-          pageInFlight.current=false;
-          setLoadingMore(false);
-          setPageError('');
-          setState({status:'error',message:accountChangedMessage});
+          invalidateOwner();
         }
       }
     };
@@ -162,12 +167,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setLoadingMore(true);
     setPageError('');
     const rejectStaleOwner=()=>{
-      if(epoch!==requestEpoch.current)return;
-      requestEpoch.current++;
-      pageInFlight.current=false;
-      setLoadingMore(false);
-      setPageError('');
-      setState({status:'error',message:accountChangedMessage});
+      if(epoch===requestEpoch.current) invalidateOwner();
     };
     try {
       const startIdentity=await port.getUser();
@@ -229,7 +229,19 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     if(saving)return;
     setSaving(true);setError('');setNotice('');
     try {
+      const identity=await port.getUser();
+      const expectedOwner=identity.data?.user?.id;
+      if(identity.error || !expectedOwner ||
+         (state.status==='ready' && state.ownerId!==expectedOwner)) {
+        invalidateOwner();
+        return;
+      }
       const saved=await port.createPrivateProject(draft);
+      const current=await port.getUser();
+      if(current.error || current.data?.user?.id!==expectedOwner) {
+        invalidateOwner();
+        return;
+      }
       if(saved.error||!saved.data) {
         setError(saved.error?.message||'Private project save was not confirmed. Your form is retained.');
         return;
@@ -269,6 +281,12 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         <button type="button" aria-pressed={view==='gallery'} onClick={()=>setView('gallery')}>Gallery</button>
         <button type="button" aria-pressed={view==='list'} onClick={()=>setView('list')}>List</button>
       </div>
+      <button type="button" className="ws-secondary" disabled={state.status!=='ready'}
+        onClick={()=>{
+          requestEpoch.current++;
+          setState({status:'loading'});
+          setReload(value=>value+1);
+        }}>Refresh projects</button>
     </div>
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
