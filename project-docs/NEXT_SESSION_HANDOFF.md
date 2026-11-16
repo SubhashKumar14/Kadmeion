@@ -1,3 +1,19 @@
+## F4 continuation — owner-scoped saved revision selection and reviewer recovery (16 November 2026)
+
+**Code commits since initial F4 handoff:**
+- [`54d69ca`](https://github.com/SubhashKumar14/Kadmeion/commit/54d69ca57c08d6d960dd6f0fdc0a4d70ce02add5): Added owner-RLS metadata listing of registered reviewer grants (no raw tokens, token digests or hidden source). UI now displays persisted grant status, expiry and created timestamp, and supports selecting a prior grant for explicit revoke confirmation after reload. Added Chromium reload/revocation coverage and responsive list styling.
+- [`a816a0b`](https://github.com/SubhashKumar14/Kadmeion/commit/a816a0b302e2a6402eac36dbd1bdbae2038492c1): Removed inaccurate client-invented grant creation timestamps; refresh from the real database metadata on registration.
+- [`5478c96`](https://github.com/SubhashKumar14/Kadmeion/commit/5478c968d1198617c366641a96d6cc153d538a14): Added owner-RLS list of real immutable portfolio revisions (bounded, metadata-only); the staging and preflight UI selects an actual saved revision rather than only the newest. Missing/unverified revisions cannot be frozen. Chromium asserts selection of revision 2 from the owner-private journal.
+- [`d253655`](https://github.com/SubhashKumar14/Kadmeion/commit/d253655baacdd2fe5fc2d4f0f8230cac828cece8): Repaired the revocation confirmation after a reload with no currently selected freeze and added a real browser regression path.
+
+**Authority and security:** Existing PostgreSQL RLS and column-level grants are reused; no SQL migrations or hosted config were changed. Only `revision,created_at,snapshot_sha256` from owner revision journal and `id,request_id,portfolio_id,expires_at,revoked_at,created_at` from owner reviewer registry are requested. Never persist or surface raw reviewer credentials. These are owner-private controls, not externally enabled reviewer links or public release.
+
+**Verification condition:** Recheck the **latest** exact commit's frontend, contract, pgTAP and real authenticated Chromium CI. Earlier runs may be superseded/cancelled by later commits. A code commit and passing TypeScript compilation are not real hosted/public delivery proof. Original F4 LIGHT PNGs, independent visual owner acceptance and external CDN revocation checks still outstanding.
+
+**Next action:** Inspect and repair latest exact-SHA CI; capture F4 owner Chromium light/dark/mobile evidence and compare to approved original PNGs when accessible; then complete unresolved F4 server-delivery proofs and implementation under owner authorization before F5. This continuation is not full F4 acceptance.
+
+---
+
 ## 16 November 2026 — F4 implementation checkpoint: private reviewer grants and sharing controls (27, 29, 30, 34)
 
 **Branch:** `feat/b0-backend-foundation`; **starting SHA:** `2cd3ba8fcf094df78c309a27575d601ca7c879f8`. No main-branch merge, hosted feature toggles, production or Supabase changes. ₹0 new recurring cost.
