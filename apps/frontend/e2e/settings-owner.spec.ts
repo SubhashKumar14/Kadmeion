@@ -35,6 +35,12 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
 
   await page.goto('/app/settings');
   await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  for(const category of ['Your account','Control & privacy','Your data','Visibility'])
+    await expect(page.getByRole('heading',{name:category,level:2})).toBeVisible();
+  await expect(page.getByRole('link',{name:'Open privacy & sharing'}))
+    .toHaveAttribute('href','/app/settings/privacy');
+  await expect(page.getByRole('link',{name:'Open export center'}))
+    .toHaveAttribute('href','/app/export');
   await page.getByRole('button',{name:'Switch to dark theme'}).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
 

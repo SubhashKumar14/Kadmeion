@@ -14,6 +14,23 @@ const settingsLinks = [
   ['/app/export', 'Export center', 'Download your application metadata.'],
   ['/app/settings/account/delete', 'Account exit', 'Review prerequisites for account deletion.']
 ] as const;
+const settingsSections = [
+  {title:'Your account',detail:'Identity and sign-in controls.',items:[
+    ['/app/profile','Developer profile','Edit your private profile and eligible public fields.'],
+    settingsLinks[2]
+  ]},
+  {title:'Control & privacy',detail:'Choose what can be disclosed and which activity you receive.',items:[
+    settingsLinks[0],settingsLinks[1],
+    ['/app/integrations','Platform connections','Review private links and genuine provider connection states.']
+  ]},
+  {title:'Your data',detail:'Export, recover and manage the lifecycle of account content.',items:[
+    settingsLinks[4],settingsLinks[3],settingsLinks[5]
+  ]},
+  {title:'Visibility',detail:'Inspect private portfolio work and analytics availability.',items:[
+    ['/app/portfolios','Portfolio library','Review private drafts and unpublished release candidates.'],
+    ['/app/analytics','Portfolio analytics','Review the opt-in status; unavailable visitor data is never invented.']
+  ]}
+] as const;
 type Services = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['ownerSettings']>>['data']>;
 type Message = {error: boolean; text: string} | null;
 const emptyMessage: Message = null;
@@ -55,8 +72,17 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
 
   const title = settingsLinks.find(([href]) => href === path)?.[1] ?? 'Settings';
   let content: ReactNode = null;
-  if (path === '/app/settings') content = <div className="ws-settings-grid">{settingsLinks.map(([href, title, detail]) =>
-    <SettingsCard key={href} title={title}><p>{detail}</p><a href={href} className="ws-secondary">Open {title.toLowerCase()}</a></SettingsCard>)}</div>;
+  if (path === '/app/settings') content = <div className="ws-settings-grid ws-settings-hub" aria-label="Account settings sections">
+    {settingsSections.map(group=><SettingsCard key={group.title} title={group.title}>
+      <p className="ws-settings-group-description">{group.detail}</p>
+      <ul className="ws-settings-hub-links">
+        {group.items.map(([href,label,detail])=><li key={href}>
+          <div><strong>{label}</strong><p>{detail}</p></div>
+          <a href={href} className="ws-secondary">Open {label.toLowerCase()}</a>
+        </li>)}
+      </ul>
+    </SettingsCard>)}
+  </div>;
   else if (!services) content = error
     ? <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary" onClick={() => {
       setError(''); setRetry(value => value + 1);

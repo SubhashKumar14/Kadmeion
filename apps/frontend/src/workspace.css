@@ -1182,3 +1182,20 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-release-preflight-gates .ws-release-diagnostics h4{font-size:.97rem}
 .ws-release-preflight-gates .ws-private-static-preview{min-height:320px;max-height:72dvh}
 @media(max-width:500px){.ws-release-unrun-checks li{align-items:start;flex-direction:column;gap:5px}}
+
+
+/* SET-01: approved grouped information architecture, not a mockup-sized grid. */
+.ws-settings-hub{grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(16px,2vw,26px)}
+.ws-settings-hub .ws-setting-card{min-width:0;padding:clamp(18px,2vw,28px)}
+.ws-settings-hub .ws-setting-card h2{margin-bottom:6px}
+.ws-settings-hub .ws-settings-group-description{font-size:.875rem;line-height:1.55;margin-bottom:19px}
+.ws-settings-hub-links{margin:0;padding:0;list-style:none}
+.ws-settings-hub-links li{display:flex;justify-content:space-between;align-items:center;
+  gap:clamp(10px,2vw,20px);min-width:0;padding:15px 0;border-top:1px solid var(--line)}
+.ws-settings-hub-links li>div{min-width:0}
+.ws-settings-hub-links strong{font-size:.94rem;color:var(--ink)}
+.ws-settings-hub-links p{margin:5px 0 0;font-size:.81rem;line-height:1.5}
+.ws-settings-hub-links a{flex:none;min-height:44px;display:inline-flex;align-items:center;padding:9px 14px}
+@media(max-width:1150px){.ws-settings-hub{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:440px){.ws-settings-hub-links li{flex-direction:column;align-items:stretch}
+  .ws-settings-hub-links a{align-self:flex-start}}
