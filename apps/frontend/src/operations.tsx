@@ -385,7 +385,10 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
     cases:OwnerModerationCase[];events:OwnerModerationEvent[];
   }|null>(null);
   const records=loaded?.scope===scope?loaded:null;
-  const [selected,setSelected]=useState('');
+  // Preserve the selected case across this owner's post-appeal refresh, but
+  // discard it synchronously when a different auth adapter is supplied.
+  const [selection,setSelection]=useState<{port:SupabaseBrowserAuthPort;id:string}|null>(null);
+  const selected=selection?.port===port?selection.id:'';
   const [statement,setStatement]=useState('');
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
   const [busy,setBusy]=useState(false);
@@ -398,7 +401,6 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
     let active=true;
     setLoaded(null);
     setFailedScope(null);
-    setSelected('');
     setStatement('');
     void (async()=>{
       const {data:service}=await port.privateModeration();
@@ -438,7 +440,7 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       {records?.cases.length===0 && <p>There are no cases for this account.</p>}
       {!!records?.cases.length && <label className="ws-ops-field">Case to review
         <select value={selected} disabled={busy} onChange={event=>{
-          setSelected(event.target.value);setStatement('');setMessage(null);setOperation(crypto.randomUUID());
+          setSelection({port,id:event.target.value});setStatement('');setMessage(null);setOperation(crypto.randomUUID());
         }}>
           <option value="">Choose a case</option>
           {records.cases.map(item=><option key={item.id} value={item.id}>
