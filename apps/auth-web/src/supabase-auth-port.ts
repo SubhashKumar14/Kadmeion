@@ -512,10 +512,19 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           throw new Error('Your public profile is live. Confirm withdrawal before saving these changes.');
       }
     }
-    if (!response.ok)
-      throw new Error(response.status === 401 || response.status === 403
-        ? 'Private workspace access was denied.' : response.status === 409
-        ? 'Project conflicts with an existing owner record. Choose a different slug.' : 'Private workspace request failed.');
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403)
+        throw new Error('Private workspace access was denied.');
+      if (response.status === 429)
+        throw new Error('Too many private workspace requests. Try again later.');
+      if (response.status === 409) {
+        const isProjectCreation = method === 'POST' && path.startsWith('projects?');
+        throw new Error(isProjectCreation
+          ? 'Project conflicts with an existing owner record. Choose a different slug.'
+          : 'Private workspace conflict. Reload the latest data before trying again.');
+      }
+      throw new Error('Private workspace request failed.');
+    }
     try { return await response.json() as unknown; }
     catch { throw new Error('Private workspace returned an invalid response.'); }
   }
