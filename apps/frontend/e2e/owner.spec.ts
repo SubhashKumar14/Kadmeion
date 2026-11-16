@@ -385,12 +385,19 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:'Share portfolio'}).click();
   const shareDialog=page.getByRole('dialog',{name:'Share your work'});
   await expect(shareDialog).toBeVisible();
+  // The visual background is an owner-private portfolio, not an editor shell.
+  const shareScene=page.locator('.ws-share-scene');
+  await expect(shareScene).toBeVisible();
+  await expect(shareScene.locator('.portfolio-only-preview')).toBeVisible();
+  await expect(shareScene).toHaveAttribute('data-public-delivery','disabled');
+  await expect(shareScene.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
   await expect(shareDialog.getByRole('button',{name:'Copy link'})).toBeDisabled();
   await expect(shareDialog.getByRole('button',{name:'Native Share unavailable'})).toBeDisabled();
   await expect(shareDialog.getByRole('textbox',{name:'Verified public link'}))
     .toHaveValue('No verified public URL');
   await page.keyboard.press('Escape');
   await expect(shareDialog).toHaveCount(0);
+  await expect(page.locator('.ws-share-scene')).toHaveCount(0);
   await expect(page.getByRole('button',{name:'Share portfolio'})).toBeFocused();
   await page.getByRole('button',{name:'Share portfolio'}).click();
   await capture('34_SHARE_GATE_BROWSER');

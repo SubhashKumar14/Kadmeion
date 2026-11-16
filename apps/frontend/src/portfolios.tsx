@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
 import {
   applyEditorTransaction, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
@@ -577,6 +578,21 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 
 /** EDIT-09: an owner-only visual simulation. This route cannot activate
  * publishing, obtain reviewer grants or create consented public projections. */
+/** PUBLIC-04: show only the actual saved, owner-private portfolio beneath
+ * the share modal. Never insert illustrative projects or imply a public release.
+ * This portal separates the visual portfolio surface from the workspace shell,
+ * while the native dialog supplies focus containment and Escape handling. */
+function PrivateShareScene({record,onClose}:{
+  record:PortfolioRecord;onClose:()=>void;
+}) {
+  return createPortal(<>
+    <div className="ws-share-scene" aria-hidden="true" data-public-delivery="disabled">
+      <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone/>
+    </div>
+    <PrivateShareDialog onClose={onClose}/>
+  </>, document.body);
+}
+
 /** PUBLIC-04 share-state preview. No owner-private draft has a public URL here. */
 function PrivateShareDialog({onClose}:{onClose:()=>void}) {
   const dialog=useRef<HTMLDialogElement|null>(null);
@@ -715,7 +731,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         </div>
       </aside>
     </div>}
-    {record&&shareOpen&&<PrivateShareDialog onClose={()=>setShareOpen(false)}/>}
+    {record&&shareOpen&&<PrivateShareScene record={record} onClose={()=>setShareOpen(false)}/>} 
   </section>;
 }
 

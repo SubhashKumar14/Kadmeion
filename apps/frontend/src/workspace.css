@@ -898,3 +898,24 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-share-footer p{color:var(--body);line-height:1.6}
 @media(max-width:580px){.ws-share-dialog{padding:22px 18px}
   .ws-share-address{flex-wrap:wrap}.ws-share-address input{flex-basis:100%}}
+
+/* PUBLIC-04: the approved frame shows the share modal over an independent
+ * portfolio, not over Kadmeion's editor or private preview controls.
+ * Only a real owner-scoped saved snapshot is painted in this backdrop. */
+.ws-share-scene{position:fixed;inset:0;z-index:120;overflow:auto;overscroll-behavior:contain;
+  background:var(--surface);pointer-events:none}
+.ws-share-scene>.portfolio-only-preview.pv-document{width:100%;max-width:none!important;min-height:100dvh;
+  margin:0;border-top:0}
+.ws-share-scene .pv-site{max-width:100%!important}
+.ws-share-scene .pv-site-head{padding:26px clamp(24px,7%,112px);min-height:87px}
+.ws-share-scene .pv-site-head strong{font:800 17px/1.3 Inter,Arial,sans-serif;letter-spacing:.2em}
+.ws-share-scene .pv-section{padding:52px clamp(24px,8%,125px)}
+.ws-share-scene .pv-hero-grid{min-height:425px;grid-template-columns:1.3fr 1fr}
+.ws-share-scene .pv-hero h2{font-size:clamp(38px,5vw,70px)}
+.ws-share-scene .pv-site-footer{padding:30px clamp(24px,8%,125px)}
+@media(max-width:700px){
+  .ws-share-scene .pv-site-head{padding:18px 22px;min-height:65px}
+  .ws-share-scene .pv-section{padding:24px 20px}
+  .ws-share-scene .pv-hero-grid{grid-template-columns:1fr;min-height:0}
+  .ws-share-scene .pv-hero h2{font-size:clamp(29px,7vw,42px)}
+}
