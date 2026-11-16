@@ -1542,3 +1542,23 @@ Previous new three-pane RevisionWorkspace `962d3b4` passed both [frontend CI 437
 **S0 integration order:** 1. verify CI at `11c8954` and remediate through file owners; 2. merge S3 after focused UI evidence; 3. resolve S5 principal scope and merge after targeted evidence; 4. integrate additive pagination in order S1→S2/S3→S6. Continue independent acceptance tests while blocked. Do not reset worker branches, edit worker-owned files without coordination, merge main, deploy production or spend money.
 
 **Open synchronization:** S1 contract map/reviewer/owner identity; S2 pagination UI and public QA; S3 draft retention/restore browser; S4 freeze pin/reviewer expiry; S5 principal-switch tests; S6 tests for all. This entry is a time-specific coordination checkpoint; check GitHub/Notion live before acting.
+
+
+---
+
+## 17 November 2026 — S0 second six-worker coordination batch
+
+**Base:** previously integrated `6f379cdf36f7e08e71f259b3410ede43e1ef2cad`; exact-head [frontend 43942858619](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43942858619) and [application/database 43942858413](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43942858413) both completed SUCCESS. New accepted source merges on feature branch only:
+1. **S1 PR #12**, worker `0ad4522` → integration merge `b5f5a2fce6c889fbc2de2c8896b08eb42893272d`, `apps/auth-web/src/supabase-auth-port.ts`: additive owner-private projects/portfolios cursor pagination, legacy methods retained. Worker [CI 43944405510](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43944405510) SUCCESS; >100/ties/cross-owner acceptance pending.
+2. **S2 PR #11**, worker `8064ac4` → integration merge `c0aa0580a0ec92b3458ffbcc02c1ff674fb397ee`: projects/profile/explore/templates, four S2-owned files. Existing S2 prior source was already integrated; this merge brings only subsequent source commits. New React/owner tests pending exact combined SHA.
+3. **S4 PR #10**, worker `9dca024` → integration merge `01a2ef52f1a72a63c7c5ef053d390b325847277e`: two S4-owned frozen loader/reviewer staging adapters. A mistaken zero-path rejection was reverted by worker before merge; SQL permits valid never-published empty account-exit plan. No external host proof.
+4. S0 shared contract register updated in `8caa8315583815bd28a5a5de388311ef0516a5aa`: 47 baseline real public methods (36 source verified, 8 external proof required, 3 gaps), plus two additive paging methods = 49 public methods. Initial helper false positives superseded.
+
+**NOT integrated / not accepted:**
+- **S3 PR #4** worker `01d729a`, editor buffer/history + editor-save-coordinator. [Application/DB 43944169514](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43944169514) SUCCESS, but root typecheck excludes React TSX; focused frontend and S6 editor buffer/Restore/Undo/browser tests pending.
+- **S5 PR #9** worker `47af6ea`, auth/growth/settings/ops. [Application/DB 43944485658](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43944485658) SUCCESS including 9 isolated owner browser tests, but React typecheck and same-instance A→B security regression pending. Earlier appeal selection regression fixed. S1 confirms same-port principal change can retain old workspace; S0 shell fail-closed owner/epoch remount and S1 trustworthy identity event remain mandatory.
+- **S6 PR #13** worker `7ea4b86`, two S6-owned test files. [CI 43945850832](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43945850832) **FAILURE** in isolated authenticated React workflow, contracts SUCCESS. Do not merge until S6 inspects actual failing test trace and fixes test or escalates product defect. Earlier run 43944922974 failed due strict-mode status locator and was corrected, but latest failure persists and cannot be classified without logs.
+
+**Integration order / task status:** S1/S2/S4 source INTEGRATED_PENDING_EXACT_HEAD_ACCEPTANCE; S3 ACTIVE_AWAITING_FOCUSED_FRONTEND; S5 ACTIVE_BLOCKED_ON_PRINCIPAL_SCOPE; S6 ACTIVE_CI_FAILURE. S0 must inspect combined CI on current head and fix owner-assigned failures; do not advance S6 acceptance on red. Then S0+S1 identity/epoch contract, S6 negative tests, S5 merge; S3 separate focused verification/merge; S2/S3 consume paginated methods with S6 >100 tests. S4 corrects historical frozen request UI list limitation and pin retry in owned release.tsx. No main, production, paid service or destructive change.
+
+**Latest SHA:** This handoff commit itself advances the feature branch; verify its actual returned SHA and current CI before claiming final green.
