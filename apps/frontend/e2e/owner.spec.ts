@@ -507,7 +507,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('heading', {name:'Frozen private requests'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Use frozen revision 2'})).toBeVisible();
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
-  await expect(page.getByRole('status')).toContainText('Loaded an existing owner-private frozen request.');
+  await expect(page.getByRole('status').filter({hasText:'Loaded an existing owner-private frozen request.'})).toBeVisible();
   await expect(page.getByRole('heading', {name:'Registered reviewer grants'})).toBeVisible();
   await expect(page.getByText('Registered (not servable)', {exact:true})).toBeVisible();
   await page.getByRole('button', {name:'Review revocation'}).click();
