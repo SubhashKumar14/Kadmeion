@@ -939,3 +939,61 @@ test('S6 SQL 40001 keeps revision-conflict precedence over HTTP 409', async () =
   assert.match(stale.error?.message??'',/changed while you were editing/);
   assert.doesNotMatch(stale.error?.message??'',/Choose a different slug|Too many requests/);
 });
+
+
+test('S6 same-port A to B rejects delayed A cursor results and authenticates B rows',async()=>{
+  const tokensB={access_token:'b'.repeat(64),refresh_token:'s'.repeat(64),
+    expires_in:3600,user:secondUser};
+  const projectId='11111111-1111-4111-8111-111111111111';
+  const row={
+    id:projectId,owner_user_id:secondUser.id,slug:'owner-b-project',title:'Owner B only',
+    summary:'',description:'',repository_url:null,live_url:null,revision:0,
+    updated_at:'2026-11-16T00:00:00.123456+00:00'
+  };
+  let allowA!: (result:Response)=>void;
+  let enteredA!: ()=>void;
+  const delayedA=new Promise<Response>(resolve=>{allowA=resolve;});
+  const aRequested=new Promise<void>(resolve=>{enteredA=resolve;});
+  const calls:string[]=[];
+  const {port}=mock((async(url:string|URL|Request,options?:RequestInit)=>{
+    const u=String(url),headers=options?.headers as Record<string,string>|undefined;
+    if(u.includes('grant_type=password')){
+      const input=JSON.parse(String(options?.body)) as {email:string};
+      return json(input.email===secondUser.email?tokensB:tokens);
+    }
+    if(u.endsWith('/auth/v1/user')){
+      return json(headers?.Authorization==='Bearer '+tokensB.access_token?secondUser:user);
+    }
+    if(u.includes('/rest/v1/projects?')){
+      calls.push(headers?.Authorization??'');
+      if(headers?.Authorization==='Bearer '+tokens.access_token){
+        enteredA();return delayedA;
+      }
+      if(headers?.Authorization==='Bearer '+tokensB.access_token)return json([row]);
+    }
+    return json({},404);
+  }) as typeof fetch);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'owner-a-password'})).error,null);
+  const oldPage=port.listOwnerProjectsPage(50,null);
+  await aRequested;
+  const switched=await port.signInWithPassword({email:secondUser.email,password:'owner-b-password'});
+  assert.equal(switched.error,null);
+  assert.equal(switched.data?.session?.user.id,secondUser.id);
+  allowA(json([{...row,owner_user_id:user.id}]));
+  const stale=await oldPage;
+  assert.equal(stale.data,null,'the old owner response must never be rendered as a valid page');
+  assert.ok(stale.error);
+  const current=await port.listOwnerProjectsPage(50,null);
+  assert.equal(current.error,null);
+  assert.equal(current.data?.items[0]?.id,projectId);
+  assert.equal(current.data?.items[0]?.title,'Owner B only');
+  assert.deepEqual(calls,[
+    'Bearer '+tokens.access_token,'Bearer '+tokensB.access_token
+  ]);
+  const denied=await port.listOwnerProjectsPage(50,{
+    version:1,collection:'projects',ownerUserId:user.id,
+    updatedAt:'2026-11-16T00:00:00.123456+00:00',id:projectId
+  });
+  assert.equal(denied.data,null);
+  assert.match(denied.error?.message??'',/cursor.*current owner/i);
+});
