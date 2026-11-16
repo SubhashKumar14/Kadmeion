@@ -53,7 +53,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
         event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu')?.focus();
       }
     }}>
-      <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home">
+      <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home, Build · Showcase · Evolve">
         <BrandMark/><small>BUILD · SHOWCASE · EVOLVE</small>
       </a>
       <p className="ws-rail-label">YOUR WORKSPACE</p>

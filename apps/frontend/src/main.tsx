@@ -110,7 +110,7 @@ function UnavailableRoute() {
     <section className="system-status system-status-editorial"
       aria-labelledby="system-status-title" data-state={offline ? 'offline' : 'unavailable'}>
       <header className="sys51-header">
-        <a href="/" aria-label="Kadmeion home" className="sys51-brand"><BrandMark/>
+        <a href="/" aria-label="Kadmeion home, Developer Identity & Portfolio Builder" className="sys51-brand"><BrandMark/>
           <small>DEVELOPER IDENTITY &amp; PORTFOLIO BUILDER</small>
         </a>
         <span className="sys51-privacy-label">PUBLIC ROUTE · CONTENT WITHHELD</span>

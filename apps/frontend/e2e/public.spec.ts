@@ -31,7 +31,7 @@ test('landing respects approved public path, can switch theme and persists prefe
 
 test('approved vector identity is visible and named in both runtime themes', async ({ page }) => {
   await page.goto('/');
-  const home = page.getByRole('link', { name: 'Kadmeion home', exact: true });
+  const home = page.getByRole('link', { name: 'Kadmeion home, Developer Identity Platform', exact: true });
   const symbol = home.locator('.brand-symbol');
   const letters = home.locator('.brand-letters');
   await expect(home).toBeVisible();
@@ -105,6 +105,11 @@ test('sign-in and sign-up switch without losing transient form values', async ({
   await page.getByRole('link',{name:/Sign in/}).click();
   await expect(page).toHaveURL(/\/signin$/);
   await expect(page.locator('#signin-password')).toHaveValue('not-a-real-password');
+  expect(await page.evaluate(secret=>[window.location.href,document.cookie,
+    JSON.stringify(localStorage),JSON.stringify(sessionStorage)].some(value=>value.includes(secret)),
+  'not-a-real-password')).toBe(false);
+  await page.reload();
+  await expect(page.locator('#signin-password')).toHaveValue('');
 });
 
 test('OAuth and recovery callbacks scrub tokens and fail closed when backend is unavailable', async ({ page }) => {

@@ -312,8 +312,7 @@ test('real owner onboarding and project revision are private across browser sess
   expect(panelButton.height).toBeGreaterThanOrEqual(42);
   expect(panelButton.fontSize).toBeGreaterThanOrEqual(12);
   await expect(page.getByText('Illustrative empty-slot copy · Never saved or published')).toBeVisible();
-  await expect(page.getByRole('button',{name:'Edit L1 title slot in preview'}))
-    .toContainText('Build things that make a difference.');
+  await expect(page.getByRole('button',{name:'Edit L1 title slot in preview — Build things that make a difference.'})).toBeVisible();
   await expect(page.getByRole('button',{name:'arc hero title'})).toBeVisible();
   await capture('18_PORTFOLIO_EDITOR_BROWSER');
   await page.getByRole('button',{name:'Switch to dark theme'}).click();
@@ -466,6 +465,8 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('tab',{name:'Problems'})).toBeFocused();
   await expect(page.getByRole('heading',{name:'Validation has not been run here.'})).toBeVisible();
   await expect(page.getByRole('tabpanel',{name:'Problems'})).toBeVisible();
+  await expect(page.getByRole('link',{name:'Open private release preflight'}))
+    .toHaveAttribute('href',editorPath.replace('/edit','/publish'));
   await page.keyboard.press('End');
   await expect(page.getByRole('tab',{name:'Conflicts'})).toBeFocused();
   await expect(page.getByRole('heading',{name:'Concurrent-save checks happen on save.'})).toBeVisible();
@@ -477,6 +478,11 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:'Compare to working copy'}).click();
   await expect(page.getByRole('status',{name:'Actual snapshot comparison'}))
     .toContainText('Different project files');
+  const revisionPreview=page.getByRole('region',{name:'Current revision preview'});
+  await revisionPreview.focus();
+  await expect(revisionPreview).toBeFocused();
+  await page.keyboard.press('PageDown');
+  await expect.poll(()=>revisionPreview.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
   await capture('25_REVISION_HISTORY_BROWSER');
   const fullscreenPath = await page.getByRole('link', {name: 'Fullscreen saved preview'}).getAttribute('href');
   expect(fullscreenPath).toBeTruthy();
@@ -1121,7 +1127,7 @@ test('eligible private static ZIP and expired Trash remain owner scoped',async({
   await page.getByRole('button',{name:'Sections',exact:true}).click();
   await page.getByLabel('Section layout').selectOption('stepped-hero@1');
   await page.getByRole('button',{name:'Add section',exact:true}).click();
-  await page.getByRole('button',{name:'New section: title',exact:true}).click();
+  await page.getByRole('button',{name:/^New section: title/}).click();
   await page.getByRole('button',{name:'Choose compatible component'}).click();
   await page.getByRole('button',{name:/Heading title-stacked@1/}).click();
   await page.getByRole('button',{name:'Add to empty slot'}).click();

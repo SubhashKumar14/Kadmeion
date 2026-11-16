@@ -34,7 +34,7 @@ export function BrandMark({ stacked = false, label }: { stacked?: boolean; label
 }
 
 export function Brand({ tagline = true }: { tagline?: boolean }) {
-  return <a className="brand" href="/" aria-label="Kadmeion home">
+  return <a className="brand" href="/" aria-label={tagline?'Kadmeion home, Developer Identity Platform':'Kadmeion home'}>
     <BrandMark/>
     {tagline && <span className="brand-subtitle">DEVELOPER IDENTITY PLATFORM</span>}
   </a>;

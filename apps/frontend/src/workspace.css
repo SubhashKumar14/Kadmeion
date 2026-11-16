@@ -344,17 +344,17 @@
   box-shadow:0 10px 35px color-mix(in srgb,var(--ink) 5%,transparent)}
 .pv-editor-caption{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;
   gap:8px;padding:9px 15px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent);
-  font-size:10px;letter-spacing:.09em;font-weight:650;opacity:.75}
+  font-size:10px;letter-spacing:.09em;font-weight:650}
 .pv-site{background:inherit;color:inherit;min-width:0;overflow-wrap:anywhere}
 .pv-site-head{padding:15px clamp(15px,3%,35px);display:flex;align-items:center;
   justify-content:space-between;gap:14px;border-bottom:1px solid color-mix(in srgb,currentColor 13%,transparent)}
 .pv-site-head strong{font-family:Georgia,serif;font-weight:600;font-size:clamp(14px,1.6vw,20px)}
-.pv-site-head span{font-size:11px;opacity:.67}
+.pv-site-head span{font-size:11px}
 .pv-section{position:relative;padding:clamp(18px,3%,42px);border-bottom:1px solid color-mix(in srgb,currentColor 11%,transparent)}
 .pv-hero{min-height:330px;overflow:hidden}
 .pv-hero-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px;min-height:300px}
 .pv-hero-copy{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-width:0}
-.pv-eyebrow{font-size:10px;font-weight:750;letter-spacing:.19em;text-transform:uppercase;opacity:.65;margin-bottom:14px}
+.pv-eyebrow{font-size:10px;font-weight:750;letter-spacing:.19em;text-transform:uppercase;margin-bottom:14px}
 .pv-hero h2{font:normal clamp(24px,3.5vw,45px)/1.15 Georgia,serif;max-width:580px;margin:0 0 13px}
 .pv-slot{white-space:pre-wrap;overflow-wrap:anywhere}
 button.pv-slot{display:block;text-align:left;border:1px dashed transparent;background:none;color:inherit;
@@ -362,17 +362,17 @@ button.pv-slot{display:block;text-align:left;border:1px dashed transparent;backg
 button.pv-slot:hover,button.pv-slot.pv-selected{border-color:var(--accent-strong);
   background:color-mix(in srgb,var(--accent-soft) 48%,transparent)}
 button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
-.pv-placeholder{font-family:Arial,Helvetica,sans-serif;opacity:.57;font-size:.84em;font-style:italic;font-weight:400}
+.pv-placeholder{font-family:Arial,Helvetica,sans-serif;font-size:.84em;font-style:italic;font-weight:400}
 .pv-slot-title{display:block}
-.pv-summary{font-size:clamp(12px,1.15vw,16px);line-height:1.7;opacity:.83;max-width:550px}
+.pv-summary{font-size:clamp(12px,1.15vw,16px);line-height:1.7;max-width:550px}
 .pv-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
 .pv-actions>.pv-slot-action{width:auto;max-width:100%;padding:9px 17px;background:currentColor;
   color:inherit;border-radius:6px;min-width:105px;min-height:37px;display:flex;align-items:center}
 .pv-actions>.pv-slot-action:not(button){background:transparent;border:1px solid currentColor}
 .pv-actions>button.pv-slot-action{background:color-mix(in srgb,var(--ink) 91%,transparent);
   color:var(--on-nav);border:1px solid color-mix(in srgb,var(--ink) 91%,transparent)}
-.pv-actions>button.pv-slot-action .pv-placeholder{color:inherit;opacity:.9}
-.pv-hero-note{font-size:11px;opacity:.8;margin-top:15px}
+.pv-actions>button.pv-slot-action .pv-placeholder{color:inherit}
+.pv-hero-note{font-size:11px;margin-top:15px}
 .pv-hero-art{position:relative;min-height:230px;pointer-events:none;overflow:hidden}
 .pv-art-arc{position:absolute;left:2%;top:-40%;width:120%;height:145%;border:1px solid
   color-mix(in srgb,currentColor 19%,transparent);border-radius:50%;box-shadow:
@@ -469,7 +469,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-layer-name{text-transform:capitalize;font-size:11px;color:var(--ink)!important}
 .ws-editor-layer-state{font-size:10px!important;white-space:nowrap;color:var(--body)!important}
 .ws-editor-layers .ws-editor-slots button[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-strong)}
-.pv-layout-example{font:inherit;font-style:normal;opacity:.92}
+.pv-layout-example{font:inherit;font-style:normal}
 .pv-slot-title .pv-layout-example{font-family:Georgia,serif;font-size:inherit;line-height:1.15}
 .pv-slot-action .pv-layout-example{font-family:Arial,sans-serif;font-size:12px;font-weight:650;color:inherit;opacity:1}
 .pv-media-blank{display:block;width:100%;min-height:85px}
@@ -1166,6 +1166,8 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   border-radius:10px;background:var(--panel)}
 .ws-release-visual-canvas .ws-studio-canvas{margin:0;padding:0;border:0;
   border-radius:0;min-height:340px;max-height:min(760px,75dvh);overflow:auto}
+:is(.ws-release-visual-canvas .ws-studio-canvas,.ws-revision-canvas):focus-visible{
+  outline:3px solid var(--focus);outline-offset:-3px}
 .ws-release-visual-canvas .pv-site{min-width:0}
 .ws-release-visual-canvas .pv-editor-caption{padding:10px 16px}
 .ws-release-visual-foot{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}

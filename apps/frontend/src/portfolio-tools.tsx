@@ -80,10 +80,11 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     const text=slotDisplay(assignment);
     const label=SLOT_TITLES[name.toLowerCase()]??name;
     const example=editing&&!text?layoutExample(section.renderId,name):null;
+    const visibleLabel=text|| (kind==='media' ? '' : example??('Add '+label));
     const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
     if(editing)return <button className={className} type="button"
-      aria-label={'Edit '+section.renderId+' '+name+' slot in preview'}
+      aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
       {text||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
@@ -95,9 +96,9 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       !showMissing?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
   };
 
-export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot}: {
+export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll}: {
   snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean;
-  simulation?:boolean; width?: number;
+  simulation?:boolean; width?: number; keyboardScroll?:boolean;
   selectedSlot?:string; onSelectSlot?:(key:string)=>void;
 }) {
   const theme=readTheme(snapshot);
@@ -110,7 +111,8 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation};
   const Tag=standalone?'main':'div';
   return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
-    style={style} aria-label={standalone?'Saved private portfolio author preview':
+    style={style} role={standalone?undefined:'region'} tabIndex={keyboardScroll?0:undefined}
+    aria-label={standalone?'Saved private portfolio author preview':
       simulation?'Simulated visitor portfolio appearance':'Private authoring canvas'}>
     {!standalone&&<div className="pv-editor-caption">
       <span>AUTHOR CANVAS / {theme.mode.toUpperCase()}</span>
@@ -574,11 +576,11 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
             Restore selected checkpoint to draft</button>
         </div>
       </>}
-      {comparison&&<dl className="ws-revision-difference" role="status" aria-label="Actual snapshot comparison">
+      {comparison&&<div role="status" aria-label="Actual snapshot comparison"><dl className="ws-revision-difference">
         <div><dt>Compared revision</dt><dd>{comparison.revision}</dd></div>
         <div><dt>Different project files</dt><dd>{comparison.changedFiles}</dd></div>
         <div><dt>Different component slots</dt><dd>{comparison.changedSlots}</dd></div>
-      </dl>}
+      </dl></div>}
       <p>Restore is a reversible editor transaction, not a public rollback; save the private draft to persist it.</p>
     </section>
   </div>;
@@ -621,7 +623,7 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
     <section className="ws-revision-center">
       <div className="ws-revision-breadcrumb">HISTORY / PRIVATE AUTHOR PREVIEW
         <span>Saved revision {revision} · {dirty?'Uncommitted edits':'No uncommitted edits'}</span></div>
-      <div id="history-current" className="ws-revision-canvas">
+      <div id="history-current" className="ws-revision-canvas" role="region" aria-label="Current revision preview" tabIndex={0}>
         <PortfolioCanvas snapshot={working} title={title}/>
       </div>
       <section id="history-checkpoints" className="ws-revision-bottom">
@@ -641,7 +643,7 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
           tab==='Problems'?<div className="ws-revision-honest-state">
             <h3>Validation has not been run here.</h3>
             <p>Saved revision integrity is checked on read. This history page does not run source lint, custom-code analysis, media attestation or public host checks.</p>
-            <a href={'/app/portfolios/'+id+'/preflight'}>Open private release preflight</a>
+            <a href={'/app/portfolios/'+id+'/publish'}>Open private release preflight</a>
           </div>:
           <div className="ws-revision-honest-state">
             <h3>Concurrent-save checks happen on save.</h3>

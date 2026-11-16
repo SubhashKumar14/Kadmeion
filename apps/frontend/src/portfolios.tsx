@@ -218,7 +218,7 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
             <div><h2><a href={editorPath(item.id)}>{item.title}</a></h2>
               <p>{item.revision ? 'Draft revision ' + item.revision : 'Setup pending'}{preset && ' · ' + preset.title + ' starting layout'}</p></div>
             <div className="ws-actions">
-              <a className="ws-secondary" href={editorPath(item.id)} aria-label={'Open ' + item.title}>Open draft</a>
+              <a className="ws-secondary" href={editorPath(item.id)} aria-label={'Open draft: ' + item.title}>Open draft</a>
               <MoveToTrash port={port} kind="portfolio" id={item.id} title={item.title}
                 onMoved={()=>window.location.assign('/app/trash')}/>
             </div>
@@ -568,19 +568,23 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           </div>
           <details className="ws-editor-layer-group" open={index===0||group.id.startsWith('section-')}>
           <summary>{group.title}<small>{group.slots.length} slots</small></summary>
-          <ul className="ws-editor-slots">{group.slots.map(item=><li key={item.key}>
+          <ul className="ws-editor-slots">{group.slots.map(item=>{
+            const label=item.name.replaceAll(/([A-Z])/g,' $1');
+            const state=item.state==='EMPTY'?'Empty':item.state==='S0'?'Starter':item.state==='S1'?'Owned':'Custom';
+            const section=group.id.startsWith('section-')?'New section: ':group.id.replaceAll('-',' ')+' ';
+            return <li key={item.key}>
             <button type="button" aria-pressed={slot===item.key}
-              aria-label={(group.id.startsWith('section-')?'New section: ':group.id.replaceAll('-',' ')+' ')+item.name}
+              aria-label={section+label+' '+state}
               onClick={()=>{
                 setSlot(item.key);
                 const assignment=head?.snapshot.slots[item.key];
                 setValue(assignment?.content[primaryField(assignment.componentId)]??'');
                 setTool('Content');
               }}>
-              <span className="ws-editor-layer-name">{item.name.replaceAll(/([A-Z])/g,' $1')}</span>
-              <span className="ws-editor-layer-state">{item.state==='EMPTY'?'Empty':item.state==='S0'?'Starter':item.state==='S1'?'Owned':'Custom'}</span>
+              <span className="ws-editor-layer-name">{label}</span>
+              <span className="ws-editor-layer-state">{state}</span>
             </button>
-          </li>)}</ul></details>
+          </li>;})}</ul></details>
         </li>)}</ol>
         <div className="ws-actions">
           <button type="button" className="ws-secondary" disabled={!head.undo.length || saving}
