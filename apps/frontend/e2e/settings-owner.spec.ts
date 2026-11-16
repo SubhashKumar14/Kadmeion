@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {mkdir} from 'node:fs/promises';
 import {test, expect} from '@playwright/test';
+import { auditAccessibility } from './accessibility.ts';
 
 const localApi='http://127.0.0.1:54321';
 
@@ -108,6 +109,7 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
       }));
       expect(dimensions.scroll,route+' overflow at '+width+'px')
         .toBeLessThanOrEqual(dimensions.visible+2);
+      if(width===320) await auditAccessibility(page,screenshot+'_DARK_320',capture);
       if(capture&&width!==320){
         await mkdir(capture,{recursive:true});
         await page.screenshot({path:capture+'/'+screenshot+'_DARK_'+width+'.png',
@@ -134,6 +136,7 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
       }));
       expect(dimensions.scroll,route+' light overflow at '+width+'px')
         .toBeLessThanOrEqual(dimensions.viewport+2);
+      if(width===1600) await auditAccessibility(page,screenshot+'_LIGHT_1600',capture);
       if(capture){
         await mkdir(capture,{recursive:true});
         await page.screenshot({path:capture+'/'+screenshot+'_LIGHT_'+width+'.png',

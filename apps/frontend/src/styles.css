@@ -53,7 +53,7 @@ h1,h2,h3,p{margin-top:0}
 h1,h2,h3{font-family: Georgia, "Times New Roman", ui-serif,serif;letter-spacing:-.027em;font-weight:500}
 p{line-height:1.55}
 .skip-link{position:absolute;top:-64px;left:20px;z-index:10;padding:12px 18px;background:var(--nav);color:var(--on-nav);border-radius:8px}
-.skip-link:focus{top:12px}
+.skip-link:focus{position:fixed;top:12px;z-index:100}
 .site-shell{width:100%;min-height:100dvh;background:var(--surface);overflow:clip}
 .site-header{height:63px;padding:0 34px 0 49px;display:flex;align-items:center;justify-content:space-between;gap:20px;
   border-bottom:1px solid var(--line);position:relative;z-index:3}

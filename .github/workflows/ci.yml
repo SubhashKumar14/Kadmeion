@@ -147,7 +147,9 @@ jobs:
         if: always()
         with:
           name: kadmeion-owner-browser-captures
-          path: /tmp/kadmeion-owner-captures/*.png
+          path: |
+            /tmp/kadmeion-owner-captures/*.png
+            /tmp/kadmeion-owner-captures/*.a11y.json
           if-no-files-found: ignore
           retention-days: 1
       - name: Test real GoTrue + PostgREST + private Storage over HTTP

@@ -97,6 +97,8 @@ const justifiedExtra = [
   // distinct fixture-driven test to keep owner acceptance auditable.
   // This is a proposed source-file variance, not owner approval of the cap.
   'apps/frontend/e2e/settings-owner.spec.ts',
+  // F06 records test-only WCAG-rule evidence for public and owner fixtures.
+  'apps/frontend/e2e/accessibility.ts',
   'apps/frontend/src/profile.tsx',
   'apps/frontend/src/portfolios.tsx',
   'apps/frontend/src/portfolio-tools.tsx',

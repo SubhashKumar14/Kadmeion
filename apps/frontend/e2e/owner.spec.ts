@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { auditAccessibility } from './accessibility.ts';
 import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
@@ -86,10 +87,11 @@ async function signIn(page: Page, user: {email: string; password: string}) {
 
 test('real owner onboarding and project revision are private across browser sessions', async ({page, browser}, testInfo) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
-  test.setTimeout(150_000);
+  test.setTimeout(200_000);
   const [owner, outsider] = await Promise.all([localUser('CI Portfolio Owner'), localUser('CI Other Owner')]);
   const captureDir = process.env.KADMEION_BROWSER_CAPTURE_DIR;
   async function capture(name: string) {
+    await auditAccessibility(page,name,captureDir);
     if (!captureDir) return;
     await mkdir(captureDir, {recursive: true});
     // Evidence captures compare the top of the actual document, not wherever
@@ -102,6 +104,10 @@ test('real owner onboarding and project revision are private across browser sess
   await signIn(page, owner);
   await page.getByRole('link', {name: 'Open private workspace'}).click();
   await expect(page.getByRole('heading', {name: 'A place for what you build next.'})).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('link',{name:'Skip to workspace content'})).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main')).toBeFocused();
   await capture('11_WORKSPACE_BROWSER');
   await expect(page.getByRole('link', {name: 'Create portfolio'})).toHaveAttribute('href', '/app/portfolios/new');
   await page.setViewportSize({width: 390, height: 844});
@@ -796,6 +802,7 @@ test('verified local operator can read case-scoped views without impersonation o
   await expect(page.getByRole('status')).toContainText('Private audit case recorded.');
   await expect(page.getByText('Owner ID '+subject.id)).toBeVisible();
   const dir=process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  await auditAccessibility(page,'48_OPERATOR_USERS',dir);
   if(dir){await mkdir(dir,{recursive:true});await page.screenshot({
     path:dir+'/48_ADMIN_USERS_BROWSER.png',animations:'disabled'
   });}
@@ -804,11 +811,13 @@ test('verified local operator can read case-scoped views without impersonation o
   await expect(page.getByRole('heading',{name:'Submitted portfolio reports'})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Private moderation hold'})).toBeVisible();
   await expect(page.getByText('No pending abuse reports were returned.')).toBeVisible();
+  await auditAccessibility(page,'49_OPERATOR_MODERATION',dir);
   if(dir)await page.screenshot({path:dir+'/49_PORTFOLIO_MODERATION_BROWSER.png',animations:'disabled'});
   await page.goto('/app/operations/appeals');
   await expect(page.getByRole('heading',{name:'Appeals & case history',exact:true})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Internal hold release'})).toBeVisible();
   await expect(page.getByText('No pending appeals were returned.')).toBeVisible();
+  await auditAccessibility(page,'50_OPERATOR_APPEALS',dir);
   if(dir)await page.screenshot({path:dir+'/50_APPEALS_BROWSER.png',animations:'disabled'});
   // An administrator's private-case permissions are not public host authority.
   await expect(page.getByText('This does not republish content.',{exact:false})).toBeVisible();
@@ -845,6 +854,7 @@ test('verified local operator can read case-scoped views without impersonation o
     await page.reload();
     await page.getByRole('button',{name:'Select for decision'}).click();
     await expect(page.getByText(statement)).toBeVisible();
+    await auditAccessibility(page,'50_VERIFIED_APPEAL_EVIDENCE',dir);
     await expect(page.getByText(rationale)).toBeVisible();
     const decision='Closed after reviewing the simulated evidence and the owner appeal statement.';
     await page.getByLabel('Decision rationale').fill(decision);
@@ -981,6 +991,7 @@ test('F1 recovery request and password reset use isolated GoTrue and Mailpit', a
   const user = await localUser('CI Recovery');
   const directory = process.env.KADMEION_BROWSER_CAPTURE_DIR;
   async function capture(screen: string) {
+    await auditAccessibility(page,screen,directory);
     if (!directory) return;
     await mkdir(directory, { recursive: true });
     await page.screenshot({ path: directory + '/' + screen + '_BROWSER.png', animations: 'disabled' });

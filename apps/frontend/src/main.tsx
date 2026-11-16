@@ -158,6 +158,8 @@ const WorkspaceRoute=lazy(async()=>{
   }};
 });
 const path = window.location.pathname.replace(/\/$/, '') || '/';
+if (path === '/templates') document.title = 'Portfolio templates · Kadmeion';
+if (path === '/explore') document.title = 'Explore portfolios · Kadmeion';
 const page = path === '/templates' ? <TemplateExplorer/> :
   path === '/explore' ? <ExplorePortfolios/> :
   (path === '/app' || path.startsWith('/app/')) ?

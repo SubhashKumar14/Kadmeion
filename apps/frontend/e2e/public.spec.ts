@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { auditAccessibility } from './accessibility.ts';
 
 test('landing follows the seven owner-approved sections in order', async ({page}) => {
   await page.goto('/');
@@ -144,7 +145,7 @@ test('recovery is gated by mail delivery and signup explains missing Auth config
 test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
   for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/portfolios/11111111-1111-4111-8111-111111111111/preview', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals',
     '/app/settings', '/app/settings/privacy', '/app/notifications', '/app/settings/security',
-    '/app/trash', '/app/export', '/app/settings/account/delete', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
+    '/app/trash', '/app/export', '/app/settings/account/delete', '/app/settings/cases', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
     await page.goto(route);
     await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');
@@ -267,7 +268,7 @@ test('F4 gated reviewer and public routes preserve theme, reflow, and never reve
 
   for(const width of [320,390,1366]){
     await page.setViewportSize({width,height:900});
-    for(const [route,heading] of routes){
+    for(const [route,heading,label] of routes){
       await page.goto(route);
       await expect(page.getByRole('heading',{name:heading})).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
@@ -280,6 +281,7 @@ test('F4 gated reviewer and public routes preserve theme, reflow, and never reve
         page:document.documentElement.scrollWidth
       }));
       expect(widthReport.page,route+' at '+width+'px').toBeLessThanOrEqual(widthReport.viewport+1);
+      if(width===320) await auditAccessibility(page,label+'_DARK_320',process.env.KADMEION_PUBLIC_CAPTURE_DIR);
     }
   }
 
@@ -293,6 +295,7 @@ test('F4 gated reviewer and public routes preserve theme, reflow, and never reve
     await page.goto(route);
     await expect(page.getByRole('heading',{name:heading})).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+    await auditAccessibility(page,label+'_LIGHT_1366',captureDir);
     if(captureDir){
       const {mkdir}=await import('node:fs/promises');
       await mkdir(captureDir,{recursive:true});
@@ -376,4 +379,43 @@ test('landing keeps its reading scale and controls usable on desktop and narrow 
       await page.screenshot({path:captures + '/01_LANDING_' + width + '_FULL.png', fullPage:true, animations:'disabled'});
     }
   }
+});
+
+test('F06 scans public and signed-out surfaces in desktop light and phone dark', async ({page})=>{
+  test.setTimeout(90_000);
+  const states=[
+    ['/','01_LANDING'],['/explore','02_EXPLORE'],['/templates','03_TEMPLATES'],
+    ['/signin','04_SIGN_IN'],['/signup','05_SIGN_UP'],['/auth/callback','06_CALLBACK_FAILURE'],
+    ['/forgot-password','07_RECOVERY'],['/auth/recovery-status','09_RECOVERY_STATUS'],
+    ['/unavailable-f06-test','51_UNAVAILABLE']
+  ] as const;
+  for(const [theme,width] of [['light',1600],['dark',320]] as const){
+    await page.setViewportSize({width,height:900});
+    await page.goto('/');
+    const isDark=await page.locator('html').getAttribute('data-theme')==='dark';
+    if(isDark!==(theme==='dark'))
+      await page.getByRole('button',{name:'Switch to '+theme+' theme'}).click();
+    for(const [route,label] of states){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{level:1})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme',theme);
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth),label+' reflow')
+        .toBeLessThanOrEqual(width+2);
+      await auditAccessibility(page,label+'_'+theme.toUpperCase()+'_'+width,process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+    }
+  }
+});
+
+test('F06 public route titles identify the task and keyboard skip remains visible after scroll', async ({page})=>{
+  await page.goto('/explore');
+  await expect(page).toHaveTitle('Explore portfolios · Kadmeion');
+  await page.goto('/templates');
+  await expect(page).toHaveTitle('Portfolio templates · Kadmeion');
+  await page.evaluate(()=>window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'}));
+  const skip=page.getByRole('link',{name:'Skip to templates'});
+  await page.keyboard.press('Tab');
+  await expect(skip).toBeFocused();
+  await expect(skip).toBeInViewport();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main')).toBeFocused();
 });
