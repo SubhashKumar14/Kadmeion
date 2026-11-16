@@ -336,6 +336,16 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByLabel('Readonly generated file')).toBeVisible();
   await expect(page.getByText('Code execution disabled')).toBeVisible();
   await expect(page.getByRole('button',{name:'Apply owned source to draft'})).toHaveCount(0);
+  const sourceColumns=await page.locator('.ws-source-explorer').evaluate(root=>{
+    const left=root.querySelector('.ws-source-tree')?.getBoundingClientRect();
+    const center=root.querySelector('.ws-source-editor')?.getBoundingClientRect();
+    const right=root.querySelector('.ws-source-diagnostics')?.getBoundingClientRect();
+    return {left:left?.width??0,center:center?.width??0,right:right?.width??0};
+  });
+  if((page.viewportSize()?.width??0)>=1151){
+    expect(sourceColumns.center).toBeGreaterThan(sourceColumns.left*2.25);
+    expect(sourceColumns.center).toBeGreaterThan(sourceColumns.right*2);
+  }
   await capture('24_SOURCE_BROWSER');
   await page.getByRole('button',{name:'Back to editor canvas'}).click();
   await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();

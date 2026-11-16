@@ -613,7 +613,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 /* EDIT-07: source explorer uses actual private snapshot file paths.
    Generated JSON and library originals cannot be edited in this view. */
 .ws-editor-grid[hidden],.ws-source-explorer[hidden],.ws-studio-editor>div[hidden]{display:none!important}
-.ws-source-explorer{display:grid;grid-template-columns:minmax(195px,23%) minmax(0,1fr) minmax(220px,26%);
+.ws-source-explorer{display:grid;grid-template-columns:minmax(195px,20.5%) minmax(0,1fr) minmax(240px,24%);
   min-height:calc(100dvh - 154px);background:var(--panel)}
 .ws-source-tree,.ws-source-diagnostics{padding:23px 18px;min-width:0}
 .ws-source-tree{border-right:1px solid var(--line)}
@@ -918,4 +918,14 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .ws-share-scene .pv-section{padding:24px 20px}
   .ws-share-scene .pv-hero-grid{grid-template-columns:1fr;min-height:0}
   .ws-share-scene .pv-hero h2{font-size:clamp(29px,7vw,42px)}
+}
+
+/* EDIT-07: measured 1600x1000 approved source layout.
+   Readable owner source stays central, not a fabricated code sample.
+   Preserve smaller viewport stacking and keyboard access. */
+@media(min-width:1151px) and (min-height:760px){
+  .ws-source-editor{padding-top:34px}
+  .ws-source-editor-header{min-height:74px}
+  .ws-source-explorer .ws-source-code-window{flex:0 0 auto;
+    height:min(615px,calc(100dvh - 300px));min-height:310px}
 }
