@@ -627,6 +627,17 @@ test('real owner onboarding and project revision are private across browser sess
     await other.goto(editorPath);
     await expect(other.getByRole('alert')).toContainText('Portfolio unavailable.');
     await expect(other.getByText('Portfolio draft title', {exact: true})).toHaveCount(0);
+    // F4 owner-only routes must deny direct cross-tenant navigation, not merely
+    // hide editor links. No frozen source, reviewer registration or SEO metadata
+    // may render before the owner-scoped record authorizes the portfolio.
+    for(const mode of ['staging','publish','releases','share'] as const) {
+      await other.goto(editorPath.replace('/edit','/'+mode));
+      await expect(other.getByRole('alert')).toContainText('Portfolio unavailable.');
+      await expect(other.locator('.ws-release-visual-canvas,.ws-release-preflight-gates')).toHaveCount(0);
+      await expect(other.getByRole('button',{name:'Run private preflight'})).toHaveCount(0);
+      await expect(other.getByRole('button',{name:'Register private reviewer grant'})).toHaveCount(0);
+      await expect(other.getByText('Saved author portfolio',{exact:true})).toHaveCount(0);
+    }
   } finally {
     await foreign.close();
   }
