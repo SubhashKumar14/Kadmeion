@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, KeyboardEvent } from 'react';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
@@ -488,13 +488,18 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
   }|null>(null);
   useEffect(()=>{
     let active=true;
+    setItems(null);setSelected(null);setComparison(null);setError('');
     void port.listOwnerRevisions(id).then(result=>{
       if(!active)return;
       if(result.data)setItems(result.data);
       else setError(result.error?.message??'Revision history could not be loaded.');
+    }).catch(()=>{
+      if(active)setError('Revision history could not be loaded. Please retry.');
     });
     return ()=>{active=false;};
   },[port,id,revision]);
+  // A comparison describes one exact working snapshot, not later edits/restores.
+  useEffect(()=>{setComparison(null);},[working]);
   async function compare(){
     if(!selected||busy)return;
     setBusy(true);setError('');setComparison(null);
@@ -515,9 +520,14 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
     }finally{setBusy(false);}
   }
   async function readSelectedUnsafe(version:number):Promise<PortfolioSnapshot|null>{
-    const result=await port.readOwnerRevision(id,version);
-    if(!result.data){setError(result.error?.message??'Historical revision cannot be verified.');return null;}
-    return result.data;
+    try {
+      const result=await port.readOwnerRevision(id,version);
+      if(!result.data){setError(result.error?.message??'Historical revision cannot be verified.');return null;}
+      return result.data;
+    } catch {
+      setError('Historical revision could not be verified. Please retry.');
+      return null;
+    }
   }
   async function restore(){
     if(!selected||busy)return;
@@ -567,6 +577,17 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
   onRestore:(snapshot:PortfolioSnapshot)=>void;back:()=>void;
 }){
   const [tab,setTab]=useState<'History'|'Problems'|'Conflicts'>('History');
+  const views=['History','Problems','Conflicts'] as const;
+  function moveTab(event:KeyboardEvent<HTMLButtonElement>,index:number){
+    const last=views.length-1;
+    const next=event.key==='ArrowRight'?(index+1)%views.length:
+      event.key==='ArrowLeft'?(index+last)%views.length:
+      event.key==='Home'?0:event.key==='End'?last:null;
+    if(next===null)return;
+    event.preventDefault();
+    setTab(views[next]);
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]').item(next)?.focus();
+  }
   return <div className="ws-revision-workspace">
     <aside className="ws-revision-nav">
       <p className="ws-kicker">DOCUMENT HISTORY</p>
@@ -590,11 +611,14 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
         <div className="ws-revision-tab-row"><h2>History &amp; problems</h2>
           <span>Private revisions · diagnostics are explicitly scoped</span></div>
         <div className="ws-revision-tabs" role="tablist" aria-label="Revision views">
-          {(['History','Problems','Conflicts'] as const).map(view=>
-            <button role="tab" type="button" key={view} aria-selected={tab===view}
+          {views.map((view,index)=>
+            <button role="tab" type="button" key={view} id={'kd-revision-tab-'+view.toLowerCase()}
+              aria-controls="kd-revision-panel" aria-selected={tab===view}
+              tabIndex={tab===view?0:-1} onKeyDown={event=>moveTab(event,index)}
               onClick={()=>setTab(view)}>{view}</button>)}
         </div>
-        <div role="tabpanel" aria-label={tab+' revision view'}>
+        <div id="kd-revision-panel" role="tabpanel" tabIndex={0}
+          aria-labelledby={'kd-revision-tab-'+tab.toLowerCase()}>
           {tab==='History'?<RevisionHistory port={port} id={id} revision={revision}
             working={working} onRestore={onRestore}/>:
           tab==='Problems'?<div className="ws-revision-honest-state">
