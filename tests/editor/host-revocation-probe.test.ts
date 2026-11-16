@@ -104,14 +104,15 @@ test('release withdrawal proves live bytes first and blocks all paths after the 
   const http:typeof fetch=async(url,options)=>{
     if(!withdrawn){
       assert.equal(new URL(String(url)).pathname,input.canonicalPath);
-      assert.equal(options?.method,'GET');
-      return new Response(html,{headers:{'Content-Type':'text/html','Cache-Control':'no-store'}});
+      assert.ok(options?.method==='GET'||options?.method==='HEAD');
+      return new Response(options?.method==='HEAD'?null:html,
+        {headers:{'Content-Type':'text/html','Cache-Control':'no-store'}});
     }
     return response(404,{},options?.method==='HEAD'?'':'Not found');
   };
   const observation=await verifyReleaseWithdrawal(input,sha,async()=>{withdrawn=true;},http);
   assert.equal(withdrawn,true);
-  assert.equal(observation.observedHttpRequests,7);
+  assert.equal(observation.observedHttpRequests,8);
   assert.equal(observation.directPathsChecked,2);
 });
 
@@ -140,14 +141,15 @@ test('withdrawal also fetches the exact previously reachable PNG bytes on each m
     const current=new URL(String(url)).pathname;
     calls.push((options?.method??'GET')+' '+current);
     if(withdrawn)return response(404,{},options?.method==='HEAD'?'':'Not found');
-    return new Response(current===path?png:html,{headers:{
+    return new Response(options?.method==='HEAD'?null:current===path?png:html,{headers:{
       'Content-Type':current===path?'image/png':'text/html','Cache-Control':'no-store'
     }});
   };
   const result=await verifyReleaseWithdrawal(withMedia,sha(html),async()=>{withdrawn=true;},http);
   assert.equal(result.liveAssetPathsVerified,1);
-  assert.equal(result.observedHttpRequests,10);
-  assert.deepEqual(calls.slice(0,2),['GET '+input.canonicalPath,'GET '+path]);
+  assert.equal(result.observedHttpRequests,12);
+  assert.deepEqual(calls.slice(0,4),['GET '+input.canonicalPath,
+    'HEAD '+input.canonicalPath,'GET '+path,'HEAD '+path]);
   assert.ok(calls.includes('HEAD '+path));
 });
 

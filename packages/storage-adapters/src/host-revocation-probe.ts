@@ -196,7 +196,28 @@ async function verifyLiveBytes(
   }
 }
 
-/** Verify the canonical HTML and manifest media before withdrawing, then check all listed paths for denial. */
+/** A live HEAD has to match the same noncacheable delivery contract as GET.
+ * It cannot quietly advertise cacheable metadata or return private bytes. */
+async function verifyLiveHead(response:Response,mime:RegExp):Promise<void>{
+  if(response.status!==200||response.redirected||response.headers.has('location')||
+     !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers)){
+    await response.body?.cancel().catch(()=>{});
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }
+  if(response.body){
+    const reader=response.body.getReader();
+    try{
+      const sample=await reader.read();
+      if(!sample.done&&sample.value?.byteLength)
+        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    }catch{
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  }
+}
+
+/** Verify exact GET bytes and HEAD metadata for canonical HTML and every
+ * pinned manifest media path before withdrawing; then prove denial. */
 export async function verifyReleaseWithdrawal(
   input:ReleaseWithdrawalInput,expectedServedSha256:string,
   withdraw:()=>Promise<void>,http:typeof fetch=fetch
@@ -220,14 +241,17 @@ export async function verifyReleaseWithdrawal(
 
   const html=await fetchPath(new URL(paths.canonicalPath,origin),'GET',http);
   await verifyLiveBytes(html,/^text\/html(?:;|$)/i,750_000,expectedServedSha256);
+  await verifyLiveHead(await fetchPath(new URL(paths.canonicalPath,origin),'HEAD',http),
+    /^text\/html(?:;|$)/i);
   for(const [path,sha256] of liveAssets){
     const image=await fetchPath(new URL(path,origin),'GET',http);
     await verifyLiveBytes(image,/^image\/png$/i,5*1024*1024,sha256);
+    await verifyLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),/^image\/png$/i);
   }
   await withdraw();
   const after=await probeHostRevocation(paths,http);
   return Object.freeze({...after,liveAssetPathsVerified:liveAssets.size,
-    observedHttpRequests:after.observedHttpRequests+1+liveAssets.size});
+    observedHttpRequests:after.observedHttpRequests+2+2*liveAssets.size});
 }
 
 const PORTFOLIO_ASSET_QUERY=/^\/api\/public-portfolio\?handle=([a-z][a-z0-9_]{2,29})&slug=([a-z0-9-]{3,64})(?:&manifest=[a-f0-9]{64}&asset=[a-f0-9]{64})?$/;
