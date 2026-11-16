@@ -1243,6 +1243,10 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   test.setTimeout(90_000);
   const owner=await localUser('S6 S2 retry');
   await signIn(page,owner);
+  // Establish a real successful owner list first. The forced failure must
+  // be tied to one explicit reload, not incidental startup requests.
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
   let readFailed=false, createFailed=false;
   const requests:{method:string;status:number}[]=[];
   await page.route('**/rest/v1/projects?*',async route=>{
@@ -1257,7 +1261,8 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
         body:JSON.stringify({code:'23505',message:'Disposable conflict'})});
     } else await route.continue();
   });
-  await page.goto('/app/projects');
+  await page.reload();
+  await expect.poll(()=>readFailed).toBe(true);
   await expect(page.getByRole('alert')).toContainText('could not be loaded');
   await expect(page.getByText('Your first project belongs here.')).toHaveCount(0);
   await page.getByRole('button',{name:'Retry securely'}).click();
