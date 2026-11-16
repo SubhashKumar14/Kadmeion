@@ -330,7 +330,7 @@ test('reviewer withdrawal validates grant, digest, media manifest and local orig
     {...fixture.input,allowLocal:false},
     {...fixture.input,assets:[...fixture.input.assets,...fixture.input.assets]},
     {...fixture.input,assets:[{manifestSha256:'wrong',sha256:pngSha}]},
-    {...fixture.input,assets:[{manifestSha256:mediaManifest,sha256:'x'.repeat(64)}]}
+    {...fixture.input,assets:[{manifestSha256:mediaManifest,sha256:'e'.repeat(64)}]}
   ];
   try{
     for(const bad of invalid){
