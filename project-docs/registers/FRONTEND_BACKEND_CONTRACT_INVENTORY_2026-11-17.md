@@ -109,3 +109,18 @@ Worker [commit `b61b4c0`](https://github.com/SubhashKumar14/Kadmeion/commit/b61b
 6. SYS-01–02: accurate deny/offline/expired/unsupported-device branches.
 
 **Next S1 action:** replace every UNASSESSED row with verifiable contract IDs and source/migration/proof. Publish first only truly stable operations to unblock dependent workers. Historical smoke/CI statuses are not hosted evidence for a new SHA.
+
+
+## 17 November 2026 — S1 verified source reconciliation (supersedes initial UNASSESSED inventory)
+
+The initial extraction contained **49 candidate call-like lines, of which 47 were actual baseline public methods and two were helpers**, not 48 baseline public methods. S1's additive v1 pagination adds **two** actual public methods, giving **49** public methods on integrated S1 source commit `0ad4522fb39ffd50ce684199de17a8765f81be90` (merged as `b5f5a2fce6c889fbc2de2c8896b08eb42893272d`). Historical UNASSESSED cells above describe the *initial* inventory only and must not override this later source-backed classification.
+
+**S1 baseline method classifications (47):** `VERIFIED_EXISTING` 36, `EXTERNAL_PROOF_REQUIRED` 8, `CONTRACT_GAP` 3. The full method-by-method endpoint, RLS, migration and error notes are in S1's Notion log, TASK-1-002. VERIFIED_EXISTING means source/isolated tests, **not hosted or manual acceptance**. Three baseline gaps: first-100-only owner project list, first-100-only owner portfolio list, and bounded frozen request index (known older request ID remains directly loadable).
+
+**Additive owner-private pagination:** `listOwnerProjectsPage` and `listOwnerPortfoliosPage` in `apps/auth-web/src/supabase-auth-port.ts`, owner JWT + row ownership validation, keyset order preserving PostgreSQL timestamp precision, 50-row maximum, collection/owner-bound continuation cursor, no fabricated total, legacy list methods retained. S1 exact worker SHA [CI 43944405510](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43944405510) SUCCESS (application/database). >100 rows, tied timestamp, cursor expiry and same-port A→B negative browser tests remain **OPEN**. S2/S3 must consume additive pages without claiming global search until all pages loaded; S6 owns regressions.
+
+**S4 source-backed frozen/reviewer clarification:** `load_private_frozen_revision` uses owner bearer, atomic SQL revision/digest check; older frozen request IDs remain valid independently of newest-50 revision/newest-100 frozen lists. A missing catalogue entry is **not** an invalid frozen request. Reviewer grants: 15–10080 min TTL, max five active, operation ID replay returns no raw token; registration does **not** enable hosted reviewer delivery. No public-host or direct-asset revocation proof.
+
+**P0 identity dependency:** S1 confirms the same SupabaseBrowserAuthPort instance may survive principal A→B. Existing UI guards keyed only by port/route/retry are insufficient. S0 owns immediate fail-closed workspace invalidation and owner/epoch keyed remount; S1 owns trustworthy identity/epoch contract; S5 owns consumer private-state guards; S6 must test delayed A responses after B sign-in. Do not mark cross-account isolation accepted until executed.
+
+**Remaining:** reconcile each row with exact endpoint/SQL provenance and separate local/hosted/manual test columns. No changes to main, production, secrets, destructive account exit or paid infrastructure.
