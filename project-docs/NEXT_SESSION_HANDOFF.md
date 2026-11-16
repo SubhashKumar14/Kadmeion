@@ -1,3 +1,15 @@
+## 17 November 2026 — Coordinated Session 0 start (READY_FOR_WORKERS)
+
+**New run `20261117-7232a31`; baseline `7232a312c821459e6d88ba400eed6a391738c979`; setup commit `d9c7aa2c13f0566f5b43ebb4593515e302610c6f`.** No worker feature change or new automated test was represented as completed. Session 0 verified the 425-file baseline tree (160 project-docs paths, 52 screen specs, 15 capstone files), created six isolated worker branches and seven owned Notion logs, and committed all-path ownership/reader assignments, precise first tasks, and a preliminary list of 49 unassessed auth-browser adapter methods. See [coordination instructions](SESSION0_COORDINATION_2026-11-17.md), [complete source ownership CSV](registers/SESSION0_SOURCE_AND_DOCUMENT_INVENTORY_2026-11-17.csv), [initial contract inventory](registers/FRONTEND_BACKEND_CONTRACT_INVENTORY_2026-11-17.md), and [shared Notion run dashboard](https://app.notion.com/p/41ab082297c78134b007f69c52bd5475).
+
+- Integration branch remains `feat/b0-backend-foundation`; only Session 0 may update it for this run. Workers use `work/20261117-7232a31/s1-contracts` through `s6-acceptance`, with exact suffixes in the coordination file. Worker Notion logs and branch links are published in the dashboard.
+- Every current tracked file and current documentation file is assigned an owner and reader; binary references still need provenance review. All current-file assignments are a work allocation, not proof every assigned file has been read.
+- The user-approved Phase 2/3 boundaries and authorization/cost gates remain in force. Hosted email, independent public host/revocation, untrusted preview source, erasure and actual device/assistive-technology acceptance are not silently cleared.
+- Latest historical F06 evidence remains 121 axe samples for 52 IDs with zero automated violations but 49 contextual review items; 36/138 UAT cases mapped across 26/53 workflows, with 12 isolated-pass and 24 partial. These totals have **not** been rerun for the new coordination commit.
+- **Next action:** S1 publishes stable real contracts; S2–S5 implement independent dependency-ready UI gaps in owned files; S6 builds acceptance evidence; S0 coordinates shared shell/router/global styles, protects exports, integrates coherent commits and reruns integrated verification.
+
+---
+
 ## 16 November 2026 — F06 accessibility and acceptance
 
 Continued after the F05 handoff on `feat/b0-backend-foundation`. F06 remains open for manual review and complete end-to-end acceptance.
