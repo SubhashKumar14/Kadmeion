@@ -523,11 +523,15 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Revoked', {exact:true})).toBeVisible();
   await expect(page.getByRole('button', {name:'Review revocation'})).toHaveCount(0);
   await page.getByRole('link', {name: 'Publish preflight', exact: true}).click();
+  await expect(page.getByRole('heading',{name:'Preflight checks'})).toBeVisible();
+  await expect(page.getByRole('status').filter({hasText:'Not evaluated.'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Publish unavailable — host proof required'})).toBeDisabled();
   await expect(page.getByRole('button',{name:'Use frozen revision 2'})).toBeVisible();
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
   await page.getByRole('button', {name: 'Run private preflight'}).click();
   await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();
   await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toBeVisible();
+  await expect(page.getByText('Private · Not published', {exact:true})).toBeVisible();
   await capture('29_PREFLIGHT_BROWSER');
   await page.getByRole('link', {name: 'Releases & rollback'}).click();
   await expect(page.getByRole('heading', {name: 'Private release pointer'})).toBeVisible();

@@ -1166,3 +1166,19 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media(max-width:900px){
   .ws-release-visual-canvas .ws-studio-canvas{max-height:440px}
 }
+
+/* F4 PUBLISH-03: findings first, exposure intent second, real content-driven sizes. */
+@media(min-width:1101px){
+  .ws-release-page[data-release-mode="publish"] .ws-project-detail.ws-owner-columns{
+    grid-template-columns:minmax(0,1.15fr) minmax(320px,1fr);gap:clamp(16px,2.5vw,32px)
+  }
+}
+.ws-release-preflight-gates>h2{font-size:clamp(1.4rem,2vw,1.85rem);margin:6px 0 10px}
+.ws-release-preflight-gates>.ws-release-action{margin-top:15px}
+.ws-release-unrun-checks{list-style:none;margin:14px 0 0;padding:0}
+.ws-release-unrun-checks li{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  padding:14px 0;border-bottom:1px solid var(--line);font-size:.875rem}
+.ws-release-unrun-checks li>span:last-child{color:var(--body);font-weight:650;white-space:nowrap}
+.ws-release-preflight-gates .ws-release-diagnostics h4{font-size:.97rem}
+.ws-release-preflight-gates .ws-private-static-preview{min-height:320px;max-height:72dvh}
+@media(max-width:500px){.ws-release-unrun-checks li{align-items:start;flex-direction:column;gap:5px}}

@@ -275,6 +275,21 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <button type="button" className="ws-secondary" disabled>Copy public link unavailable</button>
         </div>
       </aside>}
+      {mode==='publish' && <section className="ws-project-aside ws-release-preflight-gates" aria-labelledby="preflight-checks-title">
+        <p className="ws-kicker">RELEASE GATES</p>
+        <h2 id="preflight-checks-title">Preflight checks</h2>
+        <p>Only checks executed against a verified frozen revision are reported as passed.
+          Public delivery is a separate host proof.</p>
+        {result ? <PreflightResults result={result}/> : <div aria-label="Unrun release checks">
+          <p role="status">Not evaluated. Select a saved revision and run private preflight.</p>
+          <ul className="ws-release-unrun-checks">
+            {['Revision and snapshot integrity','Content and required slots','Metadata and links',
+              'Accessible static structure','Static output and delivery safety'].map(name=><li key={name}>
+              <span>{name}</span><span>Not checked</span>
+            </li>)}
+          </ul>
+        </div>}
+      </section>}
       <div className="ws-project-fields">
         {mode==='share'?<>
           <h2>Public sharing controls</h2>
@@ -407,24 +422,18 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               </div>}
             </>}
           </div>}
-          {result && <section className="ws-release-action" aria-labelledby="preflight-results">
-            <h3 id="preflight-results">Preflight results</h3>
-            <p role="status">This is a private renderability check, not a published release or host readiness proof.</p>
-            {([
-              ['Blocking errors',result.blockers],['Warnings',result.warnings],
-              ['Checks performed and passed',result.passed]
-            ] as const).map(([heading,items])=><div key={heading} className="ws-release-diagnostics">
-              <h4>{heading} ({items.length})</h4>
-              {items.length ? <ul>{items.map((item,index)=><li key={item.code+':'+index}>
-                <strong>{item.code}</strong>: {item.message}</li>)}</ul> : <p>None in this category.</p>}
-            </div>)}
-            {result.previewHtml && <iframe title="Private scriptless preview" className="ws-private-static-preview"
-              sandbox="" referrerPolicy="no-referrer" srcDoc={result.previewHtml}/>}
-            <p className="ws-field-hint">Publication is disabled until separately authorized and proved on the delivery host.</p>
-          </section>}
+          {mode==='publish' && <div className="ws-release-action" aria-labelledby="publication-controls-title">
+            <h3 id="publication-controls-title">Exposure and publication</h3>
+            <p>Visibility above is an intent for a future release, not the current exposure of this private draft.
+              No canonical URL or live SEO projection has been issued.</p>
+            <dl className="ws-release-facts"><dt>Public URL</dt><dd>Unavailable until host verification</dd>
+              <dt>Release status</dt><dd>Private · Not published</dd>
+              <dt>SEO metadata</dt><dd>Read from the selected revision only during preflight</dd></dl>
+            <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>
+          </div>}
         </>}
       </div>
-      {mode!=='staging' && <aside className="ws-project-aside">
+      {mode!=='staging' && mode!=='publish' && <aside className="ws-project-aside">
         <h2>Delivery &amp; sharing</h2>
         <p>No public or reviewer address is verified. An owner preview is not a shareable release.</p>
         <dl className="ws-release-facts"><dt>Owner preview</dt><dd>Private to your signed-in account</dd>
@@ -465,5 +474,26 @@ function FrozenRequestHistory({requests,error,onSelect,activeRequestId}:{
         </button>}
       </li>)}</ol>}
     {requests?.length===100&&<p className="ws-field-hint">Showing the newest 100 private freeze records.</p>}
+  </section>;
+}
+
+
+/** A diagnostic is displayed only when emitted by the real frozen-snapshot
+ * preflight engine. Never label an unexecuted check as passed. */
+function PreflightResults({result}:{result:SafePreviewResult}) {
+  return <section className="ws-release-action" aria-labelledby="preflight-results">
+    <h3 id="preflight-results">Preflight results</h3>
+    <p role="status">Private renderability check. No published release or host readiness proof.</p>
+    {([
+      ['Blocking errors',result.blockers],['Warnings',result.warnings],
+      ['Checks performed and passed',result.passed]
+    ] as const).map(([heading,items])=><div key={heading} className="ws-release-diagnostics">
+      <h4>{heading} ({items.length})</h4>
+      {items.length?<ul>{items.map((item,index)=><li key={item.code+':'+index}>
+        <strong>{item.code}</strong>: {item.message}</li>)}</ul>:<p>None in this category.</p>}
+    </div>)}
+    {result.previewHtml && <iframe title="Private scriptless preview" className="ws-private-static-preview"
+      sandbox="" referrerPolicy="no-referrer" srcDoc={result.previewHtml}/>}
+    <p className="ws-field-hint">Publication remains blocked until host proof and separate authorization.</p>
   </section>;
 }
