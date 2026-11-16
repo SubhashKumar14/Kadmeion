@@ -6,7 +6,7 @@ import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type Saf
 import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type {PortfolioSnapshot} from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
-const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback'} as const;
+const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
 type SafeGrant = {grantId:string;expiresAt:string;status:'REGISTERED_UNSERVABLE'|'REVOKED'};
 const dataComponents:Readonly<Record<string,SafeSlotKind>> = {
@@ -37,7 +37,7 @@ function buildPlan(snapshot:PortfolioSnapshot):SafeSlotPlan[] {
 }
 
 export function releaseRoute(path:string):{id:string;mode:ReleaseMode}|undefined {
-  const match=/^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(staging|publish|releases)$/i.exec(path);
+  const match=/^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(staging|publish|releases|share)$/i.exec(path);
   if (match?.[1] && match[2] && Object.hasOwn(routes,match[2]))
     return {id:match[1].toLowerCase(),mode:match[2] as ReleaseMode};
 }
@@ -70,7 +70,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!active) return;
         if (!reply.data) {setError(reply.error?.message ?? 'Portfolio unavailable.');return;}
         setRecord(reply.data);
-        if (mode!=='releases') return;
+        if (mode!=='releases' && mode!=='share') return;
         const status=await port.readOwnerRelease(id);
         if (!active) return;
         if (status.data) {setPointer(status.data);setError('');}
@@ -173,7 +173,29 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       Retry private release check</button>}
     {record && <div className="ws-project-detail ws-owner-columns">
       <div className="ws-project-fields">
-        {mode==='releases'?<>
+        {mode==='share'?<>
+          <h2>Public sharing controls</h2>
+          <p>These controls require a separately verified release. An editor URL, a private review grant and a prepared pointer are not shareable public links.</p>
+          <div className="ws-release-action">
+            <h3>Release visibility</h3>
+            <dl className="ws-release-facts">
+              <dt>Private</dt><dd>Only authenticated owner access. Never copy the author-preview URL as a public link.</dd>
+              <dt>Unlisted</dt><dd>A real published address may be shared by its holder, but it is not a private access-control mechanism.</dd>
+              <dt>Public</dt><dd>Requires explicit consent, verified host delivery and correct indexability before sharing.</dd>
+              <dt>Current pointer</dt><dd>{pointer ? pointer.status==='BLOCKED'?'No active private candidate':'Private candidate prepared; not live'
+                : error?'Status could not be verified':'Checking private pointer…'}</dd>
+            </dl>
+          </div>
+          <div className="ws-release-action">
+            <h3>Share a verified address</h3>
+            <p>There is no host-attested public URL on this owner route. Copy and native sharing are unavailable until publication, consent and revocation checks pass.</p>
+            <div className="ws-release-actions">
+              <button type="button" className="ws-secondary" disabled>Copy verified public URL</button>
+              <button type="button" className="ws-secondary" disabled>Share verified public URL</button>
+            </div>
+            <p className="ws-field-hint">The absence of a public URL is not a failure of your private saved portfolio.</p>
+          </div>
+        </> : mode==='releases'?<>
           <h2>Private release pointer</h2>
           {pointer ? <>
             <dl className="ws-release-facts">

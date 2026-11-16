@@ -505,9 +505,21 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByText('Source manifest requires seo.title and seo.description.')).toBeVisible();
   await capture('29_PREFLIGHT_BROWSER');
   await page.getByRole('link', {name: 'Releases & rollback'}).click();
-  await expect(page.getByRole('heading', {name: 'Release status'})).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'Private release pointer'})).toBeVisible();
   await expect(page.getByText('Awaiting verification', {exact: true})).toBeVisible();
   await capture('30_RELEASES_BROWSER');
+  await page.getByRole('link', {name:'Sharing controls'}).click();
+  await expect(page.getByRole('heading', {name:'Public sharing controls'})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Copy verified public URL'})).toBeDisabled();
+  await expect(page.getByRole('button', {name:'Share verified public URL'})).toBeDisabled();
+  await capture('34_SHARING_BROWSER');
+  await page.setViewportSize({width:390,height:844});
+  await expect(page.getByRole('heading', {name:'Public sharing controls'})).toBeVisible();
+  const shareWidths=await page.evaluate(()=>({scroll:document.documentElement.scrollWidth,
+    viewport:document.documentElement.clientWidth}));
+  expect(shareWidths.scroll).toBeLessThanOrEqual(shareWidths.viewport+2);
+  await capture('34_SHARING_PHONE_BROWSER');
+  await page.setViewportSize({width:1600,height:1000});
   await page.goto(editorPath);
   await page.setViewportSize({width: 390, height: 844});
   await expect(page.getByRole('heading', {name: 'Continue on a larger screen.'})).toBeVisible();
