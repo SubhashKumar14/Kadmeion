@@ -1197,3 +1197,42 @@ test('eligible private static ZIP and expired Trash remain owner scoped',async({
   await expect(restore).toBeDisabled();
   await expect(page.getByRole('button',{name:/permanent/i})).toHaveCount(0);
 });
+
+
+test('F6 failed onboarding skip remains private and is retryable after RPC recovery', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1',
+    'Requires isolated local Supabase and disposable GoTrue owner.');
+  test.setTimeout(75_000);
+  const owner = await localUser('F6 onboarding retry fixture');
+  await signIn(page, owner);
+  await page.goto('/app/onboarding');
+
+  const skip = page.getByRole('button', {name: 'Skip selected step'});
+  const portfolio = page.getByRole('radio', {name: /Create a portfolio/});
+  await expect(portfolio).toBeChecked();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(0);
+
+  // Fail the actual owner RPC rather than substituting a successful mock.
+  // The UI must not commit a skipped state until the server confirms it.
+  const rpc = '**/rest/v1/rpc/set_private_onboarding_step*';
+  await page.route(rpc, route => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({code: 'PGRST503', message: 'Disposable test outage'})
+  }));
+  await skip.click();
+  await expect(page.getByRole('status')).toContainText(
+    'The server did not confirm this skipped step. Nothing was marked saved.');
+  await expect(skip).toBeEnabled();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(0);
+  await page.unroute(rpc);
+
+  // An unsaved optimistic state must not survive a fresh authenticated read.
+  await page.reload();
+  await expect(portfolio).toBeChecked();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(0);
+  await skip.click();
+  await expect(page.getByRole('status')).toContainText('saved as skipped');
+  await page.reload();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(1);
+});
