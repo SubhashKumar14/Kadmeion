@@ -277,3 +277,181 @@ export async function attestAccountExitHostDenial(input:{
   if(recorded!==true) throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   return {status:'APPLICATION_HOST_DENIAL_RECORDED',observedHttpRequests:count};
 }
+
+
+/**
+ * F4 reviewer staging proof. Operator/test harness ONLY: this procedure
+ * deliberately requires an already activated, expiring reviewer grant and
+ * withdraws it through a trusted callback. It never issues a grant, changes
+ * host flags, or publishes a portfolio.
+ *
+ * An application/CDN can prove only the exact routes checked here. Raw token
+ * is used in the outgoing requests by necessity but is NEVER included in
+ * observations, diagnostic messages or logs from this module.
+ */
+export interface ReviewerHostWithdrawalInput {
+  origin:string;
+  grantId:string;
+  rawToken:string;
+  expectedServedHtmlSha256:string;
+  /** Enumerate every PNG presented in the rendered reviewer HTML. */
+  assets?:readonly {manifestSha256:string;sha256:string}[];
+  allowLocal?:boolean;
+}
+export interface ReviewerHostWithdrawalObservation {
+  status:'REVIEWER_REVOKED_ON_SCOPED_PATHS';
+  observedHttpRequests:number;
+  directPathsChecked:number;
+  liveMediaVerified:number;
+  universalCacheErasureVerified:false;
+  thirdPartyArchiveErasureVerified:false;
+}
+const REVIEWER_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const REVIEWER_IMG=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
+
+function reviewerHttpHeaders(response:Response,media:boolean):boolean {
+  const h=response.headers;
+  const robots=(h.get('x-robots-tag')??'').toLowerCase().split(',').map(x=>x.trim());
+  const csp=h.get('content-security-policy')??'';
+  const directives=csp.split(';').map(x=>x.trim().split(/\s+/)).filter(x=>x[0]);
+  const requireNone=(name:string)=> {
+    const set=directives.filter(x=>x[0]===name);
+    return set.length===1&&set[0].length===2&&set[0][1]==="'none'";
+  };
+  const overrides=directives.filter(x=>
+    ['script-src-elem','script-src-attr','worker-src','child-src'].includes(x[0]));
+  return response.status===200&&!response.redirected&&!h.has('location')&&
+    !h.has('etag')&&isUncacheable(h)&&
+    robots.includes('noindex')&&!robots.includes('index')&&
+    h.get('referrer-policy')==='no-referrer'&&
+    h.get('x-content-type-options')==='nosniff'&&
+    requireNone('default-src')&&requireNone('script-src')&&
+    overrides.every(d=>d.length===2&&d[1]==="'none'")&&
+    (media? /^image\/png(?:;|$)/i.test(h.get('content-type')??''):
+      /^text\/html(?:;|$)/i.test(h.get('content-type')??''));
+}
+async function reviewerLiveHtml(response:Response,expectedSha:string):Promise<string> {
+  if(!reviewerHttpHeaders(response,false)){
+    await response.body?.cancel();
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }
+  const reader=response.body?.getReader();
+  if(!reader)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  const hash=createHash('sha256'),pieces:Uint8Array[]=[];
+  let length=0;
+  try{
+    for(;;){
+      const part=await reader.read();
+      if(part.done)break;
+      if(!(part.value instanceof Uint8Array)||
+         (length+=part.value.byteLength)>750_000)
+        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+      hash.update(part.value);
+      pieces.push(part.value);
+    }
+    if(length===0||hash.digest('hex')!==expectedSha)
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    const bytes=new Uint8Array(length);
+    let offset=0;
+    for(const part of pieces){bytes.set(part,offset);offset+=part.byteLength;}
+    const html=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+    const head=/^<!doctype html>\s*<html(?:\s[^>]*)?>\s*<head(?:\s[^>]*)?>([\s\S]*?)<\/head>/i.exec(html);
+    if(!head||!head[1].includes('<meta name="robots" content="noindex,nofollow,noarchive">')||
+      (head[1].match(/<meta\b[^>]*\bname=["']?(?:robots|googlebot|bingbot)\b/gi)??[]).length!==1)
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    return html;
+  }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
+  finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+}
+async function reviewerLiveHead(response:Response,media:boolean):Promise<void>{
+  if(!reviewerHttpHeaders(response,media)){
+    await response.body?.cancel();
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }
+  if(response.body){
+    const reader=response.body.getReader();
+    try{
+      const first=await reader.read();
+      if(!first.done&&first.value?.byteLength)
+        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
+    finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  }
+}
+function reviewerHostPaths(input:ReviewerHostWithdrawalInput):{
+  origin:URL;htmlPaths:string[];mediaPaths:{path:string;sha256:string}[];
+}{
+  if(!input||typeof input.grantId!=='string'||!REVIEWER_UUID.test(input.grantId)||
+     typeof input.rawToken!=='string'||!SHA256.test(input.rawToken)||
+     typeof input.expectedServedHtmlSha256!=='string'||!SHA256.test(input.expectedServedHtmlSha256)||
+     (input.assets!==undefined&&!Array.isArray(input.assets)))
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const assets=input.assets??[];
+  if(assets.length>8||assets.some(asset=>!asset||!SHA256.test(asset.manifestSha256)||
+    !SHA256.test(asset.sha256))||
+    new Set(assets.map(asset=>asset.sha256)).size!==assets.length||
+    new Set(assets.map(asset=>asset.manifestSha256)).size>1)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const credential=input.grantId+'.'+input.rawToken;
+  const query='review='+credential;
+  return {
+    origin,
+    htmlPaths:['/r/'+credential,'/api/reviewer?'+query],
+    mediaPaths:assets.map(asset=>({
+      path:'/api/reviewer?'+query+'&manifest='+asset.manifestSha256+'&asset='+asset.sha256,
+      sha256:asset.sha256
+    }))
+  };
+}
+/** Actual HTTP GET/HEAD lifecycle check, including every referenced immutable PNG.
+ * This observation remains narrower than a guarantee of global cache erasure.
+ */
+export async function verifyReviewerHostWithdrawal(
+  input:ReviewerHostWithdrawalInput,revoke:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<ReviewerHostWithdrawalObservation>{
+  const {origin,htmlPaths,mediaPaths}=reviewerHostPaths(input);
+  if(typeof revoke!=='function')throw new HostRevocationProbeError('INVALID_INPUT');
+  let checks=0;
+  for(const path of htmlPaths){
+    const html=await reviewerLiveHtml(await fetchPath(new URL(path,origin),'GET',http),
+      input.expectedServedHtmlSha256);
+    checks++;
+    // The actual rendered IMG list must match the manifest's ENTIRE declared
+    // media set. Partial coverage cannot produce an accepted revocation proof.
+    const imgs=[...html.matchAll(REVIEWER_IMG)];
+    if((html.match(/<img\b/gi)??[]).length!==imgs.length||
+       imgs.length!==mediaPaths.length||
+       new Set(imgs.map(x=>x[1])).size!==imgs.length||
+       imgs.some((img)=>!mediaPaths.some(asset=>img[1]===asset.path.replaceAll('&','&amp;'))))
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    await reviewerLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),false);
+    checks++;
+  }
+  for(const asset of mediaPaths){
+    const media=await fetchPath(new URL(asset.path,origin),'GET',http);
+    if(!reviewerHttpHeaders(media,true)){
+      await media.body?.cancel();
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    }
+    await verifyLiveBytes(media,/^image\/png(?:;|$)/i,4_000_000,asset.sha256);
+    checks++;
+    await reviewerLiveHead(await fetchPath(new URL(asset.path,origin),'HEAD',http),true);
+    checks++;
+  }
+  await revoke();
+  for(const path of [...htmlPaths,...mediaPaths.map(x=>x.path)]){
+    for(const method of ['GET','HEAD'] as const){
+      await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
+      checks++;
+    }
+  }
+  return Object.freeze({
+    status:'REVIEWER_REVOKED_ON_SCOPED_PATHS' as const,
+    observedHttpRequests:checks,
+    directPathsChecked:1+mediaPaths.length,
+    liveMediaVerified:mediaPaths.length,
+    universalCacheErasureVerified:false as const,
+    thirdPartyArchiveErasureVerified:false as const
+  });
+}
