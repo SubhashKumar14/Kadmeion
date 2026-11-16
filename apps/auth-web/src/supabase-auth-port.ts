@@ -102,6 +102,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   // replace a newer login or reinstate a session after explicit logout.
   private authAttempt = 0;
   private assertCurrentAuthAttempt(attempt:number):void {
+    // An unfocused tab may have missed another port's write. Never let an
+    // older successful Auth response overwrite a different persisted principal.
+    this.reconcileOwnerSessionEpoch();
     if (attempt !== this.authAttempt)
       throw new Error('This authentication attempt was superseded.');
   }
