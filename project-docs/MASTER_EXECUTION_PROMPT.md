@@ -52,7 +52,7 @@ Verify snapshot ownership, private record coverage and truthful distinctions amo
 
 ### R3 · Close B10 and B11 code/security gates
 
-Complete email/password, optional Google OAuth callback/PKCE, resend, recovery, sign-out/rotation and error/identity/rate-limit handling with local Supabase Mailpit tests and no cross-account session switching. Keep registration/recovery gated if sender delivery is unverified. **Brevo DNS/sender credentials and real multi-inbox delivery are deferred owner-manual proof, not a blocker for code implementation.**
+Complete email/password, optional Google OAuth callback/PKCE, resend, recovery, sign-out/rotation and error/identity/rate-limit handling with local Supabase Mailpit tests and no cross-account session switching. Keep email/password registration and sign-in available without an inbox challenge, per the 16 November 2026 owner instruction. Restore mandatory confirmation only on explicit owner instruction. Gate recovery and confirmation resend on verified mail delivery. **Brevo DNS/sender credentials and real multi-inbox delivery are deferred owner-manual proof, not a blocker for code implementation.**
 
 Run same-SHA production dependency audit, TypeScript/build, Node contracts, application+DB CI, pgTAP, local GoTrue/PostgREST/Storage/Edge, media and hostile inputs, permission matrix, integration smoke and all CI error/warning checks. Fix failures instead of treating cancelled/obsolete CI as success. Audit public secrets, source ZIP, image, redirect and CSP gates.
 
