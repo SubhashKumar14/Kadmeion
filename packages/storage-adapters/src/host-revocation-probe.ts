@@ -356,8 +356,9 @@ async function reviewerLiveHtml(response:Response,expectedSha:string):Promise<st
     for(const part of pieces){bytes.set(part,offset);offset+=part.byteLength;}
     const html=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
     const head=/^<!doctype html>\s*<html(?:\s[^>]*)?>\s*<head(?:\s[^>]*)?>([\s\S]*?)<\/head>/i.exec(html);
-    if(!head||!head[1].includes('<meta name="robots" content="noindex,nofollow,noarchive">')||
-      (head[1].match(/<meta\b[^>]*\bname=["']?(?:robots|googlebot|bingbot)\b/gi)??[]).length!==1)
+    const robots=head?.[1].match(/<meta\b[^>]*\bname=["']?(?:robots|googlebot|bingbot)\b/gi)??[];
+    const robotsTag=head?.[1].match(/<meta\s+name="robots"\s+content="(noindex(?:,nofollow(?:,noarchive)?)?)"\s*\/?>/gi)??[];
+    if(!head||robots.length!==1||robotsTag.length!==1)
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
     return html;
   }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}

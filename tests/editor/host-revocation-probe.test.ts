@@ -227,10 +227,14 @@ const reviewerHtml='<!doctype html><html lang="en"><head>'+
 const reviewerHtmlSha=createHash('sha256').update(reviewerHtml).digest('hex');
 
 async function reviewerHostFixture(options:{
-  keepMediaVisible?:boolean;tamperAlias?:boolean;cacheable?:boolean;invalidHead?:boolean
+  keepMediaVisible?:boolean;tamperAlias?:boolean;cacheable?:boolean;invalidHead?:boolean;
+  bareNoindex?:boolean
 }={}) {
   let revoked=false;
   const visits:string[]=[];
+  const validHtml=options.bareNoindex
+    ?reviewerHtml.replace('content="noindex,nofollow,noarchive"','content="noindex"')
+    :reviewerHtml;
   const host=createServer((req,res)=>{
     const target=req.url??'';
     const media=target===reviewerMedia;
@@ -258,7 +262,7 @@ async function reviewerHostFixture(options:{
     res.setHeader('Content-Type',media?'image/png':'text/html; charset=utf-8');
     if(options.invalidHead&&req.method==='HEAD')res.setHeader('X-Robots-Tag','index');
     res.end(media?png:options.tamperAlias&&target===reviewerApi?
-      reviewerHtml.replace('Review-only','Unverified') : reviewerHtml);
+      validHtml.replace('Review-only','Unverified') : validHtml);
   });
   host.listen(0,'127.0.0.1');
   await once(host,'listening');
@@ -267,7 +271,8 @@ async function reviewerHostFixture(options:{
   const input={
     origin:'http://127.0.0.1:'+port,allowLocal:true,
     grantId:reviewerGrant,rawToken:reviewerSecret,
-    expectedServedHtmlSha256:reviewerHtmlSha,
+    expectedServedHtmlSha256:options.bareNoindex
+      ?createHash('sha256').update(validHtml).digest('hex'):reviewerHtmlSha,
     assets:[{manifestSha256:mediaManifest,sha256:pngSha}]
   };
   return {input,visits,close,revoke:async()=>{revoked=true;},get revoked(){return revoked;}};
@@ -340,5 +345,17 @@ test('reviewer withdrawal validates grant, digest, media manifest and local orig
         {code:bad===invalid[6]?'RELEASE_NOT_OBSERVED':'INVALID_INPUT'});
       assert.equal(fixture.revoked,false);
     }
+  }finally{await fixture.close();}
+});
+
+
+test('reviewer host verifier accepts the existing safe minimal noindex meta variant',
+  {timeout:15000},async()=>{
+  const fixture=await reviewerHostFixture({bareNoindex:true});
+  try{
+    const result=await verifyReviewerHostWithdrawal(fixture.input,fixture.revoke);
+    assert.equal(result.status,'REVIEWER_REVOKED_ON_SCOPED_PATHS');
+    assert.equal(result.liveMediaVerified,1);
+    assert.equal(fixture.revoked,true);
   }finally{await fixture.close();}
 });
