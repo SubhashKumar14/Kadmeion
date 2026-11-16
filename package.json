@@ -23,7 +23,7 @@
     "build:auth:preview": "npm run build:auth && node scripts/prepare-auth-preview.mjs",
     "verify:auth:preview": "node scripts/verify-auth-preview.mjs",
     "verify:approved-light": "node scripts/verify-approved-light-references.mjs",
-    "verify:f0": "node scripts/verify-f0-source-contract.mjs"
+    "verify:f0": "node scripts/verify-approved-light-references.mjs --contract"
   },
   "devDependencies": {
     "@types/node": "26.6.6",
