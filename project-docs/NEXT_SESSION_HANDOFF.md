@@ -1,3 +1,12 @@
+## 16 November 2026 — Visual reference policy and landing rebuild
+
+- Owner direction for all frontend work: use approved LIGHT images for brand, hierarchy and composition cues. Build responsive UI using the 115 interview decisions and 52 screen mappings. Size content for readability and the user’s task, and let pages scroll. Historical pixel-difference figures and reference-frame dimensions have no acceptance role.
+- PUB-01 keeps Hero, Social proof, Problem statement, Solution or value, How it works, FAQ and CTA. It now uses a fluid editorial type scale, wide gutters, differentiated section layouts, and larger controls. The preview cycles through distinct Studio, sample portfolio and Workspace views. These illustrate the actual product concepts with no usage charts or claims of a public release. The social-proof area links two independent public project repositories.
+- Updated both frontend execution plans, master design, PUB-01 and design QA. Browser coverage checks readable type, minimum preview button size, narrow reflow and the seven section order. Full-page desktop and phone captures are produced in the frontend workflow for review.
+- Apply this review method to the upcoming screens in their original approval order. F2 begins with WORK-03 and the remaining 12–17 designs. Owner visual acceptance is a separate checkpoint.
+
+---
+
 ## 16 November 2026 — Owner clarification of the landing-page sequence
 
 - Landing (PUB-01) follows the seven owner-specified sections in exact order: Hero, Social proof, Problem statement, Solution or value, How it works, FAQ, CTA. This supersedes the earlier ordering and supersedes separate landing sections for templates and developer connections. Templates sit under Value, and connections are explained in the FAQ.

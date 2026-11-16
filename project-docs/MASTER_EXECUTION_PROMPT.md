@@ -25,7 +25,7 @@ Do not invent a completion percentage or claim production readiness from passing
 - Hosted Supabase project `scyooqjitjzjdxgtanso`: **56/56 source migration versions already present**, latest `20261115140000_owner_my_components_library.sql`; **3/3 Edge Functions ACTIVE**. Verify ledger before proposing or applying anything. **Never replay applied migration SQL.** Only new forward-only migrations after genuine code/DB gaps.
 - Current backend evidence register: D01–D90 = **52 PARTIAL; 2 BLOCKED_EXTERNAL (D10/D20); 12 DEFERRED_APPROVED; 24 NOT_APPLICABLE**. All 90 IDs are accounted for, not necessarily implemented. Original evidence inventories: **115 UI selections, 53 workflows, 138 UAT cases and 20 technical proof gates**. New `scripts/verify-backend-traceability.mjs` checks structural integrity, not functional acceptance.
 - Read-only hosted security at checkpoint: 85 app `SECURITY DEFINER` routines fixed-search-path and 0 anon-EXECUTE; 45 authenticated-definer warnings to review individually; 17 service-only RLS-without-policy INFO entries; leaked-password protection warning unresolved. `npm audit`, typecheck, Node suites, pgTAP, local GoTrue/Storage/Edge/Mailpit smoke and GitHub Actions must be independently green for the **same** release SHA.
-- Auth preview and server delivery adapters exist, but these are **not** finished pixel-matched 52-screen frontend and public-host acceptance. Main branch merge, public hosting and real sender delivery were not authorized by the last checkpoint.
+- Auth preview and server delivery adapters exist, but these are **not** completed and owner-accepted 52-screen frontend and public-host acceptance. Main branch merge, public hosting and real sender delivery were not authorized by the last checkpoint.
 - Proposed 200-file source budget is exceeded in the live tree; maintain a truthful count, justified exceptions and a no-file-hiding rule. `project-docs/` is outside the authored application-path count.
 
 ## Next phases — execute in order
@@ -83,7 +83,7 @@ Use Kadmeion's original approved angular layered-K mark, Aether Drift C directio
 
 ### F1 · Shared shells, route safety, design system and authentication (01–11)
 
-Build public, auth, workspace and restricted operations shells, accessible controls, theme semantics, navigation, glyph-text skeleton loading without artificial delays, reduced-motion and focus behavior. Implement approved landing/explore/templates (01–03), full reversible auth suite (04–09), welcome and workspace home (10–11) against verified contracts. For each screen compare the rendered browser capture to the **exact approved screenshot**, then check responsive behavior and accessible semantic functionality. Show true email unavailable states rather than a fake success.
+Build public, auth, workspace and restricted operations shells, accessible controls, theme semantics, navigation, glyph-text skeleton loading without artificial delays, reduced-motion and focus behavior. Implement approved landing/explore/templates (01–03), full reversible auth suite (04–09), welcome and workspace home (10–11) against verified contracts. For each screen review rendered browser captures for responsive hierarchy, legibility, and functional accessibility, using the approved visual references and decisions as guidance. Show true email unavailable states rather than a fake success.
 
 **Exit:** 01–11 coded, tested, visually reviewed, real auth guarded and route accessibility demonstrated.
 
@@ -101,19 +101,19 @@ Implement editor workspace, content inspector, section/components, My Components
 
 ### F4 · Staging, publishing, developer identity and sharing (27–34)
 
-Implement reviewer stage/link, preflight, release/rollback, public profile, case study, conditional public portfolio and share controls. Follow the exact 27–34 approved images. Public direct HTML and sanitized PNG assets require no-index/private/public status accuracy, preserved SEO only when legitimately published, and verified host revocation before enabling controls. Where an external gate is still closed, present honest disabled/preview-only/export behavior; never fabricate a live URL.
+Implement reviewer stage/link, preflight, release/rollback, public profile, case study, conditional public portfolio and share controls. Use the approved 27–34 images for visual direction and apply the screen decisions to responsive, usable layouts. Public direct HTML and sanitized PNG assets require no-index/private/public status accuracy, preserved SEO only when legitimately published, and verified host revocation before enabling controls. Where an external gate is still closed, present honest disabled/preview-only/export behavior; never fabricate a live URL.
 
 **Exit:** actual HTTP traces where authorized, safe fail-closed fallbacks elsewhere, 27–34 visual and keyboard tests.
 
 ### F5 · Settings, account security, moderation, system screens and Phase 2 growth (35–52)
 
-Implement core P1 settings/privacy/notifications/security/Trash/export/account exit (41–47), restricted admin users/moderation/appeals (48–50) and unavailable/unsupported-device states (51–52), using the exact approved images and actual permission boundaries. For **35–40** (Growth/Activity/DevScore/Goals/Analytics/Connections), preserve their approved design references while respecting **Phase 2**: build only genuine data-backed elements where permitted/implemented, otherwise honest opt-in/empty/deferred states; never invent scores, API sync or traffic. This sequencing implements P1 before P2 despite numeric screen ordering.
+Implement core P1 settings/privacy/notifications/security/Trash/export/account exit (41–47), restricted admin users/moderation/appeals (48–50) and unavailable/unsupported-device states (51–52), using the approved visual references and actual permission boundaries. For **35–40** (Growth/Activity/DevScore/Goals/Analytics/Connections), preserve their approved design references while respecting **Phase 2**: build only genuine data-backed elements where permitted/implemented, otherwise honest opt-in/empty/deferred states; never invent scores, API sync or traffic. This sequencing implements P1 before P2 despite numeric screen ordering.
 
 **Exit:** 41–52 P1 flow acceptance and P2-specific 35–40 capability status separately documented; no misleading action appears functional.
 
 ### F6 · Full 52-screen acceptance and release decision
 
-Per screen verify light-image visual parity on a known viewport **and** responsive breakpoints, real action state matrix, keyboard + screen reader, 200% zoom/reflow, focus, reduced motion, access control, error/empty/loading, privacy, source provenance and links. Validate published portfolio independence from workspace shell and avoid forcing a universal application theme on authored portfolios. Test Vercel free preview and real-host revocation only when permitted. Preserve the final 115 UI/53 workflow/138 UAT/20 proof statuses with per-case evidence, not green-by-association.
+Per screen verify brand and hierarchy at responsive viewports against the approved visual direction, along with the real action state matrix, keyboard + screen reader, 200% zoom/reflow, focus, reduced motion, access control, error/empty/loading, privacy, source provenance and links. Validate published portfolio independence from workspace shell and avoid forcing a universal application theme on authored portfolios. Test Vercel free preview and real-host revocation only when permitted. Preserve the final 115 UI/53 workflow/138 UAT/20 proof statuses with per-case evidence, not green-by-association.
 
 **Exit:** 52 individually accepted UI implementations (not merely 52 static screenshots), no P0/P1 defects, documented free-tier operational envelope, **separate** approved main merge/production activation.
 

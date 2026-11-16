@@ -17,11 +17,11 @@ The owner clarified the section order on 16 November 2026, superseding the earli
 6. FAQ, including optional developer connections.
 7. Final Create Your Portfolio CTA.
 
-The page uses Kadmeion’s approved visual family, full-width outer shell, and responsive content layout.
+The page uses Kadmeion’s approved visual family and a full-width shell. Use a curved composition, generous spacing, readable text, and clear section transitions. Design for the content at desktop, tablet, and phone widths. The reference image provides composition cues for this layout.
 
 ## Content and actions
 
-7-second carousel with manual prev/next/pause; persistent theme switch; CTA enters sign-in if guest. Provide clear field labels, contextual help, status feedback, keyboard equivalents and visible focus. Every destructive or public-facing operation requires a meaningful scope-specific confirmation; routine reversible edits use quiet inline feedback with Undo where feasible.
+7-second carousel with distinct editor, illustrative portfolio preview, and workspace views. Provide manual prev/next/pause; persistent theme switch; CTA enters sign-in if guest. Provide clear field labels, contextual help, status feedback, keyboard equivalents and visible focus. Every destructive or public-facing operation requires a meaningful scope-specific confirmation; routine reversible edits use quiet inline feedback with Undo where feasible.
 
 ## Data/authorization and invariants
 

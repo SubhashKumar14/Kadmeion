@@ -62,41 +62,32 @@ const projectExamples = [
   { name: 'StreamFlix', summary: 'Movie discovery and recommendations.', href: 'https://github.com/thandriyalahimaja/Stream-Flix' }
 ] as const;
 function DemoWorkspace({ view }: { view: DemoView }) {
-  const viewHeading = view === 'Workspace' ? 'A place for what you build next.'
-    : view === 'Portfolio Studio' ? 'Shape your portfolio your way.'
-    : 'See your growth, privately.';
-  return <div className="demo-window" aria-label={view + ' illustrative interface concept'} role="img">
-    <div className="demo-rail">
-      <div className="demo-rail-title">KADMEION</div>
-      <p>YOUR WORKSPACE</p>
-      <div className="demo-rail-item active"><Icon name="folder" size={13} /> Workspace</div>
-      <div className="demo-rail-item"><Icon name="layers" size={13}/> Studio</div>
-      <div className="demo-rail-item"><Icon name="code" size={13}/> Projects</div>
-      <div className="demo-rail-item"><Icon name="activity" size={13}/> Growth</div>
-    </div>
-    <div className="demo-stage">
-      <div className="demo-crumb">Workspace <span>›</span> {view} <span className="demo-dots">◌ &nbsp; ◌</span></div>
-      <div className="demo-stage-body">
-        <div className="demo-stage-head">{viewHeading}</div>
-        <div className="demo-metrics">
-          <div><Icon name="code" size={16}/><span>Projects</span></div>
-          <div><Icon name="layers" size={16}/><span>Portfolios</span></div>
-          <div><Icon name="activity" size={16}/><span>Progress</span></div>
+  return <div className="demo-window" data-view={view} aria-label={view + ' illustrative interface concept'} role="img">
+    <div className="demo-crumb"><Icon name={view === 'Workspace' ? 'folder' : 'layers'} size={16}/><strong>{view}</strong></div>
+    {view === 'Workspace' ? <div className="demo-overview">
+      <p className="demo-stage-head">Your private workspace</p>
+      <div className="demo-rows"><span><Icon name="user"/> Profile</span><span><Icon name="folder"/> Projects</span><span><Icon name="layers"/> Portfolio drafts</span></div>
+    </div> : <div className="demo-document">
+      {view === 'Portfolio Studio' && <div className="demo-rail">
+        <strong>Structure</strong><span className="active">Introduction</span><span>Projects</span><span>Contact</span>
+      </div>}
+      <div className="demo-canvas">
+        <div className="demo-canvas-copy">
+          <p className="demo-canvas-label">Developer portfolio</p>
+          <p className="demo-stage-head">Good work deserves a story.</p>
+          <p className="demo-canvas-note">A selection of projects and what I learned building them.</p>
         </div>
-        <div className="demo-chart">
-          <span>{view === 'Workspace' ? 'Your work, in one place' : view === 'Portfolio Studio' ? 'Build and preview' : 'Goals and activity'}</span>
-          <svg aria-hidden="true" viewBox="0 0 310 54" preserveAspectRatio="none"><path d="M0 48 C32 40 45 44 70 34 S112 41 140 25 S183 36 212 17 S257 27 282 12 S299 18 310 7" fill="none" stroke="#427CB8" strokeWidth="2"/></svg>
-        </div>
-        <span className="demo-truth">Illustrative interface · no account data</span>
+        <div className="demo-art" aria-hidden="true"><span/></div>
       </div>
-    </div>
+    </div>}
   </div>;
 }
 function ProductDemo() {
   const [index,setIndex] = useState(0);
   const [reduced,setReduced] = useState(initialReducedMotion);
   const [paused,setPaused] = useState(false);
-  const [interacting,setInteracting] = useState(false);
+  const [hovered,setHovered] = useState(false);
+  const [focused,setFocused] = useState(false);
   const [visible,setVisible] = useState(() => document.visibilityState === 'visible');
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -110,23 +101,25 @@ function ProductDemo() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   },[]);
   useEffect(() => {
-    if (!canAutoAdvance(reduced,paused,interacting,visible)) return;
+    if (!canAutoAdvance(reduced,paused,hovered || focused,visible)) return;
     const timer=window.setInterval(() => setIndex(current=>nextPreviewIndex(current,1)),7000);
     return () => window.clearInterval(timer);
-  },[reduced,paused,interacting,visible]);
+  },[reduced,paused,hovered,focused,visible]);
   const change=(step:-1|1) => setIndex(current=>nextPreviewIndex(current,step));
-  return <div className="hero-demo" onMouseEnter={()=>setInteracting(true)} onMouseLeave={()=>setInteracting(false)}
-    onFocusCapture={()=>setInteracting(true)}
-    onBlurCapture={event=>{ if(!event.currentTarget.contains(event.relatedTarget as Node|null))setInteracting(false); }}>
+  return <figure className="hero-demo" onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}
+    onFocusCapture={()=>setFocused(true)}
+    onBlurCapture={event=>{ if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFocused(false); }}>
     <DemoWorkspace view={DEMO_VIEWS[index] ?? DEMO_VIEWS[0]} />
-    <div className="demo-controls">
+    <figcaption className="demo-caption">Illustrative product preview
+    <div className="demo-controls" role="group" aria-label="Product preview controls">
       <button type="button" aria-label="Previous product example" onClick={()=>change(-1)}>‹</button>
       <span aria-label={'Illustrative product view '+(index+1)+' of 3'}>{index+1} / {DEMO_VIEWS.length}</span>
       <button type="button" aria-label="Next product example" onClick={()=>change(1)}>›</button>
       <button className="demo-pause" type="button" aria-label={paused?'Resume automatic preview':'Pause automatic preview'}
         aria-pressed={paused} onClick={()=>setPaused(v=>!v)}><Icon name={paused?'play':'pause'} size={13}/></button>
     </div>
-  </div>;
+    </figcaption>
+  </figure>;
 }
 export function ActionLink({children,href,kind='primary'}:{children:ReactNode,href:string,kind?:'primary'|'outline'}) {
   return <a className={'action-link '+kind} href={href}>{children}<Icon name="arrow" size={17}/></a>;
@@ -160,11 +153,11 @@ export function Landing() {
 
       <main id="main" tabIndex={-1}>
         <section className="hero" aria-labelledby="hero-title">
-          <div className="hero-decoration" aria-hidden="true"><span/><span/><span/></div>
+          <div className="hero-decoration" aria-hidden="true"><span/></div>
           <div className="hero-copy">
             <div className="eyebrow"><span/> Build · Showcase · Evolve</div>
-            <h1 id="hero-title">Your Developer Identity,<br/><em>Crafted with Purpose.</em></h1>
-            <p>Create a distinct portfolio, showcase real work, and build your developer presence with intention.</p>
+            <h1 id="hero-title">Your Developer Identity,<br/><em>On your terms.</em></h1>
+            <p>Build a portfolio that shows what you made, how you worked, and what you want to build next.</p>
             <div className="hero-actions">
               <ActionLink href={getAuthHref()}>Create Your Portfolio</ActionLink>
               <ActionLink href="/explore" kind="outline">Explore Portfolios</ActionLink>
@@ -190,41 +183,41 @@ export function Landing() {
           </div>
         </section>
 
-        <section className="statement" aria-labelledby="problem-title">
-          <span className="statement-icon"><Icon name="target" size={24}/></span>
+        <section className="landing-problem section" aria-labelledby="problem-title">
           <div><h2 id="problem-title">The Challenge</h2>
-            <p>Your code, skills, and project stories live across different platforms. That makes it hard for someone to understand your work in one visit.</p></div>
+            <p className="landing-lead">A repository shows the code. Where do you tell the rest of the story?</p></div>
+          <p>Your decisions, responsibilities, demos, and lessons learned can end up across several platforms. Give visitors one place to understand the work and see what you contributed.</p>
         </section>
 
-        <section className="statement landing-value" aria-labelledby="value-title">
-          <span className="statement-icon warm"><Icon name="layers" size={24}/></span>
+        <section className="landing-value section" aria-labelledby="value-title">
           <div><h2 id="value-title">The Kadmeion Solution</h2>
-            <p>Bring your projects, skills, and case studies together in a portfolio. Choose a template, edit your work privately, and decide what to share.</p>
+            <p className="landing-lead">Give your work a place of its own.</p>
+            <p>Bring your projects, skills, and case studies together. Choose a template, edit privately, and decide what to share.</p>
             <a id="templates" className="inline-link" href="/templates">Browse templates <Icon name="arrow" size={16}/></a>
           </div>
           <div className="template-thumbnails" aria-hidden="true">
-            <span className="mini-template"/><span className="mini-template two"/><span className="mini-template three"/>
+            <span className="mini-template demo-template-front"><strong>Selected work</strong><span/></span>
+            <span className="mini-template demo-template-back"><strong>Portfolio</strong><span/></span>
           </div>
         </section>
 
         <section className="steps section" aria-labelledby="steps-heading">
-          <div><div className="eyebrow"><span/> How it works</div><h2 id="steps-heading">Your Portfolio in Three Simple Steps.</h2></div>
-          <div className="step-grid">
-            <div className="step"><span className="step-icon"><Icon name="user" size={23}/></span><p><strong>1. Set Up</strong><span>Create your private developer profile.</span></p></div>
-            <div className="step"><span className="step-icon warm"><Icon name="layers" size={23}/></span><p><strong>2. Build</strong><span>Add real projects and shape your portfolio.</span></p></div>
-            <div className="step"><span className="step-icon"><Icon name="rocket" size={23}/></span><p><strong>3. Share & Grow</strong><span>Publish only after the release is verified.</span></p></div>
-          </div>
+          <h2 id="steps-heading">Your Portfolio in Three Simple Steps.</h2>
+          <ol className="step-grid">
+            <li className="step"><Icon name="user" size={23}/><div><h3>Set up your profile</h3><p>Write a short introduction and choose which details you want to share.</p></div></li>
+            <li className="step"><Icon name="layers" size={23}/><div><h3>Build your portfolio</h3><p>Add projects, choose a layout, and preview your draft as you go.</p></div></li>
+            <li className="step"><Icon name="rocket" size={23}/><div><h3>Decide what to share</h3><p>Review your work and choose what to publish when it is ready.</p></div></li>
+          </ol>
         </section>
 
         <section className="faq section" aria-labelledby="faq-heading">
-          <div><div className="eyebrow"><span/> FAQ</div><h2 id="faq-heading">Common Questions.</h2></div>
+          <h2 id="faq-heading">Common Questions.</h2>
           <div className="faq-items">{faqs.map(([question,answer])=>
             <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}
           </div>
         </section>
         <section className="closing-cta" aria-labelledby="closing-heading">
-          <div><h2 id="closing-heading">Build Your Developer Identity Today.</h2>
-            <p>Create a portfolio that represents your work, your growth, and what you build next.</p></div>
+          <h2 id="closing-heading">Build Your Developer Identity Today.</h2>
           <ActionLink href={getAuthHref()} kind="outline">Create Your Portfolio</ActionLink>
           <div className="closing-pattern" aria-hidden="true"/>
         </section>

@@ -47,9 +47,11 @@ test('approved vector identity is visible and named in both runtime themes', asy
 
 test('manual carousel, pause and native FAQ are keyboard-operable', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('img', { name: /Workspace illustrative interface concept/ })).toBeVisible();
+  await expect(page.getByRole('img', { name: /Portfolio Studio illustrative interface concept/ })).toBeVisible();
   await page.getByRole('button',{name:'Next product example'}).click();
-  await expect(page.getByRole('img',{name:/Portfolio Studio illustrative interface concept/})).toBeVisible();
+  await expect(page.getByRole('img',{name:/Portfolio preview illustrative interface concept/})).toBeVisible();
+  await page.getByRole('button',{name:'Next product example'}).click();
+  await expect(page.getByRole('img',{name:/Workspace illustrative interface concept/})).toBeVisible();
   await page.getByRole('button',{name:'Pause automatic preview'}).click();
   await expect(page.getByRole('button',{name:'Resume automatic preview'})).toHaveAttribute('aria-pressed','true');
   const question=page.locator('summary').filter({hasText:'Is my work private by default?'});
@@ -272,6 +274,34 @@ test('public and auth shells span the window across desktop and phone widths',as
       expect(layout.left, route + ' at ' + width).toBeLessThanOrEqual(1);
       expect(layout.right, route + ' at ' + width).toBeGreaterThanOrEqual(layout.viewport - 1);
       expect(layout.scrollWidth, route + ' at ' + width).toBeLessThanOrEqual(layout.viewport + 1);
+    }
+  }
+});
+
+test('landing keeps its reading scale and controls usable on desktop and narrow phones', async ({page}) => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const captures = process.env.KADMEION_PUBLIC_CAPTURE_DIR;
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({width, height:900});
+    await page.goto('/');
+    await expect(page.getByRole('heading', {level:1})).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const main = document.querySelector('main')!;
+      const hero = main.querySelector('.hero')!;
+      const story = main.querySelector('.landing-value p:not(.landing-lead)')!;
+      return {
+        viewport:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth,
+        heroSize:parseFloat(getComputedStyle(hero.querySelector('h1')!).fontSize),
+        bodySize:parseFloat(getComputedStyle(story).fontSize),
+        controlHeight:hero.querySelector('.demo-controls button')!.getBoundingClientRect().height
+      };
+    });
+    expect(layout.heroSize).toBeGreaterThanOrEqual(width === 1440 ? 64 : 40);
+    expect(layout.bodySize).toBeGreaterThanOrEqual(16);
+    expect(layout.controlHeight).toBeGreaterThanOrEqual(44);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewport + 1);
+    if (captures && width !== 320) {
+      await page.screenshot({path:captures + '/01_LANDING_' + width + '_FULL.png', fullPage:true, animations:'disabled'});
     }
   }
 });

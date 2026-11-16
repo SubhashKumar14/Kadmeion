@@ -46,6 +46,8 @@ See [all 52 screen surfaces](docs/02_design/SCREEN_CATALOG.md) and [53 feature w
 
 ## 3. Visual expression, layout and content strategy
 
+**Owner clarification, 16 November 2026.** Apply the approved LIGHT images as visual references. Carry their brand, emphasis, composition cues and intent into responsive product layouts. Choose type sizes, gutters, spacing, section height and layout from content and task needs at each viewport. Screens may scroll vertically. Review readability, visual hierarchy, focus, and workflow usability with browser captures at relevant widths. Historical pixel-difference figures are diagnostic records only.
+
 **Expressive brand mode:** public landing, sign-in/up, empty states and milestone panels. Use approved K source geometry and **sparse** geometric crop/arc/diagonal pattern; large editorial hierarchy. Do not transplant unrelated SaaS palette/screens or overuse random glassmorphism. All hero artwork must correspond to Kadmeion's real tools/portfolios, with illustrative data explicitly labeled.
 
 **Restrained productivity mode:** sidebar/workspace/editor/settings, where legibility and task completion outweigh decorative motion. Controls are flat enough to identify affordances and information groups. Avoid nested decorative cards, vague primary buttons, empty charts and generic motivational numbers.

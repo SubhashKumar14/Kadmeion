@@ -9,7 +9,8 @@
 - [ ] Editorial/productivity/code typography hierarchy verified against original references and licensing; no unsupported font selection.
 - [ ] Public landing appears Aether Drift light initially and theme manual persistence works; user published portfolio theme stays independent.
 - [ ] Icons share known stroke/size/meaning; bespoke icons limited to Kadmeion concepts and glyph-loader language.
-- [ ] Hero sections use approved compositions; real software/project imagery or clearly identified illustrative previews, not fake social proof.
+- [ ] At desktop, tablet, and phone widths, the rendered hierarchy, body scale, spacing, content flow, and touch targets suit the task and the approved visual direction. Evaluate screenshot evidence independently of its original dimensions.
+- [ ] Hero sections use the approved composition cues; real software/project imagery or clearly identified illustrative previews, not fake social proof.
 
 ## UI states and behavior
 
