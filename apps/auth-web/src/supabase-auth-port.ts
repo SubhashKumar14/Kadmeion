@@ -24,6 +24,13 @@ export type OwnerProfile = ProfileDraft & { handle: string | null };
 
 export type OwnerPortfolio = {id: string; title: string; slug: string; templateId: string; revision: number};
 
+/** Versioned owner-bound keyset cursor; never an authorization credential. */
+export type OwnerPrivateCursorV1 = Readonly<{
+  version: 1; collection: 'projects' | 'portfolios'; ownerUserId: string;
+  updatedAt: string; id: string;
+}>;
+export type OwnerPrivatePageV1<T> = { items: T[]; nextCursor: OwnerPrivateCursorV1 | null };
+
 export type OwnerProject = {
   id: string; title: string; slug: string; summary: string; description: string;
   repositoryUrl: string | null; liveUrl: string | null; revision: number; updatedAt: string;
@@ -42,6 +49,8 @@ export type OwnerWorkspaceSnapshot = {
 
 const OWNER_PROJECT_FIELDS = 'id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
 const PROJECT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// PostgreSQL timestamps can have microseconds; never round a cursor through JS Date.
+const OWNER_CURSOR_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 const STORAGE_KEY = 'kadmeion.auth.session.v1';
 const OAUTH_PKCE_KEY = 'kadmeion.oauth.google.pkce.v1';
 const OAUTH_TTL_MS = 5*60*1000;
@@ -576,6 +585,77 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         typeof row.head_revision !== 'number' || !Number.isSafeInteger(row.head_revision) || row.head_revision < 0)
       throw new Error('Private portfolio response could not be verified.');
     return {id: row.id, title: row.title, slug: row.slug, templateId: row.template_id, revision: row.head_revision};
+  }
+
+  /**
+   * Additive v1 owner-private keyset pagination. Legacy list methods stay
+   * unchanged until S2/S3 consumers migrate. No global total is claimed.
+   * Concurrent edits can move rows between pages; callers must dedupe/reset.
+   */
+  private ownerLibraryPage<T>(
+    collection: 'projects' | 'portfolios',
+    select: string, pageSize: number, after: OwnerPrivateCursorV1 | null,
+    parse: (row: Json, ownerId: string) => T
+  ): Promise<AuthOutcome<OwnerPrivatePageV1<T>>> {
+    return this.outcome(async () => {
+      if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 50)
+        throw new Error('Private library page size must be between 1 and 50.');
+      const {session, userId} = await this.ownerSession();
+      if (after !== null && (
+        typeof after !== 'object' || Array.isArray(after) ||
+        Object.keys(after).length !== 5 ||
+        after.version !== 1 || after.collection !== collection ||
+        after.ownerUserId !== userId ||
+        typeof after.id !== 'string' || !PROJECT_ID_PATTERN.test(after.id) ||
+        typeof after.updatedAt !== 'string' ||
+        !OWNER_CURSOR_TIMESTAMP.test(after.updatedAt) ||
+        !Number.isFinite(Date.parse(after.updatedAt))
+      )) throw new Error('Private library cursor is invalid for the current owner.');
+
+      const params = new URLSearchParams({
+        select, owner_user_id: 'eq.' + userId, trashed_at: 'is.null',
+        order: 'updated_at.desc,id.asc', limit: String(pageSize + 1)
+      });
+      if (after !== null) {
+        // AND with the owner/Trash filters. User input is shape-validated, then encoded.
+        params.set('or', '(updated_at.lt.' + after.updatedAt +
+          ',and(updated_at.eq.' + after.updatedAt + ',id.gt.' + after.id + '))');
+      }
+      const raw = await this.ownerRest(collection + '?' + params, session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(raw) || raw.length > pageSize + 1)
+        throw new Error('Private library page could not be verified.');
+      const seen = new Set<string>();
+      const records = raw.map((value: unknown) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+          throw new Error('Private library page returned an invalid row.');
+        const row = value as Json;
+        if (row.owner_user_id !== userId ||
+            typeof row.id !== 'string' || !PROJECT_ID_PATTERN.test(row.id) ||
+            seen.has(row.id) || typeof row.updated_at !== 'string' ||
+            !OWNER_CURSOR_TIMESTAMP.test(row.updated_at) ||
+            !Number.isFinite(Date.parse(row.updated_at)))
+          throw new Error('Private library page failed owner or cursor validation.');
+        seen.add(row.id);
+        return {item: parse(row, userId), updatedAt: row.updated_at, id: row.id};
+      });
+      const visible = records.slice(0, pageSize);
+      const tail = records.length > pageSize ? visible[visible.length - 1] : undefined;
+      return {
+        items: visible.map(row => row.item),
+        nextCursor: tail ? {
+          version: 1 as const, collection, ownerUserId: userId,
+          updatedAt: tail.updatedAt, id: tail.id
+        } : null
+      };
+    });
+  }
+
+  listOwnerPortfoliosPage(
+    pageSize = 50, after: OwnerPrivateCursorV1 | null = null
+  ): Promise<AuthOutcome<OwnerPrivatePageV1<OwnerPortfolio>>> {
+    return this.ownerLibraryPage('portfolios',
+      'id,owner_user_id,title,slug,template_id,head_revision,updated_at',
+      pageSize, after, (row, ownerId) => this.parseOwnerPortfolio(row, ownerId));
   }
 
   async listOwnerPortfolios(): Promise<AuthOutcome<OwnerPortfolio[]>> {
@@ -1174,6 +1254,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       description:row.description,updatedAt:row.updated_at,revision:row.revision,
       repositoryUrl:row.repository_url,liveUrl:row.live_url
     };
+  }
+
+  listOwnerProjectsPage(
+    pageSize = 50, after: OwnerPrivateCursorV1 | null = null
+  ): Promise<AuthOutcome<OwnerPrivatePageV1<OwnerProject>>> {
+    return this.ownerLibraryPage('projects', OWNER_PROJECT_FIELDS,
+      pageSize, after, (row, ownerId) => this.parsePrivateProject(row, ownerId));
   }
 
   /** Bounded initial owner-private library. 100 is a page size, not a total. */
