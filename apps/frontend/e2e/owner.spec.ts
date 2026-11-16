@@ -565,7 +565,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('status').filter({hasText:'Private portfolio draft saved.'})).toBeVisible();
   await page.reload();
   await expect(page.getByLabel('SEO page title')).toHaveValue('Saved author portfolio');
-  await page.goto(editorPath.replace(/\\/edit$/, '/publish'));
+  await page.goto(editorPath.replace('/edit', '/publish'));
   await expect(page.getByRole('button',{name:'Run private preflight'})).toBeEnabled();
   await page.getByRole('button',{name:'Run private preflight'}).click();
   await expect(page.getByText('SEO metadata is derived from the pinned file set.')).toBeVisible();
