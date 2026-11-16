@@ -1140,3 +1140,29 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-release-grant-list ol{margin:0}
 .ws-release-grant-list button[aria-pressed="true"]{border-color:var(--accent-strong);font-weight:750}
 .ws-release-grant-list code{overflow-wrap:anywhere;font-size:.83em}
+
+/* F4 approved reference: real portfolio appearance dominates staging; controls
+ * remain semantic DOM-next and independent of a fixed 1600x1000 mock canvas. */
+@media(min-width:1101px){
+  .ws-release-page[data-release-mode="staging"] .ws-project-detail.ws-owner-columns{
+    grid-template-columns:minmax(0,1.32fr) minmax(310px,.92fr);gap:clamp(16px,2.4vw,32px);
+  }
+}
+.ws-release-visual{overflow:hidden}
+.ws-release-visual>h2{font-size:clamp(1.4rem,2vw,1.85rem);margin:6px 0 12px}
+.ws-release-visual>p{line-height:1.52}
+.ws-release-visual .ws-release-preview-label{font-size:.8125rem;font-weight:750;letter-spacing:.035em;
+  margin:18px 0 12px;color:var(--accent-strong)}
+.ws-release-visual-canvas{min-width:0;overflow:hidden;border:1px solid var(--line);
+  border-radius:10px;background:var(--panel)}
+.ws-release-visual-canvas .ws-studio-canvas{margin:0;padding:0;border:0;
+  border-radius:0;min-height:340px;max-height:min(760px,75dvh);overflow:auto}
+.ws-release-visual-canvas .pv-site{min-width:0}
+.ws-release-visual-canvas .pv-editor-caption{padding:10px 16px}
+.ws-release-visual-foot{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}
+.ws-release-visual-foot strong{font-size:.875rem}
+.ws-release-visual-foot p{font-size:.875rem;color:var(--body);line-height:1.5}
+.ws-release-visual-foot button{min-height:44px}
+@media(max-width:900px){
+  .ws-release-visual-canvas .ws-studio-canvas{max-height:440px}
+}

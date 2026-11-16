@@ -5,6 +5,7 @@ import type {PrivatePointerSnapshot} from '../../../packages/contracts/src/priva
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
 import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type {PortfolioSnapshot} from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
+import {PortfolioCanvas} from './portfolio-tools.tsx';
 
 const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
@@ -52,6 +53,9 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [pointer,setPointer]=useState<PrivatePointerSnapshot|null>(null);
   const [visibility,setVisibility]=useState<FrozenVisibilityIntent>('UNLISTED');
   const [frozen,setFrozen]=useState<PrivateFrozenRequest|null>(null);
+  const [pinnedPreview,setPinnedPreview]=useState<PortfolioSnapshot|null>(null);
+  const [pinnedPreviewPending,setPinnedPreviewPending]=useState(false);
+  const [pinnedPreviewError,setPinnedPreviewError]=useState('');
   const [result,setResult]=useState<SafePreviewResult|null>(null);
   const [grant,setGrant]=useState<SafeGrant|null>(null);
   const [grants,setGrants]=useState<OwnerReviewerGrantSummary[]|null>(null);
@@ -111,6 +115,28 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     })();
     return ()=>{active=false;};
   },[port,id,mode,retry]);
+
+  /** Distinguish an owner-only saved-head visual from the exact frozen pin.
+   * Never show a fallback HEAD while labeling it as the selected revision. */
+  useEffect(()=>{
+    if (mode!=='staging'||!frozen) {
+      setPinnedPreview(null);setPinnedPreviewError('');setPinnedPreviewPending(false);
+      return;
+    }
+    let active=true;
+    setPinnedPreview(null);setPinnedPreviewError('');setPinnedPreviewPending(true);
+    void port.loadOwnerFrozenRelease(frozen.requestId).then(reply=>{
+      if (!active) return;
+      if (!reply.data||reply.data.loadedPortfolioId!==id||
+          reply.data.loadedRevision!==frozen.revision||
+          reply.data.loadedSnapshotSha256!==frozen.snapshotSha256) {
+        setPinnedPreviewError('The exact frozen revision could not be verified. The current draft is not substituted.');
+      } else setPinnedPreview(reply.data.snapshot);
+    }).catch(()=>{
+      if (active) setPinnedPreviewError('The pinned preview is temporarily unavailable. No public data was released.');
+    }).finally(()=>{if(active)setPinnedPreviewPending(false);});
+    return()=>{active=false;};
+  },[port,id,mode,frozen]);
 
   async function inspect(){
     if (!record?.revision || selectedRevision===null || busy) return;
@@ -211,7 +237,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setNotice('Loaded an existing owner-private frozen request. Public delivery is still disabled.');
   }
   const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=Date.now();
-  return <section aria-labelledby="release-title" className="ws-owner-page ws-release-page">
+  return <section aria-labelledby="release-title" data-release-mode={mode} className="ws-owner-page ws-release-page">
     <div className="ws-heading">
       <a href={base+'/edit'}>Back to portfolio editor</a>
       <p className="ws-kicker">PORTFOLIO RELEASE</p><h1 id="release-title">{routes[mode]}.</h1>
@@ -228,6 +254,27 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     {error && <button type="button" className="ws-secondary" onClick={()=>{setError('');setRetry(value=>value+1);}}>
       Retry private release check</button>}
     {record && <div className="ws-project-detail ws-owner-columns">
+      {mode==='staging' && <aside className="ws-project-aside ws-release-visual" aria-labelledby="staging-visual-title">
+        <p className="ws-kicker">REVISION APPEARANCE</p>
+        <h2 id="staging-visual-title">What the reviewer would see</h2>
+        <p>This is a read-only owner simulation. A shareable reviewer route requires independently verified host delivery.</p>
+        <p className="ws-release-preview-label">{frozen
+          ? 'Frozen revision '+frozen.revision+' · '+(pinnedPreviewPending?'Verifying…':'Pinned private request')
+          : 'Current saved draft · Not yet frozen'}</p>
+        {pinnedPreviewPending && <p role="status">Verifying the exact private revision…</p>}
+        {pinnedPreviewError && <p role="alert">{pinnedPreviewError}</p>}
+        {(!frozen || (pinnedPreview&&!pinnedPreviewPending&&!pinnedPreviewError)) &&
+          (frozen?pinnedPreview:record.snapshot)
+          ? <div className="ws-release-visual-canvas">
+              <PortfolioCanvas snapshot={frozen?pinnedPreview:record.snapshot} title={record.title} simulation/>
+            </div>
+          : !pinnedPreviewPending&&!pinnedPreviewError && <p>No saved portfolio content is available for this private preview.</p>}
+        <div className="ws-release-visual-foot">
+          <strong>Private preview only</strong>
+          <p>No reviewer token or public link is exposed. Custom source is not executed in this canvas.</p>
+          <button type="button" className="ws-secondary" disabled>Copy public link unavailable</button>
+        </div>
+      </aside>}
       <div className="ws-project-fields">
         {mode==='share'?<>
           <h2>Public sharing controls</h2>
@@ -377,7 +424,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           </section>}
         </>}
       </div>
-      <aside className="ws-project-aside">
+      {mode!=='staging' && <aside className="ws-project-aside">
         <h2>Delivery &amp; sharing</h2>
         <p>No public or reviewer address is verified. An owner preview is not a shareable release.</p>
         <dl className="ws-release-facts"><dt>Owner preview</dt><dd>Private to your signed-in account</dd>
@@ -388,7 +435,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <button type="button" className="ws-secondary" disabled title="No verified public release exists">Copy public link unavailable</button>
         </div>
         <p className="ws-field-hint">Nothing on this page activates external sharing. Private, unlisted and public are delivery policies, not just labels.</p>
-      </aside>
+      </aside>}
     </div>}
   </section>;
 }
