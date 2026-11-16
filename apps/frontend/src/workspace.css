@@ -1274,3 +1274,9 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-notification-filters button{min-height:44px}
 .ws-notification-filters button[aria-pressed="true"]{border-color:var(--accent-strong);
   background:var(--surface-soft);font-weight:750}
+
+.ws-lifecycle-dialog{inset:0;margin:auto;padding:24px;width:min(460px,calc(100% - 32px));
+  height:fit-content;max-height:calc(100dvh - 32px);border-radius:12px}
+.ws-export-select{display:grid;gap:6px;margin:12px 0;font-weight:700}
+.ws-export-select input,.ws-export-select select{width:100%;min-height:44px;min-width:0;
+  padding:8px 12px;border:1px solid var(--line-dark);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit}

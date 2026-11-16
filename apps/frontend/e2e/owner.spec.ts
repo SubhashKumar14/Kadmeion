@@ -698,8 +698,28 @@ test('real owner onboarding and project revision are private across browser sess
   await page.goto('/app/trash');
   await expect(page.getByText('Trash is empty.')).toBeVisible();
   await capture('45_TRASH_BROWSER');
+  await page.goto(projectPath);
+  const trashTrigger=page.getByRole('button',{name:'Move to Trash'});
+  await trashTrigger.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(trashTrigger).toBeFocused();
+  await trashTrigger.click();
+  await page.getByRole('button',{name:'Confirm move to Trash'}).click();
+  await expect(page).toHaveURL('/app/trash');
+  await expect(page.getByText('Restore by')).toBeVisible();
+  await page.getByRole('button',{name:'Restore privately'}).click();
+  await expect(page.getByText('Item restored as private.')).toBeVisible();
+  await expect(page.getByText('Trash is empty.')).toBeVisible();
+  await page.goto(projectPath);
+  await expect(page.getByRole('button',{name:'Move to Trash'})).toBeVisible();
 
   await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const sourceDownload=page.waitForEvent('download');
+  await page.getByRole('button',{name:'Download portfolio source ZIP'}).click();
+  expect((await sourceDownload).suggestedFilename()).toMatch(/^kadmeion-portfolio-revision-\d+\.zip$/);
+  await expect(page.getByText('Portfolio source download prepared.')).toBeVisible();
   const download = page.waitForEvent('download');
   await page.getByRole('button', {name: 'Download application metadata'}).click();
   const downloaded = await download;

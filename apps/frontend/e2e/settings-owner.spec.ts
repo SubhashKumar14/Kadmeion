@@ -204,6 +204,17 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await page.goto('/app/settings/privacy');
   await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeDisabled();
   await page.goto('/app/settings/account/delete');
-  await expect(page.getByRole('button',{name:'Review deletion prerequisites'})).toBeVisible();
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
+  const request=page.getByRole('button',{name:'Record deletion request'});
+  await expect(request).toBeDisabled();
+  await page.getByRole('textbox',{name:'Type DELETE MY ACCOUNT to record the request'}).fill('DELETE MY ACCOUNT');
+  await request.click();
+  await expect(page.getByText('Deletion request recorded. No data has been erased.')).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await page.getByRole('button',{name:'Withdraw deletion request'}).click();
+  await expect(page.getByText('Account deletion request withdrawn.')).toBeVisible();
+  await expect(page.getByRole('list',{name:'Recent deletion requests'})).toContainText('Withdrawn');
   await expect(page.getByRole('button',{name:/Delete account/i})).toHaveCount(0);
 });

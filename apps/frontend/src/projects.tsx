@@ -6,6 +6,7 @@ import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/proje
 import type { PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
 import type { CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
 import { Icon } from './landing.tsx';
+import { MoveToTrash } from './settings.tsx';
 
 type LoadState = { status:'loading' } | { status:'error'; message:string } |
   { status:'ready'; items:OwnerProject[] };
@@ -325,6 +326,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           {repository && <a href={repository} target="_blank" rel="noopener noreferrer">Repository</a>}
           {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live website</a>}
         </div>}
+        <MoveToTrash port={port} kind="project" id={projectId} title={detail.saved.title}
+          disabled={dirty || saving || checking} onMoved={()=>window.location.assign('/app/trash')}/>
         {latest && <div className="ws-project-conflict">
           <h3>Saved revision {latest.revision} is newer</h3>
           <dl>

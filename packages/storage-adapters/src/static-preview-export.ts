@@ -17,7 +17,7 @@ export interface StaticPreviewArchive {
 export async function exportStandaloneStaticPreview(input:SafePreviewInput):Promise<StaticPreviewArchive> {
   const result=prepareSafeStaticPreview(input);
   if(result.status!=='PREVIEW_ONLY'||result.publicationReady!==false||!result.previewHtml||
-    result.blockers.length!==1||result.blockers[0].code!=='PUBLIC_DELIVERY_UNVERIFIED')
+    result.blockers.length!==1||result.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')
     throw new ContractError('VALIDATION','Private static preview preflight is not valid.');
   const html=encoder.encode(result.previewHtml);
   const digest=await crypto.subtle.digest('SHA-256',html);

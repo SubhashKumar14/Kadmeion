@@ -9,6 +9,7 @@ import type { MyComponentVersion } from '../../../packages/contracts/src/private
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
+import { MoveToTrash } from './settings.tsx';
 import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector } from './portfolio-tools.tsx';
 
 const presets = [
@@ -216,7 +217,11 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
             <div className="ws-studio-record-icon" aria-hidden="true"><Icon name="layers" size={23}/></div>
             <div><h2><a href={editorPath(item.id)}>{item.title}</a></h2>
               <p>{item.revision ? 'Draft revision ' + item.revision : 'Setup pending'}{preset && ' · ' + preset.title + ' starting layout'}</p></div>
-            <a className="ws-secondary" href={editorPath(item.id)} aria-label={'Open ' + item.title}>Open draft</a>
+            <div className="ws-actions">
+              <a className="ws-secondary" href={editorPath(item.id)} aria-label={'Open ' + item.title}>Open draft</a>
+              <MoveToTrash port={port} kind="portfolio" id={item.id} title={item.title}
+                onMoved={()=>window.location.assign('/app/trash')}/>
+            </div>
           </li>;
         })}</ul>}
         {items.length === 100 && <p>Showing the latest 100 portfolios.</p>}

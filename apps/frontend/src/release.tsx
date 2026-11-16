@@ -6,6 +6,7 @@ import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type Saf
 import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type {PortfolioSnapshot} from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import {PortfolioCanvas} from './portfolio-tools.tsx';
+import {downloadPrivateFile} from './settings.tsx';
 
 const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
@@ -137,6 +138,22 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     }).finally(()=>{if(active)setPinnedPreviewPending(false);});
     return()=>{active=false;};
   },[port,id,mode,frozen]);
+
+  async function downloadStaticPreview(){
+    if (busy || !frozen || result?.status!=='PREVIEW_ONLY') return;
+    setBusy(true);setError('');setNotice('');
+    try {
+      const {exportStandaloneStaticPreview}=await import('../../../packages/storage-adapters/src/static-preview-export.ts');
+      const {data}=await port.loadOwnerFrozenRelease(frozen.requestId);
+      if (!data || data.loadedPortfolioId!==id || data.loadedRevision!==frozen.revision ||
+          data.loadedSnapshotSha256!==frozen.snapshotSha256) throw new Error('Invalid frozen revision receipt.');
+      const archive=await exportStandaloneStaticPreview({...data,plan:buildPlan(data.snapshot)});
+      downloadPrivateFile('kadmeion-static-preview-revision-'+data.loadedRevision+'.zip',archive.zip,'application/zip');
+      setNotice('Offline static preview download prepared.');
+    } catch {
+      setError('The frozen revision could not be exported. Run preflight again to check eligibility.');
+    } finally {setBusy(false);}
+  }
 
   async function inspect(){
     if (!record?.revision || selectedRevision===null || busy) return;
@@ -436,7 +453,11 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <dl className="ws-release-facts"><dt>Public URL</dt><dd>Unavailable until host verification</dd>
               <dt>Release status</dt><dd>Private · Not published</dd>
               <dt>SEO metadata</dt><dd>Read from the selected revision only during preflight</dd></dl>
-            <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>
+            <div className="ws-actions">
+              {result?.status==='PREVIEW_ONLY' && <button className="ws-primary" type="button" disabled={busy}
+                onClick={()=>void downloadStaticPreview()}>Download offline static preview ZIP</button>}
+              <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>
+            </div>
           </div>}
         </>}
       </div>

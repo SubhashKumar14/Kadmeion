@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountExitPreflight } from '../../../packages/contracts/src/private-account-erasure-service.ts';
-import type { PrivateTrashEntry } from '../../../packages/contracts/src/private-trash-service.ts';
+import type { AccountExitPreflight, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
 
 const settingsLinks = [
@@ -11,7 +11,7 @@ const settingsLinks = [
   ['/app/notifications', 'Notifications', 'Review activity and notification preferences.'],
   ['/app/settings/security', 'Account security', 'Update your password or sign out other sessions.'],
   ['/app/trash', 'Trash', 'Review items you can restore privately.'],
-  ['/app/export', 'Export center', 'Download your application metadata.'],
+  ['/app/export', 'Export center', 'Download private account records or portfolio source.'],
   ['/app/settings/account/delete', 'Account exit', 'Review prerequisites for account deletion.']
 ] as const;
 const settingsSections = [
@@ -92,7 +92,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path === '/app/notifications') content = <Notifications service={services.notifications}/>;
   else if (path === '/app/settings/security') content = <Security port={port}/>;
   else if (path === '/app/trash') content = <Trash service={services.trash}/>;
-  else if (path === '/app/export') content = <ExportCenter services={services}/>;
+  else if (path === '/app/export') content = <ExportCenter port={port} services={services}/>;
   else content = <AccountExit service={services.account}/>;
 
   return <section className="ws-settings-page" aria-labelledby="settings-title">
@@ -415,6 +415,49 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
     </section></>;
 }
 
+export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
+  port: SupabaseBrowserAuthPort; kind: PrivateTrashKind; id: string; title: string;
+  disabled?: boolean; onMoved: () => void;
+}) {
+  const titleId = useId();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<Message>(null);
+  async function move() {
+    if (busy || disabled) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const {data} = await port.ownerSettings();
+      if (!data) throw new Error('Could not verify your private Trash session.');
+      await data.trash.move(kind, id);
+      dialog.current?.close();
+      onMoved();
+    } catch (error) {
+      setMessage(failure(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <>
+    <button ref={trigger} type="button" className="ws-secondary" disabled={disabled}
+      onClick={()=>{setMessage(null); dialog.current?.showModal();}}>Move to Trash</button>
+    <dialog ref={dialog} className="ws-project-dialog ws-lifecycle-dialog" aria-labelledby={titleId}
+      onCancel={event=>{if (busy) event.preventDefault();}} onClose={()=>trigger.current?.focus()}>
+      <h2 id={titleId}>Move {title} to Trash?</h2>
+      <p>You can restore this {kind} privately within 15 days. Any public delivery requires separate withdrawal verification.</p>
+      <Status message={message}/>
+      <div className="ws-actions">
+        <button autoFocus type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>dialog.current?.close()}>Cancel</button>
+        <button type="button" className="ws-primary" disabled={busy}
+          onClick={()=>void move()}>{busy?'Moving…':'Confirm move to Trash'}</button>
+      </div>
+    </dialog>
+  </>;
+}
+
 function Trash({service}: {service: Services['trash']}) {
   const [items, setItems] = useState<PrivateTrashEntry[] | null>(null);
   const [message, setMessage] = useState<Message>(emptyMessage);
@@ -440,7 +483,7 @@ function Trash({service}: {service: Services['trash']}) {
     finally {setBusy(false);}
   }
 
-  return <SettingsCard title="Recoverable items">
+  return <div className="ws-settings-grid"><SettingsCard title="Recoverable items">
     <Status message={message}/>
     {!items && !message && <p role="status">Loading Trash…</p>}
     {!items && message?.error && <button type="button" className="ws-secondary"
@@ -450,61 +493,191 @@ function Trash({service}: {service: Services['trash']}) {
       const expired = Date.parse(item.restore_until) <= Date.now();
       return <li key={item.item_type + ':' + item.item_id}>
         <strong>{item.item_type} · {item.item_id.slice(0, 8)}</strong>
-        <p>Restore by {new Date(item.restore_until).toLocaleString()}</p>
+        <p>Moved to Trash <time dateTime={item.trashed_at}>{new Date(item.trashed_at).toLocaleString()}</time></p>
+        <p>Restore by <time dateTime={item.restore_until}>{new Date(item.restore_until).toLocaleString()}</time></p>
         {expired && <p>Recovery window ended. Restore is unavailable.</p>}
         <button type="button" className="ws-secondary" disabled={busy || expired}
           onClick={() => void restore(item)}>Restore privately</button>
       </li>;
     })}</ul>
-  </SettingsCard>;
+  </SettingsCard><SettingsCard title="15-day recovery window">
+    <p>Restored items return to your library as private drafts. Recovery ends at the deadline shown for each item.</p>
+    <p>Expired items are eligible for scheduled cleanup. Permanent removal is unavailable from this page.</p>
+    <div className="ws-actions"><a href="/app/projects">Project library</a><a href="/app/portfolios">Portfolio library</a></div>
+  </SettingsCard></div>;
 }
 
-function ExportCenter({services}: {services: Services}) {
+export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: string) {
+  const url = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], {type: mime}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+
+function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [message, setMessage] = useState<Message>(emptyMessage);
-  const [busy, setBusy] = useState(false);
-  async function download() {
+  const [busy, setBusy] = useState<'metadata'|'recovery'|'source'|null>(null);
+  const [portfolios, setPortfolios] = useState<{id:string;title:string}[]|null>(null);
+  const [portfolioError, setPortfolioError] = useState('');
+  const [retry, setRetry] = useState(0);
+  const [selected, setSelected] = useState('');
+  useEffect(()=>{
+    let active = true;
+    void port.listOwnerPortfolios().then(({data})=>{
+      if (!active) return;
+      if (!data) throw new Error('Saved portfolios could not be loaded.');
+      setPortfolios(data.filter(item=>item.revision>0));
+    }).catch(()=>{if(active) setPortfolioError('Saved portfolios could not be loaded.');});
+    return ()=>{active=false;};
+  },[port,retry]);
+
+  async function download(kind: NonNullable<typeof busy>) {
     if (busy) return;
-    setBusy(true); setMessage(null);
+    setBusy(kind); setMessage(null);
     try {
-      const inventory = await services.account.captureInventory(crypto.randomUUID());
-      const result = await services.data.exportApplicationMetadata(inventory.snapshotId);
-      const bytes = Uint8Array.from(result.bytes);
-      const url = URL.createObjectURL(new Blob([bytes], {type: result.mime}));
-      const link = document.createElement('a');
-      link.href = url; link.download = result.filename; link.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setMessage({error: false, text: 'Application metadata download prepared.'});
+      if (kind==='source') {
+        if (!selected) return;
+        const {exportPortfolioSourceZip} = await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+        const {data} = await port.readOwnerPortfolio(selected);
+        if (!data?.snapshot || data.id!==selected) throw new Error('Could not verify the saved portfolio revision.');
+        downloadPrivateFile('kadmeion-portfolio-revision-'+data.revision+'.zip', exportPortfolioSourceZip(data.snapshot), 'application/zip');
+        setMessage({error:false,text:'Portfolio source download prepared.'});
+      } else {
+        const inventory = await services.account.captureInventory(crypto.randomUUID());
+        if (kind==='metadata') {
+          const result = await services.data.exportApplicationMetadata(inventory.snapshotId);
+          downloadPrivateFile(result.filename,result.bytes,result.mime);
+          setMessage({error:false,text:'Application metadata download prepared.'});
+        } else {
+          const result = await services.data.export(inventory.snapshotId);
+          const {createBoundedPrivateAccountRecoveryBundle} = await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+          const bundle = await createBoundedPrivateAccountRecoveryBundle(result.bytes);
+          downloadPrivateFile(bundle.filename,bundle.zip,'application/zip');
+          setMessage({error:false,text:'Private recovery download prepared.'});
+        }
+      }
     } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    finally {setBusy(null);}
   }
 
-  return <SettingsCard title="Application metadata">
-    <p>Download a verified JSON snapshot of application records. Storage bytes and external provider data are excluded.</p>
-    <Status message={message}/>
-    <button className="ws-primary" type="button" disabled={busy} onClick={() => void download()}>{busy ? 'Preparing export…' : 'Download application metadata'}</button>
-  </SettingsCard>;
+  return <><Status message={message}/><div className="ws-settings-grid">
+    <SettingsCard title="Editable portfolio ZIP">
+      <p>Download the saved revision for editing or recovery. This archive contains private source and excludes uploaded media.</p>
+      {portfolioError && <><p role="alert">{portfolioError}</p><button type="button" className="ws-secondary"
+        onClick={()=>{setPortfolioError('');setRetry(value=>value+1);}}>Retry portfolio list</button></>}
+      {!portfolios && !portfolioError && <p role="status">Loading saved portfolios…</p>}
+      {portfolios?.length===0 && <p>No saved portfolio revisions to export.</p>}
+      {!!portfolios?.length && <><label className="ws-export-select">Portfolio to export
+        <select value={selected} disabled={busy!==null} onChange={event=>setSelected(event.target.value)}>
+          <option value="">Select a portfolio</option>
+          {portfolios.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
+        </select></label>
+        <button className="ws-primary" type="button" disabled={!selected || busy!==null}
+          onClick={()=>void download('source')}>{busy==='source'?'Preparing portfolio ZIP…':'Download portfolio source ZIP'}</button></>}
+    </SettingsCard>
+    <SettingsCard title="Private account data">
+      <p>Download application records as JSON, or build a bounded recovery ZIP with owner records and verified uploaded files. Provider data and backups are excluded.</p>
+      <div className="ws-actions">
+        <button className="ws-primary" type="button" disabled={busy!==null}
+          onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
+        <button className="ws-secondary" type="button" disabled={busy!==null}
+          onClick={()=>void download('recovery')}>{busy==='recovery'?'Checking records and files…':'Download private recovery ZIP'}</button>
+      </div>
+    </SettingsCard>
+    <SettingsCard title="Offline static preview">
+      <p>Run preflight on a saved revision to download an eligible scriptless HTML preview. The ZIP has no public URL and excludes custom code and private media.</p>
+      <a href="/app/portfolios">Choose a portfolio to preview</a>
+    </SettingsCard>
+  </div></>;
 }
 
 function AccountExit({service}: {service: Services['account']}) {
   const [inventory, setInventory] = useState<AccountExitPreflight | null>(null);
-  const [message, setMessage] = useState<Message>(emptyMessage);
+  const [requests, setRequests] = useState<PrivateAccountErasureEntry[] | null>(null);
+  const [confirmation, setConfirmation] = useState('');
+  const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
+  const operation = useRef<{key:string;id:string} | null>(null);
+  const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
+
   async function check() {
     if (busy) return;
-    setBusy(true); setMessage(null); setInventory(null);
-    try {setInventory(await service.preflight());}
-    catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    setBusy(true);
+    setMessage(null);
+    setInventory(null);
+    setRequests(null);
+    setConfirmation('');
+    try {
+      const [result, history] = await Promise.all([service.preflight(),service.list()]);
+      setInventory(result);
+      setRequests(history);
+    } catch (error) {
+      setMessage(failure(error));
+    } finally {
+      setBusy(false);
+    }
   }
-  return <SettingsCard title="Deletion prerequisites">
-    <p>Account deletion requires identity, public revocation and storage verification.</p>
-    <Status message={message}/>
-    <button className="ws-primary" type="button" disabled={busy} onClick={() => void check()}>{busy ? 'Checking…' : 'Review deletion prerequisites'}</button>
-    {inventory && <div role="status">
-      <h3>Private inventory</h3>
-      <dl><dt>Projects</dt><dd>{inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.counts.portfolios}</dd>
-        <dt>Public routes</dt><dd>Awaiting revocation verification</dd><dt>Active session</dt><dd>Verified for inventory</dd></dl>
-      <p>Deletion is blocked pending the required evidence.</p>
-    </div>}
-  </SettingsCard>;
+
+  async function changeRequest(requestId: string | null) {
+    if (busy || !inventory || !requests) return;
+    if (requestId ? activeRequest?.id!==requestId : !!activeRequest || confirmation!=='DELETE MY ACCOUNT') return;
+    const key = requestId ?? 'request';
+    if (operation.current?.key!==key) operation.current={key,id:crypto.randomUUID()};
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (requestId) await service.withdraw(requestId,operation.current.id);
+      else await service.request(operation.current.id,'DELETE MY ACCOUNT');
+      // Hide old actions until a fresh read confirms the current request state.
+      setRequests(null);
+      setConfirmation('');
+      operation.current=null;
+      setRequests(await service.list());
+      setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
+    } catch (error) {
+      setMessage(failure(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <><Status message={message}/><div className="ws-settings-grid">
+    <SettingsCard title="Deletion prerequisites">
+      <p>Account deletion requires fresh identity verification, public revocation and storage checks. You can record or withdraw a request while these checks are pending.</p>
+      <button className="ws-primary" type="button" disabled={busy}
+        onClick={()=>void check()}>Review deletion prerequisites</button>
+      {inventory && <section aria-label="Private inventory">
+        <h3>Private inventory</h3>
+        <dl><dt>Projects</dt><dd>{inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.counts.portfolios}</dd>
+          <dt>Portfolio revisions</dt><dd>{inventory.counts.portfolioRevisions}</dd>
+          <dt>Registered files</dt><dd>{inventory.counts.projectAssetMetadata}</dd>
+          <dt>Reviewer grants</dt><dd>{inventory.counts.reviewerGrants}</dd>
+          <dt>Trash records</dt><dd>{inventory.counts.trashRecords}</dd></dl>
+        {inventory.countsCapped && <p>Some categories show up to {inventory.maxCountPerCategory} records.</p>}
+        <p>Public route withdrawal, storage cleanup, provider data and backups require separate verification.</p>
+      </section>}
+      <a href="/app/export">Open export center</a>
+    </SettingsCard>
+    <SettingsCard title="Account deletion request">
+      {!requests && <p>Review the prerequisites to check your request history.</p>}
+      {activeRequest && <>
+        <p>Request pending verification. Your account and private data are still available.</p>
+        <button type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>void changeRequest(activeRequest.id)}>Withdraw deletion request</button>
+      </>}
+      {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
+        <label className="ws-export-select">Type DELETE MY ACCOUNT to record the request
+          <input autoComplete="off" value={confirmation} disabled={busy}
+            onChange={event=>setConfirmation(event.target.value)}/></label>
+        <button type="submit" className="ws-secondary" disabled={busy || confirmation!=='DELETE MY ACCOUNT'}>
+          Record deletion request
+        </button>
+      </form>}
+      {!!requests?.length && <ul className="ws-settings-records" aria-label="Recent deletion requests">
+        {requests.map(item=><li key={item.id}>{item.status==='WITHDRAWN'?'Withdrawn':'Pending verification'} · <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></li>)}
+      </ul>}
+    </SettingsCard>
+  </div></>;
 }
