@@ -489,7 +489,8 @@ test('real owner onboarding and project revision are private across browser sess
   await page.goto(editorPath);
   await page.getByRole('link', {name: 'Release workspace'}).click();
   await expect(page.getByRole('heading', {name: 'Reviewer staging.'})).toBeVisible();
-  const savedRevision=page.getByLabel('Saved revision',{exact:true});
+  await expect(page.getByText('Saved draft revision 2')).toBeVisible();
+  const savedRevision=page.getByRole('combobox',{name:'Saved revision',exact:true});
   await expect(savedRevision).toBeVisible();
   await expect(savedRevision.locator('option')).toHaveCount(2);
   await savedRevision.selectOption('2');

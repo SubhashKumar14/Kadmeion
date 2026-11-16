@@ -252,7 +252,7 @@ export function PortfolioRelease({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <p>Freeze a selected immutable saved revision with its content digest. Unsaved editor changes are not included.</p>
           {revisionError && <p role="alert">{revisionError}</p>}
           <label>Saved revision
-            <select value={selectedRevision??''} disabled={busy||!!frozen||!revisions?.length}
+            <select aria-label="Saved revision" value={selectedRevision??''} disabled={busy||!!frozen||!revisions?.length}
               onChange={event=>{
                 const next=Number(event.target.value);
                 setSelectedRevision(revisions?.some(row=>row.revision===next)?next:null);
