@@ -361,3 +361,32 @@ test('reviewer host verifier accepts the existing safe minimal noindex meta vari
     assert.equal(fixture.revoked,true);
   }finally{await fixture.close();}
 });
+
+
+test('withdrawal rejects unsafe live HEAD responses before touching the release pointer',async()=>{
+  const html='<!doctype html><title>Live before withdrawal</title>';
+  const digest=createHash('sha256').update(html).digest('hex');
+  const png=Buffer.from('89504e470d0a1a0a','hex');
+  const pngSha=createHash('sha256').update(png).digest('hex');
+  const pngPath='/assets/'+pngSha+'.png';
+  const candidate={...input,candidateDirectPaths:[pngPath],
+    liveAssets:[{path:pngPath,sha256:pngSha}]};
+  let withdrawals=0;
+  for(const failOn of ['CANONICAL_HEAD','MEDIA_HEAD']){
+    let observed=0;
+    const http:typeof fetch=async(url,options)=>{
+      observed++;
+      const isMedia=new URL(String(url)).pathname===pngPath;
+      const isHead=options?.method==='HEAD';
+      const rejected=isHead&&(failOn==='CANONICAL_HEAD'?!isMedia:isMedia);
+      return new Response(isHead?null:isMedia?png:html,{
+        headers:{'Content-Type':isMedia?'image/png':'text/html',
+          'Cache-Control':rejected?'public, max-age=600':'private, no-store'}
+      });
+    };
+    await assert.rejects(verifyReleaseWithdrawal(candidate,digest,async()=>{withdrawals++;},http),
+      {code:'RELEASE_NOT_OBSERVED'});
+    assert.ok(observed>=2);
+  }
+  assert.equal(withdrawals,0,'Unsafe HEAD metadata cannot trigger destructive withdrawal');
+});
