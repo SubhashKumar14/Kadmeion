@@ -292,6 +292,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [openedAssets,setOpenedAssets]=useState(false);
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
+  const [sourceDirty,setSourceDirty]=useState(false);
+  const editorPanels=['Content','Components','My Components','Theme','Assets','Source','History'] as const;
 
   useEffect(() => {
     const key = id + ':' + attempt;
@@ -313,8 +315,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setValue(initial?.content[primaryField(initial.componentId)]??'');
       setOperation('');
       setFieldDrafts({});setFieldIssues({});
+      setSourceDirty(false);
       setError('');
-    });
+    }).catch(()=>{if(active)setError('Private portfolio loading failed. Check your connection and retry.');});
     return () => {active = false;};
   }, [port, id, attempt, allowed]);
 
@@ -349,14 +352,15 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   }
 
   async function save() {
-    if (!allowed || !record || !head || !operation || saving) return;
+    if (!allowed || !record || !head || !operation || saving || sourceDirty || pendingFields) return;
     setSaving(true); setError(''); setNotice('');
     try {
       const result = await port.saveOwnerPortfolio(id, operation, record.revision, head.snapshot);
       if (!result.data) {setError(result.error?.message ?? 'Draft save could not be confirmed.'); return;}
       setRecord({...record, revision: result.data, snapshot: head.snapshot});
       setOperation(''); setNotice('Private portfolio draft saved.');
-    } finally {setSaving(false);}
+    } catch {setError('Draft save could not be verified. Your edits remain in this editor.');}
+    finally {setSaving(false);}
   }
 
   async function initialize() {
@@ -367,7 +371,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       const result = await port.initializeOwnerPortfolio(id, crypto.randomUUID(), preset.id);
       if (result.data) setAttempt(current => current + 1);
       else setError(result.error?.message ?? 'Draft setup could not be confirmed.');
-    } finally {setSaving(false);}
+    } catch {setError('Draft setup could not be confirmed. Retry safely.');}
+    finally {setSaving(false);}
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
@@ -388,13 +393,13 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   // transaction journal or uncommitted secondary fields. This guard never
   // persists draft text to a public origin or external service.
   useEffect(()=>{
-    if(!operation&&!pendingFields)return;
+    if(!operation&&!pendingFields&&!sourceDirty)return;
     const warn=(event:BeforeUnloadEvent)=>{
       event.preventDefault();event.returnValue='';
     };
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
-  },[operation,pendingFields]);
+  },[operation,pendingFields,sourceDirty]);
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{
@@ -406,16 +411,18 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     <div className="ws-project-head"><div className="ws-heading">
       <a href={STUDIO}>Back to portfolios</a><p className="ws-kicker">PORTFOLIO BUILDER</p>
       <h1 id="edit-title">{record?.title ?? 'Portfolio editor'}</h1>
-      <p>{record ? 'Private draft · revision ' + record.revision : 'Open a private portfolio draft.'}</p>
+      <p>{record ? 'Private draft · revision ' + record.revision +
+        (operation||pendingFields||sourceDirty?' · Uncommitted changes':' · Saved privately') : 'Open a private portfolio draft.'}</p>
     </div>{head && <div className="ws-actions">
       <button type="button" className="ws-secondary" onClick={() => setPreview(current => !current)}>{preview ? 'Back to editor' : 'Author preview'}</button>
-      {record && !operation && <>
+      {record && !operation && !sourceDirty && !pendingFields && <>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview'}>Preview modes</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'} target="_blank" rel="noopener">Fullscreen saved preview</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/staging'}>Release workspace</a>
       </>}
-      <button type="button" className="ws-primary" disabled={!operation||saving||pendingFields}
-        title={pendingFields?'Resolve or apply unfinished inspector fields before saving.':undefined}
+      <button type="button" className="ws-primary" disabled={!operation||saving||pendingFields||sourceDirty}
+        title={sourceDirty?'Apply or discard unapplied source before saving.':pendingFields?
+          'Resolve or apply unfinished inspector fields before saving.':undefined}
         onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
@@ -423,9 +430,20 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
     }}>{operation ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
+    {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
+      <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
     {!record && !error && <p role="status">Loading portfolio…</p>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
       onClick={() => void initialize()}>Complete draft setup</button>}
+    {head&&!preview&&<nav className="ws-editor-modebar" aria-label="Editor panels">
+      <span className="ws-editor-modebar-title">EDIT WORKSPACE</span>
+      {editorPanels.map(item=><button type="button" key={item} className="ws-editor-modebar-button"
+        aria-pressed={tool===item} onClick={()=>{setTool(item);
+          if(item==='Source')setOpenedSource(true);
+          if(item==='Assets')setOpenedAssets(true);
+          if(item==='History')setOpenedHistory(true);
+        }}>{item}</button>)}
+    </nav>}
     {head && (preview ? contentPreview : <><div className="ws-editor-grid" hidden={tool==='Source'||tool==='Assets'||tool==='History'}>
       <aside className="ws-project-aside">{tool==='Components'?<div className="ws-editor-component-catalog">
         <p className="ws-kicker">COMPATIBLE BUILDING BLOCKS</p>
@@ -493,11 +511,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       </aside>
       {contentPreview}
       <aside className="ws-project-fields">
-        <div className="ws-editor-tool"><nav aria-label="Editor panels">{['Content', 'Components', 'My Components', 'Theme', 'Assets', 'Source', 'History'].map(item =>
-          <button type="button" key={item} className="ws-secondary" aria-pressed={tool === item} onClick={() => {
-            setTool(item);if(item==='Source')setOpenedSource(true);
-            if(item==='Assets')setOpenedAssets(true);if(item==='History')setOpenedHistory(true);
-          }}>{item}</button>)}</nav></div>
         {tool === 'Components' && <div className="ws-editor-tool" aria-label="Slot compatibility">
           <p className="ws-kicker">COMPONENT PLACEMENT</p>
           <h2>Slot compatibility</h2>
@@ -580,7 +593,8 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       <AssetList port={port} back={()=>setTool('Content')}/>
     </div>}
     {openedSource&&<div hidden={tool!=='Source'}>
-      <SourceInspector head={head} slot={slot} apply={apply} back={()=>setTool('Content')}/>
+      <SourceInspector key={id+':'+attempt} head={head} slot={slot} apply={apply}
+        onBufferDirtyChange={setSourceDirty} back={()=>setTool('Content')}/>
     </div>}</>)}
   </section>;
 }

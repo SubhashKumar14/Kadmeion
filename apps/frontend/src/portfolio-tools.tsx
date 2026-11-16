@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
+import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
@@ -188,12 +189,15 @@ export function ThemeInspector({head, apply, width, resize}: {
   </div>;
 }
 
-export function SourceInspector({head,apply,back}:{
+export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
   head:EditorHead;slot:string;apply:Apply;back:()=>void;
+  onBufferDirtyChange:(dirty:boolean)=>void;
 }) {
   const [selected,setSelected]=useState('');
   const [buffers,setBuffers]=useState<Record<string,string>>({});
   const [notice,setNotice]=useState('');
+  const pendingSource=unappliedSourceBufferCount(buffers,head.snapshot.files);
+  useEffect(()=>onBufferDirtyChange(pendingSource>0),[onBufferDirtyChange,pendingSource]);
   const files=Object.keys(head.snapshot.files).sort((left,right)=>{
     const a=left.startsWith('slots/'),b=right.startsWith('slots/');
     return a===b?left.localeCompare(right):a?-1:1;
@@ -255,7 +259,13 @@ export function SourceInspector({head,apply,back}:{
           'Generated JSON composition and library files are protected from direct editing. Use Content and Sections instead.'}</p>
         {owned&&<button type="button" className="ws-primary" disabled={!changed||overLimit}
           onClick={applyBuffer}>Apply owned source to draft</button>}
+        {changed&&<button type="button" className="ws-secondary" onClick={()=>{
+          setBuffers(values=>{const next={...values};delete next[path];return next;});
+          setNotice('Unapplied source buffer discarded; the private snapshot was unchanged.');
+        }}>Discard source buffer</button>}
       </div>
+      {pendingSource>0&&<p className="ws-source-unapplied" role="status">{pendingSource} unapplied source {pendingSource===1?'buffer':'buffers'}.
+        Apply or discard each before saving or leaving this editor.</p>
       {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     </section>
     <aside className="ws-source-diagnostics">
@@ -265,7 +275,7 @@ export function SourceInspector({head,apply,back}:{
       <dl>
         <div><dt>Source protection</dt><dd>{owned?'Owner-controlled version':'Read-only generated or archived file'}</dd></div>
         <div><dt>File size</dt><dd>{bytes.toLocaleString()} / {MAX_FILE_BYTES.toLocaleString()} bytes</dd></div>
-        <div><dt>Draft buffer</dt><dd>{changed?'Unapplied changes':'Matches working revision'}</dd></div>
+        <div><dt>Draft buffer</dt><dd>{pendingSource?pendingSource+' unapplied file'+(pendingSource===1?'':'s'):'Matches working revision'}</dd></div>
         <div><dt>Author preview</dt><dd>Code execution disabled</dd></div>
         <div><dt>Public custom JavaScript</dt><dd>Blocked pending proven isolation</dd></div>
       </dl>

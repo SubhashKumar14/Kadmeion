@@ -46,3 +46,8 @@ export function authHref(configuredOrigin: unknown, route: '/signin' | '/signup'
     return url.origin + route;
   } catch { return route; }
 }
+
+/** Source buffers are local and not persisted until a typed editor transaction applies them. */
+export function unappliedSourceBufferCount(buffers:Readonly<Record<string,string>>,files:Readonly<Record<string,string>>):number{
+  return Object.keys(buffers).filter(path=>buffers[path]!==files[path]).length;
+}

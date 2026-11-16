@@ -276,6 +276,13 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.locator('html')).toHaveAttribute('data-theme','light');
   const editorPath = new URL(page.url()).pathname;
   await expect(page.getByLabel('Text content')).toBeVisible();
+  const panelBar=page.getByRole('navigation',{name:'Editor panels'});
+  await expect(panelBar).toBeVisible();
+  await expect(panelBar.getByRole('button',{name:'Content',exact:true})).toHaveAttribute('aria-pressed','true');
+  const panelButton=await panelBar.getByRole('button',{name:'Content',exact:true}).evaluate(button=>({
+    height:button.getBoundingClientRect().height,fontSize:parseFloat(getComputedStyle(button).fontSize)}));
+  expect(panelButton.height).toBeGreaterThanOrEqual(42);
+  expect(panelButton.fontSize).toBeGreaterThanOrEqual(12);
   await expect(page.getByText('Illustrative empty-slot copy · Never saved or published')).toBeVisible();
   await expect(page.getByRole('button',{name:'Edit L1 title slot in preview'}))
     .toContainText('Build things that make a difference.');
@@ -391,6 +398,11 @@ test('real owner onboarding and project revision are private across browser sess
   await capture('24_SOURCE_BROWSER');
   await page.getByRole('button',{name:'Back to editor canvas'}).click();
   await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();
+  await page.setViewportSize({width:920,height:850});
+  await expect(page.getByRole('navigation',{name:'Editor panels'})).toBeVisible();
+  const editorOverflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
+  expect(editorOverflow,'Narrow laptop editor horizontal overflow').toBeLessThanOrEqual(2);
+  await page.setViewportSize({width:1600,height:1000});
   await page.reload();
   await expect(page.getByRole('button', {name:'Edit L1 title slot in preview'}))
     .toContainText('Portfolio draft title');

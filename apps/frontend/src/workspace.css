@@ -1053,3 +1053,40 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .ws-owner-page .ws-project-empty{padding:clamp(17px,5vw,26px)}
   .ws-owner-page .ws-preset-browser .ws-studio-presets{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+/* F3: reference-led editorial composition, not a fixed-height PNG reproduction. */
+.ws-editor-modebar{display:flex;align-items:center;gap:clamp(4px,.7vw,11px);min-width:0;width:100%;
+  padding:10px clamp(14px,2vw,28px);background:var(--panel);border-bottom:1px solid var(--line);
+  overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.ws-editor-modebar-title{flex:none;font-size:11px;letter-spacing:.13em;font-weight:800;color:var(--body);margin-right:8px}
+.ws-editor-modebar-button{flex:none;min-height:44px;padding:9px clamp(10px,1vw,16px);
+  border-radius:8px;border:1px solid transparent;background:transparent;color:var(--body);
+  font-size:clamp(12px,.85vw,14px);font-weight:650;white-space:nowrap;cursor:pointer}
+.ws-editor-modebar-button[aria-pressed=true]{background:var(--accent-soft);color:var(--ink);border-color:var(--accent-strong)}
+.ws-editor-modebar-button:hover{background:var(--surface-soft);color:var(--ink)}
+.ws-editor-modebar-button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.ws-editor-safety{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
+  margin:12px clamp(14px,2vw,28px);padding:13px 16px;background:var(--accent-soft);
+  border-left:3px solid var(--accent-strong);font-size:14px;line-height:1.5;color:var(--ink)}
+.ws-source-unapplied{font-size:13px;line-height:1.55;color:var(--body);padding:8px 12px;
+  border-left:3px solid var(--accent-strong)}
+.ws-source-footer{flex-wrap:wrap;gap:10px}
+@media(min-width:901px){
+  .ws-editor-shell .ws-editor-grid{grid-template-columns:minmax(180px,18%) minmax(0,1fr) minmax(235px,21%);
+    min-height:calc(100dvh - 206px)}
+  .ws-editor-shell .ws-editor-grid>.pv-document{max-height:none;min-height:560px;overflow:visible}
+  .ws-editor-shell .ws-editor-grid>.ws-project-aside,
+  .ws-editor-shell .ws-editor-grid>.ws-project-fields{padding:clamp(18px,1.8vw,28px)}
+  .ws-editor-shell .ws-editor-grid .ws-editor-slots button{min-height:44px;font-size:12px}
+  .ws-editor-shell .ws-editor-grid aside h2,.ws-editor-shell .ws-editor-grid .ws-project-fields h2{font-size:clamp(20px,1.45vw,24px)}
+  .ws-editor-shell .ws-project-head .ws-heading>p:last-child{font-size:13px}
+  .ws-editor-shell .ws-project-head .ws-primary,.ws-editor-shell .ws-project-head .ws-secondary{min-height:44px;font-size:12px}
+  .ws-editor-shell .ws-editor-grid .ws-editor-tool label{font-size:13px;line-height:1.5}
+  .ws-editor-shell .ws-editor-grid .ws-editor-tool :is(input,select,textarea){font-size:14px}
+}
+@media(min-width:901px) and (max-width:1160px){
+  .ws-editor-shell .ws-editor-grid{grid-template-columns:minmax(172px,20%) minmax(0,1fr) minmax(206px,24%)}
+  .ws-editor-modebar-title{display:none}
+}
+@media(max-width:900px){.ws-editor-modebar{display:none}}
+@media(prefers-reduced-motion:reduce){.ws-editor-modebar{scroll-behavior:auto}}
