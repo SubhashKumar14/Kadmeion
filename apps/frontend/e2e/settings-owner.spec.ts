@@ -76,9 +76,31 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
     }
   }
 
-  await page.setViewportSize({width:1366,height:900});
+  // Approved references are LIGHT; produce current-source captures rather
+  // than treating a dark-mode functional pass as visual acceptance.
+  await page.setViewportSize({width:1600,height:900});
   await page.goto('/app/settings');
   await page.getByRole('button',{name:'Switch to light theme'}).click();
+  for(const width of [1600,390]){
+    await page.setViewportSize({width,height:900});
+    for(const [route,heading,screenshot] of screens){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+      const dimensions=await page.evaluate(()=>({
+        viewport:document.documentElement.clientWidth,
+        scroll:document.documentElement.scrollWidth
+      }));
+      expect(dimensions.scroll,route+' light overflow at '+width+'px')
+        .toBeLessThanOrEqual(dimensions.viewport+2);
+      if(capture){
+        await mkdir(capture,{recursive:true});
+        await page.screenshot({path:capture+'/'+screenshot+'_LIGHT_'+width+'.png',
+          animations:'disabled'});
+      }
+    }
+  }
+  await page.setViewportSize({width:1366,height:900});
   await page.goto('/app/settings/security');
   await expect(page.locator('html')).toHaveAttribute('data-theme','light');
   await expect(page.getByLabel('Current password')).toBeVisible();
