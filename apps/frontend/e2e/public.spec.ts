@@ -1,5 +1,20 @@
 import { test, expect } from '@playwright/test';
 
+test('landing follows the seven owner-approved sections in order', async ({page}) => {
+  await page.goto('/');
+  const sections = page.locator('main > section');
+  await expect(sections).toHaveCount(7);
+  await expect(sections.locator('h1, h2')).toHaveText([
+    /^Your Developer Identity/, 'Real Work from Developers.', 'The Challenge',
+    'The Kadmeion Solution', 'Your Portfolio in Three Simple Steps.',
+    'Common Questions.', 'Build Your Developer Identity Today.',
+  ]);
+  const examples = page.getByRole('region', {name:'Real Work from Developers.'});
+  await expect(examples.getByRole('link', {name:'BidHub'})).toHaveAttribute('href','https://github.com/SubhashKumar14/Bid-Hub');
+  await expect(examples.getByRole('link', {name:'StreamFlix'})).toHaveAttribute('href','https://github.com/thandriyalahimaja/Stream-Flix');
+  await expect(page.getByRole('link', {name:'Explore Portfolios', exact:true})).toHaveAttribute('href','/explore');
+});
+
 test('landing respects approved public path, can switch theme and persists preference', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1, name: /^Your Developer Identity/ })).toBeVisible();

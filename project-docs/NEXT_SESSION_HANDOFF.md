@@ -1,3 +1,11 @@
+## 16 November 2026 — Owner clarification of the landing-page sequence
+
+- Landing (PUB-01) follows the seven owner-specified sections in exact order: Hero, Social proof, Problem statement, Solution or value, How it works, FAQ, CTA. This supersedes the earlier ordering and supersedes separate landing sections for templates and developer connections. Templates sit under Value, and connections are explained in the FAQ.
+- The social-proof area links the publicly accessible BidHub and StreamFlix repositories as independent developer work. It does not claim verified Kadmeion users, endorsements, or portfolios. Preserve the approved landing composition cues, runtime themes, and full viewport.
+- Keep the original screen-level owner decisions as the authority for each subsequent screen. The source matrix and the UI decision register provide traceability, not implementation acceptance. F2 remains the next implementation phase.
+
+---
+
 ## 16 November 2026 — Owner-directed signup and viewport correction
 
 - Owner supersession: allow account creation and sign-in without an inbox challenge until the owner explicitly asks to restore confirmation. The shared auth contract now submits valid signup independently of email-delivery verification. The React signup uses a verified provider session to open the private workspace. Supabase still decides whether a session is issued. The UI handles confirmation-required configurations honestly.

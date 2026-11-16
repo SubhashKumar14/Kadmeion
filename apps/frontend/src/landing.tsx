@@ -57,11 +57,9 @@ export function useTheme(): [Theme, () => void] {
   }, [theme]);
   return [theme, () => setTheme(current => invertTheme(current))];
 }
-const projectCards = [
-  { name: 'BidHub', type: 'Micro-freelance platform', summary: 'Project discovery and collaborative bidding.', tags: ['Product', 'Web'], symbol: 'B', tone: 'blue' },
-  { name: 'StreamFlix', type: 'Movie discovery experience', summary: 'Personalized viewing and recommendations.', tags: ['Media', 'Web'], symbol: '▶', tone: 'coal' },
-  { name: 'Aegis AI', type: 'Applied AI concept', summary: 'AI-assisted analysis and developer tooling.', tags: ['AI / ML', 'Tools'], symbol: 'A', tone: 'teal' },
-  { name: 'Kadmeion', type: 'Developer identity platform', summary: 'The portfolio builder under development.', tags: ['Identity', 'Portfolio'], symbol: 'K', tone: 'copper' }
+const projectExamples = [
+  { name: 'BidHub', summary: 'Project discovery and competitive bidding.', href: 'https://github.com/SubhashKumar14/Bid-Hub' },
+  { name: 'StreamFlix', summary: 'Movie discovery and recommendations.', href: 'https://github.com/thandriyalahimaja/Stream-Flix' }
 ] as const;
 function DemoWorkspace({ view }: { view: DemoView }) {
   const viewHeading = view === 'Workspace' ? 'A place for what you build next.'
@@ -136,7 +134,7 @@ export function ActionLink({children,href,kind='primary'}:{children:ReactNode,hr
 const faqs=[
   ['What is Kadmeion?', 'Kadmeion is a developer identity and portfolio creation platform. Build a profile, curate your work and prepare independently themed portfolios.'],
   ['Is my work private by default?', 'Yes. Draft profiles, projects and portfolio work remain private until you explicitly choose what to share. A preview is not a public release.'],
-  ['Can I connect existing developer accounts?', 'Optional connections are planned and require provider permissions. An unconnected platform is not evidence of verified activity or achievements.']
+  ['Can I connect existing developer accounts?', 'You can save links to your developer profiles. Automatic activity sync is currently unavailable.']
 ] as const;
 export function Landing() {
   const [theme,toggleTheme]=useTheme();
@@ -169,47 +167,44 @@ export function Landing() {
             <p>Create a distinct portfolio, showcase real work, and build your developer presence with intention.</p>
             <div className="hero-actions">
               <ActionLink href={getAuthHref()}>Create Your Portfolio</ActionLink>
-              <ActionLink href="#showcase" kind="outline">Explore Portfolios</ActionLink>
+              <ActionLink href="/explore" kind="outline">Explore Portfolios</ActionLink>
             </div>
           </div>
           <ProductDemo />
         </section>
 
-        <section className="problem-solution" aria-label="Why Kadmeion">
-          <div className="statement">
-            <span className="statement-icon"><Icon name="target" size={24}/></span>
-            <div><h2>The Challenge</h2><p>Your work lives across platforms, making it harder to present a complete, professional identity.</p></div>
-          </div>
-          <div className="statement">
-            <span className="statement-icon warm"><Icon name="layers" size={24}/></span>
-            <div><h2>The Kadmeion Solution</h2><p>One considered place for projects, skills and the portfolio experiences you choose to share.</p></div>
-          </div>
-        </section>
-
         <section className="showcase section" id="showcase" aria-labelledby="showcase-title">
-          <div className="section-heading"><div><div className="eyebrow"><span/> Showcase</div><h2 id="showcase-title">Make your work the story.</h2></div>
-            <a href="#project-examples" className="inline-link">Explore the showcase <Icon name="arrow" size={16}/></a></div>
-          <p className="example-disclosure">Illustrative project cards from the approved visual concept; not a directory of verified public portfolios.</p>
-          <div className="project-grid" id="project-examples">
-            {projectCards.map(card=><article className="project-card" key={card.name}>
-              <span className={'project-icon '+card.tone} aria-hidden="true">{card.symbol}</span>
+          <div className="section-heading">
+            <h2 id="showcase-title">Real Work from Developers.</h2>
+            <a href="/explore" className="inline-link">Explore the showcase <Icon name="arrow" size={16}/></a>
+          </div>
+          <p className="example-disclosure">Independent projects with public source code.</p>
+          <div className="project-grid">
+            {projectExamples.map(project=><article className="project-card" key={project.name}>
+              <span className="statement-icon"><Icon name="code" size={22}/></span>
               <div className="project-copy">
-                <h3>{card.name}</h3><p className="project-type">{card.type}</p>
-                <p>{card.summary}</p>
-                <div className="tag-row">{card.tags.map(tag=><span className="tag" key={tag}>{tag}</span>)}</div>
+                <h3><a href={project.href}>{project.name} <span aria-hidden="true">↗</span></a></h3>
+                <p>{project.summary}</p>
               </div>
             </article>)}
           </div>
         </section>
 
-        <section className="template-strip" id="templates" aria-labelledby="templates-heading">
-          <span className="strip-icon"><Icon name="layers" size={24}/></span>
-          <div className="template-copy"><h2 id="templates-heading">Start Faster with Templates.</h2>
-            <p>Curated portfolio compositions, with space for your own voice and work.</p></div>
-          <div className="template-thumbnails" aria-label="Illustrative template arrangements">
-            <span className="mini-template one" aria-hidden="true"/><span className="mini-template two" aria-hidden="true"/><span className="mini-template three" aria-hidden="true"/>
+        <section className="statement" aria-labelledby="problem-title">
+          <span className="statement-icon"><Icon name="target" size={24}/></span>
+          <div><h2 id="problem-title">The Challenge</h2>
+            <p>Your code, skills, and project stories live across different platforms. That makes it hard for someone to understand your work in one visit.</p></div>
+        </section>
+
+        <section className="statement landing-value" aria-labelledby="value-title">
+          <span className="statement-icon warm"><Icon name="layers" size={24}/></span>
+          <div><h2 id="value-title">The Kadmeion Solution</h2>
+            <p>Bring your projects, skills, and case studies together in a portfolio. Choose a template, edit your work privately, and decide what to share.</p>
+            <a id="templates" className="inline-link" href="/templates">Browse templates <Icon name="arrow" size={16}/></a>
           </div>
-          <a className="outline-small" href={getAuthHref()}>Create your portfolio <Icon name="arrow" size={16}/></a>
+          <div className="template-thumbnails" aria-hidden="true">
+            <span className="mini-template"/><span className="mini-template two"/><span className="mini-template three"/>
+          </div>
         </section>
 
         <section className="steps section" aria-labelledby="steps-heading">
@@ -219,12 +214,6 @@ export function Landing() {
             <div className="step"><span className="step-icon warm"><Icon name="layers" size={23}/></span><p><strong>2. Build</strong><span>Add real projects and shape your portfolio.</span></p></div>
             <div className="step"><span className="step-icon"><Icon name="rocket" size={23}/></span><p><strong>3. Share & Grow</strong><span>Publish only after the release is verified.</span></p></div>
           </div>
-        </section>
-
-        <section className="connections-strip" aria-label="Developer activity connections">
-          <span className="strip-icon"><Icon name="activity" size={23}/></span>
-          <div><h2>Bring Your Developer Activity Together.</h2><p>Optional platform connections are planned; no account sync is implied here.</p></div>
-          <div className="platform-tags" aria-label="Possible future integrations"><span>GitHub</span><span>LeetCode</span><span>Codeforces</span><span>HackerRank</span><span>Kaggle</span><span>Hugging Face</span></div>
         </section>
 
         <section className="faq section" aria-labelledby="faq-heading">
