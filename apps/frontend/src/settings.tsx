@@ -264,8 +264,10 @@ function Notifications({service}: {service: Services['notifications']}) {
     if (busy) return;
     setBusy(true);
     try {
-      const fields = {reviewerEnabled: prefs?.reviewer_enabled ?? false,
-        publishEnabled: prefs?.publish_enabled ?? false, syncEnabled: prefs?.sync_enabled ?? false};
+      // Server defaults on absent rows: REVIEWER/PUBLISH are enabled; SYNC is opt-in.
+      // Match the trigger's coalesce(..., true) behavior and table defaults.
+      const fields = {reviewerEnabled: prefs?.reviewer_enabled ?? true,
+        publishEnabled: prefs?.publish_enabled ?? true, syncEnabled: prefs?.sync_enabled ?? false};
       setPrefs(await service.setPreferences({...fields, [key]: checked}));
       setMessage({error: false, text: 'Notification preferences saved.'});
     } catch (error) {setMessage(failure(error));}
@@ -301,11 +303,11 @@ function Notifications({service}: {service: Services['notifications']}) {
     {inbox?.items.length ? <p>Review opens an owner-only area. Unread notices are marked read only after the server acknowledges the action.</p> : null}
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
-    {prefs === null && <p role="status">No saved optional notification preferences were returned. Switches are off by default until you save a choice.</p>}
+    {prefs === null && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && <>
-      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.reviewer_enabled ?? false}
+      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.reviewer_enabled ?? true}
         disabled={busy} onChange={event => void preference('reviewerEnabled', event.target.checked)}/> Reviewer activity</label>
-      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.publish_enabled ?? false}
+      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.publish_enabled ?? true}
         disabled={busy} onChange={event => void preference('publishEnabled', event.target.checked)}/> Publishing activity</label>
       <label className="ws-settings-check"><input type="checkbox" checked={prefs?.sync_enabled ?? false}
         disabled={busy} onChange={event => void preference('syncEnabled', event.target.checked)}/> Draft sync activity</label>
