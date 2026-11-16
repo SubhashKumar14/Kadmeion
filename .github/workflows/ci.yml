@@ -86,6 +86,13 @@ jobs:
       - uses: supabase/setup-cli@v3
         with:
           version: 3.1.0
+      - name: Reserve local Supabase ports on the ephemeral runner
+        shell: bash
+        run: |
+          # Supabase publishes fixed ports inside Linux's ephemeral range.
+          # Preserve any existing reservations on this GitHub-hosted runner.
+          reserved=$(sysctl -n net.ipv4.ip_local_reserved_ports)
+          sudo sysctl -q -w "net.ipv4.ip_local_reserved_ports=${reserved:+$reserved,}54320-54329"
       - name: Start isolated Supabase, retry one port collision
         shell: bash
         run: |
@@ -98,8 +105,12 @@ jobs:
             fi
             cat "$log"
             result=$(<"$log")
-            if [[ "$attempt" == 2 || "$result" != *"address already in use"* ||
+            if [[ "$result" != *"address already in use"* ||
                   "$result" != *"failed to bind host port"* ]]; then
+              exit 1
+            fi
+            sudo ss -ltnp | awk '$4 ~ /:5432[0-9]$/'
+            if [[ "$attempt" == 2 ]]; then
               exit 1
             fi
             # Only this ephemeral CI project. Remove partially started
