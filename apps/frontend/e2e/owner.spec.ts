@@ -1332,3 +1332,75 @@ test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen p
   await page.unroute('**/rest/v1/rpc/load_private_frozen_revision');
   await page.unroute('**/rest/v1/rpc/freeze_private_release_request');
 });
+
+
+test('S6 S3 pending inspector and SEO buffers block Restore until resolved', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1' ||
+    process.env.KADMEION_S3_CANDIDATE !== '1',
+    'Requires isolated Supabase and S3 candidate integrated into the tested source.');
+  test.setTimeout(110_000);
+  const owner=await localUser('S6 S3 checkpoint buffers');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 checkpoint buffer fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 checkpoint buffer fixture',level:1})).toBeVisible();
+
+  const textField=page.getByLabel('Text content');
+  await expect(textField).toBeVisible();
+  await textField.fill('Unsaved S3 primary text must survive History');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:/Revision 1/}).click();
+  const restore=page.getByRole('button',{name:'Restore selected checkpoint to draft'});
+  await expect(restore).toBeDisabled();
+  await expect(page.getByRole('status')).toContainText('Apply or discard unapplied inspector and source text');
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await expect(textField).toHaveValue('Unsaved S3 primary text must survive History');
+  await page.getByRole('button',{name:'Discard unapplied text'}).click();
+  await page.getByRole('button',{name:'Metadata',exact:true}).click();
+  await page.getByLabel('SEO page title').fill('Unapplied S3 SEO title');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await expect(restore).toBeDisabled();
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await page.getByRole('button',{name:'Metadata',exact:true}).click();
+  await expect(page.getByLabel('SEO page title')).toHaveValue('Unapplied S3 SEO title');
+
+  // Deliberate discard is the only allowed escape from these unsaved buffers.
+  await page.getByRole('button',{name:'Discard changes and load saved draft'}).click();
+  await expect(page.getByLabel('SEO page title')).not.toHaveValue('Unapplied S3 SEO title');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:/Revision 1/}).click();
+  await expect(restore).toBeEnabled();
+  await restore.click();
+  await expect(page.getByText('Revision restored into the working draft. Save to keep it.')).toBeVisible();
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByText('Private portfolio draft saved.')).toBeVisible();
+});
+
+test('S6 S5 principal A to B switch clears restricted views in the same browser', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Requires disposable local Supabase.');
+  test.setTimeout(95_000);
+  const [operator,owner]=await Promise.all([
+    localUser('S6 restricted operator A'),localUser('S6 private owner B')
+  ]);
+  grantLocalOperatorRole(operator.id);
+  await signIn(page,operator);
+  await page.goto('/app/operations/users');
+  await expect(page.getByRole('heading',{name:'Admin users'})).toBeVisible();
+  await expect(page.getByRole('navigation',{name:'Restricted operation areas'})).toBeVisible();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,owner);
+  await page.goto('/app/operations/users');
+  await expect(page.getByRole('heading',{name:'Restricted operations.'})).toBeVisible();
+  await expect(page.getByRole('navigation',{name:'Restricted operation areas'})).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText('did not authorize this session');
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Settings',exact:true})).toBeVisible();
+  await expect(page.getByText(operator.email,{exact:true})).toHaveCount(0);
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Account security'})).toBeVisible();
+  await expect(page.getByText(operator.email,{exact:true})).toHaveCount(0);
+});
