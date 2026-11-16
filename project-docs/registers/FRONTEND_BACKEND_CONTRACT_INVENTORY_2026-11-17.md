@@ -11,6 +11,29 @@ This is the **initial source inventory**, not a verified API contract or newly r
 - Browser URL family actually visible in adapter: `/auth/v1/*`, `/rest/v1/*`, `/functions/v1/*` (verify exact path per method). Do not assume authenticated endpoints exist or accept any particular payload without tracing source and migration.
 - No service-only role or privileged RPC may move to a public browser client.
 
+## Session 1 confirmed source-backed contract families (17 November 2026)
+
+These are **source-and-historical-isolated-evidence classifications**, from [Session 1's log](https://app.notion.com/p/41ab082297c781048ae8e1aed99469a1). They are **not hosted approval** or complete screen/UAT success. The initial mechanical scan incorrectly counted a built-in `encodeURIComponent` call at line 538 as a method; corrected method count: **48**. Complete individual method classification remains Session 1's task.
+
+| Contract family | Existing transport/source | Acceptance boundary | State |
+| --- | --- | --- | --- |
+| Password sign-in/session | `/auth/v1/token?grant_type=password`, `/auth/v1/user`, refresh-token exchange | Owner/email binding; prior local tests | VERIFIED_EXISTING (source + historical isolated only) |
+| Signup and recovery/resend | `/auth/v1/signup`, `/auth/v1/recover`, `/auth/v1/resend` | Immediate session depends on confirm-email setting; real mailbox/prod domain unproven | EXTERNAL_PROOF_REQUIRED |
+| OAuth and email callback | PKCE `/auth/v1/authorize`, `/auth/v1/token?grant_type=pkce`, `/auth/v1/verify` | One-time verifier; Google/sender round trip remains unproven | EXTERNAL_PROOF_REQUIRED |
+| Owner profile / onboarding | `profiles`, `owner_save_profile_draft`, `private_onboarding_steps`, `set_private_onboarding_step` RPC | Auth bearer, RLS and CAS; historical local tests only | VERIFIED_EXISTING (source only) |
+| Projects and cases | Owner `projects` REST + `update_private_project` / `update_private_project_case_study` RPC | Revision SQLSTATE 40001 must retain stale-write classification; owner 409/429 messages need targeted regressions | VERIFIED_EXISTING (source only); S1 PATCH UNDER REVIEW |
+| Portfolio create/save | `SupabasePortfolioRevisionStore`, `commit_portfolio_revision` RPC | Owner/RLS, operation ID, optimistic revision; host and full editor tests separate | VERIFIED_EXISTING (source only) |
+| Frozen staging / reviewer | `freeze_private_release_request`, reviewer grant/pointer services | Signed owner and private immutable request do not establish independent public static hosting | EXTERNAL_PROOF_REQUIRED (host claims) |
+| Goals/settings/operations | Delegated `private-*-service.ts` owners | Restricted roles, private records; provider sync/erasure/host proofs independent | PARTIAL_SOURCE_MAPPING; external proof dependent |
+
+### Session 1 contract patch under review
+Worker [commit `b61b4c0`](https://github.com/SubhashKumar14/Kadmeion/commit/b61b4c05fa7d036f8a8169f5b96a97460fb58fd9) changes **only** S1-owned `apps/auth-web/src/supabase-auth-port.ts`, to give HTTP 429 rate-limit errors a truthful message and distinguish project-creation 409 slug conflicts from generic stale/conflicting owner requests. The existing SQLSTATE `40001` handling precedes this mapping and must not be weakened. This note does **not** mark the patch integrated or tested; the integration SHA and exact CI must be appended separately.
+
+### Outstanding questions
+- QUESTION-1-001: S6 regression for owner REST 429, project-create 409 and non-create 409, plus SQLSTATE 40001.
+- QUESTION-1-002 (answered by S0): stage the durable detailed mapping in S1's existing Notion log; S0 alone updates this central register. No new authored code file/manifest is necessary until the over-budget source file policy is reconciled.
+- QUESTION-4-001: S1 to verify frozen attestation, reviewer grant expiry/receipt errors and whether frozen revisions beyond the 50-item revision browser list are owner-staging eligible.
+
 ## Methods to trace, by precise source line
 | Existing method | Definition | Classification | Owner |
 | --- | --- | --- | --- |
@@ -28,7 +51,6 @@ This is the **initial source inventory**, not a verified API contract or newly r
 | acceptTokens | [auth port L437](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L437) | UNASSESSED — SOURCE METHOD | S1 |
 | verifyTokenHash | [auth port L457](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L457) | UNASSESSED — SOURCE METHOD | S1 |
 | readOwnerProfile | [auth port L534](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L534) | UNASSESSED — SOURCE METHOD | S1 |
-| encodeURIComponent | [auth port L538](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L538) | UNASSESSED — SOURCE METHOD | S1 |
 | saveOwnerProfile | [auth port L545](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L545) | UNASSESSED — SOURCE METHOD | S1 |
 | listOwnerPortfolios | [auth port L572](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L572) | UNASSESSED — SOURCE METHOD | S1 |
 | createOwnerPortfolio | [auth port L584](https://github.com/SubhashKumar14/Kadmeion/blob/7232a312c821459e6d88ba400eed6a391738c979/apps/auth-web/src/supabase-auth-port.ts#L584) | UNASSESSED — SOURCE METHOD | S1 |
