@@ -265,7 +265,12 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
         }}>Discard source buffer</button>}
       </div>
       {pendingSource>0&&<p className="ws-source-unapplied" role="status">{pendingSource} unapplied source {pendingSource===1?'buffer':'buffers'}.
-        Apply or discard each before saving or leaving this editor.</p>}
+        Apply or discard each before saving or leaving this editor.
+        <button type="button" className="ws-secondary ws-source-clear-all" onClick={()=>{
+          setBuffers({});
+          setNotice('All unapplied source buffers were discarded. The saved private snapshot is unchanged.');
+        }}>Discard all unapplied source buffers</button>
+      </p>}
       {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     </section>
     <aside className="ws-source-diagnostics">
