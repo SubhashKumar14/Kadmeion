@@ -265,7 +265,7 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
         }}>Discard source buffer</button>}
       </div>
       {pendingSource>0&&<p className="ws-source-unapplied" role="status">{pendingSource} unapplied source {pendingSource===1?'buffer':'buffers'}.
-        Apply or discard each before saving or leaving this editor.</p>
+        Apply or discard each before saving or leaving this editor.</p>}
       {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     </section>
     <aside className="ws-source-diagnostics">
