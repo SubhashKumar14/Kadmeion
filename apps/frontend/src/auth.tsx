@@ -375,7 +375,7 @@ export function AuthApp(){
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
             {outcome==='registered'&&auth?.emailAvailable&&<button type="button" className="auth-text-button" disabled={pending}
               onClick={()=>{
-                if(pending)return;
+                if(!auth||pending)return;
                 setPending(true);setError('');setNotice('');
                 void auth.service.resendSignupConfirmation(email)
                   .then(()=>setNotice('If confirmation is required, the provider accepted another request. Email delivery is not confirmed.'))
