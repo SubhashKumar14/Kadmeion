@@ -734,6 +734,120 @@ test('verified local operator can read case-scoped views without impersonation o
   await expect(page.getByText('This does not republish content.',{exact:false})).toBeVisible();
 });
 
+test('F6 owner Growth 35–40 remains private and reflows in dark and light',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires ephemeral owner-JWT Supabase.');
+  test.setTimeout(120_000);
+  const user=await localUser('CI F6 Growth');
+  await page.setViewportSize({width:1600,height:900});
+  await signIn(page,user);
+  await page.goto('/app/growth');
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  const stages=[
+    ['/app/growth','Growth overview','35_GROWTH'],
+    ['/app/growth/activity','Developer activity','36_ACTIVITY'],
+    ['/app/growth/devscore','Private DevScore','37_DEVSCORE'],
+    ['/app/growth/goals','Your goals','38_GOALS'],
+    ['/app/analytics','Portfolio analytics','39_ANALYTICS'],
+    ['/app/integrations','Platform connections','40_CONNECTIONS']
+  ] as const;
+  const dir=process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  for(const width of [390,320]){
+    await page.setViewportSize({width,height:844});
+    for(const [route,heading,label] of stages){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await expect(page.getByRole('navigation',{name:'Growth sections'})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+      const dimensions=await page.evaluate(()=>({
+        viewport:document.documentElement.clientWidth,
+        scroll:document.documentElement.scrollWidth
+      }));
+      expect(dimensions.scroll,route+' dark '+width+'px')
+        .toBeLessThanOrEqual(dimensions.viewport+2);
+      if(route==='/app/growth/devscore')
+        await expect(page.getByText('A numeric DevScore is unavailable.')).toBeVisible();
+      if(route==='/app/analytics')
+        await expect(page.getByRole('button',{name:'Enable portfolio analytics'})).toBeDisabled();
+      if(dir&&width===390){
+        await mkdir(dir,{recursive:true});
+        await page.screenshot({path:dir+'/'+label+'_DARK_PHONE_BROWSER.png',animations:'disabled'});
+      }
+    }
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.goto('/app/growth');
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  for(const [route,heading,label] of stages){
+    await page.goto(route);
+    await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+    const dimensions=await page.evaluate(()=>({
+      viewport:document.documentElement.clientWidth,
+      scroll:document.documentElement.scrollWidth
+    }));
+    expect(dimensions.scroll,route+' light 390px')
+      .toBeLessThanOrEqual(dimensions.viewport+2);
+    if(dir){
+      await mkdir(dir,{recursive:true});
+      await page.screenshot({path:dir+'/'+label+'_LIGHT_PHONE_BROWSER.png',animations:'disabled'});
+    }
+  }
+});
+
+test('F6 restricted operations 48–50 reflow without leaking account directory',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated privileged operator fixture.');
+  test.setTimeout(100_000);
+  const operator=await localUser('CI F6 Moderator');
+  grantLocalOperatorRole(operator.id);
+  await page.setViewportSize({width:1600,height:900});
+  await signIn(page,operator);
+  await page.goto('/app/operations/users');
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  const stages=[
+    ['/app/operations/users','Admin users','48_ADMIN_USERS'],
+    ['/app/operations/moderation','Portfolio moderation','49_MODERATION'],
+    ['/app/operations/appeals','Appeals & case history','50_APPEALS']
+  ] as const;
+  const dir=process.env.KADMEION_BROWSER_CAPTURE_DIR;
+  for(const width of [390,320]){
+    await page.setViewportSize({width,height:844});
+    for(const [route,heading,label] of stages){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await expect(page.getByRole('navigation',{name:'Restricted operation areas'})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+      const dimensions=await page.evaluate(()=>({
+        viewport:document.documentElement.clientWidth,
+        scroll:document.documentElement.scrollWidth
+      }));
+      expect(dimensions.scroll,route+' dark '+width+'px')
+        .toBeLessThanOrEqual(dimensions.viewport+2);
+      if(dir&&width===390){
+        await mkdir(dir,{recursive:true});
+        await page.screenshot({path:dir+'/'+label+'_DARK_PHONE_BROWSER.png',animations:'disabled'});
+      }
+    }
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.goto('/app/operations/users');
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  for(const [route,heading,label] of stages){
+    await page.goto(route);
+    await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+    const dimensions=await page.evaluate(()=>({
+      viewport:document.documentElement.clientWidth,
+      scroll:document.documentElement.scrollWidth
+    }));
+    expect(dimensions.scroll,route+' light 390px')
+      .toBeLessThanOrEqual(dimensions.viewport+2);
+    if(dir){
+      await mkdir(dir,{recursive:true});
+      await page.screenshot({path:dir+'/'+label+'_LIGHT_PHONE_BROWSER.png',animations:'disabled'});
+    }
+  }
+});
+
 test('F1 recovery request and password reset use isolated GoTrue and Mailpit', async ({ page }) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
   test.setTimeout(60_000);
