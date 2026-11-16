@@ -232,6 +232,56 @@ test('reviewer and public candidate addresses disclose no records, no token and 
   await expect(page.getByRole('heading',{name:'This page is unavailable.'})).toBeVisible();
 });
 
+
+test('F4 gated reviewer and public routes preserve theme, reflow, and never reveal private data', async ({page}) => {
+  test.setTimeout(90_000);
+  const token='11111111-1111-4111-8111-111111111111.'+'a'.repeat(64);
+  const routes=[
+    ['/r/'+token,'Reviewer preview unavailable.','28_REVIEWER_GATE'],
+    ['/u/release_owner','Developer identity unavailable.','31_IDENTITY_GATE'],
+    ['/u/release_owner/projects/project-story','Project story unavailable.','32_CASE_STUDY_GATE'],
+    ['/release_owner/portfolio-story','Portfolio page unavailable.','33_PORTFOLIO_GATE']
+  ] as const;
+  await page.goto('/');
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+
+  for(const width of [320,390,1366]){
+    await page.setViewportSize({width,height:900});
+    for(const [route,heading] of routes){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+      await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+        'content','noindex, nofollow, noarchive');
+      await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
+      await expect(page.locator('body')).not.toContainText(token);
+      const widthReport=await page.evaluate(()=>({
+        viewport:document.documentElement.clientWidth,
+        page:document.documentElement.scrollWidth
+      }));
+      expect(widthReport.page,route+' at '+width+'px').toBeLessThanOrEqual(widthReport.viewport+1);
+    }
+  }
+
+  // Gated screenshots are evidence of unavailable states, NOT captures of
+  // independently delivered published content or approved visual acceptance.
+  await page.goto('/');
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  const captureDir=process.env.KADMEION_PUBLIC_CAPTURE_DIR;
+  await page.setViewportSize({width:1366,height:900});
+  for(const [route,heading,label] of routes){
+    await page.goto(route);
+    await expect(page.getByRole('heading',{name:heading})).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+    if(captureDir){
+      const {mkdir}=await import('node:fs/promises');
+      await mkdir(captureDir,{recursive:true});
+      await page.screenshot({path:captureDir+'/'+label+'.png',animations:'disabled'});
+    }
+  }
+});
+
 test('F1 skip links focus the content and auth reflows with reduced motion', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 390, height: 844 });
