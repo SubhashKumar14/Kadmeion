@@ -1321,7 +1321,7 @@ test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen p
   await expect(page.getByRole('alert')).toContainText('Freeze could not be confirmed');
   await expect(freeze).toBeEnabled();
   await freeze.click();
-  await expect(page.getByRole('status')).toContainText(/Private revision \d+ frozen/);
+  await expect(page.getByText(/Private revision \d+ frozen\./)).toBeVisible();
   expect(operations).toHaveLength(2);
   expect(operations[0]).toBe(operations[1]);
   await expect(page.getByRole('alert')).toContainText('The exact frozen revision could not be verified.');
