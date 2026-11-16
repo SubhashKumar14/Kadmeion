@@ -1,3 +1,15 @@
+## 16 November 2026 — F1 implementation and browser verification
+
+- **Scope:** One phase per response. F1 screens 01–11 received a full implementation and comparison pass on [PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3). Verified code SHA [`f78fee91ef99dad330dac05647d6c61a330b6816`](https://github.com/SubhashKumar14/Kadmeion/commit/f78fee91ef99dad330dac05647d6c61a330b6816).
+- **Code and decisions:** Use the approved mark and wordmark in the light/dark runtime shells. Improve public composition, reversible auth layout, skip-link focus and reduced-motion behavior. Bind password updates to the active session before the provider call. Preserve mobile sign-out and owner access controls. Use real glyph-text loading, recovery guidance and private recent-work links. Explore stays illustrative pending public delivery proof. Signup takes a candidate handle and does not expose private account presence through guest availability queries.
+- **CI at the exact code SHA:** [Frontend #112](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43819836296) success, 16 public Chromium tests. [Application and Database #855](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43819836277) success, 504 root tests, 511 pgTAP assertions and all three isolated Chromium scenarios. Both typechecks, frontend build and production dependency audits passed. Existing Vite ineffective dynamic import warning and 261/200 source-file variance recorded. Hosted inspection matched 57 migration versions and three active Edge Functions.
+- **Design review:** 11/11 source PNG hashes and matching viewport captures compared. All references were retained. The 06 capture uses the actual shared recovery-verification screen. Hosted Google OAuth and Brevo inbox proof, visual parity, full accessibility and owner UAT remain open. No production promotion or hosted configuration changes were made.
+- **Next phase F2:** Review and hash originals 12–17, starting with WORK-03 profile edit and privacy preview. Exercise the owner draft update and stale revision path before working through project create/edit, quick add, portfolio library and template choice. Keep F1 visual and provider gaps visible in the source register for acceptance.
+
+[F1 evidence and comparison table](FRONTEND_F1_IMPLEMENTATION_NOTES_2026-11-15.md) · [52-screen register](registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv) · [Notion execution ledger](https://app.notion.com/p/419b082297c781db810cd756ec0343eb)
+
+---
+
 ## 16 November 2026 — F1 implementation and verification checkpoint
 
 - Starting point: `f76d46445f0c429a0fea81719900d688e429d527` on [PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3), branch `feat/b0-backend-foundation`. Rechecked both starting-head workflows as successful. Hosted Supabase inventory matches all 57 migration versions and reports three active Edge Functions.
