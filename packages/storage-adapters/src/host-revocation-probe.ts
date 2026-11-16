@@ -284,8 +284,7 @@ export async function attestAccountExitHostDenial(input:{
     throw new HostRevocationProbeError('INVALID_INPUT');
   const {paths,planSha256}=raw as Record<string,unknown>;
   if(typeof planSha256!=='string'||!SHA256.test(planSha256)||
-     !Array.isArray(paths)||paths.length<1||paths.length>256||
-     paths.some(path=>!accountExitPath(path))||
+     !Array.isArray(paths)||paths.length>256||paths.some(path=>!accountExitPath(path))||
      new Set(paths).size!==paths.length)
     throw new HostRevocationProbeError('INVALID_INPUT');
   const http=input.http??fetch;
