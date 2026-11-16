@@ -207,6 +207,10 @@ function notificationDestination(item: PrivateNotification): string {
 function Notifications({service}: {service: Services['notifications']}) {
   const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
   const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
+  const [pendingPrefs, setPendingPrefs] = useState<{
+    reviewerEnabled: boolean; publishEnabled: boolean; syncEnabled: boolean;
+  } | null>(null);
+  const [preferenceMessage, setPreferenceMessage] = useState<Message>(emptyMessage);
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -260,18 +264,29 @@ function Notifications({service}: {service: Services['notifications']}) {
     finally {setBusy(false);}
   }
 
-  async function preference(key: 'reviewerEnabled' | 'publishEnabled' | 'syncEnabled', checked: boolean) {
+  // The database enables reviewer and publishing notices when no row exists.
+  const effectivePrefs = {
+    reviewerEnabled: prefs?.reviewer_enabled ?? true,
+    publishEnabled: prefs?.publish_enabled ?? true,
+    syncEnabled: prefs?.sync_enabled ?? false
+  };
+  const displayedPrefs = pendingPrefs ?? effectivePrefs;
+
+  async function preference(key: keyof typeof effectivePrefs, checked: boolean) {
     if (busy) return;
+    const next = {...effectivePrefs, [key]: checked};
     setBusy(true);
+    setPendingPrefs(next);
+    setPreferenceMessage(null);
     try {
-      // Server defaults on absent rows: REVIEWER/PUBLISH are enabled; SYNC is opt-in.
-      // Match the trigger's coalesce(..., true) behavior and table defaults.
-      const fields = {reviewerEnabled: prefs?.reviewer_enabled ?? true,
-        publishEnabled: prefs?.publish_enabled ?? true, syncEnabled: prefs?.sync_enabled ?? false};
-      setPrefs(await service.setPreferences({...fields, [key]: checked}));
-      setMessage({error: false, text: 'Notification preferences saved.'});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+      setPrefs(await service.setPreferences(next));
+      setPreferenceMessage({error: false, text: 'Notification preferences saved.'});
+    } catch {
+      setPreferenceMessage({error: true, text: 'Could not confirm the change. Showing the last confirmed preferences. Try again or reload to check the saved settings.'});
+    } finally {
+      setPendingPrefs(null);
+      setBusy(false);
+    }
   }
 
   const visibleNotices=inbox?.items.filter(item=>inboxFilter==='ALL' ||
@@ -303,15 +318,19 @@ function Notifications({service}: {service: Services['notifications']}) {
     {inbox?.items.length ? <p>Review opens an owner-only area. Unread notices are marked read only after the server acknowledges the action.</p> : null}
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
-    {prefs === null && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
-    {prefs !== undefined && <>
-      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.reviewer_enabled ?? true}
-        disabled={busy} onChange={event => void preference('reviewerEnabled', event.target.checked)}/> Reviewer activity</label>
-      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.publish_enabled ?? true}
-        disabled={busy} onChange={event => void preference('publishEnabled', event.target.checked)}/> Publishing activity</label>
-      <label className="ws-settings-check"><input type="checkbox" checked={prefs?.sync_enabled ?? false}
-        disabled={busy} onChange={event => void preference('syncEnabled', event.target.checked)}/> Draft sync activity</label>
-    </>}
+    {prefs === null && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
+    {prefs !== undefined && ([
+      ['reviewerEnabled', 'Reviewer activity'],
+      ['publishEnabled', 'Publishing activity'],
+      ['syncEnabled', 'Draft sync activity']
+    ] as const).map(([key, label]) => (
+      <label className="ws-settings-check" key={key}>
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={busy}
+          onChange={event => void preference(key, event.target.checked)}/> {label}
+      </label>
+    ))}
+    {pendingPrefs && <p role="status">Saving notification preferences…</p>}
+    <Status message={preferenceMessage}/>
     <p>Security and moderation notices use the required in-app channel.</p>
   </SettingsCard></div>;
 }

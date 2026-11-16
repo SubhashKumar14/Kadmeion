@@ -175,7 +175,27 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByRole('checkbox',{name:'Publishing activity'})).toBeChecked();
   const syncPreference=page.getByRole('checkbox',{name:'Draft sync activity'});
   await expect(syncPreference).not.toBeChecked();
-  await syncPreference.check();
+  const preferencesRpc='**/rest/v1/rpc/owner_set_notification_preferences';
+  const rejectedWrite=Promise.withResolvers<void>();
+  await page.route(preferencesRpc,async route=>{
+    await rejectedWrite.promise;
+    await route.fulfill({status:503,json:{message:'Fixture preference outage'}});
+  },{times:1});
+  try {
+    await syncPreference.focus();
+    await syncPreference.press('Space');
+    await expect(syncPreference).toBeChecked();
+    await expect(syncPreference).toBeFocused();
+    await expect(syncPreference).toBeDisabled();
+    await expect(page.getByText('Saving notification preferences…')).toBeVisible();
+    await expect(page.getByText('Notification preferences saved.')).toHaveCount(0);
+  } finally {
+    rejectedWrite.resolve();
+  }
+  await expect(page.getByRole('alert')).toContainText('Could not confirm the change.');
+  await expect(syncPreference).not.toBeChecked();
+  await expect(syncPreference).toBeFocused();
+  await syncPreference.press('Space');
   await expect(page.getByText('Notification preferences saved.')).toBeVisible();
   await page.reload();
   await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();

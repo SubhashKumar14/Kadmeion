@@ -196,13 +196,25 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
   });
   await expect(page.getByRole('heading', {name: 'Your browser reports no connection.'})).toBeVisible();
   await expect(page).toHaveTitle('Offline · Kadmeion');
+  await expect(retry).toBeDisabled();
+  await expect(retry).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', {name: 'Your browser reports no connection.'})).toBeVisible();
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'onLine', {configurable: true, get: () => true});
     window.dispatchEvent(new Event('online'));
   });
   await expect(page.getByRole('heading', {name: 'This page is unavailable.'})).toBeVisible();
   await expect(page).toHaveTitle('Page unavailable · Kadmeion');
+  await expect(retry).toBeEnabled();
+  await expect(retry).toBeFocused();
+  await Promise.all([
+    page.waitForEvent('domcontentloaded'),
+    page.keyboard.press('Enter')
+  ]);
+  await expect(page.getByRole('heading', {name: 'This page is unavailable.'})).toBeVisible();
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content','noindex, nofollow, noarchive');
+  await expect(page.getByRole('link', {name:'Sign in to review your workspace'})).toHaveAttribute('href','/signin');
   await page.getByRole('link', {name: 'Return to home'}).click();
   await expect(page).toHaveURL('/');
 });
@@ -319,7 +331,7 @@ test('public and auth shells span the window across desktop and phone widths',as
     ['/signin', '.auth-page'], ['/register', '.auth-page'], ['/forgot-password', '.auth-page'],
     ['/auth/callback', '.auth-callback'], ['/unavailable-viewport-test', '.system-status-editorial'],
   ] as const;
-  for (const width of [1920, 1366, 768, 390]) {
+  for (const width of [1920, 1600, 1366, 900, 768, 390, 320]) {
     await page.setViewportSize({width, height:768});
     for (const [route, selector] of routes) {
       await page.goto(route);

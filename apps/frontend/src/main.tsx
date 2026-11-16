@@ -122,16 +122,18 @@ function UnavailableRoute() {
           <div className="sys51-code" aria-hidden="true">{offline?'OFFLINE':'404'}</div>
           <h1 id="system-status-title">{offline ? 'Your browser reports no connection.' : 'This page is unavailable.'}</h1>
           <p role="status" className="system-status-description">{offline
-            ? 'You appear to be offline. Reconnect and retry; the browser connection indicator cannot verify whether this address exists.'
+            ? 'Reconnect to retry this address. This page will stay open while you are offline.'
             : 'The address may be incorrect, private, or no longer accessible. For privacy, we do not confirm whether a private record exists.'}</p>
           <div className="system-status-actions">
             <a href="/" className="system-status-primary">Return to home</a>
-            <button type="button" className="system-status-secondary" onClick={() => window.location.reload()}>
+            <button type="button" className="system-status-secondary" aria-disabled={offline}
+              onClick={() => {if (navigator.onLine) window.location.reload();}}>
               Retry this address
             </button>
           </div>
-          <p className="sys51-disclosure">Private and unpublished portfolios do not disclose their existence.
-            If you own this content, sign in to review its status.</p>
+          {!offline && <p className="sys51-disclosure">
+            Looking for your own work? <a href="/signin">Sign in to review your workspace</a>.
+          </p>}
         </div>
         <div className="sys51-art" aria-hidden="true">
           <span className="sys51-art-label">NO CONTENT DISCLOSED</span>
