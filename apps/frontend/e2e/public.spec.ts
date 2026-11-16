@@ -179,6 +179,8 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
   await expect(page.getByRole('heading', { name: 'This page is unavailable.' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('do not confirm whether a private record exists');
   await expect(page.locator('.sys51-code')).toHaveText('404');
+  await expect(page).toHaveTitle('Page unavailable · Kadmeion');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content','noindex, nofollow, noarchive');
   await expect(page.locator('.sys51-art')).toBeVisible();
   await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
   await page.setViewportSize({width:390,height:844});
@@ -193,11 +195,14 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
     window.dispatchEvent(new Event('offline'));
   });
   await expect(page.getByRole('heading', {name: 'Your browser reports no connection.'})).toBeVisible();
+  await expect(page).toHaveTitle('Offline · Kadmeion');
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'onLine', {configurable: true, get: () => true});
     window.dispatchEvent(new Event('online'));
   });
   await expect(page.getByRole('heading', {name: 'This page is unavailable.'})).toBeVisible();
+  await expect(page).toHaveTitle('Page unavailable · Kadmeion');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content','noindex, nofollow, noarchive');
   await page.getByRole('link', {name: 'Return to home'}).click();
   await expect(page).toHaveURL('/');
 });

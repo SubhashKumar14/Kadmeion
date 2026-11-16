@@ -90,6 +90,23 @@ function UnavailableRoute() {
       window.removeEventListener('offline', update);
     };
   }, []);
+  useEffect(() => {
+    // A SPA fallback is not an authoritative HTTP 404; keep it nonindexable
+    // and give users an accurate, state-specific page title.
+    const previousTitle=document.title;
+    document.title=offline ? 'Offline · Kadmeion' : 'Page unavailable · Kadmeion';
+    const existing=document.querySelector<HTMLMetaElement>('meta[name="robots"]');
+    const tag=existing??document.createElement('meta');
+    const previous=tag.getAttribute('content');
+    if(!existing){tag.name='robots';document.head.append(tag);}
+    tag.setAttribute('content','noindex, nofollow, noarchive');
+    return () => {
+      document.title=previousTitle;
+      if(!existing)tag.remove();
+      else if(previous===null)tag.removeAttribute('content');
+      else tag.setAttribute('content',previous);
+    };
+  }, [offline]);
   return <main id="main" className="system-status-shell system-status-editorial-shell">
     <section className="system-status system-status-editorial"
       aria-labelledby="system-status-title" data-state={offline ? 'offline' : 'unavailable'}>
