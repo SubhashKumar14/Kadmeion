@@ -338,6 +338,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
   const [sourceDirty,setSourceDirty]=useState(false);
+  const [sourceReset,setSourceReset]=useState(0);
   const editorPanels=['Content','Components','My Components','Theme','Metadata','Assets','Source','History'] as const;
 
   useEffect(() => {
@@ -377,17 +378,27 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     }
   }
 
-  function restore(snapshot: PortfolioSnapshot) {
-    if (!head || !allowed || saving) return;
+  function restore(snapshot: PortfolioSnapshot): boolean {
+    if (!head || !allowed || saving) return false;
+    if (pendingFields || sourceDirty) {
+      setError('Apply or discard unapplied content and source buffers before restoring a saved checkpoint.');
+      return false;
+    }
     try {
       const next = restoreHistoricalSnapshot(head, snapshot, crypto.randomUUID());
       setHead(next);
       setSlot('');
       setOperation(crypto.randomUUID());
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
+      // A formerly clean source explorer must not carry an old snapshot's
+      // buffer into the newly restored revision.
+      setSourceReset(value => value + 1);
+      setSourceDirty(false);
       setNotice('Revision restored into the working draft. Save to keep it.');
+      return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not restore the revision.');
+      return false;
     }
   }
 
@@ -706,14 +717,14 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       </aside>
     </div>{openedHistory&&record&&<div hidden={tool!=='History'}>
       <RevisionWorkspace port={port} id={id} revision={record.revision}
-        working={head.snapshot} title={record.title} dirty={!!operation}
-        onRestore={restore} back={()=>setTool('Content')}/>
+        working={head.snapshot} title={record.title} dirty={!!operation||pendingFields||sourceDirty}
+        buffered={pendingFields||sourceDirty} onRestore={restore} back={()=>setTool('Content')}/>
     </div>}
     {openedAssets&&<div hidden={tool!=='Assets'}>
       <AssetList port={port} back={()=>setTool('Content')}/>
     </div>}
     {openedSource&&<div hidden={tool!=='Source'}>
-      <SourceInspector key={id+':'+attempt} head={head} slot={slot} apply={apply}
+      <SourceInspector key={id+':'+attempt+':'+sourceReset} head={head} slot={slot} apply={apply}
         onBufferDirtyChange={setSourceDirty} back={()=>setTool('Content')}/>
     </div>}</>)}
   </section></>;
