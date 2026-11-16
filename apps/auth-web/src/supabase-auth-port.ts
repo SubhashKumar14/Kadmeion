@@ -4,7 +4,8 @@ import type { PortfolioPresetId } from '../../../packages/editor-core/src/manage
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { FrozenVisibilityIntent, PrivateFrozenRequest } from '../../../packages/contracts/src/private-release-service.ts';
-import type { PrivatePointerSnapshot } from '../../../packages/contracts/src/private-release-visibility-service.ts';
+import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
+import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
@@ -648,6 +649,49 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const result = await service.read(id);
       if (!this.isCurrentSession(session)) throw new Error('Account changed while loading release status.');
       return result;
+    });
+  }
+
+
+  /** Reviewer credentials are returned by the provider once. Callers must never
+   * save, log or expose rawToken while hosted review delivery is unverified. */
+  async issueOwnerReviewerGrant(requestId:string,operationId:string,validMinutes:number):
+    Promise<AuthOutcome<PrivateReviewerGrant>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabasePrivateReviewerService} = await import('../../../packages/contracts/src/private-reviewer-service.ts');
+      const service = new SupabasePrivateReviewerService(this.origin,this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null,this.fetcher);
+      const receipt = await service.issue(requestId,operationId,validMinutes);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while registering a private reviewer.');
+      return receipt;
+    });
+  }
+
+  async revokeOwnerReviewerGrant(grantId:string):Promise<AuthOutcome<PrivateReviewerRevocation>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabasePrivateReviewerService} = await import('../../../packages/contracts/src/private-reviewer-service.ts');
+      const service = new SupabasePrivateReviewerService(this.origin,this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null,this.fetcher);
+      const receipt = await service.revoke(grantId);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while revoking reviewer access.');
+      return receipt;
+    });
+  }
+
+  /** Blocks only the owner-private candidate pointer, not a live CDN artifact.
+   * Never call this an externally verified unpublish operation. */
+  async blockOwnerReleaseCandidate(id:string,operationId:string):
+    Promise<AuthOutcome<PrivatePointerReceipt>> {
+    return this.outcome(async () => {
+      const {session} = await this.ownerSession();
+      const {SupabasePrivateReleasePointerService} = await import('../../../packages/contracts/src/private-release-visibility-service.ts');
+      const service = new SupabasePrivateReleasePointerService(this.origin,this.publishableKey,
+        async () => this.isCurrentSession(session) ? session.access_token : null,this.fetcher);
+      const receipt = await service.block(id,operationId);
+      if (!this.isCurrentSession(session)) throw new Error('Account changed while blocking the private candidate.');
+      return receipt;
     });
   }
 
