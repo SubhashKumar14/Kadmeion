@@ -74,9 +74,13 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       const created=saved.data;
+      // The first page is not the whole library. Keep an optimistic item only
+      // when we already have a valid page; refresh from the owner-scoped source
+      // so a failed initial read never becomes a misleading one-item library.
       setState(old=>old.status==='ready'
         ? {status:'ready',items:[created,...old.items.filter(item=>item.id!==created.id)].slice(0,100)}
-        : {status:'ready',items:[created]});
+        : {status:'loading'});
+      setReload(value=>value+1);
       modal.current?.close();
       setDraft(freshDraft());setCustomSlug(false);
       setNotice('Saved privately in your account. This did not publish or connect a repository.');
@@ -111,8 +115,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
      state.status==='error'?<div role="alert" className="ws-project-state">
        <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>{setState({status:'loading'});setReload(value=>value+1);}}>Retry securely</button></div>:
     <>
-      <p className="ws-project-count">{search ? filtered.length + ' of ' : ''}{state.items.length} private {state.items.length === 1 ? 'project' : 'projects'}
-        {state.items.length===100?' (latest 100 only; older projects are not shown)':''}</p>
+      <p className="ws-project-count" role="status">
+        Showing {search ? filtered.length + ' matching of ' : ''}{state.items.length} most recently updated private {state.items.length===1?'project':'projects'}.
+        {state.items.length===100 && ' This view is limited to the first 100; older projects may exist. Search and sorting only cover loaded records.'}
+      </p>
       {filtered.length===0?<div className="ws-project-empty-layout">
         <div className="ws-project-empty">
           <div className="ws-area-icon"><Icon name="folder" size={22}/></div>
@@ -172,10 +178,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
         <label>Summary (optional)<textarea rows={3} maxLength={360} value={draft.summary}
           onChange={event=>setDraft(old=>({...old,summary:event.target.value}))}/></label>
-        <label>Repository URL (optional)<input type="url" maxLength={2048}
+        <label>Repository URL (optional)<input type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/repository" value={draft.repositoryUrl||''}
           onChange={event=>setDraft(old=>({...old,repositoryUrl:event.target.value||null}))}/></label>
-        <label>Live website URL (optional)<input type="url" maxLength={2048}
+        <label>Live website URL (optional)<input type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
           onChange={event=>setDraft(old=>({...old,liveUrl:event.target.value||null}))}/></label>
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
@@ -301,10 +307,10 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           </label>
           <div className="ws-project-detail-links">
           <label>Repository URL (optional)
-            <input type="url" maxLength={2048} value={detail.draft.repositoryUrl ?? ''} onChange={e => edit('repositoryUrl', e.target.value)}/>
+            <input type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048} value={detail.draft.repositoryUrl ?? ''} onChange={e => edit('repositoryUrl', e.target.value)}/>
           </label>
           <label>Live website URL (optional)
-            <input type="url" maxLength={2048} value={detail.draft.liveUrl ?? ''} onChange={e => edit('liveUrl', e.target.value)}/>
+            <input type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048} value={detail.draft.liveUrl ?? ''} onChange={e => edit('liveUrl', e.target.value)}/>
           </label>
           </div>
         </fieldset>
