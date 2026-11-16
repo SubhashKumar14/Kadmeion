@@ -1,0 +1,85 @@
+import {randomUUID} from 'node:crypto';
+import {mkdir} from 'node:fs/promises';
+import {test, expect} from '@playwright/test';
+
+const localApi='http://127.0.0.1:54321';
+
+/** Disposable CI owner only. No hosted user or Supabase project may be mutated. */
+async function createLocalOwner(){
+  if(process.env.KADMEION_LOCAL_BROWSER!=='1'||
+     process.env.VITE_SUPABASE_URL!==localApi||
+     !process.env.KADMEION_TEST_SERVICE_ROLE_KEY)
+    throw new Error('F5 owner acceptance requires the isolated local Supabase fixture.');
+  const password='Fixture!'+randomUUID();
+  const email='f5-'+randomUUID()+'@testing.invalid';
+  const key=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  const res=await fetch(localApi+'/auth/v1/admin/users',{
+    method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),
+    headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},
+    body:JSON.stringify({email,password,email_confirm:true,
+      user_metadata:{display_name:'F5 Private Fixture'}})
+  });
+  if(!res.ok)throw new Error('F5 local owner fixture failed: HTTP '+res.status);
+  return {email,password};
+}
+
+test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Needs ephemeral local Supabase and owner JWT.');
+  test.setTimeout(130_000);
+  const owner=await createLocalOwner();
+  await page.goto('/signin');
+  await page.getByRole('textbox',{name:'Email address'}).fill(owner.email);
+  await page.locator('#signin-password').fill(owner.password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Session verified'})).toBeVisible();
+
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+
+  const screens=[
+    ['/app/settings','Settings','41_SETTINGS'],
+    ['/app/settings/privacy','Privacy & sharing','42_PRIVACY'],
+    ['/app/notifications','Notifications','43_NOTIFICATIONS'],
+    ['/app/settings/security','Account security','44_SECURITY'],
+    ['/app/trash','Trash','45_TRASH'],
+    ['/app/export','Export center','46_EXPORT'],
+    ['/app/settings/account/delete','Account exit','47_ACCOUNT_EXIT']
+  ] as const;
+  const capture=process.env.KADMEION_BROWSER_CAPTURE_DIR;
+
+  for(const width of [1600,390,320]){
+    await page.setViewportSize({width,height:900});
+    for(const [route,heading,screenshot] of screens){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+      await expect(page.locator('.ws-settings-body')).toBeVisible();
+      const dimensions=await page.evaluate(()=>({
+        visible:document.documentElement.clientWidth,
+        scroll:document.documentElement.scrollWidth
+      }));
+      expect(dimensions.scroll,route+' overflow at '+width+'px')
+        .toBeLessThanOrEqual(dimensions.visible+2);
+      if(capture&&width!==320){
+        await mkdir(capture,{recursive:true});
+        await page.screenshot({path:capture+'/'+screenshot+'_DARK_'+width+'.png',
+          animations:'disabled'});
+      }
+    }
+  }
+
+  await page.setViewportSize({width:1366,height:900});
+  await page.goto('/app/settings');
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  await page.goto('/app/settings/security');
+  await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+  await expect(page.getByLabel('Current password')).toBeVisible();
+  await expect(page.getByLabel('New password',{exact:true})).toBeVisible();
+  await page.goto('/app/settings/privacy');
+  await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeDisabled();
+  await page.goto('/app/settings/account/delete');
+  await expect(page.getByRole('button',{name:'Review deletion prerequisites'})).toBeVisible();
+  await expect(page.getByRole('button',{name:/Delete account/i})).toHaveCount(0);
+});

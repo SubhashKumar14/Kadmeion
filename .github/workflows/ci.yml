@@ -126,7 +126,7 @@ jobs:
           test -n "$KADMEION_TEST_SERVICE_ROLE_KEY"
           export VITE_SUPABASE_PUBLISHABLE_KEY KADMEION_TEST_SERVICE_ROLE_KEY
           unset credentials
-          npm run test:e2e --prefix apps/frontend -- owner.spec.ts
+          npm run test:e2e --prefix apps/frontend -- owner.spec.ts settings-owner.spec.ts
         env:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           KADMEION_LOCAL_BROWSER: '1'
