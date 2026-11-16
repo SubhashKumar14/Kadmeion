@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {createServer} from 'node:http';
+import {once} from 'node:events';
+import {verifyReviewerHostWithdrawal} from '../../packages/storage-adapters/src/host-revocation-probe.ts';
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
 
 const grant='30000000-0000-4000-8000-000000000005';
@@ -212,4 +215,35 @@ test('reviewer PNG requests recheck the grant on both GET and HEAD',async()=>{
     assert.equal(corrupt.res.statusCode,503);
     assert.equal(corrupt.res.body,method==='HEAD'?'':'Temporarily unavailable');
   }
+});
+
+
+test('real loopback HTTP through reviewer handler verifies grant revocation on both URL forms',
+  {timeout:15000},async()=>{
+  let revoked=false;
+  let privateReads=0;
+  const server=createServer((req,res)=>{
+    void handleReviewerRequest(req,res,{
+      env,
+      http:async()=>{
+        privateReads++;
+        return Response.json(revoked?null:receipt);
+      }
+    }).catch(()=>{res.statusCode=500;res.end('Unavailable');});
+  });
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try{
+    const port=(server.address() as {port:number}).port;
+    const verified=await verifyReviewerHostWithdrawal({
+      origin:'http://127.0.0.1:'+port,
+      allowLocal:true,grantId:grant,rawToken:token,expectedServedHtmlSha256:digest
+    },async()=>{revoked=true;});
+    assert.equal(verified.status,'REVIEWER_REVOKED_ON_SCOPED_PATHS');
+    assert.equal(verified.observedHttpRequests,8);
+    assert.equal(verified.directPathsChecked,1);
+    assert.equal(verified.liveMediaVerified,0);
+    assert.equal(privateReads,8,'every external GET and HEAD must recheck the grant');
+    assert.ok(!JSON.stringify(verified).includes(token));
+  }finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });
