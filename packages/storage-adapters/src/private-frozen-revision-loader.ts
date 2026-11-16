@@ -120,7 +120,10 @@ export class SupabasePrivateFrozenRevisionLoader {
           Accept:'application/json','Content-Type':'application/json',
           'Cache-Control':'no-store'},
         body:JSON.stringify({p_request_id:requestId}),
-        cache:'no-store',credentials:'omit',redirect:'error'
+        cache:'no-store',credentials:'omit',redirect:'error',
+        // The snapshot RPC may return up to 32 MiB. Bound the whole HTTP
+        // exchange, including a stalled response stream, not just its bytes.
+        signal:AbortSignal.timeout(10_000)
       });
     }catch{
       throw new FrozenLoadError('PROVIDER_UNAVAILABLE','Private database is unreachable.');
