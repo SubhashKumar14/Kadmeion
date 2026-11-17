@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -5,15 +6,15 @@ const entities = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const textWithin = (value, max) => value === undefined ||
   (typeof value === 'string' && value.length <= max &&
-   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
+   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value));
 function validProjection(row, handle, slug) {
   if (!isRecord(row) || row.handle !== handle) return false;
   const keys = slug
     ? ['handle','slug','title','summary','description','repositoryUrl','liveUrl','sections']
     : ['handle','displayName','headline','bio'];
   if (Object.keys(row).some(key => !keys.includes(key))) return false;
-  if (!slug) return textWithin(row.displayName,160) &&
-    textWithin(row.headline,320) && textWithin(row.bio,12000);
+  if (!slug) return ['displayName','headline','bio'].some(key => Object.hasOwn(row,key)) &&
+    textWithin(row.displayName,160) && textWithin(row.headline,320) && textWithin(row.bio,12000);
   if (row.slug !== slug || typeof row.title !== 'string' ||
       !row.title.trim() || !textWithin(row.title,200) ||
       !textWithin(row.summary,1000) || !textWithin(row.description,12000) ||
@@ -21,8 +22,8 @@ function validProjection(row, handle, slug) {
       !Array.isArray(row.sections) || row.sections.length > 24) return false;
   return row.sections.every(section => isRecord(section) &&
     Object.keys(section).every(key => key === 'title' || key === 'body') &&
-    typeof section.title === 'string' && section.title.length <= 200 &&
-    typeof section.body === 'string' && section.body.length <= 12000);
+    typeof section.title === 'string' && textWithin(section.title,200) &&
+    typeof section.body === 'string' && textWithin(section.body,12000));
 }
 
 function escape(value) {
@@ -30,6 +31,7 @@ function escape(value) {
 }
 
 function link(label, value) {
+  if (typeof value !== 'string' || /[\s\\\u0000-\u001f\u007f]/u.test(value)) return '';
   try {
     const url = new URL(value);
     if (url.protocol === 'https:' && !url.username && !url.password) {
@@ -56,12 +58,18 @@ function render(projection, slug) {
   // SEO text is taken only from already-consented public projection fields.
   // Do not synthesize an author biography, claim verification or expose raw JSON.
   const visibleDescription = slug ? projection.summary : (projection.headline || projection.bio);
-  const description = typeof visibleDescription === 'string' && visibleDescription.trim()
-    ? '<meta name="description" content="' +
-      escape(visibleDescription.trim().slice(0, 300)) + '">' : '';
+  const summary = typeof visibleDescription === 'string' && visibleDescription.trim()
+    ? escape(visibleDescription.trim().slice(0, 300)) : '';
+  const description = summary ? '<meta name="description" content="' + summary + '">' : '';
+  // Text-only share metadata from this exact authorized projection. Do not
+  // infer an absolute canonical origin from request headers, or claim a public
+  // image, delivery receipt, verification or discoverability not in the RPC.
+  const shareMetadata = '<meta property="og:type" content="website">' +
+    '<meta property="og:title" content="' + title + '">' +
+    (summary ? '<meta property="og:description" content="' + summary + '">' : '');
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title +
-    '</title>' + description + '</head><body><main><h1>' + title + '</h1>' +
+    '</title><meta name="robots" content="noindex,nofollow,noarchive">' + description + shareMetadata + '</head><body><main><h1>' + title + '</h1>' +
     content + '</main></body></html>';
 }
 
@@ -73,7 +81,9 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     res.setHeader('CDN-Cache-Control', 'no-store');
     res.setHeader('Surrogate-Control', 'no-store');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-Robots-Tag', status === 200 ? 'index, follow' : 'noindex');
+    // The current projection RPC only returns explicitly selected DB snapshot
+    // fields. It does not attest independently verified canonical delivery.
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
@@ -87,12 +97,20 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   if (env.KADMEION_PUBLIC_IDENTITY_ENABLED !== 'true') return reply(404, 'Not found');
   let target;
   let supabase;
+  // Keep this B-based patch standalone. Align the S9 shared
+  // parseDeliveryTarget helper when the two owned deltas are composed.
+  const raw = req.url;
+  if (typeof raw !== 'string' || raw.length > 2048 || !raw.startsWith('/') ||
+      raw.startsWith('//') || /[\x00-\x20\x7f\\#]/.test(raw)) return reply(404, 'Not found');
   try {
-    target = new URL(req.url, 'https://kadmeion.invalid');
-    supabase = new URL(env.KADMEION_SUPABASE_URL);
+    target = new URL(raw, 'https://kadmeion.invalid');
+    if (target.origin !== 'https://kadmeion.invalid' || target.pathname !== raw.split('?')[0])
+      return reply(404, 'Not found');
   } catch {
     return reply(404, 'Not found');
   }
+  try { supabase = new URL(env.KADMEION_SUPABASE_URL); }
+  catch { return reply(503, 'Temporarily unavailable'); }
   const path = target.pathname.match(/^\/u\/([^/]+)(?:\/projects\/([^/]+))?$/);
   const handle = path?.[1] ?? target.searchParams.get('handle');
   const slug = path?.[2] ?? (path ? null : target.searchParams.get('slug'));
@@ -126,13 +144,19 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
       signal: AbortSignal.timeout(5000)
     });
     if (!upstream.ok) {
-      await upstream.body?.cancel();
+      // Cancellation of one branch of a tee can remain pending. Never let
+      // cleanup delay a fail-closed public response or leak upstream details.
+      void upstream.body?.cancel().catch(() => {});
       return reply(503, 'Temporarily unavailable');
     }
     const row = await readBoundedRpcJson(upstream);
     if (row === null) return reply(404, 'Not found');
     if (!validProjection(row, handle, slug)) return reply(503, 'Temporarily unavailable');
-    return reply(200, render(row, slug));
+    const html = render(row, slug);
+    // Evidence input only: this digest is of exact served bytes, not a
+    // verification receipt or a promise of hosted availability.
+    res.setHeader('X-Kadmeion-Served-SHA256', createHash('sha256').update(html,'utf8').digest('hex'));
+    return reply(200, html);
   } catch {
     return reply(503, 'Temporarily unavailable');
   }

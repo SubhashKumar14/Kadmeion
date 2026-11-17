@@ -6,6 +6,22 @@ const app = paths.filter((path) => path !== 'README.md' && !path.startsWith('pro
   !path.startsWith('node_modules/') && !path.startsWith('dist/') &&
   !path.startsWith('coverage/'));
 const planned = 200;
+const formerCeiling = 280; // DECISION-B16-002: historical reporting only, not a failure threshold.
+// Fail closed if the pinned historical baseline is unavailable.
+const baselineRef = '7d03713fbbef4f02215d38b28932ad3952adefad';
+const baselinePaths = new Set(execFileSync('git', ['ls-tree', '-r', '--name-only', baselineRef], { encoding: 'utf8' }).trim().split('\n').filter(Boolean));
+const authorizedAdditionPaths = [
+  // RESERVE-B16-S01-001; WF-009/013/041; S1; exact authorized migration path.
+  'supabase/migrations/20261117083520_owner_private_project_thumbnails.sql',
+];
+const reservedAdditions = new Set(authorizedAdditionPaths);
+// Exact reservations must not collide with the grandfathered baseline or each other.
+const collisions = authorizedAdditionPaths.filter((path, index) => baselinePaths.has(path) || authorizedAdditionPaths.indexOf(path) !== index);
+if (collisions.length) {
+  console.error('Colliding counted-path authorizations: ' + collisions.join(', '));
+  process.exitCode = 1;
+}
+// RESERVE-B16-S01-002 is conditional, not allowlisted until its gates are recorded.
 // Independently reviewed security migrations, owner-notification files and
 // a dependency-free server-only PNG sanitization source/test pair remain
 // separate so privacy safeguards are not hidden inside unrelated modules.
@@ -115,14 +131,17 @@ const justifiedExtra = [
   'apps/frontend/src/growth.tsx',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
-const extras = justifiedExtra.filter(path => app.includes(path));
+const extras = [...justifiedExtra, ...reservedAdditions].filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
 console.log(`Kadmeion authored application/config/test files: ${app.length} / originally planned ${planned}`);
 if (app.length > planned) {
-  console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified security/privacy/frontend files require owner review.`);
+  console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified historical/reserved files; former ceiling ${formerCeiling} (reporting only).`);
 }
-if (nonexceptionCount > planned) {
-  console.error('Nonexception source/config/test files exceed the original planned count; review modularity.');
+console.log(`Nonexception files: ${nonexceptionCount}; separately justified/reserved: ${extras.length}; variance vs former 280: ${app.length - formerCeiling}. Numerical thresholds are informational under DECISION-B16-002.`);
+
+
+const unreserved = app.filter(path => !baselinePaths.has(path) && !reservedAdditions.has(path));
+if (unreserved.length) {
+  console.error('Unreserved counted additions: ' + unreserved.join(', '));
   process.exitCode = 1;
 }
-

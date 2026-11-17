@@ -33,12 +33,14 @@ export type EditorIntent =
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
   | { kind:'CLEAR_SLOT'; slotKey:string }
-  | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
+  | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
+  /** Draft metadata placement only. Never grants media-byte attestation. */
+  | { kind:'PLACE_PRIVATE_IMAGE'; slotKey:string; assetId:string; altText:string }
   | { kind:'CUSTOMIZE_COMPONENT'; slotKey:string; copiedSource:string }
-  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean }
+  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'EDIT_OWNED_SOURCE'; slotKey:string; source:string }
-  | { kind:'RESTORE_STASH'; slotKey:string }
+  | { kind:'RESTORE_STASH'; slotKey:string; stashIndex?:number }
   | { kind:'UNDO' }
   | { kind:'REDO' };
 
@@ -56,6 +58,57 @@ const OP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a
 function assertSlotKey(key: string) {
   if (typeof key!=='string' || !SLOT_KEY.test(key) || RESERVED_KEYS.has(key))
     throw new ContractError('VALIDATION', 'Invalid or reserved slot key.');
+}
+
+/** undefined = older layoutless snapshot; null = declared layout but no
+ * unique valid target. Never infer compatibility from an arbitrary suffix. */
+export function declaredLayoutSlotKind(snapshot:PortfolioSnapshot,key:string):string|null|undefined{
+  try{
+    const page=JSON.parse(snapshot.files['pages/home.page.json']??'null') as {sections?:unknown}|null;
+    if(!page||!Object.hasOwn(page,'sections'))return undefined;
+    if(!Array.isArray(page.sections)||!Object.hasOwn(snapshot.slots,key))return null;
+    const matches:string[]=[];
+    for(const raw of page.sections){
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))continue;
+      const section=raw as {id?:unknown;layout?:unknown};
+      if(typeof section.id!=='string'||typeof section.layout!=='string')continue;
+      for(const name of portfolioLayout(section.layout)?.slots??[]){
+        const kind=name.toLowerCase();
+        if(section.id+'-'+kind===key)matches.push(kind);
+      }
+    }
+    return matches.length===1?matches[0]!:null;
+  }catch{return null;}
+}
+const libraryKinds:Readonly<Record<string,readonly string[]>>={
+  'title-stacked@1':['title'],'body-copy@1':['text','text1','text2','note'],
+  'external-link@1':['cta','cta1','cta2','btn1','btn2','links'],
+  'project-card@1':['project','card'],'skills-list@1':['items','entries'],
+  'experience-list@1':['entries'],'technology-tag@1':['badge'],'author-metric@1':['meta']
+};
+export function canAssignCompatibleComponent(snapshot:PortfolioSnapshot,key:string,pin:string):boolean{
+  const kind=declaredLayoutSlotKind(snapshot,key);
+  return typeof kind==='string'&&Object.hasOwn(libraryKinds,pin)&&libraryKinds[pin]!.includes(kind);
+}
+/** A real declared media slot, not merely a key ending in "-image". */
+export function canPlacePrivateImage(snapshot:PortfolioSnapshot,key:string):boolean {
+  const slot=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
+  if(!slot||(slot.state!=='EMPTY'&&(slot.state!=='S0'||slot.componentId!=='image@1')))return false;
+  const kind=declaredLayoutSlotKind(snapshot,key);
+  return typeof kind==='string'&&['avatar','image','imagea','imageb','media','thumbs'].includes(kind);
+}
+
+/** Same pinned, documented text fields only; unknown fields stay in full stash. */
+export function matchingReplacementContent(slot:SlotAssignment,pin:string):Record<string,string>{
+  const known:Readonly<Record<string,readonly string[]>>={
+    'title-stacked@1':['title','subtitle'],'body-copy@1':['text'],
+    'external-link@1':['label','url'],'project-card@1':['title','summary','url'],
+    'skills-list@1':['items'],'experience-list@1':['items'],
+    'technology-tag@1':['text'],'author-metric@1':['label','value']
+  };
+  if(slot.componentId!==pin||!Object.hasOwn(known,pin))return {};
+  return Object.fromEntries((known[pin]??[]).filter(field=>Object.hasOwn(slot.content,field))
+    .map(field=>[field,slot.content[field]!]));
 }
 
 function isOwned(slot: SlotAssignment): boolean {
@@ -169,12 +222,13 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
     CLEAR_SLOT:['kind','slotKey'],
-    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
+    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement','preserveMatchingContent'],
     UPDATE_CONTENT:['kind','slotKey','content'],
+    PLACE_PRIVATE_IMAGE:['kind','slotKey','assetId','altText'],
     CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
-    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement'],
+    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement','preserveMatchingContent'],
     EDIT_OWNED_SOURCE:['kind','slotKey','source'],
-    RESTORE_STASH:['kind','slotKey'],
+    RESTORE_STASH:['kind','slotKey','stashIndex'],
     UNDO:['kind'],
     REDO:['kind']
   };
@@ -182,7 +236,8 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
   if(!permitted||
      Object.keys(intent).some(k=>!permitted.includes(k))||
      ('confirmOwnedReplacement' in intent &&
-       typeof intent.confirmOwnedReplacement!=='boolean'))
+       typeof intent.confirmOwnedReplacement!=='boolean')||
+     ('preserveMatchingContent' in intent&&typeof intent.preserveMatchingContent!=='boolean'))
     throw new ContractError('VALIDATION','Unknown editor command kind or properties.');
   // Canonicalize only JSON commands, never source strings or managed file
   // bytes. Normalized UUID case is part of the idempotency key.
@@ -296,17 +351,40 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         break;
       case 'ASSIGN_COMPONENT':
         if (!COMPONENT_PIN.test(intent.componentId)) throw new ContractError('VALIDATION', 'Unpinned component.');
+        if(declaredLayoutSlotKind(next,intent.slotKey)!==undefined&&!canAssignCompatibleComponent(next,intent.slotKey,intent.componentId))
+          throw new ContractError('VALIDATION','Component is incompatible with the declared layout slot. Use private image placement for media.');
         if (isOwned(slot) && !intent.confirmOwnedReplacement)
           throw new ContractError('VALIDATION', 'Owned source needs explicit replace-and-stash confirmation.');
         if (slot.state!=='EMPTY') stash.push(structuredClone(slot));
         next.stashes[intent.slotKey]=stash;
-        next.slots[intent.slotKey]={state:'S0',componentId:intent.componentId,content:{}};
+        next.slots[intent.slotKey]={state:'S0',componentId:intent.componentId,
+          content:intent.preserveMatchingContent?matchingReplacementContent(slot,intent.componentId):{}};
         break;
       case 'UPDATE_CONTENT':
         if (slot.state==='EMPTY') throw new ContractError('VALIDATION', 'Assign a component first.');
         validateContent(intent.content);
         next.slots[intent.slotKey]={...slot,content:{...slot.content,...intent.content}};
         break;
+      case 'PLACE_PRIVATE_IMAGE': {
+        if(!canPlacePrivateImage(next,intent.slotKey))
+          throw new ContractError('VALIDATION','Choose an empty or pristine image-compatible layout slot. Owned source needs protected replacement.');
+        if(typeof intent.assetId!=='string'||!OP_ID.test(intent.assetId)||
+           typeof intent.altText!=='string'||!intent.altText.trim()||intent.altText.length>300||
+           /[\x00-\x1f\x7f]/.test(intent.altText))
+          throw new ContractError('VALIDATION','Choose an owner-verified asset and descriptive alt text (1–300 characters).');
+        const assetId=intent.assetId.toLowerCase(),altText=intent.altText.trim();
+        const content:Record<string,string>={asset_id:assetId,alt_text:altText};
+        // Preserve an existing pin only for the exact same asset; new metadata
+        // must not fabricate or inherit a digest belonging to different bytes.
+        if(slot.state==='S0'&&slot.content.asset_id===assetId&&
+           /^[0-9a-f]{64}$/.test(slot.content.source_sha256??''))
+          content.source_sha256=slot.content.source_sha256!;
+        if(slot.state!=='EMPTY'){
+          stash.push(structuredClone(slot));next.stashes[intent.slotKey]=stash;
+        }
+        next.slots[intent.slotKey]={state:'S0',componentId:'image@1',content};
+        break;
+      }
       case 'CUSTOMIZE_COMPONENT': {
         if (slot.state!=='S0' || !slot.componentId)
           throw new ContractError('VALIDATION', 'Only a trusted library component can be customized.');
@@ -335,7 +413,9 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         if (!Object.hasOwn(ownerSavedComponents,id))
           throw new ContractError('VALIDATION','Saved component must be fetched and validated.');
         const saved=ownerSavedComponents[id];
-        const kind=intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1);
+        const declaredKind=declaredLayoutSlotKind(next,intent.slotKey);
+        if(declaredKind===null)throw new ContractError('VALIDATION','Saved component needs a unique declared target.');
+        const kind=declaredKind===undefined?intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1):declaredKind;
         if (!saved||saved.id!==id||typeof saved.base_component_pin!=='string'||
             !COMPONENT_PIN.test(saved.base_component_pin)||
             !Array.isArray(saved.compatible_slot_kinds)||
@@ -370,7 +450,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
           saved.source_code!==saved.pristine_source?saved.pristine_source:fallback;
         next.slots[intent.slotKey]={
           state:pristine?'S1':'S2',componentId:saved.base_component_pin,
-          content:{},sourcePath:path,originalSource:original
+          content:intent.preserveMatchingContent?matchingReplacementContent(slot,saved.base_component_pin):{},sourcePath:path,originalSource:original
         };
         break;
       }
@@ -382,13 +462,16 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         next.files[slot.sourcePath]=intent.source;
         next.slots[intent.slotKey]={...slot,state:intent.source===slot.originalSource?'S1':'S2'};
         break;
-      case 'RESTORE_STASH':
-        const saved=stash.at(-1);
-        if (slot.state!=='EMPTY' || !saved)
-          throw new ContractError('VALIDATION', 'Restore requires an empty slot and an available stash.');
-        next.slots[intent.slotKey]=saved;
-        next.stashes[intent.slotKey]=stash.slice(0,-1);
+      case 'RESTORE_STASH': {
+        const index=intent.stashIndex===undefined?stash.length-1:intent.stashIndex;
+        if(!Number.isSafeInteger(index)||index<0||index>=stash.length||slot.state!=='EMPTY')
+          throw new ContractError('VALIDATION','Restore requires an empty slot and an available stash.');
+        const saved=stash[index];
+        if(!saved||saved.state==='EMPTY')throw new ContractError('VALIDATION','Stashed assignment unavailable.');
+        next.slots[intent.slotKey]=structuredClone(saved);
+        next.stashes[intent.slotKey]=stash.filter((_item,i)=>i!==index);
         break;
+      }
       default:
         throw new ContractError('VALIDATION','Unsupported editor command.');
     }

@@ -1,12 +1,60 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
 import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
+
+ // Allowlisted diagnostics only: never serialize request URLs, query strings,
+ // browser console, headers, error text, response bodies or owner content.
+test.beforeEach(async ({page}, info) => {
+  const events: Array<{pathname:string;status:number|null;category:string}> = [];
+  const paths = new Set(['/auth/v1/user','/auth/v1/token','/rest/v1/projects',
+    '/rest/v1/profiles','/rest/v1/portfolios','/rest/v1/rpc/complete_private_account_exit_reauth',
+    '/rest/v1/private_account_erasure_requests','/rest/v1/rpc/read_private_project_thumbnail',
+    '/rest/v1/rpc/set_private_project_thumbnail','/rest/v1/rpc/register_private_project_image']);
+  const pathOf=(raw:string)=>{
+    const u=new URL(raw);
+    return u.origin===origin ? (paths.has(u.pathname)?u.pathname:'/private-api/other') : null;
+  };
+  page.on('response',response=>{
+    const pathname=pathOf(response.url());
+    if(pathname&&response.status()>=400&&events.length<80){
+      const status=response.status();
+      events.push({pathname,status,category:status===401?'AUTH':status===403?'DENIED':
+        status===409?'CONFLICT':status===429?'RATE_LIMIT':status>=500?'UNAVAILABLE':'HTTP_OTHER'});
+    }
+  });
+  page.on('requestfailed',request=>{
+    const pathname=pathOf(request.url());
+    if(pathname&&events.length<80)events.push({pathname,status:null,category:'TRANSPORT'});
+  });
+  // A callback runs at fixture teardown before the page is closed.
+  // Only the predeclared route family is retained, never a dynamic ID.
+  info.annotations.push({type:'sanitized-diagnostics',description:'allowlisted fields only'});
+  // Attach on failure using afterEach below; store only already sanitized data.
+  safeDiagnostics.set(page,events);
+});
+const safeDiagnostics=new WeakMap<Page,Array<{pathname:string;status:number|null;category:string}>>();
+test.afterEach(async ({page},info)=>{
+  if(info.status===info.expectedStatus)return;
+  const p=new URL(page.url()).pathname;
+  const pathname=/^\/app\/(projects|portfolios)\/.+/.test(p)
+    ? (p.startsWith('/app/projects/')?'/app/projects/:id':'/app/portfolios/:id')
+    : /^\/(app(?:\/(?:growth(?:\/(?:activity|devscore|goals))?|settings(?:\/(?:privacy|security|account\/delete))?|projects|portfolios|analytics|integrations|notifications|trash|export))?|signin)$/.test(p)?p:'/other';
+  const gate=await page.locator('.ws-heading').first().isVisible().catch(()=>false)
+    ?'WORKSPACE_VISIBLE':await page.getByRole('button',{name:'Retry verification'}).isVisible().catch(()=>false)
+      ?'LOCKED':'UNKNOWN_OR_CHECKING';
+  const dir='/tmp/kadmeion-owner-captures';
+  await mkdir(dir,{recursive:true});
+  await writeFile(dir+'/'+randomUUID()+'.route-diagnostics.json',JSON.stringify({
+    pathname,gate,events:safeDiagnostics.get(page)??[]
+  }),{encoding:'utf8',mode:0o600});
+});
+
 
 async function localUser(label: string) {
   const serviceKey = process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
@@ -62,11 +110,11 @@ async function signIn(page: Page, user: {email: string; password: string}) {
   const requestResults: string[] = [];
   function onResponse(response: import('@playwright/test').Response) {
     const url = new URL(response.url());
-    if (url.origin === origin) requestResults.push(url.pathname + ' HTTP ' + response.status());
+    if (url.origin === origin) requestResults.push((url.pathname==='/auth/v1/token'?'/auth/v1/token':url.pathname==='/auth/v1/user'?'/auth/v1/user':'/private-api/other') + ' HTTP ' + response.status());
   }
   function onRequestFailed(request: import('@playwright/test').Request) {
     const url = new URL(request.url());
-    if (url.origin === origin) requestResults.push(url.pathname + ' failed: ' + request.failure()?.errorText);
+    if (url.origin === origin) requestResults.push((url.pathname==='/auth/v1/token'?'/auth/v1/token':url.pathname==='/auth/v1/user'?'/auth/v1/user':'/private-api/other') + ' TRANSPORT');
   }
   page.on('response', onResponse);
   page.on('requestfailed', onRequestFailed);
@@ -1575,4 +1623,676 @@ test('S6 S3 candidate paginates 111 owner portfolios with truthful partial searc
   await expect(more).toHaveCount(0);
   await page.getByLabel('Find a portfolio').fill(deepTitle);
   await expect(page.getByRole('link',{name:deepTitle,exact:true})).toBeVisible();
+});
+
+test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, replacement and detach', async ({page,browser},testInfo) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Disposable local Supabase only.');
+  test.setTimeout(150_000);
+  const owner=await localUser('C01 thumbnail owner');
+  const foreign=await localUser('C01 other owner');
+  const title='B16 C01 private fixture';
+  const firstAlt='C01 original synthetic cover', replacementAlt='C01 replacement synthetic cover';
+  const firstBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project'}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill(title);
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  let coverRead:{status:number;code:string|null;revision:number|null}|null=null;
+  page.on('response',async response=>{
+    const u=new URL(response.url());
+    if(u.origin!==origin||u.pathname!=='/rest/v1/rpc/read_private_project_thumbnail')return;
+    const status=response.status();
+    const value:unknown=await response.json().catch(()=>null);
+    const row=value&&typeof value==='object'?value as Record<string,unknown>:null;
+    coverRead={status,code:typeof row?.code==='string'&&/^[A-Z0-9]{5}$/.test(row.code)?row.code:null,
+      revision:typeof row?.revision==='number'&&Number.isSafeInteger(row.revision)?row.revision:null};
+  });
+  await page.getByRole('link',{name:title}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const projectPath=new URL(page.url()).pathname;
+  const cover=page.getByRole('region',{name:'Project thumbnail'});
+  const revision=page.getByRole('complementary',{name:'Saved project preview'}).getByText(/SAVED DRAFT · REVISION \d+/);
+  const readRevision=async()=>Number((await revision.innerText()).match(/\d+$/)?.[0]);
+  const expectImage=async(alt:string,bytes:Buffer,confirmed=true)=>{
+    const image=cover.getByRole('img',{name:alt,exact:true});
+    await expect(image).toBeVisible();
+    await expect.poll(async()=>image.evaluate(async(element,expected)=>{
+      const img=element as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.naturalHeight||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const actual=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&response.headers.get('content-type')==='image/png'&&
+        actual.length===expected.length&&actual.every((byte,i)=>byte===expected[i]);
+    },Array.from(bytes))).toBe(true);
+    await expect(cover.getByText('Saved image description: '+alt,{exact:true})).toBeVisible();
+    if(confirmed)await expect(cover.getByText('Last verified private cover',{exact:true})).toBeVisible();
+  };
+  const choose=async(name:string,bytes:Buffer,alt:string)=>{
+    const fileInput=cover.getByLabel(/Image file/);
+    const altInput=cover.getByLabel('Image alt text');
+    // setInputFiles does not wait for enabled; refresh() deliberately ignores
+    // upload input changes during the initial verified read/owner check.
+    await expect(fileInput).toBeEnabled();
+    await expect(altInput).toBeEnabled();
+    await fileInput.setInputFiles({name,mimeType:'image/png',buffer:bytes});
+    await altInput.fill(alt);
+    await expect(altInput).toHaveValue(alt);
+  };
+  await expect(cover.getByText('Folder cover',{exact:true})).toBeVisible();
+  const attach=cover.getByRole('button',{name:'Upload and attach thumbnail'});
+  try{
+    await choose('first.png',firstBytes,firstAlt);
+    await expect(attach).toBeEnabled(); // Required capability: no absent-API skip.
+  }catch(error){
+    // Failure-only, bounded diagnostic: never save raw response, URL, IDs,
+    // credentials, user fields, file names or unclassified alert strings.
+    const read=coverRead as {status:number;code:string|null;revision:number|null}|null;
+    const saved=await readRevision().catch(()=>NaN);
+    const text=(await cover.getByRole('alert').allTextContents().catch(()=>[])).join(' ');
+    const category=/owner session changed/i.test(text)?'EPOCH_CHANGED':/access was denied/i.test(text)?'DENIED':
+      /could not be verified/i.test(text)?'UNVERIFIED':/private cover read failed/i.test(text)?'READ_FAILED':text?'OTHER':'NONE';
+    const fileInput=cover.getByLabel(/Image file/),altInput=cover.getByLabel('Image alt text');
+    const dir='/tmp/kadmeion-owner-captures';await mkdir(dir,{recursive:true});
+    await writeFile(dir+'/'+randomUUID()+'.route-diagnostics.json',JSON.stringify({
+      pathname:'/app/projects/:id',gate:'C01_INITIAL_COVER',readStatus:read?.status??null,sqlstate:read?.code??null,
+      revisionRelation:read?.revision==null||!Number.isFinite(saved)?'UNKNOWN':read.revision===saved?'MATCH':read.revision<saved?'OLDER':'NEWER',
+      busy:await cover.getByText('Checking or saving the private cover…',{exact:true}).isVisible().catch(()=>false),
+      fileInputEnabled:await fileInput.isEnabled().catch(()=>false),
+      filePresent:await fileInput.evaluate(node=>!!(node as HTMLInputElement).files?.length).catch(()=>false),
+      altMatches:await altInput.inputValue().then(value=>value===firstAlt).catch(()=>false),
+      attachEnabled:await attach.isEnabled().catch(()=>false),category
+    }),{encoding:'utf8',mode:0o600});
+    throw error;
+  }
+  const base=await readRevision();
+  expect(Number.isSafeInteger(base)).toBe(true);
+  let uploads=0,registrations=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin!==origin||request.method()!=='POST')return;
+    if(url.pathname.startsWith('/storage/v1/object/kadmeion-private-assets/'))uploads++;
+    if(url.pathname==='/rest/v1/rpc/register_private_project_image')registrations++;
+  });
+  // Only synthetic operation fields held in memory; never output payload, URL, headers or IDs.
+  type AttachInput={p_project_id:string;p_base_revision:number;p_asset_id:string|null;p_operation_id:string};
+  const operations:AttachInput[]=[];
+  const statuses:number[]=[];
+  const conflicts:boolean[]=[];
+  let dropFirst=true;
+  await page.route('**/rest/v1/rpc/set_private_project_thumbnail',async route=>{
+    const data=route.request().postDataJSON() as AttachInput;
+    operations.push(data);
+    const response=await route.fetch();
+    try{
+      statuses.push(response.status());
+      const errorCode=response.ok()?null:await response.json().then((value:unknown)=>
+        !!value&&typeof value==='object'&&'code' in value&&value.code==='40001').catch(()=>false);
+      conflicts.push(errorCode===true);
+      if(dropFirst&&response.ok()){dropFirst=false;await route.abort('failed');}
+      else await route.fulfill({response});
+    }finally{await response.dispose();}
+  });
+  await attach.click();
+  await expect(cover.getByRole('alert')).toContainText(/Cover change was not confirmed|Private cover change could not be verified/);
+  expect(statuses[0]>=200&&statuses[0]<300).toBe(true);
+  expect(uploads).toBe(1);expect(registrations).toBe(1);
+  await cover.getByRole('button',{name:'Retry same cover operation'}).click();
+  await expectImage(firstAlt,firstBytes);
+  expect(operations.length).toBe(2);
+  expect(JSON.stringify(operations[0])===JSON.stringify(operations[1])).toBe(true);
+  expect(uploads).toBe(1);expect(registrations).toBe(1);
+  await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+1));
+  await page.reload();
+  await expectImage(firstAlt,firstBytes);
+  await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+1));
+
+  // Distinct bytes generated in browser (no third-party network or synthetic server success).
+  const replacementBytes=Buffer.from(await page.evaluate(()=>{
+    const canvas=document.createElement('canvas');canvas.width=2;canvas.height=2;
+    const ctx=canvas.getContext('2d')!;ctx.fillStyle='#31506b';ctx.fillRect(0,0,2,2);
+    return canvas.toDataURL('image/png').split(',')[1];
+  }),'base64');
+  const other=await page.context().newPage();
+  try{
+    await other.goto(projectPath);
+    await expect(other.getByRole('region',{name:'Project thumbnail'}).getByRole('img',{name:firstAlt})).toBeVisible();
+    await other.getByLabel('Short description').fill('C01 concurrent saved summary');
+    await other.getByRole('button',{name:'Save changes'}).click();
+    await expect(other.getByRole('status').filter({hasText:'Private draft saved.'})).toBeVisible();
+    await expect(other.getByRole('complementary',{name:'Saved project preview'}).getByText('SAVED DRAFT · REVISION '+(base+2))).toBeVisible();
+    await choose('replacement.png',replacementBytes,replacementAlt);
+    await cover.getByRole('button',{name:'Replace thumbnail'}).click();
+    await expect(cover.getByRole('alert')).toContainText('Cover change was not confirmed.');
+    expect(statuses[2]>=400&&conflicts[2]).toBe(true);
+    await expectImage(firstAlt,firstBytes,false);
+    await expect(cover.getByRole('img',{name:replacementAlt})).toHaveCount(0);
+    // Independently reload the real saved project: failure must not change its cover or revision.
+    await other.reload();
+    const savedCover=other.getByRole('region',{name:'Project thumbnail'});
+    const oldImage=savedCover.getByRole('img',{name:firstAlt,exact:true});
+    await expect(oldImage).toBeVisible();
+    await expect.poll(()=>oldImage.evaluate(async(element,expected)=>{
+      const img=element as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.naturalHeight||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const bytes=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&response.headers.get('content-type')==='image/png'&&bytes.length===expected.length&&bytes.every((v,i)=>v===expected[i]);
+    },Array.from(firstBytes))).toBe(true);
+    await expect(other.getByRole('complementary',{name:'Saved project preview'}).getByText('SAVED DRAFT · REVISION '+(base+2))).toBeVisible();
+    await expect(savedCover.getByRole('img',{name:replacementAlt})).toHaveCount(0);
+    expect(uploads).toBe(2);expect(registrations).toBe(2);
+    await cover.getByRole('button',{name:'Refresh private cover'}).click();
+    const reapply=cover.getByRole('button',{name:'Attach registered image to latest revision'});
+    await expect(reapply).toBeEnabled();
+    await reapply.click();
+    await expectImage(replacementAlt,replacementBytes);
+    expect(operations.length).toBe(4);
+    expect(operations[2].p_asset_id===operations[3].p_asset_id&&
+      operations[2].p_operation_id!==operations[3].p_operation_id&&
+      operations[3].p_base_revision===operations[2].p_base_revision+1).toBe(true);
+    expect(uploads).toBe(2);expect(registrations).toBe(2);
+    await page.reload();
+    await expectImage(replacementAlt,replacementBytes);
+    await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+3));
+    await expect(page.getByLabel('Short description')).toHaveValue('C01 concurrent saved summary');
+    // A distinct principal must be denied while a selected private image still exists.
+    const isolated=await browser.newContext({baseURL:testInfo.project.use.baseURL});
+    try{
+      const visitor=await isolated.newPage();
+      await signIn(visitor,foreign);
+      await visitor.goto(projectPath);
+      await expect(visitor.getByRole('alert')).toContainText('Project unavailable.');
+      await expect(visitor.getByRole('region',{name:'Project thumbnail'})).toHaveCount(0);
+      await expect(visitor.getByRole('img',{name:replacementAlt})).toHaveCount(0);
+    }finally{await isolated.close();}
+    await page.getByRole('link',{name:'Back to project library'}).click();
+    const cardImage=page.getByRole('img',{name:replacementAlt,exact:true});
+    await expect(cardImage).toBeVisible();
+    await page.getByRole('link',{name:title}).click();
+    await expectImage(replacementAlt,replacementBytes);
+    await cover.getByLabel('Confirm remove saved cover').check();
+    await cover.getByRole('button',{name:'Remove thumbnail'}).click();
+    await expect(cover.getByText('Private cover removed. Folder cover restored.',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(cover.getByText('Folder cover',{exact:true})).toBeVisible();
+    await expect(cover.getByRole('img')).toHaveCount(0);
+    await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+4));
+    expect(operations.length).toBe(5);
+    expect(operations[4].p_asset_id===null).toBe(true);
+    expect(uploads).toBe(2);expect(registrations).toBe(2);
+  }finally{await other.close();}
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto(projectPath);
+  await expect(page.getByRole('alert')).toContainText('Project unavailable.');
+  await expect(page.getByRole('region',{name:'Project thumbnail'})).toHaveCount(0);
+  await expect(page.getByText(firstAlt,{exact:true})).toHaveCount(0);
+  await expect(page.getByText(replacementAlt,{exact:true})).toHaveCount(0);
+});
+
+test('B16 C02 verified owner IndexedDB checkpoint, Keep Both, Restore and persisted save', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Disposable local Supabase only.');
+  test.setTimeout(150_000);
+  const owner=await localUser('C02 recovery owner');
+  const foreign=await localUser('C02 foreign owner');
+  const title='B16 C02 recovery fixture';
+  const saved='C02 initial saved title',working='C02 unapplied recovery title',concurrent='C02 newer cloud title';
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill(title);
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const portfolioId=editorPath.split('/').find(x=>/^[0-9a-f-]{36}$/.test(x));
+  expect(!!portfolioId).toBe(true);
+  const revision=page.locator('.ws-studio-editor .ws-heading').getByText(/Private draft · revision \d+/);
+  const field=page.getByLabel('Text content');
+  const save=page.getByRole('button',{name:'Save draft',exact:true});
+  const details=page.locator('details.ws-editor-safety').filter({hasText:'Browser recovery & Keep Both'});
+  const expand=async()=>{
+    await expect(details).toBeVisible(); // Mandatory S14 verified owner context, no capability skip.
+    if(await details.getAttribute('open')===null)await details.locator('summary').click();
+    await expect(details.getByRole('button',{name:'Save browser recovery copy'})).toBeVisible();
+  };
+  await field.fill(saved);
+  await page.getByRole('button',{name:'Apply text',exact:true}).click();
+  await save.click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  const base=Number((await revision.innerText()).match(/revision (\d+)/)?.[1]);
+  expect(Number.isSafeInteger(base)).toBe(true);
+  await expand();
+  await details.getByLabel('Automatically checkpoint unsaved edits on this browser during this editor session').check();
+  await field.fill(working);
+  await expect(details.getByText('Latest captured working edits acknowledged by browser storage only.',{exact:true})).toBeVisible();
+  // Read only this disposable fixture's actual committed IndexedDB row, never dump raw records.
+  const checkpointStored=await page.evaluate(({ownerId,portfolioId,working,base})=>new Promise<boolean>((resolve,reject)=>{
+    const open=indexedDB.open('kadmeion-owner-drafts-recovery-v1',1);
+    open.onerror=()=>reject(new Error('Recovery database read failed'));
+    open.onsuccess=()=>{
+      const db=open.result;
+      try{
+        const tx=db.transaction('recovery-copies','readonly');
+        const query=tx.objectStore('recovery-copies').index('owner-portfolio').getAll([ownerId,portfolioId]);
+        let verified=false;
+        query.onsuccess=()=>{const rows=query.result;
+          verified=rows.length===1&&rows[0].cloudBaseRevision===base&&
+            Number.isSafeInteger(rows[0].checkpointSequence)&&rows[0].checkpointSequence>0&&
+            Object.values(rows[0].payload.fieldDrafts).includes(working);
+        };
+        tx.oncomplete=()=>{db.close();resolve(verified);};
+        tx.onabort=tx.onerror=()=>{db.close();reject(new Error('Recovery transaction failed'));};
+      }catch{db.close();reject(new Error('Recovery store unavailable'));}
+    };
+  }),{ownerId:owner.id,portfolioId:portfolioId!,working,base});
+  expect(checkpointStored).toBe(true);
+  await expect(save).toBeDisabled();
+  // Explicitly accept the product's dirty-navigation guard after the checkpoint.
+  const acceptReload=async(dialog:import('@playwright/test').Dialog)=>{await dialog.accept();};
+  page.on('dialog',acceptReload);
+  try{await page.reload();}finally{page.off('dialog',acceptReload);}
+  await expect(field).toHaveValue(saved);
+  await expect(revision).toContainText('revision '+base+' · Saved privately');
+  await expand();
+  await expect(details.getByText(/Working checkpoint · .* · base revision/)).toHaveCount(1);
+  await details.getByRole('button',{name:'Open recovery copy',exact:true}).click();
+  await expect(details.getByText('Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.',{exact:true})).toBeVisible();
+  await expect(field).toHaveValue(working);
+  await expect(save).toBeDisabled();
+
+  const other=await page.context().newPage();
+  try{
+    await other.goto(editorPath);
+    await expect(other.getByLabel('Text content')).toHaveValue(saved);
+    await other.getByLabel('Text content').fill(concurrent);
+    await other.getByRole('button',{name:'Apply text',exact:true}).click();
+    await other.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(other.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await details.getByRole('button',{name:'Keep Both and load latest cloud draft'}).click();
+    await expect(details.getByText('Both versions preserved: browser recovery copy and latest saved cloud draft. No cloud revision was overwritten.',{exact:true})).toBeVisible();
+    await expect(field).toHaveValue(concurrent);
+    await expect(revision).toContainText('revision '+(base+1)+' · Saved privately');
+    const copy=details.getByRole('listitem').filter({hasText:/^Recovery copy · /});
+    await expect(copy).toHaveCount(1);
+    await copy.getByRole('button',{name:'Compare copy',exact:true}).click();
+    const restore=copy.getByRole('button',{name:'Restore older copy as unsaved draft'});
+    await expect(restore).toBeEnabled();
+    page.once('dialog',dialog=>dialog.dismiss());
+    await restore.click();
+    await expect(details.getByText('Recovery restore cancelled. Both versions remain unchanged.',{exact:true})).toBeVisible();
+    await expect(field).toHaveValue(concurrent);
+    await copy.getByRole('button',{name:'Compare copy',exact:true}).click();
+    page.once('dialog',dialog=>dialog.accept());
+    await restore.click();
+    await expect(details.getByText(/Older recovery copy restored into an unsaved working draft/)).toBeVisible();
+    await expect(field).toHaveValue(working);
+    await expect(revision).toContainText('revision '+(base+1)+' · Uncommitted changes');
+    await expect(save).toBeDisabled();
+    await other.reload();
+    await expect(other.getByLabel('Text content')).toHaveValue(concurrent);
+    await page.getByRole('button',{name:'Apply text',exact:true}).click();
+    await save.click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(field).toHaveValue(working);
+    await expect(revision).toContainText('revision '+(base+2)+' · Saved privately');
+    await expand();
+    await expect(copy).toHaveCount(1);
+  }finally{await other.close();}
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto(editorPath);
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(details).toHaveCount(0);
+  await expect(page.getByLabel('Text content')).toHaveCount(0);
+  await expect(page.getByText(working,{exact:true})).toHaveCount(0);
+});
+
+test('B16 C09 actual private preflight link, bounded editor hints and unchanged saved revision',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await localUser('C09 editor owner'),foreign=await localUser('C09 foreign owner');
+  const title='B16 C09 private draft';
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill(title);
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const revision=page.locator('.ws-studio-editor .ws-heading').getByText(/Private draft · revision \d+/);
+  const field=page.getByLabel('Text content');
+  const panels=page.getByRole('navigation',{name:'Editor panels'});
+  const save=page.getByRole('button',{name:'Save draft',exact:true});
+  const content='C09 assigned Arc introduction';
+  // Exact slot key from createPortfolioPresetDraft: layout id + lower-case slot name.
+  await page.goto(editorPath+'?panel=Content&slot=arc-hero-text');
+  await expect(panels.getByRole('button',{name:'Content',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(page.getByRole('button',{name:/arc hero text/i})).toHaveAttribute('aria-pressed','true');
+  await field.fill(content);
+  await page.getByRole('button',{name:'Apply text',exact:true}).click();
+  await save.click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  const base=Number((await revision.innerText()).match(/revision (\d+)/)?.[1]);
+  expect(Number.isSafeInteger(base)).toBe(true);
+  await page.goto(editorPath.replace(/\/edit$/,'/publish'));
+  await page.getByRole('button',{name:'Run private preflight'}).click();
+  await expect(page.getByRole('heading',{name:'Preflight results'})).toBeVisible();
+  const link=page.getByRole('link',{name:'Edit SEO metadata in private editor'}).first();
+  await expect(link).toHaveAttribute('href',editorPath+'?panel=Metadata');
+  await link.click();
+  await expect(panels.getByRole('button',{name:'Metadata',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(page.getByRole('heading',{name:'Page metadata'})).toBeVisible();
+  await expect(revision).toContainText('revision '+base+' · Saved privately');
+  await expect(save).toBeDisabled();
+  await page.goto(editorPath+'?panel=Content&slot=arc-hero-text');
+  await expect(field).toHaveValue(content);
+  await field.fill('C09 dirty local buffer');
+  // A new same-document query string must not reapply hints over a dirty editor.
+  await page.evaluate(()=>history.replaceState(history.state,'',location.pathname+'?panel=Metadata&slot=arc-hero-title'));
+  await expect(field).toHaveValue('C09 dirty local buffer');
+  await expect(panels.getByRole('button',{name:'Content',exact:true})).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'Discard unapplied text'}).click();
+  await expect(field).toHaveValue(content);
+  await expect(revision).toContainText('revision '+base+' · Saved privately');
+  await page.goto(editorPath+'?panel=Theme&panel=Source&slot=arc-hero-text&slot=arc-hero-title');
+  await expect(page.getByRole('status').filter({hasText:'Requested editor panel and slot are unavailable.'})).toBeVisible();
+  await expect(panels.getByRole('button',{name:'Content',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(page.getByRole('button',{name:/arc hero title/i})).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'Dismiss editor link notice'}).click();
+  await expect(page.getByRole('button',{name:'Dismiss editor link notice'})).toHaveCount(0);
+  await page.goto(editorPath+'?panel=Content&slot=missing-slot');
+  await expect(page.getByRole('status').filter({hasText:'Requested slot is unavailable in this draft.'})).toBeVisible();
+  await expect(page.getByRole('button',{name:/arc hero title/i})).toHaveAttribute('aria-pressed','true');
+  await page.goto(editorPath+'?panel='+encodeURIComponent('https://example.invalid')+'&slot=__proto__');
+  await expect(page.getByRole('status').filter({hasText:'Requested editor panel and slot are unavailable.'})).toBeVisible();
+  await expect(revision).toContainText('revision '+base+' · Saved privately');
+  await expect(save).toBeDisabled();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto(editorPath+'?panel=Source&slot=arc-hero-text');
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(panels).toHaveCount(0);
+  await expect(page.getByLabel('Text content')).toHaveCount(0);
+  await expect(page.getByText(content,{exact:true})).toHaveCount(0);
+});
+
+test('B16 WF-045 actual notification inbox retry, acknowledgement before navigation and dismissal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(100_000);
+  const owner=await localUser('WF-045 notice owner'),foreign=await localUser('WF-045 other owner');
+  await signIn(page,owner);
+  // This only records the disposable account-exit request, never executes erasure.
+  await page.goto('/app/settings/account/delete');
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
+  await page.getByRole('textbox',{name:'Type DELETE MY ACCOUNT to record the request'}).fill('DELETE MY ACCOUNT');
+  await page.getByRole('button',{name:'Record deletion request'}).click();
+  await expect(page.getByText('Deletion request recorded. No data has been erased.',{exact:true})).toBeVisible();
+  await page.route('**/rest/v1/private_notifications?*',route=>route.fulfill({
+    status:503,json:{message:'Disposable inbox outage'}
+  }),{times:1});
+  await page.goto('/app/notifications');
+  const inbox=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Inbox',exact:true})});
+  await expect(inbox.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
+  await expect(inbox.getByText('You’re caught up.')).toHaveCount(0);
+  await inbox.getByRole('button',{name:'Retry notifications'}).click();
+  const notice=inbox.getByRole('listitem').filter({hasText:'account exit requested'});
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText('Unread');
+  await page.route('**/rest/v1/rpc/owner_acknowledge_notification',route=>route.fulfill({
+    status:503,json:{message:'Disposable acknowledgement outage'}
+  }),{times:1});
+  await notice.getByRole('button',{name:'Review related area'}).click();
+  await expect(inbox.getByRole('alert')).toBeVisible();
+  await expect(page).toHaveURL(/\/app\/notifications$/);
+  await expect(notice).toContainText('Unread');
+  await notice.getByRole('button',{name:'Review related area'}).click();
+  await expect(page).toHaveURL(/\/app\/settings\/account\/delete$/);
+  await page.goto('/app/notifications');
+  await expect(notice.getByRole('button',{name:'Mark as read'})).toHaveCount(0);
+  await expect(notice).toContainText(/· Read ·/);
+  await inbox.getByRole('button',{name:'Unread',exact:true}).click();
+  await expect(notice).toHaveCount(0);
+  await inbox.getByRole('button',{name:'All loaded',exact:true}).click();
+  await expect(notice).toBeVisible();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto('/app/notifications');
+  await expect(inbox.getByText('You’re caught up.')).toBeVisible();
+  await expect(notice).toHaveCount(0);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,owner);
+  await page.goto('/app/notifications');
+  await expect(notice).toBeVisible();
+  await notice.getByRole('button',{name:'Dismiss',exact:true}).click();
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  await expect(inbox.getByText('You’re caught up.')).toBeVisible();
+  await expect(notice).toHaveCount(0);
+});
+
+test('B16 C07 real goal concurrent CAS and precise 105-entry chronological history',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(125_000);
+  const owner=await localUser('C07 goal owner'),foreign=await localUser('C07 other owner');
+  const initial='C07 goal fixture',first='C07 retained stale edit',later='C07 concurrent saved edit';
+  await signIn(page,owner);
+  await page.goto('/app/growth/goals');
+  await page.getByLabel('Goal title',{exact:true}).fill(initial);
+  await page.getByRole('button',{name:'Create private goal'}).click();
+  await page.getByRole('button',{name:initial,exact:true}).click();
+  await page.getByRole('button',{name:'Edit selected goal'}).click();
+  await page.getByLabel('Edit goal title').fill(first);
+  const other=await page.context().newPage();
+  try{
+    await other.goto('/app/growth/goals');
+    await other.getByRole('button',{name:initial,exact:true}).click();
+    await other.getByRole('button',{name:'Edit selected goal'}).click();
+    await other.getByLabel('Edit goal title').fill(later);
+    await other.getByRole('button',{name:'Save goal details'}).click();
+    await expect(other.getByText('Goal details updated privately.',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Save goal details'}).click();
+    const conflict=page.getByRole('region',{name:'Goal edit conflict'});
+    await expect(conflict).toContainText(later);
+    await expect(page.getByLabel('Edit goal title')).toHaveValue(first);
+    await expect(page.getByRole('button',{name:'Save goal details'})).toBeDisabled();
+    await other.reload();
+    await expect(other.getByRole('button',{name:later,exact:true})).toBeVisible();
+    await expect(other.getByRole('button',{name:first,exact:true})).toHaveCount(0);
+    await conflict.getByRole('button',{name:'Use reviewed version as base and keep draft'}).click();
+    await page.getByRole('button',{name:'Save goal details'}).click();
+    await expect(page.getByText('Goal details updated privately.',{exact:true})).toBeVisible();
+  }finally{await other.close();}
+  await page.reload();
+  await expect(page.getByRole('button',{name:first,exact:true})).toBeVisible();
+  await page.goto('/app/growth/activity');
+  const goalSelect=page.getByLabel('Activity goal');
+  const id=await goalSelect.getByRole('option',{name:first,exact:true}).getAttribute('value');
+  if(!id)throw new Error('Disposable goal fixture was not selectable.');
+  // Local fixture only: two records share each exact microsecond, spanning both
+  // 50-record cursor boundaries. Stable UUID suffix orders equal timestamp ties.
+  runLocalFixtureSql("insert into public.private_goal_progress_events(id,goal_id,owner_user_id,operation_id,value,note,created_at) "+
+    "select (left(:'actor_id',24)||lpad(g::text,12,'0'))::uuid,:'item_id'::uuid,:'actor_id'::uuid,gen_random_uuid(),g,"+
+    "'C07 history '||lpad(g::text,3,'0'),'2026-01-01 00:00:00+00'::timestamptz+((g+1)/2)*interval '1 microsecond' "+
+    "from generate_series(1,105) g;",owner.id,id);
+  await goalSelect.selectOption(id);
+  const history=page.getByRole('region',{name:'Private manual progress history'});
+  await expect(history.getByRole('listitem')).toHaveCount(50);
+  await history.getByRole('button',{name:'Load more history'}).click();
+  await expect(history.getByRole('listitem')).toHaveCount(100);
+  await history.getByRole('button',{name:'Load more history'}).click();
+  await expect(history.getByRole('listitem')).toHaveCount(105);
+  const notes=await history.locator('ol.ws-growth-events li p').allTextContents();
+  const expected=Array.from({length:105},(_,i)=>'C07 history '+String(105-i).padStart(3,'0'));
+  expect(notes).toEqual(expected);
+  await expect(history.getByRole('button',{name:'Load more history'})).toHaveCount(0);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto('/app/growth/activity');
+  await expect(goalSelect.getByRole('option',{name:first,exact:true})).toHaveCount(0);
+  await expect(history.getByText('C07 history 105',{exact:true})).toHaveCount(0);
+});
+
+test('B16 My Components verified private versions, protected replacement and exact archived source',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(125_000);
+  const owner=await localUser('S7 component owner'),foreign=await localUser('S7 other owner');
+  const apiKey=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if(!apiKey||process.env.VITE_SUPABASE_URL!==origin)throw new Error('Disposable local owner API required.');
+  // Seed actual private component versions through the owner-authorized RPC;
+  // this proves discovery/reuse, not an unimplemented trusted customization flow.
+  const login=await page.request.post(origin+'/auth/v1/token?grant_type=password',{
+    headers:{apikey:apiKey},data:{email:owner.email,password:owner.password}
+  });
+  expect(login.ok()).toBe(true);
+  const {access_token:token}=await login.json();
+  await login.dispose();
+  const original='export default function Original(){return null;}';
+  const v1='export default function FixtureOne(){return null;}';
+  const v2='export default function FixtureTwo(){return null;}';
+  for(const fixture of [{key:'s6-title',name:'S6 Private Title',pin:'title-stacked@1',kind:'title',code:v1},
+    {key:'s6-title',name:'S6 Private Title',pin:'title-stacked@1',kind:'title',code:v2},
+    {key:'s6-paragraph',name:'S6 Private Paragraph',pin:'body-copy@1',kind:'text',code:'export default function Paragraph(){return null;}'}]){
+    const result=await page.request.post(origin+'/rest/v1/rpc/owner_save_my_component',{
+      headers:{apikey:apiKey,Authorization:'Bearer '+token},
+      data:{p_operation_id:randomUUID(),p_component_key:fixture.key,p_display_name:fixture.name,
+        p_base_component_pin:fixture.pin,p_pristine_source:original,p_source_code:fixture.code,p_slot_kinds:[fixture.kind]}
+    });
+    const ok=result.ok();await result.dispose();expect(ok).toBe(true);
+  }
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 component fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 component fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:/arc hero title/i}).click();
+  await page.getByLabel('Text content').fill('S6 authored title preserved');
+  await page.getByRole('button',{name:'Apply text',exact:true}).click();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'My Components',exact:true}).click();
+  const library=page.locator('.ws-editor-tool').filter({has:page.getByRole('heading',{name:'My Components',exact:true})});
+  const version1=library.getByRole('listitem').filter({hasText:'S6 Private Title · v1'});
+  const version2=library.getByRole('listitem').filter({hasText:'S6 Private Title · v2'});
+  const incompatible=library.getByRole('listitem').filter({hasText:'S6 Private Paragraph · v1'});
+  await expect(version1).toBeVisible();await expect(version2).toBeVisible();
+  await expect(incompatible.getByRole('button',{name:'Review replacement'})).toBeDisabled();
+  await library.getByLabel('Search saved components').fill('no-such-private-component');
+  await expect(library.getByText('No saved versions match these filters.')).toBeVisible();
+  await library.getByRole('button',{name:'Clear filters'}).click();
+  await library.getByLabel('Only versions compatible with the selected slot').check();
+  await expect(incompatible).toHaveCount(0);
+  const impact=page.getByRole('region',{name:'Replacement impact'});
+  const revision=page.locator('.ws-studio-editor .ws-heading').getByText(/Private draft · revision \d+/);
+  const before=await revision.innerText();
+  await version1.getByRole('button',{name:'Review replacement'}).click();
+  await expect(impact.getByRole('heading',{name:'Review replacement impact'})).toBeFocused();
+  await impact.getByRole('button',{name:'Cancel replacement'}).click();
+  await expect(impact).toHaveCount(0);
+  await expect(revision).toHaveText(before);
+  await expect(page.getByRole('button',{name:'Save draft'})).toBeDisabled();
+  await version1.getByRole('button',{name:'Review replacement'}).click();
+  await impact.getByRole('button',{name:'Replace and stash'}).click();
+  await expect(library.getByText(/Replacement applied to the working draft/)).toBeVisible();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await version2.getByRole('button',{name:'Review replacement'}).click();
+  await expect(impact.getByText(/Owned modified override \(S2\)/)).toBeVisible();
+  await expect(impact.getByText(/Protected source:/)).toBeVisible();
+  await impact.getByRole('button',{name:'Replace and stash'}).click();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:/arc hero title/i}).click();
+  await expect(page.getByLabel('Text content')).toHaveValue('S6 authored title preserved');
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const archivePath=await download.path();if(!archivePath)throw new Error('Disposable source archive unavailable.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(archivePath)));
+  const active=snapshot.slots['arc-hero-title'],stash=snapshot.stashes['arc-hero-title']??[];
+  expect(active?.state==='S2'&&!!active.sourcePath&&snapshot.files[active.sourcePath]===v2).toBe(true);
+  expect(stash.some(slot=>!!slot.sourcePath&&slot.sourcePath!==active?.sourcePath&&snapshot.files[slot.sourcePath]===v1)).toBe(true);
+  // No source evaluation and no public release are asserted from this private archive.
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('Foreign component fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await page.getByRole('button',{name:'My Components',exact:true}).click();
+  await expect(page.getByText('You haven’t saved any component versions.')).toBeVisible();
+  await expect(page.getByText('S6 Private Title',{exact:false})).toHaveCount(0);
+});
+
+test('B16 WF-049/052 real moderation case and appeal lost acknowledgement replay',async({page,browser},testInfo)=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const operator=await localUser('S11 replay operator'),subject=await localUser('S11 replay subject');
+  grantLocalOperatorRole(operator.id);
+  const captureOps=async(p:Page,rpc:string)=>{
+    const operations:string[]=[];let committed=false;
+    await p.route('**/rest/v1/rpc/'+rpc,async route=>{
+      const input=route.request().postDataJSON() as {p_operation_id:string};
+      operations.push(input.p_operation_id);
+      const result=await route.fetch();
+      try{
+        if(!committed&&result.ok()){committed=true;await route.abort('failed');}
+        else await route.fulfill({response:result});
+      }finally{await result.dispose();}
+    });
+    return {operations,committed:()=>committed};
+  };
+  await signIn(page,operator);
+  await page.goto('/app/operations/users');
+  const rationale='Disposable documented test case for lost acknowledgement replay.';
+  await page.getByLabel('Exact target user ID').fill(subject.id);
+  await page.getByLabel('Case summary').fill(rationale);
+  await page.getByLabel('I confirm the serious-abuse scope and understand this is audit-only.').check();
+  const open=await captureOps(page,'operator_open_moderation_case');
+  await page.getByRole('button',{name:'Record private case'}).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  expect(open.committed()).toBe(true);
+  await expect(page.getByLabel('Case summary')).toHaveValue(rationale);
+  await expect(page.getByLabel('I confirm the serious-abuse scope and understand this is audit-only.')).toBeChecked();
+  await page.getByRole('button',{name:'Record private case'}).click();
+  await expect(page.getByRole('status')).toContainText('Private audit case recorded.');
+  expect(open.operations.length===2&&open.operations[0]===open.operations[1]).toBe(true);
+  await expect(page.getByText('Owner ID '+subject.id,{exact:true})).toHaveCount(1);
+  const context=await browser.newContext({baseURL:testInfo.project.use.baseURL});
+  try{
+    const subjectPage=await context.newPage();await signIn(subjectPage,subject);
+    await subjectPage.goto('/app/settings/cases');
+    await subjectPage.getByLabel('Case to review').selectOption({index:1});
+    const statement='Disposable private appeal statement with lost acknowledgement.';
+    await subjectPage.getByLabel('Appeal statement').fill(statement);
+    const appeal=await captureOps(subjectPage,'owner_appeal_moderation_case');
+    await subjectPage.getByRole('button',{name:'Submit private appeal'}).click();
+    await expect(subjectPage.getByRole('alert')).toContainText('The appeal could not be confirmed.');
+    expect(appeal.committed()).toBe(true);
+    await expect(subjectPage.getByLabel('Appeal statement')).toHaveValue(statement);
+    await subjectPage.getByRole('button',{name:'Submit private appeal'}).click();
+    await expect(subjectPage.getByRole('heading',{name:'Appeal pending'})).toBeVisible();
+    expect(appeal.operations.length===2&&appeal.operations[0]===appeal.operations[1]).toBe(true);
+    await subjectPage.reload();
+    await subjectPage.getByLabel('Case to review').selectOption({index:1});
+    await expect(subjectPage.getByRole('heading',{name:'Appeal pending'})).toBeVisible();
+    await expect(subjectPage.getByRole('list',{name:'Case events'}).getByText(statement,{exact:true})).toHaveCount(1);
+    await subjectPage.goto('/app/operations/appeals');
+    await expect(subjectPage.getByRole('heading',{name:'Restricted operations.'})).toBeVisible();
+  }finally{await context.close();}
 });
