@@ -691,9 +691,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         'Recovery copy not confirmed. Keep the editor open; browser storage may be full or unavailable.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
-  async function inspectRecovery(copyId:string,action:'compare'|'open'|'export'){
+  async function inspectRecovery(copyId:string,action:'compare'|'open'|'restore'|'export'){
     const view=captureRecovery();
-    if(!view||recoveryLock.current||!view.record||!view.head||(action==='open'&&view.dirty))return;
+    if(!view||recoveryLock.current||!view.record||!view.head||((action==='open'||action==='restore')&&view.dirty))return;
+    const priorComparison=recoveryComparison;
+    if(action==='restore'&&priorComparison?.copyId!==copyId)return;
     recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');setRecoveryComparison(null);
     try{
       // No offline authentication bypass: all reopen/readback/export operations
@@ -715,7 +717,12 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
         setRecoveryNotice('Recovery export requested. This private file may contain sensitive authored text.');return;
       }
-      if(action==='compare'||recovered.cloudBaseRevision!==fresh.data.revision||view.dirty){
+      const stale=recovered.cloudBaseRevision!==fresh.data.revision;
+      if(action==='restore'&&(!stale||priorComparison?.cloudRevision!==fresh.data.revision)){
+        setRecoveryNotice('The compared cloud revision is no longer current. Compare the recovery copy again; no draft was replaced.');
+        return;
+      }
+      if(action==='compare'||(action==='open'&&stale)||view.dirty){
         const paths=new Set([...Object.keys(saved.files),...Object.keys(recovered.snapshot.files)]);
         const changedFiles=[...paths].filter(path=>saved.files[path]!==recovered.snapshot.files[path]).sort();
         const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots)]);
@@ -727,8 +734,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           pendingCount:Object.keys(recovered.fieldDrafts).length+Object.keys(recovered.sourceDrafts).length+(recovered.seoDraft?1:0)});
         setRecoveryNotice('Recovery base '+recovered.cloudBaseRevision+' · cloud revision '+fresh.data.revision+
           ' · '+changedFiles.length+' differing files · '+changedSlots.length+' differing slots/stashes. '+
-          (recovered.cloudBaseRevision!==fresh.data.revision?'Cloud changed; copy retained separately. Export to recover manually.':'Copy remains separate; no cloud change.'));
+          (stale?'Cloud changed; both versions remain separate. Export the copy, or explicitly restore it into an unsaved draft after reviewing this comparison.':'Copy remains separate; no cloud change.'));
         return;
+      }
+      if(action==='restore'){
+        const accepted=window.confirm('Restore recovery copy based on revision '+recovered.cloudBaseRevision+
+          ' as an unsaved working draft against cloud revision '+fresh.data.revision+
+          '? The original recovery copy and current saved cloud revision will remain intact. '+
+          'A separate Save is required and will be rejected if the cloud advances again.');
+        if(!accepted||!draftCurrent(view)){setRecoveryNotice('Recovery restore cancelled. Both versions remain unchanged.');return;}
       }
       const next=restoreHistoricalSnapshot(createEditorHead(saved),recovered.snapshot,crypto.randomUUID());
       const issues:Record<string,string>={};
@@ -739,7 +753,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       setHead(next);setOperation(crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
       setFieldIssues(issues);setSeoDraft(recovered.seoDraft);setSourceDrafts(recovered.sourceDrafts);
       if(Object.keys(recovered.sourceDrafts).length)setOpenedSource(true);
-      setRecoveryNotice('Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.');
+      setRecoveryNotice(action==='restore'?
+        'Older recovery copy restored into an unsaved working draft. Both saved versions remain intact; review buffers before an explicit CAS Save.':
+        'Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.');
     }catch{
       if(scopeCurrent(view))setRecoveryNotice('Recovery operation not completed. No working or cloud draft was replaced.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
@@ -853,6 +869,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                 onClick={()=>void inspectRecovery(copy.copyId,'compare')}>Compare copy</button>
               <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty||copy.cloudBaseRevision!==record.revision}
                 onClick={()=>void inspectRecovery(copy.copyId,'open')}>Open recovery copy</button>
+              {recoveryComparison?.copyId===copy.copyId&&copy.cloudBaseRevision!==recoveryComparison.cloudRevision&&
+                <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+                  onClick={()=>void inspectRecovery(copy.copyId,'restore')}>Restore older copy as unsaved draft</button>}
               <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
                 onClick={()=>void inspectRecovery(copy.copyId,'export')}>Export recovery copy</button>
               <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
