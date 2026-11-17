@@ -308,3 +308,38 @@ test('B16 WF-047 actual private export downloads, receipt hashes and inventory r
   expect(captureOperations.length).toBe(2);
   // No private artifact bytes or owner identifiers are emitted to logs.
 });
+
+
+test('B16 WF-045 stale preference intent compares real saved row before writing',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(100_000);
+  const owner=await createLocalOwner();
+  await page.goto('/signin');
+  await page.getByRole('textbox',{name:'Email address'}).fill(owner.email);
+  await page.locator('#signin-password').fill(owner.password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Session verified'})).toBeVisible();
+  await page.goto('/app/notifications');
+  const panel=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Optional in-app notifications',exact:true})});
+  const reviewer=panel.getByRole('checkbox',{name:'Reviewer activity'}), publishing=panel.getByRole('checkbox',{name:'Publishing activity'});
+  await expect(reviewer).toBeChecked();await expect(publishing).toBeChecked();
+  let writes=0;
+  page.on('request',request=>{if(new URL(request.url()).pathname==='/rest/v1/rpc/owner_set_notification_preferences'&&request.method()==='POST')writes++;});
+  const other=await page.context().newPage();
+  try{
+    await other.goto('/app/notifications');
+    const toggle=other.getByRole('checkbox',{name:'Publishing activity'});
+    await expect(toggle).toBeChecked();await toggle.uncheck();
+    await expect(other.getByText('Notification preferences saved.',{exact:true})).toBeVisible();
+    await reviewer.uncheck();
+    await expect(panel.getByRole('alert')).toContainText('Saved notification preferences changed.');
+    expect(writes).toBe(0);
+    await expect(reviewer).toBeChecked();await expect(publishing).not.toBeChecked();
+    await reviewer.uncheck();
+    await expect(panel.getByText('Notification preferences saved.',{exact:true})).toBeVisible();
+    expect(writes).toBe(1);
+    await page.reload();
+    await expect(reviewer).not.toBeChecked();await expect(publishing).not.toBeChecked();
+    await expect(panel.getByText(/may still race until an atomic conditional-write contract is available/)).toBeVisible();
+  }finally{await other.close();}
+});

@@ -2296,3 +2296,158 @@ test('B16 WF-049/052 real moderation case and appeal lost acknowledgement replay
     await expect(subjectPage.getByRole('heading',{name:'Restricted operations.'})).toBeVisible();
   }finally{await context.close();}
 });
+
+
+test('B16 private folder journal and portable JSON compare restore, undo and saved readback',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(140_000);
+  const owner=await localUser('S3 folder and JSON owner');
+  // Real Chromium OPFS handles, real journal/Web Locks, with only the OS
+  // directory picker replaced by a deterministic disposable test directory.
+  // This cannot certify a native desktop permission/picker interaction.
+  const folderName='s6-'+randomUUID();
+  await page.addInitScript(name=>{
+    Object.defineProperty(window,'showDirectoryPicker',{configurable:true,value:async()=>{
+      const root=await navigator.storage.getDirectory();
+      return root.getDirectoryHandle(name,{create:true});
+    }});
+  },folderName);
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 folder JSON fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 folder JSON fixture',level:1})).toBeVisible();
+  const field=page.getByLabel('Text content');
+  const save=page.getByRole('button',{name:'Save draft',exact:true});
+  const revision=page.locator('.ws-studio-editor .ws-heading').getByText(/Private draft · revision \d+/);
+  const setTitle=async(value:string)=>{
+    await field.fill(value);await page.getByRole('button',{name:'Apply text',exact:true}).click();
+    await save.click();await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  };
+  const original='S6 original saved Unicode \u2603';
+  const changed='S6 newer cloud title';
+  await setTitle(original);
+  const base=Number((await revision.innerText()).match(/revision (\d+)/)?.[1]);
+  expect(Number.isSafeInteger(base)).toBe(true);
+  const folder=page.locator('details.ws-editor-safety').filter({has:page.getByText('Private folder backup & recovery',{exact:true})});
+  const portable=page.locator('details.ws-editor-safety').filter({has:page.getByText('Private project JSON import & export',{exact:true})});
+  const expand=async(panel:typeof folder)=>{await expect(panel).toBeVisible();if(await panel.getAttribute('open')===null)await panel.locator('summary').click();};
+  const confirm=async(button:ReturnType<typeof folder.getByRole>,accept=true)=>{
+    page.once('dialog',dialog=>accept?dialog.accept():dialog.dismiss());await button.click();
+  };
+  await expand(folder);await expand(portable);
+  await field.fill('Unapplied test buffer');
+  await expect(folder.getByRole('button',{name:'Create private folder backup'})).toBeDisabled();
+  await expect(portable.getByRole('button',{name:'Export private project JSON'})).toBeDisabled();
+  await page.getByRole('button',{name:'Discard unapplied text'}).click();
+  await expect(field).toHaveValue(original);
+  const backup=folder.getByRole('button',{name:'Create private folder backup'});
+  await confirm(backup,false);
+  await expect(folder.getByText('Folder backup cancelled. Draft unchanged.',{exact:true})).toBeVisible();
+  await confirm(backup);
+  await expect(folder.getByText('New folder backup saved. Cloud draft unchanged; image files are not included.',{exact:true})).toBeVisible();
+  const verified=await page.evaluate(async({name,text})=>{
+    const root=await navigator.storage.getDirectory(),dir=await root.getDirectoryHandle(name);
+    const meta=await dir.getDirectoryHandle('.kadmeion');
+    const head=JSON.parse(await (await (await meta.getFileHandle('editor-head.json')).getFile()).text());
+    let journalGone=false;
+    try{await meta.getFileHandle('transaction-journal.json');}catch(e){journalGone=e instanceof DOMException&&e.name==='NotFoundError';}
+    const pages=await dir.getDirectoryHandle('pages');
+    const pageBytes=await (await (await pages.getFileHandle('home.page.json')).getFile()).text();
+    const {sha256,...body}=head;
+    const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(body)))),v=>v.toString(16).padStart(2,'0')).join('');
+    return journalGone&&sha256===digest&&pageBytes===head.head.snapshot.files['pages/home.page.json']&&head.head.snapshot.slots['arc-hero-title'].content.title===text;
+  },{name:folderName,text:original});
+  expect(verified).toBe(true);
+  await confirm(backup);
+  await expect(folder.getByText(/Folder conflict or existing backup detected/)).toBeVisible();
+  const [download]=await Promise.all([page.waitForEvent('download'),portable.getByRole('button',{name:'Export private project JSON'}).click()]);
+  const localPath=await download.path();if(!localPath)throw Error('Disposable JSON download absent.');
+  const bytes=await readFile(localPath);
+  const payload=JSON.parse(bytes.toString('utf8'));
+  expect(payload.kind==='kadmeion-private-project'&&payload.formatVersion===1&&payload.snapshot.slots['arc-hero-title'].content.title===original).toBe(true);
+  await expect(revision).toContainText('revision '+base+' · Saved privately');
+  await setTitle(changed);
+  await confirm(folder.getByRole('button',{name:'Compare private folder backup'}));
+  await expect(folder.getByText('Compared the verified folder snapshot with the current cloud draft. Both remain separate.',{exact:true})).toBeVisible();
+  const comparison=folder.locator('[aria-label="Folder backup comparison"]');
+  await expect(comparison).toBeVisible();
+  await expect(field).toHaveValue(changed);
+  await confirm(comparison.getByRole('button',{name:'Restore compared folder as unsaved draft'}));
+  await expect(folder.getByText(/Folder snapshot opened as an unsaved working draft/)).toBeVisible();
+  await expect(field).toHaveValue(original);
+  await expect(revision).toContainText('revision '+(base+1)+' · Uncommitted changes');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(field).toHaveValue(changed);
+  // Undo is local; reload the confirmed cloud draft before importing.
+  const acceptReload=async(dialog:import('@playwright/test').Dialog)=>{await dialog.accept();};
+  page.on('dialog',acceptReload);try{await page.reload();}finally{page.off('dialog',acceptReload);}
+  await expect(field).toHaveValue(changed);
+  await expand(portable);const input=portable.getByLabel('Compare private project JSON');
+  await expect(input).toBeEnabled();
+  await input.setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({...payload,extra:true}))});
+  await expect(portable.getByText(/Snapshot operation rejected or not confirmed/)).toBeVisible();
+  await expect(field).toHaveValue(changed);
+  await input.setInputFiles({name:'snapshot.json',mimeType:'application/json',buffer:bytes});
+  const jsonComparison=portable.locator('[aria-label="Portable snapshot comparison"]');
+  await expect(jsonComparison).toBeVisible();
+  await expect(field).toHaveValue(changed);
+  await confirm(jsonComparison.getByRole('button',{name:'Restore compared JSON as unsaved draft'}),false);
+  await expect(field).toHaveValue(changed);
+  await confirm(jsonComparison.getByRole('button',{name:'Restore compared JSON as unsaved draft'}));
+  await expect(portable.getByText(/Imported as an unsaved draft/)).toBeVisible();
+  await expect(field).toHaveValue(original);
+  await expect(revision).toContainText('revision '+(base+1)+' · Uncommitted changes');
+  await save.click();await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();await expect(field).toHaveValue(original);
+  await expect(revision).toContainText('revision '+(base+2)+' · Saved privately');
+});
+
+test('B16 verified owner and workspace glyph pending states are real, decorative and reduced-motion safe',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(100_000);
+  const owner=await localUser('S14 glyph fixture');
+  await signIn(page,owner);
+  await page.emulateMedia({reducedMotion:'reduce'});
+  let releaseAuth!:()=>void,releaseRecords!:()=>void;
+  const authHold=new Promise<void>(resolve=>{releaseAuth=resolve;});
+  const recordsHold=new Promise<void>(resolve=>{releaseRecords=resolve;});
+  // Real provider response held by test only, never a fabricated success
+  // nor an artificial delay added to the production source.
+  await page.route('**/auth/v1/user',async route=>{
+    const response=await route.fetch();try{await authHold;await route.fulfill({response});}finally{await response.dispose();}
+  },{times:1});
+  await page.route('**/rest/v1/projects?*',async route=>{
+    const url=new URL(route.request().url());
+    if(url.origin===origin&&url.searchParams.get('limit')==='5'){
+      const response=await route.fetch();try{await recordsHold;await route.fulfill({response});}finally{await response.dispose();}
+    }else await route.continue();
+  });
+  const glyphCheck=async(container:ReturnType<Page['locator']>)=>{
+    const glyph=container.locator('.glyph-skeleton').first();
+    await expect(glyph).toBeVisible();
+    const hidden=await glyph.evaluate(node=>!!node.closest('[aria-hidden="true"]'));
+    expect(hidden).toBe(true);
+    const line=glyph.locator('.glyph-skeleton-line').first();
+    await expect(line).toBeVisible();
+    expect(await line.evaluate(node=>{const style=getComputedStyle(node);return style.animationName==='none'&&style.maskImage!=='none'&&node.getBoundingClientRect().width>0;})).toBe(true);
+    await expect(glyph.locator('button,a,input,[tabindex="0"]')).toHaveCount(0);
+  };
+  try{
+    await page.goto('/app',{waitUntil:'domcontentloaded'});
+    const gate=page.locator('main.ws-gate[aria-busy="true"]');
+    await expect(gate.getByRole('heading',{name:'Verifying owner session…'})).toBeVisible();
+    await glyphCheck(gate);
+    await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
+    releaseAuth();
+    const records=page.locator('section.ws-loading[aria-busy="true"]');
+    await expect(records.getByRole('status')).toHaveText('Loading your private workspace records…');
+    await glyphCheck(records);
+    releaseRecords();
+    await expect(records).toHaveCount(0);
+    await expect(page.locator('.glyph-skeleton')).toHaveCount(0);
+    await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toBeVisible();
+    await auditAccessibility(page,'B16_S14_GLYPH_RESOLVED_REDUCED',process.env.KADMEION_BROWSER_CAPTURE_DIR);
+  }finally{releaseAuth();releaseRecords();}
+});
