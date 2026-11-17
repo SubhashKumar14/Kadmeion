@@ -390,3 +390,43 @@ test('C03 direct media must independently pass HEAD before acknowledgement',asyn
     else assertRevokedWithoutAck(f,result);
   }
 });
+
+test('C03 late response from abort-ignoring fetch is discarded and never acknowledges',{timeout:19000},async()=>{
+  for(const method of ['GET','HEAD'] as const){
+    const f=fixture('AWAITING_VERIFICATION',{unlisted:true});
+    let resolveLate:((response:Response)=>void)|undefined;
+    let signal:AbortSignal|null|undefined;
+    let cancelled=false;
+    try{
+      const http:typeof fetch=async(input,options)=>{
+        if(options?.method!==method)return f.ports.http(input,options);
+        signal=options?.signal;
+        return new Promise<Response>(r=>{resolveLate=r;});
+      };
+      assertRevokedWithoutAck(f,await within(publishConsentedUnlistedRelease(id,{...f.ports,http})));
+      assert.equal(signal?.aborted,true);
+      resolveLate?.(new Response(new ReadableStream<Uint8Array>({
+        cancel(){cancelled=true;}
+      }),{headers:{...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'}}));
+      // Allow the late promise and its best-effort stream cleanup to run.
+      await new Promise<void>(r=>setImmediate(r));
+      assert.equal(cancelled,true);
+      assert.deepEqual(f.calls.map(x=>x.op),[
+        'service_prepare_unlisted_release','service_recover_failed_unlisted_release'
+      ]);
+    }finally{resolveLate?.(new Response(null,{status:503}));}
+  }
+});
+test('C03 oversized GET with nonsettling cancellation cannot block recovery',async()=>{
+  const f=fixture('AWAITING_VERIFICATION');
+  let cancelAttempted=false;
+  let resolveCancel:(()=>void)|undefined;
+  try{
+    const http:typeof fetch=async()=>new Response(new ReadableStream<Uint8Array>({
+      start(c){c.enqueue(new Uint8Array(750001));},
+      cancel(){cancelAttempted=true;return new Promise<void>(r=>{resolveCancel=r;});}
+    }),{headers:{...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'}});
+    assertRevokedWithoutAck(f,await within(publishConsentedUnlistedRelease(id,{...f.ports,http})));
+    assert.equal(cancelAttempted,true);
+  }finally{resolveCancel?.();}
+});
