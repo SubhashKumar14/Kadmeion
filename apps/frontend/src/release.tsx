@@ -42,7 +42,7 @@ function snapshotDelta<T>(before:Record<string,T>,after:Record<string,T>):Snapsh
     const oldCanonical=hasBefore?canonicalValue(oldValue):undefined;
     const newCanonical=hasAfter?canonicalValue(newValue):undefined;
     if(hasBefore&&hasAfter&&oldCanonical===newCanonical)return [];
-    const count=(value:T,encoded:string|undefined)=>encoded===undefined?null:
+    const count=(value:T|undefined,encoded:string|undefined)=>encoded===undefined?null:
       new TextEncoder().encode(typeof value==='string'?value:encoded).byteLength;
     let fields:string[]|undefined;
     if(oldValue&&newValue&&typeof oldValue==='object'&&typeof newValue==='object'&&
