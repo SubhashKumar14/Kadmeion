@@ -22,6 +22,8 @@ export interface EditorRecoverySummary {
   copyId: string;
   savedAt: number;
   cloudBaseRevision: number;
+  /** Only mutable, per-mounted-editor checkpoint rows have a sequence. */
+  checkpointSequence?: number;
 }
 export interface EditorRecoveryCopy extends EditorRecoverySummary {
   ownerId: string;
@@ -77,7 +79,10 @@ function validateRecoveryPayload(value:EditorRecoveryPayload):void {
     throw recoveryFailure('Recovery copy exceeds the browser storage limit. Preserve or export your edits before leaving.');
 }
 function validateStoredRecovery(value:unknown,ownerId:string,portfolioId:string,copyId?:string):EditorRecoveryCopy {
-  if(!isPlainRecord(value)||!exactKeys(value,['ownerId','portfolioId','copyId','savedAt','cloudBaseRevision','payload'])||
+  if(!isPlainRecord(value)||!exactKeys(value,['ownerId','portfolioId','copyId','savedAt','cloudBaseRevision','payload',
+     ...(Object.hasOwn(value,'checkpointSequence')?['checkpointSequence']:[])])||
+     (Object.hasOwn(value,'checkpointSequence')&&
+       (typeof value.checkpointSequence!=='number'||!Number.isSafeInteger(value.checkpointSequence)||value.checkpointSequence<1))||
      value.ownerId!==ownerId||value.portfolioId!==portfolioId||typeof value.copyId!=='string'||
      (copyId!==undefined&&value.copyId!==copyId)||typeof value.savedAt!=='number'||
      !Number.isSafeInteger(value.savedAt)||value.savedAt<0)
@@ -90,7 +95,8 @@ function validateStoredRecovery(value:unknown,ownerId:string,portfolioId:string,
   return entry;
 }
 function recoverySummary(entry:EditorRecoveryCopy):EditorRecoverySummary {
-  return {copyId:entry.copyId,savedAt:entry.savedAt,cloudBaseRevision:entry.cloudBaseRevision};
+  return {copyId:entry.copyId,savedAt:entry.savedAt,cloudBaseRevision:entry.cloudBaseRevision,
+    ...(entry.checkpointSequence===undefined?{}:{checkpointSequence:entry.checkpointSequence})};
 }
 function canonicalRecoveryPayload(payload:EditorRecoveryPayload):string {
   return JSON.stringify(payload,(_key,value:unknown)=>{
@@ -233,7 +239,8 @@ export class IndexedDbEditorDraftStore {
         try {
           if(get.result!==undefined){
             const previous=validateStoredRecovery(get.result,ownerId,portfolioId,copyId);
-            if(canonicalRecoveryPayload(previous.payload)!==canonicalRecoveryPayload(immutable))
+            if(previous.checkpointSequence!==undefined||
+               canonicalRecoveryPayload(previous.payload)!==canonicalRecoveryPayload(immutable))
               throw new ContractError('REVISION_CONFLICT','Recovery copy already exists with different edits. Choose a new copy ID.');
             done(recoverySummary(previous));return;
           }
@@ -242,6 +249,55 @@ export class IndexedDbEditorDraftStore {
             try {
               if(count.result>=MAX_RECOVERY_COPIES)
                 throw recoveryFailure('Recovery copy limit reached. Export or explicitly remove a copy before saving another.');
+              const add=store.add(entry);
+              add.onsuccess=()=>done(recoverySummary(entry));
+            }catch(error){fail(error);}
+          };
+        }catch(error){fail(error);}
+      };
+    });
+  }
+
+  /**
+   * Opt-in, per-mounted-editor working checkpoint. A fresh UUID is allocated
+   * for each writer, never taken from browser auth or reused by a new tab.
+   * Same sequence plus same bytes is an idempotent replay; a stale writer
+   * cannot modify another copy. Explicit Keep Both copies remain immutable.
+   * Uses the SAME per-portfolio bound as ordinary recovery copies; no pruning.
+   */
+  async writeRecoveryCheckpoint(ownerId:string,portfolioId:string,copyId:string,
+    expectedSequence:number,payload:EditorRecoveryPayload):Promise<EditorRecoverySummary> {
+    assertRecoveryId(ownerId);assertRecoveryId(portfolioId);assertRecoveryId(copyId);
+    if(!Number.isSafeInteger(expectedSequence)||expectedSequence<0||expectedSequence>=Number.MAX_SAFE_INTEGER)
+      throw recoveryFailure('Invalid checkpoint sequence.');
+    validateRecoveryPayload(payload);
+    const immutable=structuredClone(payload);
+    const nextSequence=expectedSequence+1;
+    const entry:EditorRecoveryCopy={ownerId,portfolioId,copyId,savedAt:Date.now(),
+      cloudBaseRevision:immutable.cloudBaseRevision,checkpointSequence:nextSequence,payload:immutable};
+    return this.recoveryTransaction<EditorRecoverySummary>('readwrite',(store,done,fail)=>{
+      const read=store.get([ownerId,portfolioId,copyId]);
+      read.onsuccess=()=>{
+        try{
+          if(read.result!==undefined){
+            const previous=validateStoredRecovery(read.result,ownerId,portfolioId,copyId);
+            if(previous.checkpointSequence===nextSequence&&
+               canonicalRecoveryPayload(previous.payload)===canonicalRecoveryPayload(immutable)){
+              done(recoverySummary(previous));return;
+            }
+            if(previous.checkpointSequence!==expectedSequence)
+              throw new ContractError('REVISION_CONFLICT','Browser checkpoint changed or is an immutable copy. Preserve edits under a new copy.');
+            const write=store.put(entry);
+            write.onsuccess=()=>done(recoverySummary(entry));
+            return;
+          }
+          if(expectedSequence!==0)
+            throw new ContractError('REVISION_CONFLICT','Browser checkpoint was removed. Do not recreate it silently.');
+          const count=store.index(RECOVERY_INDEX).count([ownerId,portfolioId]);
+          count.onsuccess=()=>{
+            try{
+              if(count.result>=MAX_RECOVERY_COPIES)
+                throw recoveryFailure('Recovery copy limit reached. Export or explicitly remove a copy.');
               const add=store.add(entry);
               add.onsuccess=()=>done(recoverySummary(entry));
             }catch(error){fail(error);}
@@ -277,11 +333,21 @@ export class IndexedDbEditorDraftStore {
   }
 
   /** Caller must obtain explicit owner consent; never delete on sync or read. */
-  async removeRecoveryCopy(ownerId:string,portfolioId:string,copyId:string):Promise<void> {
+  async removeRecoveryCopy(ownerId:string,portfolioId:string,copyId:string,
+    expectedCheckpointSequence?:number):Promise<void> {
     assertRecoveryId(ownerId);assertRecoveryId(portfolioId);assertRecoveryId(copyId);
-    return this.recoveryTransaction<void>('readwrite',(store,done)=>{
-      const request=store.delete([ownerId,portfolioId,copyId]);
-      request.onsuccess=()=>done(undefined);
+    return this.recoveryTransaction<void>('readwrite',(store,done,fail)=>{
+      const key=[ownerId,portfolioId,copyId];
+      const read=store.get(key);
+      read.onsuccess=()=>{
+        try{
+          if(read.result===undefined){done(undefined);return;}
+          const previous=validateStoredRecovery(read.result,ownerId,portfolioId,copyId);
+          if(previous.checkpointSequence!==expectedCheckpointSequence)
+            throw new ContractError('REVISION_CONFLICT','Browser checkpoint changed. Refresh the catalogue before removing it.');
+          const request=store.delete(key);request.onsuccess=()=>done(undefined);
+        }catch(error){fail(error);}
+      };
     });
   }
 
