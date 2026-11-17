@@ -620,6 +620,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         {caseDirty && <p>Save or discard unsaved case-study sections before moving this project to Trash.</p>}
         {latest && <div className="ws-project-conflict">
           <h3>Saved revision {latest.revision} is newer</h3>
+          {latest.revision<knownRevision && <p>A later revision is already known. Check the latest revision again before loading this draft.</p>}
           <dl>
             <dt>Title</dt><dd>{latest.title}</dd>
             <dt>Short description</dt><dd>{latest.summary || '—'}</dd>
@@ -657,6 +658,8 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const [loading, setLoading] = useState(true);
   const [needsReload, setNeedsReload] = useState(false);
   const pending = useRef(true);
+  const minimumRevision=useRef(knownRevision);
+  useEffect(()=>{minimumRevision.current=knownRevision;},[knownRevision]);
   const locked = busy || loading;
   // A known overview-only range can advance a matching case baseline, never
   // an unknown gap or a baseline with an unresolved server conflict.
@@ -679,13 +682,13 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     };
     void port.readOwnerCaseStudy(projectId).then(result => {
       if (!active) return;
-      if (result.data && !result.error) {
+      if (result.data && !result.error && result.data.revision>=minimumRevision.current) {
         setDraft(result.data);
         setSavedSections(result.data.sections);
         onObserved(result.data.revision);
         setError('');
         setNeedsReload(false);
-      } else failRead(result.error?.message ?? 'Case study could not be loaded.');
+      } else failRead(result.error?.message ?? 'The latest case-study revision could not be verified. Your edits are retained.');
     }).catch(() => {
       failRead('Could not reach your private case study. Your unsaved edits remain available.');
     }).finally(() => {
