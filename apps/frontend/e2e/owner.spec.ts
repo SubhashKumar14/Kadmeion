@@ -1645,7 +1645,7 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
   const cover=page.getByRole('region',{name:'Project thumbnail'});
   const revision=page.getByRole('complementary',{name:'Saved project preview'}).getByText(/SAVED DRAFT · REVISION \d+/);
   const readRevision=async()=>Number((await revision.innerText()).match(/\d+$/)?.[0]);
-  const expectImage=async(alt:string,bytes:Buffer)=>{
+  const expectImage=async(alt:string,bytes:Buffer,confirmed=true)=>{
     const image=cover.getByRole('img',{name:alt,exact:true});
     await expect(image).toBeVisible();
     await expect.poll(async()=>image.evaluate(async(element,expected)=>{
@@ -1657,7 +1657,7 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
         actual.length===expected.length&&actual.every((byte,i)=>byte===expected[i]);
     },Array.from(bytes))).toBe(true);
     await expect(cover.getByText('Saved image description: '+alt,{exact:true})).toBeVisible();
-    await expect(cover.getByText('Last verified private cover',{exact:true})).toBeVisible();
+    if(confirmed)await expect(cover.getByText('Last verified private cover',{exact:true})).toBeVisible();
   };
   const choose=async(name:string,bytes:Buffer,alt:string)=>{
     await cover.getByLabel(/Image file/).setInputFiles({name,mimeType:'image/png',buffer:bytes});
@@ -1688,7 +1688,7 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
     const response=await route.fetch();
     try{
       statuses.push(response.status());
-      const errorCode=response.ok?null:await response.json().then((value:unknown)=>
+      const errorCode=response.ok()?null:await response.json().then((value:unknown)=>
         !!value&&typeof value==='object'&&'code' in value&&value.code==='40001').catch(()=>false);
       conflicts.push(errorCode===true);
       if(dropFirst&&response.ok()){dropFirst=false;await route.abort('failed');}
@@ -1727,8 +1727,22 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
     await cover.getByRole('button',{name:'Replace thumbnail'}).click();
     await expect(cover.getByRole('alert')).toContainText('Cover change was not confirmed.');
     expect(statuses[2]>=400&&conflicts[2]).toBe(true);
-    await expect(cover.getByRole('img',{name:firstAlt})).toBeVisible();
+    await expectImage(firstAlt,firstBytes,false);
     await expect(cover.getByRole('img',{name:replacementAlt})).toHaveCount(0);
+    // Independently reload the real saved project: failure must not change its cover or revision.
+    await other.reload();
+    const savedCover=other.getByRole('region',{name:'Project thumbnail'});
+    const oldImage=savedCover.getByRole('img',{name:firstAlt,exact:true});
+    await expect(oldImage).toBeVisible();
+    await expect.poll(()=>oldImage.evaluate(async(element,expected)=>{
+      const img=element as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.naturalHeight||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const bytes=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&response.headers.get('content-type')==='image/png'&&bytes.length===expected.length&&bytes.every((v,i)=>v===expected[i]);
+    },Array.from(firstBytes))).toBe(true);
+    await expect(other.getByRole('complementary',{name:'Saved project preview'}).getByText('SAVED DRAFT · REVISION '+(base+2))).toBeVisible();
+    await expect(savedCover.getByRole('img',{name:replacementAlt})).toHaveCount(0);
     expect(uploads).toBe(2);expect(registrations).toBe(2);
     await cover.getByRole('button',{name:'Refresh private cover'}).click();
     const reapply=cover.getByRole('button',{name:'Attach registered image to latest revision'});
