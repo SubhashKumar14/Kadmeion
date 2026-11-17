@@ -1837,7 +1837,10 @@ test('B16 C02 verified owner IndexedDB checkpoint, Keep Both, Restore and persis
   }),{ownerId:owner.id,portfolioId:portfolioId!,working,base});
   expect(checkpointStored).toBe(true);
   await expect(save).toBeDisabled();
-  await page.reload();
+  // Explicitly accept the product's dirty-navigation guard after the checkpoint.
+  const acceptReload=async(dialog:import('@playwright/test').Dialog)=>{await dialog.accept();};
+  page.on('dialog',acceptReload);
+  try{await page.reload();}finally{page.off('dialog',acceptReload);}
   await expect(field).toHaveValue(saved);
   await expect(revision).toContainText('revision '+base+' · Saved privately');
   await expand();
