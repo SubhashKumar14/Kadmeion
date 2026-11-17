@@ -633,6 +633,8 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   const [message,setMessage]=useState('');
   const targetSelect=useRef<HTMLSelectElement>(null);
   const stashSelect=useRef<HTMLSelectElement>(null);
+  const layoutTitle=useRef<HTMLHeadingElement>(null);
+  const unplacedTitle=useRef<HTMLHeadingElement>(null);
   const planButton=useRef<HTMLButtonElement>(null);
   const restoreButton=useRef<HTMLButtonElement>(null);
   const reviewTitle=useRef<HTMLHeadingElement>(null);
@@ -644,7 +646,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   const draftCurrent=!!draft&&!!section&&draft.sectionId===sectionId&&
     draft.expectedLayout===section.layout&&sameWorkingHead(draft.head,head);
   const sourceSection=draft?canvasSections(draft.head.snapshot).find(item=>item.id===draft.sectionId):undefined;
-  const sourceSlots=sourceSection?.slots.map(name=>({name,key:layoutSlotKey(sourceSection.id,name)}))??[];
+  const sourceSlots=sourceSection?sourceSection.slots.map(name=>({name,key:layoutSlotKey(sourceSection.id,name)})):[];
   const targetSlots=draft?(portfolioLayout(draft.targetLayout)?.slots??[]).
     map(name=>({name,key:layoutSlotKey(draft.sectionId,name)})):[];
   const assignedKeys=sourceSlots.filter(item=>{
@@ -669,9 +671,14 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   const restoreMovesOwned=!!restoration&&!!restore&&restore.fromSlotKey!==restore.toSlotKey&&
     ownedAssignment(restoration.assignment);
   const restoreLegacy=restoreMovesOwned&&!restoration?.assignment.sourcePath?.endsWith('.tsx');
+  const restoreSelectionRef=useRef<RestoreDraft|null>(null);
 
   useLayoutEffect(()=>{if(review)reviewTitle.current?.focus();},[review]);
   useLayoutEffect(()=>{if(restoreReviewed)restoreTitle.current?.focus();},[restoreReviewed]);
+  useLayoutEffect(()=>{
+    if(restoreSelectionRef.current&&!restore&&!stashSelect.current)unplacedTitle.current?.focus();
+    restoreSelectionRef.current=restore;
+  },[restore]);
 
   function resetReview(focus=false){
     setReview(null);setConfirmStash(false);setConfirmRelocation(false);
@@ -679,7 +686,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   }
   function cancelMapping(){
     resetReview();setDraft(null);setMessage('Layout change cancelled; no transaction was submitted.');
-    targetSelect.current?.focus();
+    if(targetSelect.current)targetSelect.current.focus();else layoutTitle.current?.focus();
   }
   function beginMapping(targetLayout:string){
     if(blocked||!section||!portfolioLayout(targetLayout)||section.layout===targetLayout)return;
@@ -721,7 +728,8 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   }
   function cancelRestore(){
     setRestore(null);setRestoreReviewed(false);setRestoreRelocation(false);
-    setMessage('Restore cancelled; no transaction was submitted.');stashSelect.current?.focus();
+    setMessage('Restore cancelled; no transaction was submitted.');
+    if(stashSelect.current)stashSelect.current.focus();else unplacedTitle.current?.focus();
   }
   function selectStash(token:string){
     if(blocked)return;
@@ -752,7 +760,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
     {blocked&&<p role="status">Resolve pending edits, saves or recovery before changing the layout or restoring a stash.</p>}
     {message&&<p role="status">{message}</p>}
     <section aria-label="Change section layout">
-      <h3>Change section layout</h3>
+      <h3 ref={layoutTitle} tabIndex={-1}>Change section layout</h3>
       {!section?<p>Choose an actual section in the layers tree to change its layout.</p>:<>
         <p>Current: {layoutLabel(section.layout)}. Choose a different pinned layout, then map each filled slot.</p>
         <label>Target layout<select ref={targetSelect} disabled={blocked}
@@ -830,7 +838,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
     <section aria-label="Global Unplaced assignments" onKeyDown={event=>{
       if(event.key==='Escape'&&restore){event.preventDefault();event.stopPropagation();cancelRestore();}
     }}>
-      <h3>Unplaced assignments</h3>
+      <h3 ref={unplacedTitle} tabIndex={-1}>Unplaced assignments</h3>
       <p role="status">{entries.length} stashed assignments across current and previous layouts.</p>
       {!entries.length?<p>No stashed assignments.</p>:<>
         <label>Stashed assignment<select ref={stashSelect} disabled={blocked} value={restoreCurrent&&restore?
