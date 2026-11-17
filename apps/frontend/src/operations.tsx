@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type {
@@ -293,40 +293,54 @@ function Appeals({service, cases, committed}: Props) {
   </div>;
 }
 
+type OperatorScope = {port: SupabaseBrowserAuthPort; path: string; attempt: number};
+type OperatorSnapshot = {
+  scope: OperatorScope;
+  access: 'allowed' | 'denied' | 'unavailable';
+  service: SupabasePrivateModerationService | null;
+  cases: OperatorModerationCase[];
+  reports: OperatorPortfolioAbuseReport[];
+};
+
 export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; path: string}) {
-  const [access, setAccess] = useState<'checking'|'denied'|'unavailable'|'allowed'>('checking');
-  const [service, setService] = useState<SupabasePrivateModerationService | null>(null);
-  const [cases, setCases] = useState<OperatorModerationCase[]>([]);
-  const [reports, setReports] = useState<OperatorPortfolioAbuseReport[]>([]);
   const [attempt, setAttempt] = useState(0);
-  const [notice, setNotice] = useState('');
+  // An operator response is valid only for its exact owner adapter, route and
+  // verification attempt. Fail closed immediately when any of those change.
+  const scope = useMemo<OperatorScope>(() => ({port, path, attempt}), [port, path, attempt]);
+  const [snapshot, setSnapshot] = useState<OperatorSnapshot | null>(null);
+  const current = snapshot?.scope === scope ? snapshot : null;
+  const access = current?.access ?? 'checking';
+  const service = current?.service ?? null;
+  const cases = current?.cases ?? [];
+  const reports = current?.reports ?? [];
+  const [lastNotice, setLastNotice] = useState<{port:SupabaseBrowserAuthPort;path:string;text:string}|null>(null);
+  const notice = lastNotice?.port === port && lastNotice.path === path ? lastNotice.text : '';
   useEffect(() => {
     let active = true;
-    setAccess('checking');
     void (async () => {
       const connected = await port.privateModeration();
-      if (!connected.data) throw new Error('Operator service unavailable.');
+      if (!connected.data) throw connected.error ?? new Error('Operator service unavailable.');
       const verifiedCases = await connected.data.listOperatorCases(25);
       const verifiedReports = path === '/app/operations/moderation' ?
         await connected.data.listAbuseReports(null, 25) : [];
-      if (active) {
-        setCases(verifiedCases);setReports(verifiedReports);
-        setService(connected.data);setAccess('allowed');
-      }
+      if (active) setSnapshot({
+        scope, service: connected.data, cases: verifiedCases, reports: verifiedReports, access: 'allowed'
+      });
     })().catch((error: unknown) => {
       if (active) {
-        // Only a definitive authorization failure is a denial. A timeout or
-        // provider outage must not be represented as a negative role decision.
+        // Only definitive server authorization errors count as role denial.
         const code = error instanceof Error && error.name === 'PrivateModerationError' &&
           'code' in error ? String(error.code) : '';
-        setService(null);setCases([]);setReports([]);
-        setAccess(code === 'FORBIDDEN' || code === 'AUTH_EXPIRED' ? 'denied' : 'unavailable');
+        setSnapshot({
+          scope, service: null, cases: [], reports: [],
+          access: code === 'FORBIDDEN' || code === 'AUTH_EXPIRED' ? 'denied' : 'unavailable'
+        });
       }
     });
     return () => {active = false;};
-  }, [port, path, attempt]);
+  }, [scope, port, path]);
   function committed(message: string) {
-    setNotice(message);
+    setLastNotice({port,path,text:message});
     setAttempt(value => value + 1);
   }
   if (!isOperatorRoute(path)) return null;
@@ -364,29 +378,38 @@ const ownerEventTitle = {OPENED:'Case opened',OWNER_APPEAL:'Appeal submitted',
   OPERATOR_DECISION:'Decision recorded',OPERATOR_HOLD_LIFT:'Private hold lifted'} as const;
 
 export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
-  const [records,setRecords]=useState<{
-    service:SupabasePrivateModerationService;cases:OwnerModerationCase[];events:OwnerModerationEvent[];
-  }|null>(null);
   const [attempt,setAttempt]=useState(0);
-  const [selected,setSelected]=useState('');
+  const scope=useMemo(()=>({port,attempt}),[port,attempt]);
+  const [loaded,setLoaded]=useState<{
+    scope:typeof scope;service:SupabasePrivateModerationService;
+    cases:OwnerModerationCase[];events:OwnerModerationEvent[];
+  }|null>(null);
+  const records=loaded?.scope===scope?loaded:null;
+  // Preserve the selected case across this owner's post-appeal refresh, but
+  // discard it synchronously when a different auth adapter is supplied.
+  const [selection,setSelection]=useState<{port:SupabaseBrowserAuthPort;id:string}|null>(null);
+  const selected=selection?.port===port?selection.id:'';
   const [statement,setStatement]=useState('');
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
   const [busy,setBusy]=useState(false);
-  const [loadError,setLoadError]=useState(false);
-  const [message,setMessage]=useState<{error:boolean;text:string}|null>(null);
+  const [failedScope,setFailedScope]=useState<typeof scope|null>(null);
+  const loadError=failedScope===scope;
+  const [messageState,setMessage]=useState<{port:SupabaseBrowserAuthPort;error:boolean;text:string}|null>(null);
+  const message=messageState?.port===port?messageState:null;
   const current=records?.cases.find(item=>item.id===selected);
   useEffect(()=>{
     let active=true;
-    setRecords(null);
-    setLoadError(false);
+    setLoaded(null);
+    setFailedScope(null);
+    setStatement('');
     void (async()=>{
       const {data:service}=await port.privateModeration();
       if (!service) throw new Error('Owner moderation service unavailable.');
       const [cases,events]=await Promise.all([service.listOwnerCases(),service.listOwnerEvents()]);
-      if (active) setRecords({service,cases,events});
-    })().catch(()=>{if(active) setLoadError(true);});
+      if (active) setLoaded({scope,service,cases,events});
+    })().catch(()=>{if(active) setFailedScope(scope);});
     return ()=>{active=false;};
-  },[port,attempt]);
+  },[scope,port]);
 
   async function appeal(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -397,11 +420,11 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       await records.service.appeal(current.id,operation,statement);
       setStatement('');
       setOperation(crypto.randomUUID());
-      setRecords(null);
+      setLoaded(null);
       setAttempt(value=>value+1);
-      setMessage({error:false,text:'Private appeal submitted for review.'});
+      setMessage({port,error:false,text:'Private appeal submitted for review.'});
     } catch {
-      setMessage({error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
+      setMessage({port,error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
     } finally {
       setBusy(false);
     }
@@ -417,7 +440,7 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       {records?.cases.length===0 && <p>There are no cases for this account.</p>}
       {!!records?.cases.length && <label className="ws-ops-field">Case to review
         <select value={selected} disabled={busy} onChange={event=>{
-          setSelected(event.target.value);setStatement('');setMessage(null);setOperation(crypto.randomUUID());
+          setSelection({port,id:event.target.value});setStatement('');setMessage(null);setOperation(crypto.randomUUID());
         }}>
           <option value="">Choose a case</option>
           {records.cases.map(item=><option key={item.id} value={item.id}>

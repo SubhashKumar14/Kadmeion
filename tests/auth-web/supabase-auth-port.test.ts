@@ -997,3 +997,102 @@ test('S6 same-port A to B rejects delayed A cursor results and authenticates B r
   assert.equal(denied.data,null);
   assert.match(denied.error?.message??'',/cursor.*current owner/i);
 });
+
+test('S6 same live port A to B to A rejects the original delayed private page', async () => {
+  const b = {...tokens, access_token:'b'.repeat(64), refresh_token:'s'.repeat(64), user:secondUser};
+  const aAgain = {...tokens, access_token:'c'.repeat(64), refresh_token:'t'.repeat(64)};
+  const held = Promise.withResolvers<Response>();
+  const entered = Promise.withResolvers<void>();
+  let loginCount = 0;
+  const id = '11111111-1111-4111-8111-111111111111';
+  const row = {id, owner_user_id:user.id, slug:'owner-a-current', title:'Current A',
+    summary:'', description:'', repository_url:null, live_url:null, revision:0,
+    updated_at:'2026-11-16T00:00:00.123456+00:00'};
+  const {port} = mock(async (url, options) => {
+    const path = String(url);
+    const authorization = (options?.headers as Record<string,string>)?.Authorization;
+    if(path.includes('grant_type=password')) return json([tokens,b,aAgain][loginCount++]);
+    if(path.endsWith('/auth/v1/user')) return json(authorization === 'Bearer '+b.access_token ? secondUser : user);
+    if(path.includes('/rest/v1/projects?')){
+      if(authorization === 'Bearer '+tokens.access_token){entered.resolve();return held.promise;}
+      if(authorization === 'Bearer '+aAgain.access_token)return json([row]);
+    }
+    return json({},404);
+  });
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  const initialEpoch=port.getOwnerSessionEpoch();
+  const delayed=port.listOwnerProjectsPage(50,null);
+  try {
+    await entered.promise;
+    assert.equal((await port.signInWithPassword({email:secondUser.email,password:'fixture'})).error,null);
+    assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+    assert.ok(port.getOwnerSessionEpoch()>initialEpoch);
+  } finally {held.resolve(json([{...row,title:'Obsolete A'}]));}
+  const stale=await delayed;
+  assert.equal(stale.data,null);
+  assert.ok(stale.error);
+  const fresh=await port.listOwnerProjectsPage(50,null);
+  assert.equal(fresh.error,null);
+  assert.equal(fresh.data?.items[0]?.title,'Current A');
+});
+
+/* Explicitly candidate-gated: the base does not yet expose the approved API.
+ * A skipped test is not acceptance. S0 must run this on combined S1/S5 source. */
+test('S6 account-exit recovery single flight, transient retry and discard', async t => {
+  type Candidate = SupabaseBrowserAuthPort & {
+    reauthenticateCurrentOwner(password:string, context:{expectedEpoch:number;requestId:string;challengeId:string}):Promise<{error:unknown}>;
+    recoverOwnerAccountExitReauth(epoch:number):Promise<{error:unknown;data:unknown}>;
+    discardOwnerAccountExitReauth(epoch:number):void;
+  };
+  const requestId='11111111-1111-4111-8111-111111111111';
+  const challengeId='22222222-2222-4222-8222-222222222222';
+  const rotated={...tokens,access_token:'c'.repeat(64),refresh_token:'t'.repeat(64)};
+  let logins=0, completions=0;
+  const arrived=Promise.withResolvers<void>(), release=Promise.withResolvers<void>();
+  const {port:base}=mock(async (url, options)=>{
+    const path=String(url);
+    if(path.includes('grant_type=password')) return json(logins++ ? rotated : tokens);
+    if(path.endsWith('/auth/v1/user')) return json(user);
+    if(path.includes('/rest/v1/private_account_erasure_requests?')) return json([{
+      id:requestId,status:'REQUESTED_BLOCKED',created_at:new Date().toISOString(),withdrawn_at:null,
+      public_revocation_verified:false,reauth_verified:false,access_terminated:false,
+      erasure_executed:false,retention_verified:false
+    }]);
+    if(path.endsWith('/rpc/complete_private_account_exit_reauth')){
+      const body=JSON.parse(String(options?.body));
+      assert.equal(body.p_challenge_id,challengeId);
+      completions++;
+      if(completions===1)return json({},503);
+      if(completions===2){arrived.resolve();await release.promise;}
+      return json({challengeId,status:'NEW_SIGN_IN_VERIFIED',expiresAt:new Date(Date.now()+60000).toISOString(),
+        alreadyVerified:false,deletionAllowed:false});
+    }
+    return json({},404);
+  });
+  const port=base as Candidate;
+  if(typeof port.recoverOwnerAccountExitReauth!=='function'){
+    assert.notEqual(process.env.KADMEION_REQUIRE_REAUTH_CANDIDATE,'1','Candidate API is required');
+    t.skip('Requires combined S1 recovery candidate');return;
+  }
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  assert.equal((await port.reauthenticateCurrentOwner('fixture',{expectedEpoch:port.getOwnerSessionEpoch(),requestId,challengeId})).error,null);
+  const epoch=port.getOwnerSessionEpoch();
+  assert.ok((await port.recoverOwnerAccountExitReauth(epoch)).error);
+  const one=port.recoverOwnerAccountExitReauth(epoch);
+  const two=port.recoverOwnerAccountExitReauth(epoch);
+  try {
+    await Promise.race([arrived.promise,new Promise<never>((_,reject)=>{
+      const timer=setTimeout(()=>reject(new Error('Recovery request did not arrive')),3000);timer.unref();
+    })]);
+    assert.equal(completions,2,'both consumers share one retry');
+    port.discardOwnerAccountExitReauth(epoch);
+  } finally {release.resolve();}
+  for(const result of await Promise.all([one,two])){
+    assert.ok(result.error);
+    assert.equal(result.data,null);
+  }
+  const cleared=await port.recoverOwnerAccountExitReauth(epoch);
+  assert.equal(cleared.error,null);
+  assert.equal(cleared.data,null);
+  assert.equal(completions,2);
+});
