@@ -672,6 +672,33 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
 
+  // A confirmed challenge is short-lived. Do not leave a success receipt or
+  // destructive confirmation visible after its deadline, even without a click.
+  useEffect(() => {
+    if (!reauth) return;
+    let timer: number | undefined;
+    const reviewExpiry = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      const remaining = Date.parse(reauth.expiresAt) - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) {
+        setReauth(null);
+        setWithdrawConfirmation('');
+        withdrawalOperation.current = null;
+        setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
+        return;
+      }
+      timer = window.setTimeout(reviewExpiry, Math.min(remaining, 60_000));
+    };
+    reviewExpiry();
+    window.addEventListener('focus', reviewExpiry);
+    document.addEventListener('visibilitychange', reviewExpiry);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('focus', reviewExpiry);
+      document.removeEventListener('visibilitychange', reviewExpiry);
+    };
+  }, [reauth]);
+
   async function check() {
     if (busy) return;
     setBusy(true);
@@ -748,6 +775,8 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       challenge.current=null;
       challengeOperation.current=null;
       const receipt=await service.completeReauth(challengeId);
+      if (Date.parse(receipt.expiresAt)<=Date.now())
+        throw new Error('Identity verification expired. Sign in again to withdraw content.');
       setReauth(receipt);
     } catch (error) {
       setMessage(failure(error));
@@ -761,6 +790,8 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     if (busy || !activeRequest || !reauth || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
     if (Date.parse(reauth.expiresAt)<=Date.now()) {
       setReauth(null);
+      setWithdrawConfirmation('');
+      withdrawalOperation.current=null;
       setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
       return;
     }
