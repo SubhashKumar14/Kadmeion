@@ -56,7 +56,8 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const pageInFlight=useRef(false);
   const [search,setSearch]=useState('');
   const [view,setView]=useState<'gallery'|'list'>('gallery');
-  const [sort,setSort]=useState<'recent'|'name'>('recent');
+  const [sort,setSort]=useState<'recent'|'oldest'|'name'|'name-desc'>('recent');
+  const [linkFilter,setLinkFilter]=useState<'all'|'repository'|'live'|'both'|'none'>('all');
   const [draft,setDraft]=useState<NewPrivateProject>(freshDraft);
   const [customSlug,setCustomSlug]=useState(false);
   const [saving,setSaving]=useState(false);
@@ -76,6 +77,8 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setLoadingMore(false);
     setPageError('');
     setSearch('');
+    setLinkFilter('all');
+    setSort('recent');
     setDraft(freshDraft());
     setCustomSlug(false);
     setError('');
@@ -224,10 +227,22 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const filtered=useMemo(()=>{
     if(state.status!=='ready')return [];
     const term=search.trim().toLocaleLowerCase('en');
-    const matches=state.items.filter(item=>!term||
-      [item.title,item.slug,item.summary].some(value=>value.toLocaleLowerCase('en').includes(term)));
-    return sort==='name'?matches.sort((a,b)=>a.title.localeCompare(b.title,'en')):matches;
-  },[state,search,sort]);
+    const matches=state.items.filter(item=>{
+      const repository=!!safeProjectLink(item.repositoryUrl), live=!!safeProjectLink(item.liveUrl);
+      const typeMatches=linkFilter==='all' || (linkFilter==='repository' && repository) ||
+        (linkFilter==='live' && live) || (linkFilter==='both' && repository && live) ||
+        (linkFilter==='none' && !repository && !live);
+      return typeMatches && (!term || [item.title,item.slug,item.summary,item.description,
+        item.repositoryUrl??'',item.liveUrl??''].some(value=>value.toLocaleLowerCase('en').includes(term)));
+    });
+    // Keep server order for recent: microsecond keyset precision is not representable by Date.
+    if(sort==='oldest')return [...matches].reverse();
+    if(sort==='name'||sort==='name-desc')return matches.sort((a,b)=>
+      (sort==='name'?1:-1)*a.title.localeCompare(b.title,'en') || a.id.localeCompare(b.id));
+    return matches;
+  },[state,search,sort,linkFilter]);
+  const hasFilters=!!search.trim() || linkFilter!=='all';
+  function clearFilters(){setSearch('');setLinkFilter('all');setSort('recent');}
   function open(event: MouseEvent<HTMLButtonElement>) {
     if (!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
@@ -300,10 +315,21 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       <label className="ws-project-search">Search private projects
         <input type="search" placeholder="Search titles, slugs and summaries" value={search}
           disabled={state.status!=='ready'} onChange={event=>setSearch(event.target.value)}/></label>
+      <label>Project links
+        <select value={linkFilter} disabled={state.status!=='ready'} onChange={event=>{
+          const value=event.target.value;
+          if(value==='all'||value==='repository'||value==='live'||value==='both'||value==='none')setLinkFilter(value);
+        }}>
+          <option value="all">All projects</option><option value="repository">Has repository</option>
+          <option value="live">Has live website</option><option value="both">Has both links</option>
+          <option value="none">No external links</option>
+        </select></label>
       <label>Sort
         <select value={sort} disabled={state.status!=='ready'}
-          onChange={event=>setSort(event.target.value==='name'?'name':'recent')}>
-          <option value="recent">Recently updated</option><option value="name">Name A–Z</option>
+          onChange={event=>{const value=event.target.value;
+            if(value==='recent'||value==='oldest'||value==='name'||value==='name-desc')setSort(value);}}>
+          <option value="recent">Recently updated</option><option value="oldest">Oldest updated first</option>
+          <option value="name">Name A–Z</option><option value="name-desc">Name Z–A</option>
         </select></label>
       <div className="ws-project-view" role="group" aria-label="Project view">
         <button type="button" aria-pressed={view==='gallery'} onClick={()=>setView('gallery')}>Gallery</button>
@@ -316,27 +342,31 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           setReload(value=>value+1);
         }}>Refresh projects</button>
     </div>
+    {state.status==='ready' && <div className="ws-actions">
+      <p>Filters cover loaded private records. Publication status and technology tags are not available in this index.</p>
+      {(hasFilters||sort!=='recent')&&<button type="button" className="ws-secondary" onClick={clearFilters}>Clear filters</button>}
+    </div>}
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
      state.status==='error'?<div role="alert" className="ws-project-state">
        <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>{setState({status:'loading'});setReload(value=>value+1);}}>Retry securely</button></div>:
     <>
       <p className="ws-project-count" role="status">
-        Showing {search ? filtered.length+' matching of ' : ''}{state.items.length} loaded private {state.items.length===1?'project':'projects'}.
+        Showing {hasFilters ? filtered.length+' matching of ' : ''}{state.items.length} loaded private {state.items.length===1?'project':'projects'}.
         {state.nextCursor
-          ? ' More projects are available. Search and sorting apply only to loaded records.'
+          ? ' More projects are available. Search, filters and sorting apply only to loaded records.'
           : ' All pages currently available were loaded; refresh if your projects changed.'}
       </p>
       {filtered.length===0?<div className="ws-project-empty-layout">
         <div className="ws-project-empty">
           <div className="ws-area-icon"><Icon name="folder" size={22}/></div>
-          <h2>{search?'No matching loaded projects':'Your first project belongs here.'}</h2>
-          <p>{search?'Try a different search or load additional private pages to search older projects.':
+          <h2>{hasFilters?'No matching loaded projects':'Your first project belongs here.'}</h2>
+          <p>{hasFilters?'Change filters or load additional private pages to search older projects.':
             'Add a project title and a short description. You can add links later.'}</p>
-          {search?<button type="button" className="ws-secondary" onClick={()=>setSearch('')}>Clear search</button>:
+          {hasFilters?<button type="button" className="ws-secondary" onClick={clearFilters}>{search&&linkFilter==='all'?'Clear search':'Reset project filters'}</button>:
             <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
         </div>
-        {!search && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
+        {!hasFilters && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
           <h2 id="ws-project-guide">Show the work behind your code.</h2>
           <p>Adding a project gives you a private draft for the details you want to share later.</p>
           <ul className="ws-project-guide">
@@ -436,6 +466,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [overviewConflict, setOverviewConflict] = useState(false);
   const [casePending, setCasePending] = useState(false);
   const [caseDirty, setCaseDirty] = useState(false);
+  const [imagePending,setImagePending]=useState(false);
   const overviewPending = useRef(false);
   const casePendingRef = useRef(false);
   const observeRevision = useCallback((revision:number) => {
@@ -616,7 +647,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live website</a>}
         </div>}
         <MoveToTrash port={port} kind="project" id={projectId} title={detail.saved.title}
-          disabled={dirty || caseDirty || blocked || stale} onMoved={()=>window.location.assign('/app/trash')}/>
+          disabled={dirty || caseDirty || imagePending || blocked || stale} onMoved={()=>window.location.assign('/app/trash')}/>
         {caseDirty && <p>Save or discard unsaved case-study sections before moving this project to Trash.</p>}
         {latest && <div className="ws-project-conflict">
           <h3>Saved revision {latest.revision} is newer</h3>
@@ -638,6 +669,128 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         </div>}
       </aside>
     </div>}
+    {detail.status==='ready' && <div hidden={panel!=='details'}>
+      <PrivateProjectImages port={port} projectId={projectId} onPending={setImagePending}/>
+    </div>}
+  </section>;
+}
+
+type RegisteredProjectImage={id:string;projectId:string;mime:string;size:number;altText:string};
+const imageTypes=['image/png','image/jpeg','image/webp'];
+/** WF-013: real private registered assets, not an inferred cover attachment.
+ * A distinct project-cover pointer/read contract is required to display saved bytes.
+ */
+function PrivateProjectImages({port,projectId,onPending}:{
+  port:SupabaseBrowserAuthPort;projectId:string;onPending:(pending:boolean)=>void;
+}){
+  const [file,setFile]=useState<File|null>(null);
+  const [alt,setAlt]=useState('');
+  const [records,setRecords]=useState<RegisteredProjectImage[]|null>(null);
+  const [receipt,setReceipt]=useState<RegisteredProjectImage|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [reading,setReading]=useState(false);
+  const [error,setError]=useState('');
+  const [listError,setListError]=useState('');
+  const [notice,setNotice]=useState('');
+  const input=useRef<HTMLInputElement>(null);
+  const pending=useRef(false);
+  const generation=useRef(0);
+  const liveEpoch=useRef(port.getOwnerSessionEpoch());
+  const current=(attempt:number)=>attempt===generation.current && liveEpoch.current===port.getOwnerSessionEpoch();
+  const clearPrivate=()=>{
+    setRecords(null);setReceipt(null);setFile(null);setAlt('');setNotice('');
+    if(input.current)input.current.value='';
+  };
+  async function readImages(attempt:number){
+    const result=await port.listOwnerAssets();
+    if(!current(attempt))return;
+    if(result.error||!result.data){
+      setListError('Registered private images could not be checked. Retry the list; no cover change was assumed.');
+      return;
+    }
+    setRecords(result.data.filter(row=>row.projectId===projectId));
+    setListError('');
+  }
+  useEffect(()=>{
+    const attempt=++generation.current;
+    liveEpoch.current=port.getOwnerSessionEpoch();
+    setReading(true);
+    void readImages(attempt).catch(()=>{
+      if(current(attempt))setListError('Private image records are unavailable. Retry the list.');
+    }).finally(()=>{if(current(attempt))setReading(false);});
+    return ()=>{generation.current++;pending.current=false;};
+  },[port,projectId]);
+  async function refresh(){
+    if(pending.current||reading)return;
+    if(liveEpoch.current!==port.getOwnerSessionEpoch()){clearPrivate();setError('Your owner session changed. Reopen the project.');return;}
+    pending.current=true;setReading(true);setListError('');
+    const attempt=++generation.current;
+    try{await readImages(attempt);}
+    catch{if(current(attempt))setListError('Private image records are unavailable. Retry the list.');}
+    finally{if(attempt===generation.current){pending.current=false;setReading(false);}}
+  }
+  async function upload(){
+    if(pending.current||reading||!file)return;
+    if(liveEpoch.current!==port.getOwnerSessionEpoch()){clearPrivate();setError('Your owner session changed. Reopen the project.');return;}
+    if(!imageTypes.includes(file.type)||file.size<12||file.size>5242880||!alt.trim()||alt.length>500){
+      setError('Choose a PNG, JPEG or WebP image up to 5 MB and enter descriptive alt text.');return;
+    }
+    pending.current=true;setBusy(true);onPending(true);setError('');setNotice('');
+    const attempt=++generation.current, submitted=file, description=alt.trim();
+    try{
+      const result=await port.uploadOwnerProjectImage(projectId,submitted,description);
+      if(!current(attempt))return;
+      const row=result.data;
+      if(result.error||!row||row.projectId!==projectId||row.mime!==submitted.type||
+         row.size!==submitted.size||row.altText!==description||row.verifiedMetadata!==true||row.publicDeliveryAllowed!==false){
+        setError(result.error?.message??'Image registration could not be confirmed. Check saved images before retrying; an interrupted upload may leave private bytes.');
+        return;
+      }
+      setReceipt(row);setFile(null);setAlt('');
+      if(input.current)input.current.value='';
+      setNotice('Private image registered. It is not yet attached as the project cover.');
+      // Recheck persisted metadata separately; a list failure does not re-upload.
+      try{await readImages(attempt);}catch{
+        if(current(attempt))setListError('Upload was acknowledged, but the image list could not be refreshed. Retry the list, not the upload.');
+      }
+    }catch{if(current(attempt))setError('Private image upload could not be verified. Check saved images before retrying.');}
+    finally{
+      if(attempt===generation.current){
+        pending.current=false;setBusy(false);onPending(false);
+        if(!current(attempt)){clearPrivate();setError('Your owner session changed. Reopen the project.');}
+      }
+    }
+  }
+  return <section className="ws-project-fields" aria-labelledby="private-project-images-title">
+    <h2 id="private-project-images-title">Project thumbnail</h2>
+    <div className="ws-profile-card">
+      <span className="ws-preview-identity" aria-hidden="true"><Icon name="folder" size={22}/></span>
+      <strong>Folder cover</strong>
+      <p>Automatic website capture is unavailable. Registered images remain private; the folder cover stays until a verified thumbnail attachment is supported.</p>
+    </div>
+    <fieldset disabled={busy||reading}>
+      <legend>Upload a private image for this project</legend>
+      <label>Image file (PNG, JPEG, WebP; up to 5 MB)
+        <input type="file" ref={input} accept="image/png,image/jpeg,image/webp"
+          onChange={event=>{if(!pending.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');}}}/>
+      </label>
+      <label>Image alt text<textarea rows={2} maxLength={500} value={alt}
+        onChange={event=>{if(!pending.current)setAlt(event.target.value);}}/></label>
+      <p>Describe what the image shows. No repository import, website fetch or public publication occurs.</p>
+      <button type="button" className="ws-primary" disabled={!file||!alt.trim()||busy||reading}
+        onClick={()=>void upload()}>{busy?'Uploading…':error?'Retry private image upload':'Upload private image'}</button>
+    </fieldset>
+    {busy&&<p role="status">Uploading and registering private image…</p>}
+    {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
+    {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
+    <h3>Registered private images</h3>
+    {reading&&<p role="status">Checking registered images…</p>}
+    {listError&&<p role="alert" className="ws-inline-alert">{listError}</p>}
+    {records!==null&&<><p>Showing this project's images from up to 100 recent owner asset records; this is not a complete asset count.</p>
+      {records.length?<ul>{records.map(row=><li key={row.id}>{row.altText||'No description'} · {row.mime} · {Math.ceil(row.size/1024)} KB</li>)}</ul>:<p>No matching images in the loaded records.</p>}</>}
+    {receipt&&!records?.some(row=>row.id===receipt.id)&&<p>Registration acknowledged: {receipt.altText}. Not present in the current bounded list.</p>}
+    <button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void refresh()}>
+      {listError?'Retry image list':'Refresh image list'}</button>
   </section>;
 }
 
