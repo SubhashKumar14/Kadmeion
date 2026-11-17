@@ -1096,3 +1096,197 @@ test('S6 account-exit recovery single flight, transient retry and discard', asyn
   assert.equal(cleared.data,null);
   assert.equal(completions,2);
 });
+
+/** B16 C01/C04: requires composed S1 typed-media implementation. No feature-absent skip. */
+const c01Project='11111111-1111-4111-8111-111111111111';
+const c01Asset='22222222-2222-4222-8222-222222222222';
+const c01Operation='33333333-3333-4333-8333-333333333333';
+const c01Object='44444444-4444-4444-8444-444444444444';
+const c01Png=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64'));
+const c01Time='2026-11-17T00:00:00Z';
+const c01Path=user.id+'/'+c01Project+'/'+c01Operation+'.img';
+const c01Thumbnail={projectId:c01Project,ownerUserId:user.id,revision:8,publicDeliveryAllowed:false,
+  asset:{id:c01Asset,projectId:c01Project,mime:'image/png',size:c01Png.length,
+    altText:'Synthetic cover',createdAt:c01Time,objectPath:c01Path}};
+async function c01Port(http:typeof fetch){
+  const {port}=mock(async(url,init)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    return http(url,init);
+  });
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  return {port,epoch:port.getOwnerSessionEpoch()};
+}
+test('C01 typed thumbnail RPC distinguishes SQLSTATE from transport status and redacts provider messages',async()=>{
+  for(const [status,payload,code] of [
+    [500,{code:'40001',message:'REVISION_CONFLICT'},'CONFLICT'],
+    [409,{code:'40001',message:'THUMBNAIL_OPERATION_CONFLICT'},'CONFLICT'],
+    [500,{code:'XX000',message:'private provider diagnostic'},'PROVIDER_UNAVAILABLE'],
+    [403,{code:'42501',message:'private provider diagnostic'},'DENIED'],
+    [400,{code:'22023',message:'PRIVATE_THUMBNAIL_UNAVAILABLE'},'INTEGRITY'],
+    [400,{code:'22023',message:'private provider diagnostic'},'VALIDATION'],
+    [429,{message:'private provider diagnostic'},'RATE_LIMITED'],
+    [413,{message:'private provider diagnostic'},'LIMIT_EXCEEDED']
+  ] as const){
+    let count=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      assert.ok(String(url).endsWith('/rpc/set_private_project_thumbnail'));
+      assert.deepEqual(JSON.parse(String(init?.body)),{
+        p_project_id:c01Project,p_base_revision:7,p_asset_id:c01Asset,p_operation_id:c01Operation
+      });
+      count++;return json(payload,status);
+    });
+    const r=await port.setOwnerProjectThumbnail(c01Project,7,c01Asset,c01Operation,epoch);
+    assert.equal(r.data,null);assert.equal(r.error?.code,code);
+    assert.equal(r.error?.status,status);assert.equal(count,1,'no implicit CAS retry or readback on denial');
+    assert.doesNotMatch(r.error?.message??'',/private provider diagnostic|REVISION_CONFLICT|THUMBNAIL_OPERATION_CONFLICT/);
+  }
+});
+test('C01 legacy and typed Storage denials and quotas cannot register, retry or silently fall back',async()=>{
+  for(const [payload,expected] of [
+    [{statusCode:'403',message:'private provider diagnostic'},'DENIED'],
+    [{statusCode:404},'DENIED'],[{statusCode:'413'},'LIMIT_EXCEEDED'],
+    [{statusCode:'429'},'RATE_LIMITED'],[{code:'AccessDenied'},'DENIED'],
+    [{code:'NoSuchKey'},'DENIED'],[{code:'InvalidJWT'},'DENIED'],
+    [{code:'EntityTooLarge'},'LIMIT_EXCEEDED']
+  ] as const){
+    let uploads=0,unexpected=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      const u=String(url);
+      if(u.includes('/rest/v1/projects?'))return json([{id:c01Project,owner_user_id:user.id}]);
+      if(u.endsWith('/kadmeion-private-assets/'+c01Path)&&init?.method==='POST'){
+        uploads++;return json(payload,400);
+      }
+      unexpected++;return json({},503);
+    });
+    const r=await port.uploadOwnerProjectImage(c01Project,new File([c01Png],'cover.png',{type:'image/png'}),
+      'Synthetic cover',{operationId:c01Operation,expectedEpoch:epoch});
+    assert.equal(r.data,null);assert.equal(r.error?.code,expected);
+    assert.equal(r.error?.status,400);assert.equal(uploads,1);assert.equal(unexpected,0);
+    assert.doesNotMatch(r.error?.message??'',/private provider diagnostic/);
+  }
+});
+test('C01 ambiguous upload reuses exact object and bytes; changed bytes cannot register',async()=>{
+  for(const variant of ['exact','different','missing'] as const){
+    const bytes=variant==='different'?Uint8Array.from(c01Png.map((v,i)=>i===20?v^1:v)):c01Png;
+    let uploads=0,reads=0,registrations=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      const u=String(url);
+      if(u.includes('/rest/v1/projects?'))return json([{id:c01Project,owner_user_id:user.id}]);
+      if(u.endsWith('/object/kadmeion-private-assets/'+c01Path)&&init?.method==='POST'){
+        uploads++;throw Error('simulated lost response');
+      }
+      if(u.endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path)){
+        reads++;
+        if(variant==='missing')return json({code:'NoSuchKey'},400);
+        return new Response(bytes,{headers:{'content-type':'image/png','content-length':String(bytes.length)}});
+      }
+      if(u.endsWith('/rpc/register_private_project_image')){
+        registrations++;
+        assert.deepEqual(JSON.parse(String(init?.body)),{p_project_id:c01Project,p_object_path:c01Path,
+          p_mime_type:'image/png',p_byte_size:c01Png.length,p_alt_text:'Synthetic cover'});
+        return json({id:c01Asset,object_path:c01Path,storage_metadata_matched:true});
+      }
+      if(u.includes('/rest/v1/project_assets?'))return json([{id:c01Asset,owner_user_id:user.id,
+        project_id:c01Project,object_path:c01Path,mime_type:'image/png',byte_size:c01Png.length,alt_text:'Synthetic cover'}]);
+      return json({},404);
+    });
+    const result=await port.uploadOwnerProjectImage(c01Project,new File([c01Png],'cover.png',{type:'image/png'}),
+      'Synthetic cover',{operationId:c01Operation,expectedEpoch:epoch});
+    assert.equal(uploads,1);assert.equal(reads,1);
+    if(variant==='exact'){
+      assert.equal(result.error,null);assert.equal(result.data?.id,c01Asset);assert.equal(registrations,1);
+      assert.equal(result.data?.publicDeliveryAllowed,false);
+    }else{
+      assert.equal(result.data,null);assert.equal(registrations,0);
+      assert.equal(result.error?.code,variant==='different'?'CONFLICT':'PROVIDER_UNAVAILABLE');
+    }
+  }
+});
+test('C01 correct typed failures for interrupted, malformed and oversized successful response streams',async()=>{
+  for(const variant of ['interrupted','malformed','oversized'] as const){
+    const {port,epoch}=await c01Port(async()=>{
+      if(variant==='interrupted')return new Response(new ReadableStream<Uint8Array>({
+        start(c){c.error(new Error('private provider diagnostic'));}
+      }),{headers:{'content-type':'application/json'}});
+      return new Response(variant==='malformed'?'not JSON':'x'.repeat(65537),
+        {headers:{'content-type':'application/json'}});
+    });
+    const r=await port.readOwnerProjectThumbnail(c01Project,epoch);
+    assert.equal(r.data,null);
+    assert.equal(r.error?.code,variant==='interrupted'?'PROVIDER_UNAVAILABLE':'INTEGRITY');
+    assert.doesNotMatch(r.error?.message??'',/private provider diagnostic/);
+  }
+});
+test('C01 exact CAS receipt needs authoritative readback; selected bytes cannot escape after replacement',async()=>{
+  for(const variant of ['confirmed','wrong-ack','later-change'] as const){
+    let writes=0,reads=0;
+    const {port,epoch}=await c01Port(async(url)=>{
+      if(String(url).endsWith('/rpc/set_private_project_thumbnail')){
+        writes++;return json(variant==='wrong-ack'?{...c01Thumbnail,revision:9}:c01Thumbnail);
+      }
+      reads++;return json(variant==='later-change'?{...c01Thumbnail,revision:9,asset:null}:c01Thumbnail);
+    });
+    const r=await port.setOwnerProjectThumbnail(c01Project,7,c01Asset,c01Operation,epoch);
+    assert.equal(writes,1);assert.equal(reads,variant==='wrong-ack'?0:1);
+    if(variant==='confirmed'){
+      assert.equal(r.error,null);assert.equal(r.data?.revision,8);assert.equal(r.data?.asset?.id,c01Asset);
+    }else{
+      assert.equal(r.data,null);assert.equal(r.error?.code,variant==='wrong-ack'?'INTEGRITY':'CONFLICT');
+    }
+  }
+  let reads=0,downloads=0;
+  const {port,epoch}=await c01Port(async(url)=>{
+    if(String(url).endsWith('/rpc/read_private_project_thumbnail')){
+      reads++;return json(reads===1?c01Thumbnail:{...c01Thumbnail,revision:9,asset:null});
+    }
+    assert.ok(String(url).endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path));
+    downloads++;return new Response(c01Png,{headers:{'content-type':'image/png'}});
+  });
+  const bytes=await port.readOwnerProjectThumbnailImage(c01Project,c01Asset,epoch);
+  assert.equal(bytes.data,null);assert.equal(bytes.error?.code,'CONFLICT');
+  assert.equal(reads,2);assert.equal(downloads,1);
+});
+test('C04 owner private bytes are bound to scope and immutable object identity, never a trusted hash pin',async()=>{
+  for(const variant of ['valid','wrong-owner','wrong-project-path','version-race','wrong-mime','short-bytes','missing-version'] as const){
+    let metadataReads=0,downloads=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      const u=String(url);
+      const headers=init?.headers as Record<string,string>;
+      assert.equal(headers.Authorization,'Bearer '+tokens.access_token);
+      assert.equal(init?.redirect,'error');
+      if(u.includes('/rest/v1/projects?'))return json([{id:c01Project,owner_user_id:user.id}]);
+      if(u.includes('/rest/v1/project_assets?'))return json([{id:c01Asset,project_id:c01Project,
+        owner_user_id:variant==='wrong-owner'?secondUser.id:user.id,
+        object_path:variant==='wrong-project-path'?user.id+'/'+c01Asset+'/'+c01Operation+'.img':c01Path,
+        mime_type:'image/png',byte_size:c01Png.length,alt_text:'Synthetic cover',created_at:c01Time}]);
+      if(u.endsWith('/object/info/authenticated/kadmeion-private-assets/'+c01Path)){
+        metadataReads++;
+        return json({id:c01Object,name:c01Path,bucket_id:'kadmeion-private-assets',owner_id:user.id,
+          version:variant==='missing-version'?null:variant==='version-race'&&metadataReads===2?'v2':'v1',
+          last_modified:c01Time,size:c01Png.length,content_type:'image/png'});
+      }
+      if(u.endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path)){
+        downloads++;
+        return new Response(variant==='short-bytes'?c01Png.slice(0,-1):c01Png,{
+          headers:{'content-type':variant==='wrong-mime'?'text/plain':'image/png'}});
+      }
+      return json({},404);
+    });
+    const result=await port.readOwnerPrivateAsset(c01Project,c01Asset,epoch);
+    if(variant==='valid'){
+      assert.equal(result.error,null);assert.equal(result.data.serverAttestation,'NOT_VERIFIED');
+      assert.equal(result.data.publicDeliveryAllowed,false);
+      assert.equal(result.data.integrity.status,'OWNER_BYTES_VERIFIED');
+      const expected=Buffer.from(await crypto.subtle.digest('SHA-256',c01Png)).toString('hex');
+      assert.equal(result.data.integrity.computedSha256,expected);
+      assert.deepEqual(new Uint8Array(await result.data.bytes.arrayBuffer()),c01Png);
+      assert.equal(metadataReads,2);assert.equal(downloads,1);
+    }else{
+      assert.equal(result.data,null);
+      assert.equal(result.error?.code,variant==='wrong-owner'||variant==='wrong-project-path'?'DENIED':'INTEGRITY');
+      if(['wrong-owner','wrong-project-path','missing-version'].includes(variant))assert.equal(downloads,0);
+    }
+  }
+});
