@@ -579,7 +579,15 @@ export type LayoutToolsIntent=
       confirmStash:boolean;confirmOwnedRelocation:boolean})
   | {kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
       expectedRevision:number;confirmOwnedRelocation:boolean};
-type LayoutPlanFlags={requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean};
+type LayoutPlanRow={fromSlotKey:string;toSlotKey:string|null;componentId:string;
+  state:Assignment['state'];fields:string[];sourcePath?:string;sourceBytes?:number;
+  disposition:'retain'|'move'|'stash'|'relocate'};
+/** Additive details match the now-exported S3 LayoutChangePlan, without
+ * breaking the agreed flags-only structural parent interface. */
+type LayoutPlanFlags={requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean;
+  expectedRevision?:number;sectionId?:string;expectedLayout?:string;targetLayout?:string;
+  rows?:LayoutPlanRow[];targetKeys?:string[];emptyTargetKeys?:string[];stashedKeys?:string[];
+  addedFiles?:number;addedStashAssignments?:number};
 export type LayoutToolsProps={
   head:EditorHead;sectionId:string;blocked:boolean;
   planLayout:(head:EditorHead,request:LayoutMappingRequest)=>LayoutPlanFlags;
@@ -723,6 +731,15 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
       if(typeof flags.requiresStashConfirmation!=='boolean'||typeof flags.requiresOwnedRelocationConfirmation!=='boolean'){
         setMessage('The authoritative layout plan is unavailable. No change was applied.');return;
       }
+      if((flags.expectedRevision!==undefined&&flags.expectedRevision!==draft.head.revision)||
+        (flags.sectionId!==undefined&&flags.sectionId!==request.sectionId)||
+        (flags.expectedLayout!==undefined&&flags.expectedLayout!==request.expectedLayout)||
+        (flags.targetLayout!==undefined&&flags.targetLayout!==request.targetLayout)||
+        (flags.rows!==undefined&&(flags.rows.length!==request.mappings.length||
+          flags.rows.some((row,index)=>row.fromSlotKey!==request.mappings[index]?.fromSlotKey||
+            row.toSlotKey!==request.mappings[index]?.toSlotKey)))){
+        setMessage('The authoritative layout plan no longer matches the requested mapping. No change was applied.');return;
+      }
       setReview({draft,request,flags});
     }catch{
       setMessage('This mapping was rejected by the layout planner. Check compatible targets, owned source relocation, and stash limits. No change was applied.');
@@ -835,11 +852,21 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
         {review&&reviewCurrent&&<section aria-label="Layout change confirmation">
           <h4 ref={reviewTitle} tabIndex={-1}>Confirm layout transformation</h4>
           <p>Validated working revision {review.draft.head.revision}. {review.request.mappings.filter(row=>row.toSlotKey===null).length} assignments marked Unplaced.</p>
-          <ul>{review.request.mappings.map(row=><li key={row.fromSlotKey}>
-            {row.fromSlotKey} → {row.toSlotKey??'Unplaced (full assignment)'}
-            {row.toSlotKey&&row.toSlotKey!==row.fromSlotKey&&ownedAssignment(ownAssignment(review.draft.head.snapshot,row.fromSlotKey))?
-              <span> · Original owned file and outgoing assignment retained; new operation-specific file required</span>:null}
-          </li>)}</ul>
+          <ul>{review.request.mappings.map((row,index)=>{
+            const detail=review.flags.rows?.[index];
+            return <li key={row.fromSlotKey}>
+              {row.fromSlotKey} → {row.toSlotKey??'Unplaced (full assignment)'}
+              {detail&&<span> · {detail.disposition} · {detail.componentId} ({detail.state})</span>}
+              {detail&&<p>Retained fields: {detail.fields.join(', ')||'None'}</p>}
+              {detail?.sourcePath&&<p>Original source: <code>{detail.sourcePath}</code>{detail.sourceBytes===undefined?'':' · '+detail.sourceBytes+' bytes'}</p>}
+              {row.toSlotKey&&row.toSlotKey!==row.fromSlotKey&&ownedAssignment(ownAssignment(review.draft.head.snapshot,row.fromSlotKey))?
+                <span> · Original owned file and outgoing assignment retained; new operation-specific file required</span>:null}
+            </li>;
+          })}</ul>
+          {review.flags.addedFiles!==undefined&&review.flags.addedStashAssignments!==undefined&&
+            <p>Planner impact: {review.flags.addedFiles} additional owned files; {review.flags.addedStashAssignments} additional stash assignments.</p>}
+          {review.flags.emptyTargetKeys!==undefined&&
+            <p>Empty targets after change: {review.flags.emptyTargetKeys.join(', ')||'None'}.</p>}
           {review.flags.requiresStashConfirmation&&<label><input type="checkbox" checked={confirmStash}
             disabled={blocked} onChange={event=>setConfirmStash(event.target.checked)}/> Confirm preservation of outgoing assignments in Unplaced</label>}
           {review.flags.requiresOwnedRelocationConfirmation&&<>
