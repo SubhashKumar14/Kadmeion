@@ -50,7 +50,8 @@ function workspacePageTitle(path: string): string {
   const portfolio = portfolioIdFromRoute(path);
   if (portfolio && path.endsWith('/preview/fullscreen')) return 'Fullscreen portfolio preview';
   if (portfolio && path.endsWith('/preview')) return 'Portfolio preview';
-  if (releaseRoute(path)) return 'Portfolio release';
+  const release = releaseRoute(path);
+  if (release) return ({staging:'Reviewer staging',publish:'Publish preflight',releases:'Releases & rollback',share:'Sharing controls'} as const)[release.mode];
   if (portfolio) return 'Portfolio editor';
   if (isSettingsRoute(path)) return 'Account settings';
   if (isOperatorRoute(path)) return 'Restricted operations';
@@ -78,7 +79,10 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   const editorOnly=!!portfolioIdFromRoute(route)&&(route.endsWith('/edit')||route.endsWith('/preview'));
   const overview = route === '/app' || route === '/app/onboarding';
   return <div className={'ws-shell' + (editorOnly ? ' ws-editor-shell' : overview ? ' ws-overview-shell' : '')}>
-    <a className="skip-link" href="#ws-content">Skip to workspace content</a>
+    <a className="skip-link" href="#ws-content" onClick={event => {
+      const content = document.getElementById('ws-content');
+      if (content) { event.preventDefault(); content.focus(); }
+    }}>Skip to workspace content</a>
     <aside className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
       if (event.key === 'Escape' && menuOpen) {
         setMenuOpen(false);
@@ -270,8 +274,17 @@ export function WorkspaceApp() {
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
   const release = releaseRoute(route);
+  // Title follows access state independently of the existing provider gate.
   useEffect(() => {
-    document.title = workspacePageTitle(route) + ' · Kadmeion';
+    document.title = (gate.status === 'verified' ? workspacePageTitle(route) :
+      gate.status === 'checking' ? 'Verifying owner session' : 'Sign in required') + ' · Kadmeion';
+  }, [route, gate.status]);
+  useEffect(() => {
+    if (gate.status === 'locked' && document.activeElement === document.body) {
+      document.getElementById('ws-content')?.focus();
+    }
+  }, [gate.status]);
+  useEffect(() => {
     let cancelled = false;
     let attempt = 0;
     let unsubscribe = () => {};
@@ -371,9 +384,14 @@ export function WorkspaceApp() {
     }
   }
   if (gate.status === 'checking') return <main id="ws-content" className="ws-gate" role="main" aria-busy="true">
+    <h1>Verifying owner session…</h1>
     <p role="status">Verifying your owner session with the authentication service…</p>
+    <div className="glyph-skeleton" aria-hidden="true">
+      <span className="glyph-skeleton-line is-medium"/>
+      <span className="glyph-skeleton-line is-short"/>
+    </div>
   </main>;
-  if (gate.status === 'locked') return <main id="ws-content" className="ws-gate" role="main">
+  if (gate.status === 'locked') return <main id="ws-content" className="ws-gate" role="main" tabIndex={-1}>
     <p className="ws-kicker">OWNER ACCESS REQUIRED</p>
     <h1>Sign in required.</h1>
     <p role="alert">{gate.message}</p>
@@ -400,10 +418,26 @@ export function WorkspaceApp() {
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div aria-hidden="true">
-        <div className="ws-skeleton-heading">◩ ◿ ◬ ◜ ◩ ◿ ◬</div>
-        <div className="ws-skeleton-grid">
-          {[0, 1, 2].map(index => <span key={index}>◩ ◿ ◬<br/>◜ ◩ ◿ ◬ ◜</span>)}
+        <div className="ws-skeleton-heading glyph-skeleton">
+          <span className="glyph-skeleton-line is-title"/>
+          <span className="glyph-skeleton-line"/>
+          <span className="glyph-skeleton-line is-medium"/>
         </div>
+        <div className="ws-skeleton-grid">
+          {[0, 1, 2].map(index => <div className="glyph-skeleton" key={index}>
+            <span className="glyph-skeleton-line is-label"/>
+            <span className="glyph-skeleton-line"/>
+            <span className="glyph-skeleton-line is-medium"/>
+            <span className="glyph-skeleton-line is-short"/>
+          </div>)}
+        </div>
+        {route === '/app' && <div className="ws-recent-grid">
+          {[0,1].map(index=><div className="glyph-skeleton" key={index}>
+            <span className="glyph-skeleton-line is-medium"/>
+            <span className="glyph-skeleton-line"/>
+            <span className="glyph-skeleton-line is-short"/>
+          </div>)}
+        </div>}
       </div>
     </section> : snapshot.status === 'error' ? <section className="ws-error">
       <h1>Private records unavailable.</h1><p role="alert">{snapshot.message}</p>
