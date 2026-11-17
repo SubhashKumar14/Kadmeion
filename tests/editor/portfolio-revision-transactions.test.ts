@@ -500,6 +500,12 @@ test('C10 legacy owned CSS or unknown pin may stash without relocation; overflow
   assert.equal(result.snapshot.slots[p+'cta'].state,'EMPTY');
   assert.deepEqual(result.snapshot.stashes[key].at(-1),before.snapshot.slots[key]);
   assert.equal(result.snapshot.files[css],before.snapshot.files[css]);
+  const unknown=structuredClone(head);
+  unknown.snapshot.slots[key]={state:'S0',componentId:'unknown-legacy@1',content:{label:'Never coerce unknown pin'}};
+  assert.throws(()=>planSectionLayoutChange(unknown,request),{code:'VALIDATION'});
+  const unknownStashed=c10Apply(unknown,stash);
+  assert.deepEqual(unknownStashed.snapshot.stashes[key].at(-1),unknown.snapshot.slots[key]);
+  assert.equal(unknownStashed.snapshot.slots[p+'cta'].state,'EMPTY');
   const tooMany=structuredClone(head);
   for(let i=Object.keys(tooMany.snapshot.files).length;i<100;i++)
     tooMany.snapshot.files['content/file-'+i+'.content.json']='{}';
