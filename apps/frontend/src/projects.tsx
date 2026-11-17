@@ -354,7 +354,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       <p className="ws-project-count" role="status">
         Showing {hasFilters ? filtered.length+' matching of ' : ''}{state.items.length} loaded private {state.items.length===1?'project':'projects'}.
         {state.nextCursor
-          ? ' More projects are available. Search, filters and sorting apply only to loaded records.'
+          ? ' More projects are available. Search and sorting apply only to loaded records; link filters also cover loaded records only.'
           : ' All pages currently available were loaded; refresh if your projects changed.'}
       </p>
       {filtered.length===0?<div className="ws-project-empty-layout">
@@ -688,17 +688,19 @@ function PrivateProjectImages({port,projectId,onPending}:{
   const [records,setRecords]=useState<RegisteredProjectImage[]|null>(null);
   const [receipt,setReceipt]=useState<RegisteredProjectImage|null>(null);
   const [busy,setBusy]=useState(false);
-  const [reading,setReading]=useState(false);
+  const [reading,setReading]=useState(true);
   const [error,setError]=useState('');
   const [listError,setListError]=useState('');
   const [notice,setNotice]=useState('');
+  const [ambiguous,setAmbiguous]=useState(false);
+  const [confirmRetry,setConfirmRetry]=useState(false);
   const input=useRef<HTMLInputElement>(null);
-  const pending=useRef(false);
+  const pending=useRef(true);
   const generation=useRef(0);
   const liveEpoch=useRef(port.getOwnerSessionEpoch());
   const current=(attempt:number)=>attempt===generation.current && liveEpoch.current===port.getOwnerSessionEpoch();
   const clearPrivate=()=>{
-    setRecords(null);setReceipt(null);setFile(null);setAlt('');setNotice('');
+    setRecords(null);setReceipt(null);setFile(null);setAlt('');setNotice('');setAmbiguous(false);setConfirmRetry(false);
     if(input.current)input.current.value='';
   };
   async function readImages(attempt:number){
@@ -714,10 +716,11 @@ function PrivateProjectImages({port,projectId,onPending}:{
   useEffect(()=>{
     const attempt=++generation.current;
     liveEpoch.current=port.getOwnerSessionEpoch();
+    pending.current=true;
     setReading(true);
     void readImages(attempt).catch(()=>{
       if(current(attempt))setListError('Private image records are unavailable. Retry the list.');
-    }).finally(()=>{if(current(attempt))setReading(false);});
+    }).finally(()=>{if(attempt===generation.current){pending.current=false;setReading(false);if(!current(attempt))clearPrivate();}});
     return ()=>{generation.current++;pending.current=false;};
   },[port,projectId]);
   async function refresh(){
@@ -727,15 +730,15 @@ function PrivateProjectImages({port,projectId,onPending}:{
     const attempt=++generation.current;
     try{await readImages(attempt);}
     catch{if(current(attempt))setListError('Private image records are unavailable. Retry the list.');}
-    finally{if(attempt===generation.current){pending.current=false;setReading(false);}}
+    finally{if(attempt===generation.current){pending.current=false;setReading(false);if(!current(attempt))clearPrivate();}}
   }
   async function upload(){
-    if(pending.current||reading||!file)return;
+    if(pending.current||reading||!file||(ambiguous&&!confirmRetry))return;
     if(liveEpoch.current!==port.getOwnerSessionEpoch()){clearPrivate();setError('Your owner session changed. Reopen the project.');return;}
     if(!imageTypes.includes(file.type)||file.size<12||file.size>5242880||!alt.trim()||alt.length>500){
       setError('Choose a PNG, JPEG or WebP image up to 5 MB and enter descriptive alt text.');return;
     }
-    pending.current=true;setBusy(true);onPending(true);setError('');setNotice('');
+    pending.current=true;setBusy(true);onPending(true);setError('');setNotice('');setConfirmRetry(false);
     const attempt=++generation.current, submitted=file, description=alt.trim();
     try{
       const result=await port.uploadOwnerProjectImage(projectId,submitted,description);
@@ -743,17 +746,18 @@ function PrivateProjectImages({port,projectId,onPending}:{
       const row=result.data;
       if(result.error||!row||row.projectId!==projectId||row.mime!==submitted.type||
          row.size!==submitted.size||row.altText!==description||row.verifiedMetadata!==true||row.publicDeliveryAllowed!==false){
+        setAmbiguous(true);
         setError(result.error?.message??'Image registration could not be confirmed. Check saved images before retrying; an interrupted upload may leave private bytes.');
         return;
       }
-      setReceipt(row);setFile(null);setAlt('');
+      setReceipt(row);setFile(null);setAlt('');setAmbiguous(false);
       if(input.current)input.current.value='';
       setNotice('Private image registered. It is not yet attached as the project cover.');
       // Recheck persisted metadata separately; a list failure does not re-upload.
       try{await readImages(attempt);}catch{
         if(current(attempt))setListError('Upload was acknowledged, but the image list could not be refreshed. Retry the list, not the upload.');
       }
-    }catch{if(current(attempt))setError('Private image upload could not be verified. Check saved images before retrying.');}
+    }catch{if(current(attempt)){setAmbiguous(true);setError('Private image upload could not be verified. Check saved images before retrying.');}}
     finally{
       if(attempt===generation.current){
         pending.current=false;setBusy(false);onPending(false);
@@ -772,19 +776,20 @@ function PrivateProjectImages({port,projectId,onPending}:{
       <legend>Upload a private image for this project</legend>
       <label>Image file (PNG, JPEG, WebP; up to 5 MB)
         <input type="file" ref={input} accept="image/png,image/jpeg,image/webp"
-          onChange={event=>{if(!pending.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');}}}/>
+          onChange={event=>{if(!pending.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');setConfirmRetry(false);}}}/>
       </label>
       <label>Image alt text<textarea rows={2} maxLength={500} value={alt}
         onChange={event=>{if(!pending.current)setAlt(event.target.value);}}/></label>
       <p>Describe what the image shows. No repository import, website fetch or public publication occurs.</p>
-      <button type="button" className="ws-primary" disabled={!file||!alt.trim()||busy||reading}
+      {ambiguous&&<label className="ws-profile-check"><input type="checkbox" checked={confirmRetry}
+        onChange={event=>setConfirmRetry(event.target.checked)}/> I checked the registered images and understand another upload may create an extra private asset.</label>}
+      <button type="button" className="ws-primary" disabled={!file||!alt.trim()||busy||reading||(ambiguous&&!confirmRetry)}
         onClick={()=>void upload()}>{busy?'Uploading…':error?'Retry private image upload':'Upload private image'}</button>
     </fieldset>
-    {busy&&<p role="status">Uploading and registering private image…</p>}
+    <div aria-live="polite">{busy&&<p>Uploading and registering private image…</p>}{notice&&<p className="ws-inline-alert">{notice}</p>}</div>
     {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
-    {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     <h3>Registered private images</h3>
-    {reading&&<p role="status">Checking registered images…</p>}
+    <div aria-live="polite">{reading&&<p>Checking registered images…</p>}</div>
     {listError&&<p role="alert" className="ws-inline-alert">{listError}</p>}
     {records!==null&&<><p>Showing this project's images from up to 100 recent owner asset records; this is not a complete asset count.</p>
       {records.length?<ul>{records.map(row=><li key={row.id}>{row.altText||'No description'} · {row.mime} · {Math.ceil(row.size/1024)} KB</li>)}</ul>:<p>No matching images in the loaded records.</p>}</>}

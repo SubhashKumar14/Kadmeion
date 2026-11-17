@@ -340,9 +340,8 @@ function PrivateProfileLinks({port}:{port:SupabaseBrowserAuthPort}){
   return <section className="ws-project-fields" aria-labelledby="profile-private-links-title">
     <h2 id="profile-private-links-title">Private platform links</h2>
     <p>Personal handles only. No OAuth connection, provider verification, metrics sync or public exposure.</p>
-    {busy&&<p role="status">Checking private links…</p>}
-    {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
-    {notice&&<p role="status">{notice}</p>}
+    <div aria-live="polite">{busy&&<p>Checking private links…</p>}{notice&&<p>{notice}</p>}</div>
+    {error&&<p role="alert" className="ws-inline-alert">{error}</p>
     {records!==null&&<>
       {records.length?<ul>{records.map(row=><li key={row.id}>
         <strong>{profileProviders.find(item=>item.id===row.provider)?.label}</strong>{' '}
