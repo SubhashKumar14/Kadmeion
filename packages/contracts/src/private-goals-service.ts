@@ -57,10 +57,11 @@ function timestamp(value:unknown):value is string {
 function instantMicros(value:unknown):bigint|null{
   if(typeof value!=='string')return null;
   const match=/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,6}))?(Z|[+-]\d\d:\d\d)$/.exec(value);
-  if(!match||!date(match[1].slice(0,10)))return null;
-  const milliseconds=Date.parse(match[1]+match[3]);
+  const whole=match?.[1],zone=match?.[3];
+  if(!whole||!zone||!date(whole.slice(0,10)))return null;
+  const milliseconds=Date.parse(whole+zone);
   if(!Number.isFinite(milliseconds))return null;
-  return BigInt(milliseconds)*1000n+BigInt((match[2]??'').padEnd(6,'0')||'0');
+  return BigInt(milliseconds)*1000n+BigInt((match?.[2]??'').padEnd(6,'0')||'0');
 }
 function numeric(value:unknown):value is number {
   return typeof value==='number'&&Number.isFinite(value)&&value>=0&&
@@ -127,8 +128,9 @@ export class SupabasePrivateGoalsService {
   private readonly key:string;
   private readonly token:()=>Promise<string|null>;
   private readonly http:typeof fetch;
+  private readonly ownerId:string|undefined;
   constructor(endpoint:string,publishableKey:string,token:()=>Promise<string|null>,
-    http:typeof fetch=fetch,private readonly ownerId?:string){
+    http:typeof fetch=fetch,ownerId?:string){
     let url:URL;
     try{url=new URL(endpoint);}catch{throw new PrivateGoalsError('VALIDATION');}
     if((url.protocol!=='https:'&&!(url.protocol==='http:'&&
@@ -139,7 +141,7 @@ export class SupabasePrivateGoalsService {
     if(!isSafeSupabaseClientKey(publishableKey))
       throw new PrivateGoalsError('VALIDATION');
     if(ownerId!==undefined&&!validId(ownerId))throw new PrivateGoalsError('VALIDATION');
-    this.origin=url.origin;this.key=publishableKey;this.token=token;this.http=http;
+    this.origin=url.origin;this.key=publishableKey;this.token=token;this.http=http;this.ownerId=ownerId;
   }
   private async send(path:string,method:'GET'|'POST'|'PATCH'|'DELETE',
     body?:Record<string,unknown>):Promise<unknown> {
