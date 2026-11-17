@@ -1862,6 +1862,9 @@ test('B08/WF-025: real GoTrue identity, private versions and replay-safe compone
 
 test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes (migration mandatory)',
   {timeout:120_000},async()=>{
+  // Two distinct, independently decoded, CRC-valid PNGs. Do not use the older synthetic byte fixture.
+  const thumbnailPng=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64'));
+  const replacementPng=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP44Kb8HwAF3AJZlf4qbQAAAABJRU5ErkJggg==','base64'));
   const owner=await adminUser('thumb-owner'), stranger=await adminUser('thumb-stranger');
   const createProject=async(actor)=>{
     const rows=successful(await send('/rest/v1/projects?select=id,revision,owner_user_id',{
@@ -1886,7 +1889,7 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   assert.equal(before.projectId,project.id);
   assert.equal(before.revision,project.revision);
   assert.equal(before.asset,null);assert.equal(before.publicDeliveryAllowed,false);
-  const register=async(actor,p,bytes=png)=>{
+  const register=async(actor,p,bytes=thumbnailPng)=>{
     const objectPath=actor.id+'/'+p.id+'/'+randomUUID()+'.png';
     const uploadPath='/storage/v1/object/'+bucket+'/'+objectPath;
     successful(await send(uploadPath,{...bearer(actor),method:'POST',
@@ -1925,7 +1928,7 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   const attached=successful(await set(input),'Attach valid owner thumbnail');
   assert.equal(attached.revision,before.revision+1);
   assert.equal(attached.asset.id,first.id);assert.equal(attached.asset.objectPath,first.path);
-  assert.equal(attached.asset.mime,'image/png');assert.equal(attached.asset.size,png.length);
+  assert.equal(attached.asset.mime,'image/png');assert.equal(attached.asset.size,thumbnailPng.length);
   assert.equal(attached.asset.altText,'Synthetic thumbnail');
   assert.equal(attached.publicDeliveryAllowed,false);
   assert.deepEqual(successful(await set(input),'Replay exact thumbnail operation'),attached);
@@ -1936,17 +1939,17 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   const owned=await send(download,bearer(owner));
   assert.ok(owned.ok,'Owner private-byte read failed');
   assert.match(owned.headers.get('content-type')??'',/^image\/png(?:;|$)/i);
-  assert.equal(owned.bytes.length,png.length);
-  assert.equal(createHash('sha256').update(owned.bytes).digest('hex'),createHash('sha256').update(png).digest('hex'));
-  assert.deepEqual(owned.bytes,png);
+  assert.equal(owned.bytes.length,thumbnailPng.length);
+  assert.equal(createHash('sha256').update(owned.bytes).digest('hex'),createHash('sha256').update(thumbnailPng).digest('hex'));
+  assert.deepEqual(owned.bytes,thumbnailPng);
   assert.ok(!(await send(download,bearer(stranger))).ok,'Foreign private-byte read');
   assert.ok(!(await send(download)).ok,'Anonymous authenticated-path private-byte read');
   assert.ok(!(await send('/storage/v1/object/public/'+bucket+'/'+first.path)).ok,'Public-path private-byte read');
   assert.ok(!(await send(first.uploadPath,{...bearer(owner),method:'POST',
-    headers:{'Content-Type':'image/png','x-upsert':'true'},body:Uint8Array.of(1,2,3)})).ok,
+    headers:{'Content-Type':'image/png','x-upsert':'true'},body:replacementPng})).ok,
     'Owner overwrite must not mutate immutable uploaded bytes');
   const afterOverwrite=await send(download,bearer(owner));
-  assert.ok(afterOverwrite.ok);assert.deepEqual(afterOverwrite.bytes,png);
+  assert.ok(afterOverwrite.ok);assert.deepEqual(afterOverwrite.bytes,thumbnailPng);
   for(const [column,value] of [['thumbnail_asset_id',null],['thumbnail_operation_id',randomUUID()],
     ['thumbnail_operation_base_revision',0]]){
     denied(await send('/rest/v1/projects?id=eq.'+project.id,{
@@ -1958,10 +1961,14 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
     thumbnail_asset_id:first.id,thumbnail_operation_id:randomUUID(),thumbnail_operation_base_revision:0
   }}),'42501','Direct managed-column insert');
   assert.deepEqual(successful(await read(),'Prior cover retained after denials'),attached);
-  const replacement=await register(owner,project);
+  const replacement=await register(owner,project,replacementPng);
   const replaced=successful(await set({...input,p_asset_id:replacement.id,
     p_base_revision:attached.revision,p_operation_id:randomUUID()}),'Replace thumbnail');
   assert.equal(replaced.revision,attached.revision+1);assert.equal(replaced.asset.id,replacement.id);
+  const replacementRead=await send('/storage/v1/object/authenticated/'+bucket+'/'+replacement.path,bearer(owner));
+  assert.ok(replacementRead.ok);assert.deepEqual(replacementRead.bytes,replacementPng);
+  assert.notEqual(createHash('sha256').update(replacementRead.bytes).digest('hex'),
+    createHash('sha256').update(thumbnailPng).digest('hex'),'Replacement must contain different bytes');
   denied(await set(input),'40001','Superseded replay cannot restore old cover');
   const detach={...input,p_asset_id:null,p_base_revision:replaced.revision,p_operation_id:randomUUID()};
   const detached=successful(await set(detach),'Detach thumbnail');
@@ -1969,7 +1976,7 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   assert.deepEqual(successful(await set(detach),'Replay exact detach'),detached);
   assert.deepEqual(successful(await read(),'Reload detached thumbnail'),detached);
   const retained=await send(download,bearer(owner));assert.ok(retained.ok);
-  assert.deepEqual(retained.bytes,png,'Detach is not destructive byte deletion');
+  assert.deepEqual(retained.bytes,thumbnailPng,'Detach is not destructive byte deletion');
   // Browser-computed byte equality is NOT a trusted server attestation;
   // independently existing server-attestation tests remain mandatory.
 });
