@@ -11,6 +11,24 @@ const previewFields: {key: PreviewField; label: string}[] = [
   {key: 'displayName', label: 'Display name'}, {key: 'headline', label: 'Headline'}, {key: 'bio', label: 'About you'}
 ];
 
+// Match owner_save_profile_draft's btrim (space only) and ordered private skills.
+const trimProfileSpaces=(value:string)=>value.replace(/^ +| +$/g,'');
+function canonicalProfileDraft(profile:OwnerProfile){
+  return {displayName:trimProfileSpaces(profile.displayName),headline:trimProfileSpaces(profile.headline),
+    bio:trimProfileSpaces(profile.bio),skills:profile.skills.map(trimProfileSpaces)};
+}
+function equalProfileFields(a:ReturnType<typeof canonicalProfileDraft>,b:ReturnType<typeof canonicalProfileDraft>){
+  return a.displayName===b.displayName&&a.headline===b.headline&&a.bio===b.bio&&
+    a.skills.length===b.skills.length&&a.skills.every((skill,index)=>skill===b.skills[index]);
+}
+function profileDraftError(profile:OwnerProfile){
+  const value=canonicalProfileDraft(profile);
+  if(!value.displayName.trim()||value.displayName.length>80)return 'Enter a display name of up to 80 characters.';
+  if(value.headline.length>160||value.bio.length>2000||value.skills.length>20||
+    value.skills.some(skill=>!skill.trim()||skill.length>40))return 'Check the length of your profile fields and skills.';
+  return '';
+}
+
 export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [saved, setSaved] = useState<OwnerProfile | null>(null);
   const [draft, setDraft] = useState<OwnerProfile | null>(null);
@@ -64,23 +82,59 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [needsReload, setNeedsReload] = useState(false);
   const [reloadFailed, setReloadFailed] = useState(false);
+  const [autosave,setAutosave]=useState(false);
+  const [activeSaveMode,setActiveSaveMode]=useState<'manual'|'auto'|null>(null);
+  const [latestProfile,setLatestProfile]=useState<OwnerProfile|null>(null);
+  const [checkingLatest,setCheckingLatest]=useState(false);
+  const [confirmRebase,setConfirmRebase]=useState(false);
+  const [uncertainSave,setUncertainSave]=useState<ReturnType<typeof canonicalProfileDraft>|null>(null);
+  const [sessionExpired,setSessionExpired]=useState(false);
+  const profileEpoch=useRef(port.getOwnerSessionEpoch());
+  const profileLifetime=useRef(0);
+  const autoTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const autoEnabled=useRef(false);
+  function cancelScheduledSave(){
+    if(autoTimer.current!==null)clearTimeout(autoTimer.current);
+    autoTimer.current=null;
+  }
+  function stopAutosave(){autoEnabled.current=false;cancelScheduledSave();setAutosave(false);}
+  function expireProfile(){
+    stopAutosave();invalidateProjection();setSaved(null);setDraft(null);setSkill('');setSkillError('');
+    setLatestProfile(null);setUncertainSave(null);setConfirmRebase(false);setWithdrawal(false);
+    setBusy(false);setActiveSaveMode(null);setLoadingProfile(false);setCheckingLatest(false);
+    setNeedsReload(true);setSessionExpired(true);setNotice('');setError('Your owner session changed. Reopen your profile.');
+  }
+  function validEpoch(){
+    return profileEpoch.current===port.reconcileOwnerSessionEpoch();
+  }
+  useEffect(()=>{
+    profileEpoch.current=port.getOwnerSessionEpoch();
+    profileLifetime.current++;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next!==profileEpoch.current){profileLifetime.current++;operationPending.current=true;expireProfile();}
+    });
+    return ()=>{profileLifetime.current++;autoEnabled.current=false;cancelScheduledSave();unsubscribe();};
+  },[port]);
   // A ref closes the synchronous gap before React commits disabled controls.
   const operationPending = useRef(true);
-  const locked = busy || loadingProfile;
+  const locked = busy || loadingProfile || checkingLatest || sessionExpired;
 
   useEffect(() => {
     let active = true;
+    const lifetime=profileLifetime.current;
+    const current=()=>active&&lifetime===profileLifetime.current&&validEpoch();
     operationPending.current = true;
     setLoadingProfile(true);
     const failRead = (message: string) => {
-      if (!active) return;
+      if (!current()) return;
       setError(message);
       setNeedsReload(true);
       setReloadFailed(true);
       // Keep the current saved baseline, draft and unadded skill on failure.
     };
+    if(!current())return;
     void port.readOwnerProfile().then(({data, error}) => {
-      if (!active) return;
+      if (!current()) return;
       if (!data || error) { failRead(error?.message ?? 'Private profile is unavailable.'); return; }
       setSaved(data);
       setDraft(data);
@@ -90,10 +144,11 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       setWithdrawal(false);
       setNeedsReload(false);
       setReloadFailed(false);
+      setLatestProfile(null);setUncertainSave(null);setConfirmRebase(false);
     }).catch(() => {
       failRead('Could not reach your private profile. Retry when your connection is restored.');
     }).finally(() => {
-      if (active) {
+      if (current()) {
         operationPending.current = false;
         setLoadingProfile(false);
       }
@@ -102,7 +157,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   }, [port, retry]);
 
   function requestReload() {
-    if (operationPending.current) return;
+    if (operationPending.current||!validEpoch()) return;
+    stopAutosave();setLatestProfile(null);setConfirmRebase(false);
     operationPending.current = true;
     invalidateProjection();
     setLoadingProfile(true);
@@ -113,7 +169,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   }
 
   function edit(field: PreviewField, value: string) {
-    if (operationPending.current) return;
+    if (operationPending.current||!validEpoch()) return;
+    cancelScheduledSave();setLatestProfile(null);setConfirmRebase(false);
     setDraft(current => current ? {...current, [field]: value} : current);
     setWithdrawal(false);
     setNotice('');
@@ -121,7 +178,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
 
   function addSkill() {
     const value = skill.trim();
-    if (operationPending.current || !draft || !value) return;
+    if (operationPending.current || !draft || !value || !validEpoch()) return;
+    cancelScheduledSave();setLatestProfile(null);setConfirmRebase(false);
     if (draft.skills.length >= 20) {
       setSkillError('You can list up to 20 skills.');
       return;
@@ -137,41 +195,113 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     setNotice('');
   }
 
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!saved || !draft || operationPending.current || needsReload) return;
-    if (!draft.displayName.trim()) { setError('Enter a display name before saving.'); setPanel('Profile'); return; }
-    operationPending.current = true;
-    invalidateProjection();
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      const {displayName, headline, bio, skills} = draft;
-      const result = await port.saveOwnerProfile(saved, {displayName, headline, bio, skills}, withdrawal);
-      if (!result.data || result.error) {
-        const message = result.error?.message ?? 'Profile save could not be confirmed.';
-        setError(message);
-        if (message.includes('another session') ||
-            message === 'Private workspace conflict. Reload the latest data before trying again.') setNeedsReload(true);
-        return;
-      }
-      setSaved(result.data);
-      setDraft(result.data);
-      setWithdrawal(false);
-      setNotice('Private profile draft saved.');
-    } catch {
-      setError('Private profile save could not be verified. Your edits are still here.');
-    } finally {
-      operationPending.current = false;
-      setBusy(false);
+  // A failed CAS or uncertain receipt pauses the timer. A new save requires
+  // a verified baseline; never use a retry that silently rebases the draft.
+  function pauseForReview(message:string,desired:ReturnType<typeof canonicalProfileDraft>|null){
+    stopAutosave();setError(message);setNeedsReload(true);setUncertainSave(desired);
+    setLatestProfile(null);setConfirmRebase(false);setWithdrawal(false);
+  }
+  async function persistProfile(mode:'manual'|'auto'){
+    cancelScheduledSave();
+    if(!saved||!draft||operationPending.current||needsReload||!validEpoch())return;
+    if(mode==='auto'&&(!autoEnabled.current||withdrawal))return;
+    const validation=profileDraftError(draft);
+    if(validation){if(mode==='manual'){setError(validation);setPanel('Profile');}return;}
+    const desired=canonicalProfileDraft(draft),expected={...saved,skills:[...saved.skills]};
+    if(equalProfileFields(expected,desired)){
+      setDraft({...saved,skills:[...saved.skills]});setError('');setNotice('');return;
     }
+    const lifetime=profileLifetime.current,current=()=>lifetime===profileLifetime.current&&validEpoch();
+    operationPending.current=true;
+    invalidateProjection();setBusy(true);setActiveSaveMode(mode);setError('');setNotice('');
+    try{
+      // SQL rejects a public-field write with a live projection unless an
+      // explicit manual confirmation is passed. Autosave always sends false.
+      const result=await port.saveOwnerProfile(expected,desired,mode==='manual'&&withdrawal);
+      if(!current())return;
+      if(result.error||!result.data){
+        const message=result.error?.message??'Profile save could not be confirmed.';
+        if(/Confirm withdrawal/i.test(message)){
+          stopAutosave();setWithdrawal(false);setError(message);return;
+        }
+        if(authoredLinkDenial(message)){
+          stopAutosave();setNotice('');setError(message);setNeedsReload(true);return;
+        }
+        pauseForReview(message,desired);return;
+      }
+      if(!equalProfileFields(result.data,desired)){
+        pauseForReview('Profile save receipt did not match the requested draft. Check the latest saved profile.',desired);return;
+      }
+      // The response is the authenticated transactional CAS receipt. It is
+      // the last acknowledged version, not a promise of current public state.
+      setSaved(result.data);setDraft(result.data);setWithdrawal(false);
+      setLatestProfile(null);setConfirmRebase(false);setUncertainSave(null);
+      setNotice(mode==='auto'?'Private profile draft autosaved.':'Private profile draft saved.');
+    }catch{
+      if(current())pauseForReview('Private profile save could not be verified. Your edits are still here.',desired);
+    }finally{
+      if(current()){operationPending.current=false;setBusy(false);setActiveSaveMode(null);}
+    }
+  }
+  function save(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();void persistProfile('manual');
+  }
+  async function checkLatestProfile(){
+    if(operationPending.current||!saved||!draft||!validEpoch())return;
+    stopAutosave();invalidateProjection();setWithdrawal(false);
+    operationPending.current=true;setCheckingLatest(true);setLatestProfile(null);setConfirmRebase(false);setNotice('');
+    const lifetime=profileLifetime.current,current=()=>lifetime===profileLifetime.current&&validEpoch();
+    try{
+      const result=await port.readOwnerProfile();
+      if(!current())return;
+      if(result.error||!result.data){
+        setError('Latest private profile could not be verified. Your unsaved draft is retained.');return;
+      }
+      const latest=result.data;
+      if(uncertainSave&&equalProfileFields(latest,uncertainSave)&&equalProfileFields(canonicalProfileDraft(draft),uncertainSave)){
+        setSaved(latest);setDraft(latest);setNeedsReload(false);setUncertainSave(null);setReloadFailed(false);
+        setError('');setNotice('Requested private draft is confirmed saved. No additional write was made.');return;
+      }
+      if(equalProfileFields(latest,saved)&&latest.handle===saved.handle){
+        setSaved(latest);setNeedsReload(false);setUncertainSave(null);setReloadFailed(false);
+        setError('');setNotice('Saved profile is unchanged. Your edits are retained; save explicitly.');return;
+      }
+      setLatestProfile(latest);setNeedsReload(true);
+      setError('Your profile changed in another session. Compare the saved fields before choosing how to continue.');
+    }catch{
+      if(current())setError('Latest private profile check failed. Your draft is retained.');
+    }finally{
+      if(current()){operationPending.current=false;setCheckingLatest(false);}
+    }
+  }
+  function resolveProfileComparison(keepDraft:boolean){
+    if(operationPending.current||!latestProfile||!validEpoch()||(keepDraft&&!confirmRebase))return;
+    stopAutosave();setSaved(latestProfile);setDraft(current=>keepDraft&&current?{...current,handle:latestProfile.handle}:latestProfile);
+    setLatestProfile(null);setConfirmRebase(false);setUncertainSave(null);setNeedsReload(false);setReloadFailed(false);
+    setError('');setWithdrawal(false);
+    setNotice(keepDraft?'Latest saved fields loaded as the comparison baseline. Your edits still need an explicit save.':
+      'Latest saved profile loaded; unsaved edits discarded.');
   }
 
   const dirty = !!(saved && draft && (
     saved.displayName !== draft.displayName || saved.headline !== draft.headline ||
     saved.bio !== draft.bio || saved.skills.join('\u0000') !== draft.skills.join('\u0000')
   ));
+  // Opt-in is scoped to the mounted verified workspace. Never schedule a
+  // request on a stale owner, a failed/ambiguous save, or confirmed withdrawal.
+  useEffect(()=>{
+    cancelScheduledSave();
+    if(!autosave||!autoEnabled.current||!dirty||!draft||locked||needsReload||withdrawal||latestProfile||
+      profileDraftError(draft)||!validEpoch())return;
+    autoTimer.current=setTimeout(()=>{autoTimer.current=null;void persistProfile('auto');},1200);
+    return cancelScheduledSave;
+  },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port]);
+  useEffect(()=>{
+    if(!dirty&&!skill.trim()&&!busy&&!checkingLatest)return;
+    const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
+    window.addEventListener('beforeunload',warn);
+    return ()=>window.removeEventListener('beforeunload',warn);
+  },[dirty,skill,busy,checkingLatest]);
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
   const preview=projectionMode==='preferences'?projectionSnapshot:previewSaved?saved:draft;
   const previewSelection=projectionMode==='preferences'?(projectionFields??[]):visible;
@@ -184,7 +314,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           <h1 id="profile-title">Your developer profile.</h1>
           <p>Edit your draft and preview the fields visitors could see.</p>
         </div>
-        <button type="submit" className="ws-primary" disabled={locked || needsReload || !draft || !dirty}>{busy ? 'Saving…' : 'Save profile draft'}</button>
+        <button type="submit" className="ws-primary" disabled={locked || needsReload || !draft || !dirty}>{busy ? activeSaveMode==='auto'?'Autosaving…':'Saving…' : 'Save profile draft'}</button>
       </div>
       <div className="ws-profile-tabs" role="group" aria-label="Profile sections">
         {['Profile', 'Skills & links', 'Visibility', 'Public preview'].map(item =>
@@ -192,10 +322,21 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       </div>
       {error && <div role="alert" className="ws-inline-alert">{error}</div>}
       {notice && <div role="status" className="ws-inline-alert">{notice}</div>}
+      {draft&&<div className="ws-project-fields">
+        <label className="ws-profile-check"><input type="checkbox" checked={autosave}
+          disabled={locked||needsReload||withdrawal} onChange={event=>{
+            if(operationPending.current||!validEpoch())return;
+            if(event.target.checked){autoEnabled.current=true;setAutosave(true);}
+            else stopAutosave();
+          }}/> Autosave private profile fields</label>
+        <p>Off by default each time this editor opens. Only name, headline, bio and skills are saved after a short pause; links save separately. Autosave never confirms publication withdrawal. Unsaved edits stay in this editor, not offline storage.</p>
+        {autosave&&dirty&&!busy&&<p>{profileDraftError(draft)||'Unsaved private edits will be saved after you stop editing.'}</p>}
+      </div>}
       {dirty && <div className="ws-unsaved-line" role="status">
         <span>Unsaved private changes</span>
         <button type="button" className="ws-text-action" disabled={locked} onClick={() => {
-          if (operationPending.current) return;
+          if (operationPending.current||!validEpoch()) return;
+          cancelScheduledSave();setLatestProfile(null);setConfirmRebase(false);
           if (saved) setDraft({...saved, skills:[...saved.skills]});
           setWithdrawal(false); if (!needsReload) setError(''); setNotice('');
         }}>Discard changes</button>
@@ -203,15 +344,29 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       {loadingProfile && <p role="status">{draft
         ? 'Loading the latest private draft… Your edits are retained until the read succeeds.'
         : 'Loading your private profile…'}</p>}
-      {!draft && error && !loadingProfile && <button type="button" className="ws-secondary" disabled={locked} onClick={requestReload}>Retry profile</button>}
+      {!draft && error && !loadingProfile && !sessionExpired && <button type="button" className="ws-secondary" disabled={locked} onClick={requestReload}>Retry profile</button>}
       {draft && needsReload && !loadingProfile && <>
-        <p>Load the latest saved draft before saving again. Your current edits will be replaced only after a successful read.</p>
+        <p>Check the latest saved draft before saving again. You can compare without discarding your edits, or explicitly reload the saved draft.</p>
+        <button type="button" className="ws-secondary" disabled={locked} onClick={()=>void checkLatestProfile()}>{checkingLatest?'Checking…':'Compare latest saved profile'}</button>
         <button type="button" className="ws-secondary" disabled={locked} onClick={requestReload}>
           {reloadFailed ? 'Retry loading latest draft (discard edits on success)' : 'Discard edits and load latest draft'}
         </button>
       </>}
+      {latestProfile&&<fieldset className="ws-project-fields" disabled={locked}>
+        <legend>Latest saved profile compared with your draft</legend>
+        <dl>
+          <dt>Display name</dt><dd>{latestProfile.displayName}</dd>
+          <dt>Headline</dt><dd>{latestProfile.headline||'—'}</dd>
+          <dt>About you</dt><dd>{latestProfile.bio||'—'}</dd>
+          <dt>Skills</dt><dd>{latestProfile.skills.join(', ')||'—'}</dd>
+        </dl>
+        <label className="ws-profile-check"><input type="checkbox" checked={confirmRebase}
+          onChange={event=>setConfirmRebase(event.target.checked)}/> I reviewed the latest fields and want to keep my draft for a separate save.</label>
+        <button type="button" className="ws-secondary" disabled={!confirmRebase} onClick={()=>resolveProfileComparison(true)}>Keep draft against latest profile</button>
+        <button type="button" className="ws-secondary" onClick={()=>resolveProfileComparison(false)}>Discard profile edits and use compared fields</button>
+      </fieldset>}
       {error.includes('Confirm withdrawal') && <label className="ws-profile-confirm">
-        <input type="checkbox" disabled={locked || needsReload} checked={withdrawal} onChange={event => setWithdrawal(event.target.checked)}/>
+        <input type="checkbox" disabled={locked || needsReload} checked={withdrawal} onChange={event => {stopAutosave();setWithdrawal(event.target.checked);}}/>
         Withdraw my current public profile when I save this draft
       </label>}
       {draft && <div className="ws-project-detail ws-owner-columns">
@@ -230,7 +385,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             <ul className="ws-profile-skills" aria-label="Private skills">{draft.skills.map((item, index) =>
               <li key={index}><button type="button" aria-label={'Remove ' + item}
                 onClick={() => {
-                  if (operationPending.current) return;
+                  if (operationPending.current||!validEpoch()) return;
+                  cancelScheduledSave();setLatestProfile(null);setConfirmRebase(false);
                   setDraft({...draft, skills: draft.skills.filter((_, pos) => pos !== index)});
                   setSkillError(''); setWithdrawal(false); setNotice('');
                 }}>{item} ×</button></li>)}</ul>
