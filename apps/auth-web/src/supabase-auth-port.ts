@@ -1376,7 +1376,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if(!Array.isArray(project)||project.length!==1||
         project[0]?.id!==projectId.toLowerCase()||project[0]?.owner_user_id!==userId)
         throw new Error('The selected private project could not be verified.');
-      const objectPath=userId+'/'+projectId.toLowerCase()+'/'+(request?.operationId.toLowerCase()??crypto.randomUUID())+'.'+format.ext;
+      // Stable object identity is independent of MIME so a reused operation
+      // cannot create a second object simply by changing file format.
+      const objectPath=userId+'/'+projectId.toLowerCase()+'/'+
+        (request?request.operationId.toLowerCase()+'.img':crypto.randomUUID()+'.'+format.ext);
       let upload:Response|null=null;
       try{
         upload=await this.fetcher(this.origin+'/storage/v1/object/kadmeion-private-assets/'+objectPath,{
@@ -1443,8 +1446,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const prefix=ownerId+'/'+projectId.toLowerCase()+'/';
     const name=asset.objectPath.slice(prefix.length);
     const extension=asset.mime==='image/png'?'png':asset.mime==='image/jpeg'?'jpg':'webp';
-    if(!asset.objectPath.startsWith(prefix)||!name.endsWith('.'+extension)||
-      !PROJECT_ID_PATTERN.test(name.slice(0,-extension.length-1)))
+    const suffix=name.endsWith('.img')?'img':extension;
+    if(!asset.objectPath.startsWith(prefix)||!name.endsWith('.'+suffix)||
+      !PROJECT_ID_PATTERN.test(name.slice(0,-suffix.length-1)))
       throw new Error('Private thumbnail path was rejected.');
     return {value:{projectId:projectId.toLowerCase(),revision:row.revision,publicDeliveryAllowed:false,
       asset:{id:asset.id,projectId:projectId.toLowerCase(),mime:asset.mime as OwnerPrivateImageMime,
