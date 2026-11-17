@@ -108,7 +108,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path === '/app/settings/privacy') content = <Privacy key={current!.viewKey} port={port} services={services}/>;
   else if (path === '/app/notifications') content = <Notifications key={current!.viewKey} port={port} service={services.notifications}/>;
   else if (path === '/app/settings/security') content = <Security key={current!.viewKey} port={port}/>;
-  else if (path === '/app/trash') content = <Trash key={current!.viewKey} service={services.trash}/>;
+  else if (path === '/app/trash') content = <Trash key={current!.viewKey} port={port} service={services.trash}/>;
   else if (path === '/app/export') content = <ExportCenter key={current!.viewKey} port={port} services={services}/>;
   else content = <AccountExit key={current!.viewKey} port={port} service={services.account}/>;
 
@@ -122,59 +122,105 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
 }
 
 function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
-  const [prefs, setPrefs] = useState<SharingPreferences | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
-  const [message, setMessage] = useState<Message>(emptyMessage);
-  const [busy, setBusy] = useState(false);
-  const [reload, setReload] = useState(0);
-  const fields: [keyof SharingPreferences, string][] = [
-    ['shareDisplayName', 'Display name'], ['shareHeadline', 'Headline'], ['shareBio', 'About you']
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false);
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  const [savedPrefs,setSavedPrefs]=useState<SharingPreferences|null>(null);
+  const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
+  const [confirmed,setConfirmed]=useState(false);
+  const [message,setMessage]=useState<Message>(emptyMessage);
+  const [busy,setBusy]=useState(false);
+  const [reading,setReading]=useState(true);
+  const [needsReadback,setNeedsReadback]=useState(false);
+  const [reload,setReload]=useState(0);
+  const writing=useRef(false);
+  const readPending=useRef(true);
+  const fields: [keyof SharingPreferences,string][]=[
+    ['shareDisplayName','Display name'],['shareHeadline','Headline'],['shareBio','About you']
   ];
-  useEffect(() => {
-    let active = true;
-    setPrefs(null);
-    setConfirmed(false);
-    setMessage(null);
-    void port.ownerSharingPreferences().then(result => {
-      if (!active) return;
-      if (result.data) setPrefs(result.data);
-      else setMessage({error: true, text: result.error?.message ?? 'Privacy preferences are unavailable.'});
-    }).catch(() => {
-      if (active) setMessage({error: true, text: 'Privacy preferences could not be loaded.'});
+  const same=(a:SharingPreferences,b:SharingPreferences)=>
+    a.shareDisplayName===b.shareDisplayName&&a.shareHeadline===b.shareHeadline&&
+    a.shareBio===b.shareBio&&a.publicationRequested===b.publicationRequested;
+  useEffect(()=>{
+    let active=true;readPending.current=true;setReading(true);setConfirmed(false);
+    void port.ownerSharingPreferences().then(result=>{
+      if(!active||!current())return;
+      if(!result.data)throw new Error('Privacy preferences are unavailable.');
+      setSavedPrefs(result.data);
+      // Refresh the confirmed state without discarding an unsaved draft.
+      setPrefs(previous=>previous??result.data!);
+      setNeedsReadback(false);setMessage(null);
+    }).catch(()=>{
+      if(active&&current()){
+        setNeedsReadback(true);
+        setMessage({error:true,text:'Confirmed sharing preferences could not be loaded. Your draft has not been changed.'});
+      }
+    }).finally(()=>{
+      if(active&&current()){readPending.current=false;setReading(false);}
     });
-    return () => {active = false;};
-  }, [port, reload]);
-
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!prefs || !confirmed || busy) return;
-    setBusy(true); setMessage(null);
-    try {
-      await services.identity.requestPublicIdentity(prefs);
-      // A mutation acknowledgement alone is not a fresh owner-visible state.
-      const saved = await port.ownerSharingPreferences();
-      if (!saved.data || fields.some(([key]) => saved.data![key] !== prefs[key]) ||
-          saved.data.publicationRequested !== prefs.publicationRequested)
-        throw new Error('Sharing preferences could not be read back. Review the saved state before retrying.');
-      setPrefs(saved.data);
-      setConfirmed(false);
-      setMessage({error: false, text: 'Sharing preferences saved privately.'});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    return()=>{active=false;};
+  },[port,epoch,reload]);
+  function refresh(){
+    if(!current()||writing.current||readPending.current)return;
+    readPending.current=true;setReading(true);setConfirmed(false);setReload(n=>n+1);
   }
-
+  async function save(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(!prefs||!savedPrefs||!confirmed||needsReadback||readPending.current||writing.current||!current())return;
+    const desired={...prefs};const baseline={...savedPrefs};
+    writing.current=true;setBusy(true);setMessage(null);setConfirmed(false);
+    try{
+      // Compare before writing using the real current owner read. This is
+      // not an atomic CAS; the acknowledged post-write read remains required.
+      const latest=await port.ownerSharingPreferences();
+      if(!current())return;
+      if(!latest.data)throw new Error('Could not verify current sharing preferences.');
+      setSavedPrefs(latest.data);
+      if(!same(latest.data,baseline)){
+        setMessage({error:true,text:'Saved sharing preferences changed. Compare the confirmed selection with your draft and confirm again before saving.'});
+        return;
+      }
+      await services.identity.requestPublicIdentity(desired);
+      if(!current())return;
+      const saved=await port.ownerSharingPreferences();
+      if(!current())return;
+      if(!saved.data)throw new Error('Sharing preferences could not be read back.');
+      setSavedPrefs(saved.data);
+      if(!same(saved.data,desired)){
+        setMessage({error:true,text:'Readback differs from your draft. Review the confirmed selection before trying again.'});
+        return;
+      }
+      setPrefs(saved.data);setNeedsReadback(false);
+      setMessage({error:false,text:'Sharing preferences saved privately.'});
+    }catch{
+      if(current()){
+        setNeedsReadback(true);
+        setMessage({error:true,text:'The requested privacy change was not confirmed. Your draft is retained. Reload confirmed preferences before retrying.'});
+      }
+    }finally{
+      writing.current=false;if(current())setBusy(false);
+    }
+  }
   const selected=prefs?fields.filter(([key])=>prefs[key]).length:null;
+  const dirty=!!(prefs&&savedPrefs&&!same(prefs,savedPrefs));
   return <div className="ws-settings-privacy">
     <SettingsCard title="Profile visibility">
       <p>Select fields eligible for a later publication request. Saving these choices does not make a profile or portfolio public.</p>
       <Status message={message}/>
-      {!prefs && !message && <p role="status">Loading sharing preferences…</p>}
-      {!prefs && message?.error && <button type="button" className="ws-secondary"
-        onClick={() => setReload(value => value + 1)}>Retry sharing preferences</button>}
-      {prefs && <form onSubmit={event => void save(event)}>
+      {reading&&<p role="status">Loading sharing preferences…</p>}
+      {!prefs&&!reading&&message?.error&&<button type="button" className="ws-secondary"
+        onClick={refresh}>Retry sharing preferences</button>}
+      {savedPrefs&&<div aria-label="Confirmed sharing preferences">
+        <h3>Last confirmed private selection</h3>
+        <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
+          {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
+        <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
+      </div>}
+      {prefs&&<form onSubmit={event => void save(event)}>
         <p className="ws-settings-selection-count"><strong>{selected} of {fields.length}</strong> profile fields selected in this form.
-          Selection is not publication.</p>
-        <fieldset disabled={busy}>
+          Selection is not publication. {dirty?'Unsaved draft differs from confirmed preferences.':'No draft differences from the last confirmed selection.'}</p>
+        <fieldset disabled={busy||reading}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
             <input type="checkbox" checked={prefs[key]} onChange={event => {
@@ -189,10 +235,16 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
-            Save these preferences and withdraw any affected public profile projection
+            Confirm saving this private sharing intent and requesting withdrawal of affected public profile projection
           </label>
+          <p>Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
-        <button type="submit" className="ws-primary" disabled={!confirmed || busy}>{busy ? 'Saving…' : 'Save sharing preferences'}</button>
+        <div className="ws-actions">
+          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback}>{busy?'Saving…':'Save sharing preferences'}</button>
+          <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
+          <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
+            onClick={()=>{if(!current()||writing.current||!savedPrefs)return;setPrefs({...savedPrefs});setConfirmed(false);setMessage(null);}}>Discard draft changes</button>
+        </div>
       </form>}
     </SettingsCard>
     <SettingsCard title="Privacy boundaries">
@@ -481,42 +533,65 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   const dialog = useRef<HTMLDialogElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<Message>(null);
-  async function move() {
-    if (busy || disabled) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const {data} = await port.ownerSettings();
-      if (!data) throw new Error('Could not verify your private Trash session.');
-      await data.trash.move(kind, id);
+  const [message,setMessage]=useState<Message>(null);
+  const [uncertain,setUncertain]=useState(false);
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const scope=useMemo(()=>({port,kind,id,epoch}),[port,kind,id,epoch]);
+  const activeScope=useRef<typeof scope|null>(null);
+  const inFlight=useRef(false);
+  useEffect(()=>{activeScope.current=scope;return()=>{activeScope.current=null;};},[scope]);
+  const current=()=>activeScope.current===scope&&port.reconcileOwnerSessionEpoch()===epoch;
+  async function move(){
+    if(inFlight.current||busy||disabled||uncertain||!current())return;
+    inFlight.current=true;setBusy(true);setMessage(null);
+    let sent=false;
+    try{
+      const {data}=await port.ownerSettings();
+      if(!current())return;
+      if(!data)throw new Error('Could not verify your private Trash session.');
+      sent=true;
+      await data.trash.move(kind,id);
+      if(!current())return;
       dialog.current?.close();
       onMoved();
-    } catch (error) {
-      setMessage(failure(error));
-    } finally {
-      setBusy(false);
+    }catch{
+      if(!current())return;
+      if(sent){
+        setUncertain(true);
+        setMessage({error:true,text:'The move was not confirmed. Review Trash and your library before trying again. No move or public withdrawal is assumed.'});
+      }else setMessage({error:true,text:'Could not verify your private Trash session. Sign in again or retry when available.'});
+    }finally{
+      inFlight.current=false;if(current())setBusy(false);
     }
   }
   return <>
     <button ref={trigger} type="button" className="ws-secondary" disabled={disabled}
-      onClick={()=>{setMessage(null); dialog.current?.showModal();}}>Move to Trash</button>
+      onClick={()=>{if(!current()||inFlight.current)return;if(!uncertain)setMessage(null);dialog.current?.showModal();}}>Move to Trash</button>
     <dialog ref={dialog} className="ws-project-dialog ws-lifecycle-dialog" aria-labelledby={titleId}
-      onCancel={event=>{if (busy) event.preventDefault();}} onClose={()=>trigger.current?.focus()}>
+      onCancel={event=>{if(inFlight.current)event.preventDefault();}} onClose={()=>{if(current())trigger.current?.focus();}}>
       <h2 id={titleId}>Move {title} to Trash?</h2>
       <p>You can restore this {kind} privately within 15 days. Any public delivery requires separate withdrawal verification.</p>
       <Status message={message}/>
       <div className="ws-actions">
         <button autoFocus type="button" className="ws-secondary" disabled={busy}
           onClick={()=>dialog.current?.close()}>Cancel</button>
-        <button type="button" className="ws-primary" disabled={busy}
+        <button type="button" className="ws-primary" disabled={busy||uncertain}
           onClick={()=>void move()}>{busy?'Moving…':'Confirm move to Trash'}</button>
+        {uncertain&&<a className="ws-secondary" href="/app/trash">Review Trash before retrying</a>}
       </div>
     </dialog>
   </>;
 }
 
-function Trash({service}: {service: Services['trash']}) {
+function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false);
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  const inFlight=useRef(false);
+  const reading=useRef(true);
+  const [needsReadback,setNeedsReadback]=useState(false);
+  const [loading,setLoading]=useState(true);
   const [items, setItems] = useState<PrivateTrashEntry[] | null>(null);
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
@@ -524,13 +599,20 @@ function Trash({service}: {service: Services['trash']}) {
   const [now, setNow] = useState(Date.now);
   const [expiredByServer, setExpiredByServer] = useState<Set<string>>(()=>new Set());
   useEffect(() => {
-    let active = true;
-    setItems(null);
-    setMessage(null);
-    void service.list().then(rows => {if (active) setItems(rows);})
-      .catch(error => {if (active) setMessage(failure(error));});
-    return () => {active = false;};
-  }, [service, reload]);
+    let active=true;reading.current=true;setLoading(true);
+    void service.list().then(rows=>{
+      if(active&&current()){setItems(rows);setNeedsReadback(false);setMessage(null);}
+    }).catch(()=>{
+      if(active&&current()){setNeedsReadback(true);setMessage({error:true,text:'Trash could not be read. Refresh confirmed records before restoring.'});}
+    }).finally(()=>{
+      if(active&&current()){reading.current=false;setLoading(false);}
+    });
+    return()=>{active=false;};
+  },[service,port,epoch,reload]);
+  function refreshTrash(){
+    if(!current()||inFlight.current||reading.current)return;
+    reading.current=true;setLoading(true);setReload(n=>n+1);
+  }
 
   useEffect(()=>{
     if (!items?.length) return;
@@ -550,31 +632,39 @@ function Trash({service}: {service: Services['trash']}) {
 
   async function restore(item: PrivateTrashEntry) {
     const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
-    if (busy || expiredByServer.has(key)) return;
+    if(inFlight.current||busy||reading.current||needsReadback||!current()||expiredByServer.has(key))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
       setMessage({error:true,text:'The restore deadline has passed.'});
       return;
     }
-    setBusy(true); setMessage(null);
-    try {
-      await service.restore(item.item_type, item.item_id);
-      setItems(current => current?.filter(row => row.item_id !== item.item_id || row.item_type !== item.item_type) ?? []);
-      setMessage({error: false, text: 'Item restored as private.'});
-    } catch (error) {
-      if (error instanceof PrivateTrashError && error.code==='TRASH_EXPIRED')
-        setExpiredByServer(current=>new Set(current).add(key));
-      setMessage(failure(error));
+    inFlight.current=true;setBusy(true);setMessage(null);
+    try{
+      const receipt=await service.restore(item.item_type,item.item_id);
+      if(!current())return;
+      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+        throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
+      setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
+      setMessage({error:false,text:'Item restored as private.'});
+    }catch(error){
+      if(!current())return;
+      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+        setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
+      }else{
+        setNeedsReadback(true);
+        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+      }
+    }finally{
+      inFlight.current=false;if(current())setBusy(false);
     }
-    finally {setBusy(false);}
   }
 
   return <div className="ws-settings-grid"><SettingsCard title="Recoverable items">
     <Status message={message}/>
-    {!items && !message && <p role="status">Loading Trash…</p>}
-    {!items && message?.error && <button type="button" className="ws-secondary"
-      onClick={() => setReload(value => value + 1)}>Retry Trash</button>}
-    {items?.length === 0 && <p>Trash is empty.</p>}
+    {loading&&<p role="status">Loading Trash…</p>}
+    {needsReadback&&!loading&&<button type="button" className="ws-secondary" onClick={refreshTrash}>{items?'Refresh confirmed Trash':'Retry Trash'}</button>}
+    {items?.length===0&&!loading&&!needsReadback&&<p>Trash is empty.</p>}
+    {items?.length===100&&<p>Showing up to 100 loaded Trash records, not an account-wide total.</p>}
     <ul className="ws-settings-records">{items?.map(item => {
       const expired = Date.parse(item.restore_until)<=now ||
         expiredByServer.has(item.item_type+':'+item.item_id+':'+item.trashed_at);
@@ -583,13 +673,13 @@ function Trash({service}: {service: Services['trash']}) {
         <p>Moved to Trash <time dateTime={item.trashed_at}>{new Date(item.trashed_at).toLocaleString()}</time></p>
         <p>Restore by <time dateTime={item.restore_until}>{new Date(item.restore_until).toLocaleString()}</time></p>
         {expired && <p>Recovery window ended. Restore is unavailable.</p>}
-        <button type="button" className="ws-secondary" disabled={busy || expired}
+        <button type="button" className="ws-secondary" disabled={busy||loading||needsReadback||expired}
           onClick={() => void restore(item)}>Restore privately</button>
       </li>;
     })}</ul>
   </SettingsCard><SettingsCard title="15-day recovery window">
     <p>Restored items return to your library as private drafts. Recovery ends at the deadline shown for each item.</p>
-    <p>Expired items are eligible for scheduled cleanup. Permanent removal is unavailable from this page.</p>
+    <p>Expired items are eligible for scheduled cleanup. Permanent removal is unavailable from this page. An expired deadline is not proof of primary deletion or backup erasure.</p>
     <div className="ws-actions"><a href="/app/projects">Project library</a><a href="/app/portfolios">Portfolio library</a></div>
   </SettingsCard></div>;
 }
@@ -620,6 +710,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   const operation=useRef<string|null>(null);
   const running=useRef(false);
   const [failedKind,setFailedKind]=useState<ExportKind|null>(null);
+  const [quotaBlocked,setQuotaBlocked]=useState(false);
   const [receipt,setReceipt]=useState<ExportReceipt|null>(null);
   const [inventory,setInventory]=useState<Awaited<ReturnType<Services['account']['captureInventory']>>|null>(null);
   const [retry, setRetry] = useState(0);
@@ -670,7 +761,8 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   }
 
   async function download(kind: ExportKind) {
-    if (running.current || busy || !current() || (kind==='source'&&!selectedPortfolio)) return;
+    if(running.current||busy||!current()||(kind==='source'&&!selectedPortfolio)||
+      (kind!=='source'&&quotaBlocked&&!inventory))return;
     // Capture has a durable owner quota. Reuse one acknowledged inventory
     // across formats and retries; only an explicit refresh requests a new one.
     // An unacknowledged capture replays its original operation UUID.
@@ -693,7 +785,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
           sha256:await exportDigest(bytes),scope:'Editable saved portfolio source; uploaded media excluded.',revision:data.revision};
       } else {
         if(!inventory)operation.current??=crypto.randomUUID();
-        const captured = inventory??await services.account.captureInventory(operation.current!);
+        const captured = inventory??await services.account.captureInventory(operation.current!,null);
         if(!current())return;
         operation.current=null;setInventory(captured);
         if (kind==='metadata') {
@@ -736,10 +828,14 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       setMessage({error:false,text:kind==='recovery'?'Private recovery download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
     } catch (error) {
       if(!current())return;
-      setFailedKind(kind);
       const code=typeof error==='object'&&error!==null&&'code' in error?error.code:undefined;
-      if(code==='QUOTA_EXCEEDED')
-        setMessage({error:true,text:'The server reports an account inventory request limit. No file was downloaded. Avoid repeated new inventory attempts; an eligible saved portfolio source export does not consume this quota.'});
+      const terminal=code==='QUOTA_EXCEEDED'||code==='AUTH_EXPIRED'||code==='FORBIDDEN'||code==='LIMIT_EXCEEDED';
+      setFailedKind(terminal?null:kind);
+      if(code==='QUOTA_EXCEEDED'){
+        setQuotaBlocked(true);
+        setMessage({error:true,text:'The durable account inventory quota has been reached (at most 10 snapshots per owner). No file was downloaded. No new inventory will be requested in this session; eligible saved portfolio source exports do not consume this quota.'});
+      }else if(code==='RATE_LIMITED')
+        setMessage({error:true,text:'The server temporarily rate-limited the export. No file was downloaded. Retry later; the same acknowledged inventory or original capture operation will be reused.'});
       else if(code==='LIMIT_EXCEEDED')
         setMessage({error:true,text:'The export exceeds a supported size or record limit. No file was downloaded. Choose a narrower saved portfolio source or try metadata / verified JSON where eligible.'});
       else if(code==='AUTH_EXPIRED'||code==='FORBIDDEN')
@@ -796,18 +892,19 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       <p>Choose an acknowledged application metadata JSON snapshot or bounded private recovery archive. Neither terminates access nor erases your account.</p>
       <h3>Application metadata JSON</h3>
       <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category and a 12 MiB response limit; larger accounts may be refused. No uploaded bytes.</p>
-      <button className="ws-primary" type="button" disabled={busy!==null}
+      <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
         onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
       <h3>Bounded recovery archive</h3>
       <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes, 16 MiB recovery JSON and 10 MiB ZIP capacity. No partial file on verification failure.</p>
       <div className="ws-actions">
-        <button className="ws-secondary" type="button" disabled={busy!==null}
+        <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
           onClick={()=>void download('recovery')}>{busy==='recovery'?'Checking records and files…':'Download private recovery ZIP'}</button>
-        <button className="ws-secondary" type="button" disabled={busy!==null}
+        <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
           onClick={()=>void download('recovery-json')}>{busy==='recovery-json'?'Checking recovery JSON…':'Download verified recovery JSON'}</button>
       </div>
       <p>Verified recovery JSON is an alternative for archives that exceed ZIP capacity, not a bypass for asset or integrity limits.</p>
-      <p>The server allows at most 10 recorded account inventory snapshots per owner. Formats and retries reuse this session’s acknowledged inventory until you explicitly refresh it. Remaining quota is not reported by the service.</p>
+      <p>The server allows at most 10 recorded account inventory snapshots per owner. Formats and retries reuse this session’s acknowledged inventory until you explicitly refresh it. Remaining quota is not reported by the service. An export after opening a new session may allocate one snapshot; no background capture or prior-scope lookup is performed.</p>
+      {quotaBlocked&&!inventory&&<p role="status">New account inventory captures are blocked for this session because the server reported its durable quota.</p>}
       {inventory&&<><h3>Acknowledged inventory</h3>
         <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only; an application metadata export reads current records separately. Recovery rechecks storage and prior inventory consistency.</p>
         <button type="button" className="ws-secondary" disabled={busy!==null} onClick={()=>{
