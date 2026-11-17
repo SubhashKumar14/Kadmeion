@@ -133,6 +133,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const [busy,setBusy]=useState(false);
   const [reading,setReading]=useState(true);
   const [needsReadback,setNeedsReadback]=useState(false);
+  const readbackRequired=useRef(false);
   const [reload,setReload]=useState(0);
   const writing=useRef(false);
   const readPending=useRef(true);
@@ -150,10 +151,10 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
       setSavedPrefs(result.data);
       // Refresh the confirmed state without discarding an unsaved draft.
       setPrefs(previous=>previous??result.data!);
-      setNeedsReadback(false);setMessage(null);
+      readbackRequired.current=false;setNeedsReadback(false);setMessage(null);
     }).catch(()=>{
       if(active&&current()){
-        setNeedsReadback(true);
+        readbackRequired.current=true;setNeedsReadback(true);
         setMessage({error:true,text:'Confirmed sharing preferences could not be loaded. Your draft has not been changed.'});
       }
     }).finally(()=>{
@@ -167,7 +168,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   }
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!prefs||!savedPrefs||!confirmed||needsReadback||readPending.current||writing.current||!current())return;
+    if(!prefs||!savedPrefs||!confirmed||readbackRequired.current||readPending.current||writing.current||!current())return;
     const desired={...prefs};const baseline={...savedPrefs};
     writing.current=true;setBusy(true);setMessage(null);setConfirmed(false);
     try{
@@ -191,11 +192,11 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         setMessage({error:true,text:'Readback differs from your draft. Review the confirmed selection before trying again.'});
         return;
       }
-      setPrefs(saved.data);setNeedsReadback(false);
+      setPrefs(saved.data);readbackRequired.current=false;setNeedsReadback(false);
       setMessage({error:false,text:'Sharing preferences saved privately.'});
     }catch{
       if(current()){
-        setNeedsReadback(true);
+        readbackRequired.current=true;setNeedsReadback(true);
         setMessage({error:true,text:'The requested privacy change was not confirmed. Your draft is retained. Reload confirmed preferences before retrying.'});
       }
     }finally{
@@ -235,9 +236,9 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
-            Confirm saving this private sharing intent and requesting withdrawal of affected public profile projection
+            Save these preferences and withdraw any affected public profile projection
           </label>
-          <p>Public withdrawal and live delivery require separate verification.</p>
+          <p>This confirms the private sharing intent and withdrawal request, not verified withdrawal. Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
         <div className="ws-actions">
           <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback}>{busy?'Saving…':'Save sharing preferences'}</button>
@@ -538,12 +539,17 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const scope=useMemo(()=>({port,kind,id,epoch}),[port,kind,id,epoch]);
   const activeScope=useRef<typeof scope|null>(null);
-  const inFlight=useRef(false);
-  useEffect(()=>{activeScope.current=scope;return()=>{activeScope.current=null;};},[scope]);
+  const inFlight=useRef<typeof scope|null>(null);
+  const uncertainScope=useRef<typeof scope|null>(null);
+  useEffect(()=>{
+    activeScope.current=scope;
+    setBusy(false);setUncertain(false);setMessage(null);
+    return()=>{activeScope.current=null;};
+  },[scope]);
   const current=()=>activeScope.current===scope&&port.reconcileOwnerSessionEpoch()===epoch;
   async function move(){
-    if(inFlight.current||busy||disabled||uncertain||!current())return;
-    inFlight.current=true;setBusy(true);setMessage(null);
+    if(inFlight.current===scope||busy||disabled||uncertainScope.current===scope||!current())return;
+    inFlight.current=scope;setBusy(true);setMessage(null);
     let sent=false;
     try{
       const {data}=await port.ownerSettings();
@@ -557,18 +563,19 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
     }catch{
       if(!current())return;
       if(sent){
-        setUncertain(true);
+        uncertainScope.current=scope;setUncertain(true);
         setMessage({error:true,text:'The move was not confirmed. Review Trash and your library before trying again. No move or public withdrawal is assumed.'});
       }else setMessage({error:true,text:'Could not verify your private Trash session. Sign in again or retry when available.'});
     }finally{
-      inFlight.current=false;if(current())setBusy(false);
+      if(inFlight.current===scope)inFlight.current=null;
+      if(current())setBusy(false);
     }
   }
   return <>
     <button ref={trigger} type="button" className="ws-secondary" disabled={disabled}
-      onClick={()=>{if(!current()||inFlight.current)return;if(!uncertain)setMessage(null);dialog.current?.showModal();}}>Move to Trash</button>
+      onClick={()=>{if(!current()||inFlight.current===scope)return;if(uncertainScope.current!==scope)setMessage(null);dialog.current?.showModal();}}>Move to Trash</button>
     <dialog ref={dialog} className="ws-project-dialog ws-lifecycle-dialog" aria-labelledby={titleId}
-      onCancel={event=>{if(inFlight.current)event.preventDefault();}} onClose={()=>{if(current())trigger.current?.focus();}}>
+      onCancel={event=>{if(inFlight.current===scope)event.preventDefault();}} onClose={()=>{if(current())trigger.current?.focus();}}>
       <h2 id={titleId}>Move {title} to Trash?</h2>
       <p>You can restore this {kind} privately within 15 days. Any public delivery requires separate withdrawal verification.</p>
       <Status message={message}/>
@@ -591,6 +598,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   const inFlight=useRef(false);
   const reading=useRef(true);
   const [needsReadback,setNeedsReadback]=useState(false);
+  const readbackRequired=useRef(false);
+  const uncertainRestore=useRef(false);
   const [loading,setLoading]=useState(true);
   const [items, setItems] = useState<PrivateTrashEntry[] | null>(null);
   const [message, setMessage] = useState<Message>(emptyMessage);
@@ -601,9 +610,13 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   useEffect(() => {
     let active=true;reading.current=true;setLoading(true);
     void service.list().then(rows=>{
-      if(active&&current()){setItems(rows);setNeedsReadback(false);setMessage(null);}
+      if(active&&current()){
+        setItems(rows);readbackRequired.current=false;setNeedsReadback(false);
+        setMessage(uncertainRestore.current?{error:false,text:'Trash refreshed. The previous restore was not acknowledged; verify your private library before retrying.'}:null);
+        uncertainRestore.current=false;
+      }
     }).catch(()=>{
-      if(active&&current()){setNeedsReadback(true);setMessage({error:true,text:'Trash could not be read. Refresh confirmed records before restoring.'});}
+      if(active&&current()){readbackRequired.current=true;setNeedsReadback(true);setMessage({error:true,text:'Trash could not be read. Refresh confirmed records before restoring.'});}
     }).finally(()=>{
       if(active&&current()){reading.current=false;setLoading(false);}
     });
@@ -632,7 +645,7 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
 
   async function restore(item: PrivateTrashEntry) {
     const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
-    if(inFlight.current||busy||reading.current||needsReadback||!current()||expiredByServer.has(key))return;
+    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
       setMessage({error:true,text:'The restore deadline has passed.'});
@@ -651,7 +664,7 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
       if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        setNeedsReadback(true);
+        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
         setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
       }
     }finally{
@@ -907,8 +920,8 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       {quotaBlocked&&!inventory&&<p role="status">New account inventory captures are blocked for this session because the server reported its durable quota.</p>}
       {inventory&&<><h3>Acknowledged inventory</h3>
         <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only; an application metadata export reads current records separately. Recovery rechecks storage and prior inventory consistency.</p>
-        <button type="button" className="ws-secondary" disabled={busy!==null} onClick={()=>{
-          if(!current()||running.current)return;setInventory(null);operation.current=null;setFailedKind(null);setReceipt(null);setMessage(null);
+        <button type="button" className="ws-secondary" disabled={busy!==null||quotaBlocked} onClick={()=>{
+          if(!current()||running.current||quotaBlocked)return;setInventory(null);operation.current=null;setFailedKind(null);setReceipt(null);setMessage(null);
         }}>Use a new inventory for next export</button>
         <dl><dt>Projects</dt><dd>{inventory.inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.inventory.counts.portfolios}</dd>
           <dt>Portfolio revisions</dt><dd>{inventory.inventory.counts.portfolioRevisions}</dd><dt>Registered assets</dt><dd>{inventory.inventory.counts.projectAssetMetadata}</dd>
