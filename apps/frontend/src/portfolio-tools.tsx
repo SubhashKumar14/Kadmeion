@@ -248,7 +248,7 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
     <section className="ws-source-editor" aria-label="Selected project source">
       <header className="ws-source-editor-header">
         <span>{path||'No source'} · {owned?'Owned editable text':'Protected generated composition'}</span>
-        <span>{changed?'Unsaved source buffer':'Saved local snapshot'}</span>
+        <span>{changed?'Unapplied source buffer':'Matches working snapshot'}</span>
       </header>
       {path?owned?<div className="ws-source-code-window">
         <label htmlFor="kd-source-editor">Owned source buffer</label>

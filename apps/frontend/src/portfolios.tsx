@@ -450,7 +450,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT';
     if (((intent.kind === 'UNDO' || intent.kind === 'REDO') && (pendingFields || sourceDirty)) ||
-        (replacesSlot && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
+        (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
         })))) {
@@ -793,12 +793,13 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                   const issue=fieldIssues[inputKey];
                   const id='kd-field-'+inputKey;
                   const applySecondary=()=>{
+                    if(draft===stored){changeFieldBuffer(inputKey,stored,stored);return;}
                     const warning=field==='url'?ownerLinkError(draft):null;
                     if(warning){
                       setFieldIssues(values=>({...values,[inputKey]:warning}));
                       return;
                     }
-                    if(draft===stored||apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
+                    if(apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
                       changeFieldBuffer(inputKey,stored,stored);
                     }
                   };
