@@ -1,17 +1,38 @@
-import { useEffect, useState } from 'react';
-import type { CSSProperties, KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent, Dispatch, SetStateAction } from 'react';
 import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import { savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
+import { matchingReplacementContent, savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
   '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>) => boolean;
 const THEME_PATH = 'theme/tokens.json';
 const colors = ['surface', 'text', 'accent'] as const;
 type PortfolioTheme = {mode: 'light' | 'dark'; surface: string; text: string; accent: string};
+type ThemePalette=Pick<PortfolioTheme,typeof colors[number]>;
+function paletteOf(theme:PortfolioTheme):ThemePalette{
+  return {surface:theme.surface,text:theme.text,accent:theme.accent};
+}
+function objectRecord(value:unknown):Record<string,unknown>|undefined{
+  return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
+}
+function validPalette(value:unknown):value is ThemePalette{
+  const candidate=objectRecord(value);
+  return !!candidate&&colors.every(key=>typeof candidate[key]==='string'&&/^#[0-9a-f]{6}$/i.test(candidate[key] as string));
+}
 const defaultTheme: PortfolioTheme = {mode: 'light', surface: '#f9fafb', text: '#152738', accent: '#b9734d'};
+const defaultDarkTheme:PortfolioTheme={mode:'dark',surface:'#162433',text:'#f7f5ef',accent:'#eab087'};
+function themeContrast(foreground:string,background:string):number {
+  const luminance=(hex:string)=>{
+    const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255)
+      .map(v=>v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4));
+    return 0.2126*rgb[0]!+0.7152*rgb[1]!+0.0722*rgb[2]!;
+  };
+  const a=luminance(foreground),b=luminance(background);
+  return (Math.max(a,b)+0.05)/(Math.min(a,b)+0.05);
+}
 
 function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioTheme {
   try {
@@ -19,7 +40,7 @@ function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioThe
     if (!source) return defaultTheme;
     const value = JSON.parse(source) as Partial<PortfolioTheme>;
     return (value.mode === 'light' || value.mode === 'dark') && colors.every(key => /^#[0-9a-f]{6}$/i.test(value[key] ?? ''))
-      ? value as PortfolioTheme : defaultTheme;
+      ? {mode:value.mode,surface:value.surface!,text:value.text!,accent:value.accent!} : defaultTheme;
   } catch { return defaultTheme; }
 }
 
@@ -78,20 +99,24 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     const key=section.id+'-'+name.toLowerCase();
     const assignment=snapshot?.slots[key];
     const text=slotDisplay(assignment);
+    const imageReference=assignment?.state==='S0'&&assignment.componentId==='image@1'&&!!assignment.content.asset_id;
+    const imageLabel=imageReference?'Private image reference — '+(assignment.content.alt_text||'Alt text missing'):'';
     const label=SLOT_TITLES[name.toLowerCase()]??name;
     const example=editing&&!text?layoutExample(section.renderId,name):null;
-    const visibleLabel=text|| (kind==='media' ? '' : example??('Add '+label));
+    const visibleLabel=imageLabel||text|| (kind==='media' ? '' : example??('Add '+label));
     const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
     if(editing)return <button className={className} type="button"
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
-      {text||(
+      {imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:text||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
         example?<span className="pv-placeholder pv-layout-example">{example}</span>:
         <span className="pv-placeholder">Add {label}</span>
       )}
     </button>;
+    // Reference labels are author-only, never fabricated visitor imagery.
+    if(imageReference)return showMissing?<span className={className}>{imageLabel} · Preview bytes unavailable</span>:null;
     return text?<span className={className}>{text}</span>:
       !showMissing?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
   };
@@ -143,7 +168,10 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
                 <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="action"/>)}</div>
               {section.slots.includes('note')&&<div className="pv-hero-note"><PortfolioSlot {...slotProps} section={section} name="note" kind="tag"/></div>}
             </div>
-            <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>
+            {section.slots.some(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name))?
+              <div className="pv-hero-art">{section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).map(name=>
+                <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="media"/>)}</div>:
+              <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>}
           </div>:<>
             <div className="pv-section-heading">
               {headline&&<h2><PortfolioSlot {...slotProps} section={section} name="title" kind="title"/></h2>}
@@ -172,35 +200,60 @@ export function ThemeInspector({head, apply, width, resize}: {
   head: EditorHead; apply: Apply; width: number; resize: (width: number) => void;
 }) {
   const theme = readTheme(head.snapshot);
+  const ratio=themeContrast(theme.text,theme.surface);
+  const previous=head.snapshot.files[THEME_PATH];
+  const tokens=previous?objectRecord(JSON.parse(previous))??{}:{};
+  // Retain the renderer's established flat active fields. This editor-only
+  // history is optional; unknown token fields are not rewritten.
+  const history=objectRecord(tokens.authorModePalettes);
+  const historySupported=tokens.authorModePalettes===undefined||!!history&&
+    ['light','dark'].every(mode=>history[mode]===undefined||validPalette(history[mode]));
   function setTheme(next: PortfolioTheme) {
-    const previous = head.snapshot.files[THEME_PATH];
-    const tokens = previous ? JSON.parse(previous) as Record<string, unknown> : {};
-    apply({kind: 'WRITE_MANAGED_FILE', path: THEME_PATH, source: JSON.stringify({...tokens, ...next}, null, 2)});
+    if(!historySupported){
+      if(next.mode!==theme.mode)return;
+      apply({kind:'WRITE_MANAGED_FILE',path:THEME_PATH,source:JSON.stringify({...tokens,...next},null,2)});
+      return;
+    }
+    const nextHistory={...history,
+      [theme.mode]:{...objectRecord(history?.[theme.mode]),...paletteOf(theme)},
+      [next.mode]:{...objectRecord(history?.[next.mode]),...paletteOf(next)}};
+    apply({kind:'WRITE_MANAGED_FILE',path:THEME_PATH,source:JSON.stringify({...tokens,...next,authorModePalettes:nextHistory},null,2)});
+  }
+  function switchMode(mode:PortfolioTheme['mode']){
+    if(!historySupported||mode===theme.mode)return;
+    const saved=history?.[mode];
+    const palette=validPalette(saved)?paletteOf({...saved,mode}):paletteOf(mode==='dark'?defaultDarkTheme:defaultTheme);
+    setTheme({mode,...palette});
   }
   return <div className="ws-editor-tool">
     <h2>Theme &amp; responsive</h2>
     <label>Preview width<select value={width} onChange={event => resize(Number(event.target.value))}>
-      <option value={0}>Fit canvas</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
+      <option value={0}>Fit canvas</option><option value={1440}>Desktop · up to 1440 px</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
     </select></label>
-    <label>Portfolio theme<select value={theme.mode} onChange={event => {
-      const mode = event.target.value;
-      if (mode === 'dark') setTheme({mode, surface: '#162433', text: '#f7f5ef', accent: '#eab087'});
-      else setTheme({...defaultTheme});
+    <label>Portfolio theme<select value={theme.mode} disabled={!historySupported} onChange={event=>{
+      if(event.target.value==='light'||event.target.value==='dark')switchMode(event.target.value);
     }}><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    {!historySupported&&<p role="alert">Existing palette-history data is unsupported. The current colors can be edited, but switching modes is blocked to avoid losing data.</p>}
     {colors.map(key => <label key={key}>{key}<input type="color" value={theme[key]} onChange={event =>
       setTheme({...theme, [key]: event.target.value})}/></label>)}
+    <p>Global portfolio tokens · independent of the workspace theme. Preview widths do not authorize phone editing.</p>
+    <p role={ratio<4.5?'alert':undefined}>Text on surface: {ratio.toFixed(2)}:1 contrast.
+      {ratio<4.5?' Below 4.5:1 for ordinary text; adjust the colors before release.':' Meets the 4.5:1 reference for these two colors only.'}
+      {' '}This is not a complete accessibility or publication check.</p>
+    <button type="button" className="ws-secondary"
+      disabled={colors.every(key=>theme[key]===(theme.mode==='dark'?defaultDarkTheme:defaultTheme)[key])}
+      onClick={()=>setTheme({... (theme.mode==='dark'?defaultDarkTheme:defaultTheme)})}>Reset global palette</button>
+    <p>Each mode retains its own global palette; reset affects only the active palette. Changes use the private transaction and Undo. Unsupported scoped tokens are left untouched; their static export parity is not yet verified.</p>
   </div>;
 }
 
-export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
+export function SourceInspector({head,apply,back,buffers,setBuffers}:{
   head:EditorHead;slot:string;apply:Apply;back:()=>void;
-  onBufferDirtyChange:(dirty:boolean)=>void;
+  buffers:Record<string,string>;setBuffers:Dispatch<SetStateAction<Record<string,string>>>;
 }) {
   const [selected,setSelected]=useState('');
-  const [buffers,setBuffers]=useState<Record<string,string>>({});
   const [notice,setNotice]=useState('');
   const pendingSource=unappliedSourceBufferCount(buffers,head.snapshot.files);
-  useEffect(()=>onBufferDirtyChange(pendingSource>0),[onBufferDirtyChange,pendingSource]);
   const files=Object.keys(head.snapshot.files).sort((left,right)=>{
     const a=left.startsWith('slots/'),b=right.startsWith('slots/');
     return a===b?left.localeCompare(right):a?-1:1;
@@ -248,12 +301,20 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
     <section className="ws-source-editor" aria-label="Selected project source">
       <header className="ws-source-editor-header">
         <span>{path||'No source'} · {owned?'Owned editable text':'Protected generated composition'}</span>
-        <span>{changed?'Unsaved source buffer':'Saved local snapshot'}</span>
+        <span>{changed?'Unapplied source buffer':'Matches working snapshot'}</span>
       </header>
       {path?owned?<div className="ws-source-code-window">
         <label htmlFor="kd-source-editor">Owned source buffer</label>
         <textarea id="kd-source-editor" spellCheck={false} rows={22} value={buffer}
-          onChange={event=>{const next=event.target.value;setBuffers(current=>({...current,[path]:next}));setNotice('');}}/>
+          onChange={event=>{
+            const next=event.target.value;
+            setBuffers(previous=>{
+              const updated={...previous};
+              if(next===current)delete updated[path];else updated[path]=next;
+              return updated;
+            });
+            setNotice('');
+          }}/>
       </div>:<div className="ws-source-code-window ws-source-preview" role="group" aria-label="Readonly generated file">
         <pre><code>{current}</code></pre>
       </div>:<p>No source file is available.</p>}
@@ -293,8 +354,14 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
   </div>;
 }
 
-export function ComponentLibrary({port, head, committed, slot, apply}: {
-  port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;
+/** One editor mount retains the operation UUID even when the panel closes
+ * before an acknowledgement. This is not an offline login or cross-reload queue. */
+export type ComponentSaveRetryState={
+  pending:{signature:string;id:string;epoch:number}|null;inFlight:boolean;
+};
+export function ComponentLibrary({port, head, committed, slot, apply, blocked,saveRetry}: {
+  port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;blocked:boolean;
+  saveRetry:{current:ComponentSaveRetryState};
 }) {
   const [versions, setVersions] = useState<MyComponentVersion[] | null>(null);
   const [message, setMessage] = useState('');
@@ -302,53 +369,88 @@ export function ComponentLibrary({port, head, committed, slot, apply}: {
   const [busy, setBusy] = useState(false);
   const slotKind = slot.slice(slot.lastIndexOf('-') + 1);
   const state = head.snapshot.slots[slot]?.state;
-  const canSave = !!committed && ['S1', 'S2'].includes(committed.slots[slot]?.state ?? '');
+  const owned=head.snapshot.slots[slot],savedSlot=committed?.slots[slot];
+  const canSave=!!owned?.sourcePath&&!!savedSlot?.sourcePath&&['S1','S2'].includes(savedSlot.state)&&
+    owned.sourcePath===savedSlot.sourcePath&&owned.originalSource===savedSlot.originalSource&&
+    owned.componentId===savedSlot.componentId&&head.snapshot.files[owned.sourcePath]===committed?.files[savedSlot.sourcePath];
+  const [refresh,setRefresh]=useState(0);
+   const componentListGeneration=useRef(0);
+  const catalogueEpoch=useRef<number|null>(null);
+  const mounted=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
 
   useEffect(() => {
     let active = true;
+    const epoch=port.reconcileOwnerSessionEpoch(),generation=++componentListGeneration.current;
+    setMessage('');setVersions(null);
     void port.listOwnerComponents().then(result => {
-      if (!active) return;
-      if (result.data) setVersions(result.data);
-      else setMessage(result.error?.message ?? 'My Components could not be loaded.');
-    });
-    return () => {active = false;};
-  }, [port]);
+      if(!active||generation!==componentListGeneration.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(result.data){catalogueEpoch.current=epoch;setVersions(result.data);}
+      else setMessage(result.error?.message??'My Components could not be loaded.');
+    }).catch(()=>{if(active&&generation===componentListGeneration.current&&port.reconcileOwnerSessionEpoch()===epoch)setMessage('My Components could not be loaded.');});
+    return ()=>{active=false;};
+  }, [port,refresh]);
 
   async function save() {
-    if (!committed || !name.trim() || busy) return;
-    setBusy(true); setMessage('');
+    if(!committed||!canSave||blocked||!name.trim()||busy)return;
+    const retry=saveRetry.current;
+    if(retry.inFlight){setMessage('A component save is still in progress. Retry after it completes.');return;}
+    const epoch=port.reconcileOwnerSessionEpoch();
+    retry.inFlight=true;setBusy(true);setMessage('');
     try {
       const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55);
       if (!/^[a-z][a-z0-9-]{2,63}$/.test(key)) {setMessage('Choose a component name with at least three letters or digits, beginning with a letter.'); return;}
-      const input = savedComponentInputFromOwnedSlot(committed, slot, {
-        operationId: crypto.randomUUID(), componentKey: key, displayName: name, compatibleSlotKinds: [slotKind]
+      const input=savedComponentInputFromOwnedSlot(committed,slot,{
+        operationId:crypto.randomUUID(),componentKey:key,displayName:name,compatibleSlotKinds:[slotKind]
       });
-      const result = await port.saveOwnerComponent(input);
+      const signature=JSON.stringify({...input,operationId:''});
+      if(retry.pending?.signature!==signature||retry.pending.epoch!==epoch)retry.pending={signature,id:input.operationId,epoch};
+      input.operationId=retry.pending.id;
+      const result=await port.saveOwnerComponent(input);
+      if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if (!result.data) {setMessage(result.error?.message ?? 'Component save could not be confirmed.'); return;}
       const saved = result.data;
+      // Invalidate an older pending catalogue read, then reload the actual list.
+      ++componentListGeneration.current;catalogueEpoch.current=epoch;
       setVersions(current => [saved, ...(current ?? []).filter(version => version.id !== saved.id)]);
-      setName(''); setMessage('Private component version saved.');
-    } catch (error) {setMessage(error instanceof Error ? error.message : 'Component save could not be confirmed.');}
-    finally {setBusy(false);}
+      setRefresh(n=>n+1);
+      retry.pending=null;setName('');setMessage('Private component version saved.');
+    }catch(error){if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
+      setMessage(error instanceof Error?error.message:'Component save could not be confirmed.');}
+    finally{retry.inFlight=false;if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
 
   return <div className="ws-editor-tool"><h2>My Components</h2>
     {message && <p role="status">{message}</p>}
+    {!versions&&message&&<button type="button" className="ws-secondary" onClick={()=>setRefresh(n=>n+1)}>Retry private components</button>}
     {!versions && !message && <p role="status">Loading saved components…</p>}
     {versions?.length === 0 && <p>You haven’t saved any component versions.</p>}
     <ul className="ws-editor-slots">{versions?.map(version => <li key={version.id}>
-      <strong>{version.display_name}</strong> <span>{version.compatible_slot_kinds.join(', ')}</span>
-      <button type="button" disabled={!state || state === 'S1' || state === 'S2' || !version.compatible_slot_kinds.includes(slotKind)}
-        onClick={() => apply({kind: 'REUSE_SAVED_COMPONENT', slotKey: slot, componentVersionId: version.id}, {[version.id]: version})}>
-        Reuse in selected slot
+      <strong>{version.display_name} · v{version.version}</strong> <span>{version.compatible_slot_kinds.join(', ')}</span>
+      <button type="button" disabled={!state||blocked||busy||!version.compatible_slot_kinds.includes(slotKind)}
+        onClick={()=>{
+          if(port.reconcileOwnerSessionEpoch()!==catalogueEpoch.current||!owned)return;
+          const protectedSource=state==='S1'||state==='S2';
+          if(state!=='EMPTY'&&!window.confirm('Reuse this private component version and stash the existing assignment'+
+            (owned.sourcePath?' ('+owned.sourcePath+')':'')+'? Matching fields: '+
+            (Object.keys(matchingReplacementContent(owned,version.base_component_pin)).join(', ')||'none')+'.'))return;
+          apply({kind:'REUSE_SAVED_COMPONENT',slotKey:slot,componentVersionId:version.id,
+            confirmOwnedReplacement:protectedSource,preserveMatchingContent:true},{[version.id]:version});
+        }}>
+        {state==='EMPTY'?'Reuse in selected slot':'Reuse and stash previous'}
       </button>
     </li>)}</ul>
-    {canSave && <><label>Component name<input value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
-      <button type="button" className="ws-secondary" disabled={busy || !name.trim()} onClick={() => void save()}>Save committed component</button></>}
+    {canSave && <><label>Component name<input disabled={busy} value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
+      <button type="button" className="ws-secondary" disabled={busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
+    {!canSave&&(state==='S1'||state==='S2')&&<p>Save the portfolio and resolve unapplied source edits before keeping this exact owned version.</p>}
   </div>;
 }
 
-export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>void}) {
+export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisabled,onPlace}:{
+  port:SupabaseBrowserAuthPort;back:()=>void;snapshot:PortfolioSnapshot;
+  targets:readonly {key:string;label:string;state:string}[];selectedSlot:string;placementDisabled:boolean;
+  onPlace:(assetId:string,slot:string,altText:string)=>Promise<boolean>;
+}) {
   const [assets,setAssets]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']>|null>(null);
   const [projects,setProjects]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerProjects']>>['data']>|null>(null);
   const [error,setError]=useState('');
@@ -356,41 +458,65 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
   const [projectId,setProjectId]=useState('');
   const [collection,setCollection]=useState('');
   const [selectedAssetId,setSelectedAssetId]=useState('');
+  const [targetKey,setTargetKey]=useState('');
+  const [placementAlt,setPlacementAlt]=useState('');
+  const [placing,setPlacing]=useState(false);
+  const placementFlight=useRef(false);
+  const uploadFlight=useRef(false);
+  const assetMounted=useRef(false);
+  useEffect(()=>{assetMounted.current=true;return()=>{assetMounted.current=false;};},[]);
   const [uploadOpen,setUploadOpen]=useState(false);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
   const [busy,setBusy]=useState(false);
   const [refresh,setRefresh]=useState(0);
   useEffect(()=>{
-    let active=true;setError('');
+    let active=true;const epoch=port.reconcileOwnerSessionEpoch();setError('');setAssets(null);setProjects(null);
     void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
-      if(!active)return;
+      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!assetReply.data||!projectReply.data){
         setError(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');
         setAssets(null);setProjects(null);return;
       }
       setAssets(assetReply.data);setProjects(projectReply.data);
-    }).catch(()=>{if(active){setError('Private asset records could not be loaded.');setAssets(null);setProjects(null);}});
+    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch){setError('Private asset records could not be loaded.');setAssets(null);setProjects(null);}});
     return ()=>{active=false;};
   },[port,refresh]);
   const visible=assets?.filter(item=>!collection||item.projectId===collection)??[];
-  const selected=assets?.find(item=>item.id===selectedAssetId);
+  const selected=visible.find(item=>item.id===selectedAssetId);
+  // Explicitly selected target disappearing must not redirect a placement.
+  const target=targets.find(item=>item.key===(targetKey||selectedSlot));
+  const uses=selected?Object.entries(snapshot.slots).filter(([,assignment])=>
+    assignment.state!=='EMPTY'&&assignment.content.asset_id===selected.id):[];
+  async function place(){
+    if(!selected||!target||placing||busy||placementFlight.current||uploadFlight.current||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
+    const epoch=port.reconcileOwnerSessionEpoch();placementFlight.current=true;setPlacing(true);setNotice('');
+    try{
+      const placed=await onPlace(selected.id,target.key,placementAlt.trim());
+      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      setNotice(placed?'Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.':
+        'Image placement was not completed. Existing assignment and selected image were retained.');
+    }finally{placementFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setPlacing(false);}
+  }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(busy||!file||!projectId||!alt.trim())return;
-    setBusy(true);setError('');setNotice('');
+    if(busy||uploadFlight.current||placementFlight.current||!file||!projectId||!alt.trim())return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    uploadFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       const receipt=await port.uploadOwnerProjectImage(projectId,file,alt.trim());
+      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!receipt.data||receipt.data.publicDeliveryAllowed!==false||
         receipt.data.verifiedMetadata!==true)
         throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
       setNotice('Image uploaded and privately registered. Public delivery remains blocked; a trusted byte attestation is still required.');
-      setSelectedAssetId(receipt.data.id);setCollection('');
+      setSelectedAssetId(receipt.data.id);setPlacementAlt(receipt.data.altText);setCollection('');
       setAlt('');setFile(null);setUploadOpen(false);setRefresh(n=>n+1);
       const input=document.getElementById('kd-private-image-file');
       if(input instanceof HTMLInputElement)input.value='';
-    }catch(cause){setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
-    finally{setBusy(false);}
+    }catch(cause){if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
+      setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
+    finally{uploadFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
   return <div className="ws-asset-library ws-asset-manager" role="group" aria-label="Private asset manager">
     <aside className="ws-asset-collections">
@@ -431,7 +557,7 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
       </div>}
       {visible.length>0&&<ul className="ws-asset-gallery">{visible.map(asset=><li key={asset.id}>
         <button type="button" aria-pressed={selectedAssetId===asset.id}
-          onClick={()=>{setSelectedAssetId(asset.id);setUploadOpen(false);}}>
+          onClick={()=>{setSelectedAssetId(asset.id);setPlacementAlt(asset.altText);setUploadOpen(false);}}>
           <span className="ws-asset-gallery-icon" aria-hidden="true">▧</span>
           <strong>{asset.altText}</strong><small>{asset.mime} · {Math.ceil(asset.size/1024)} KB</small>
           <small>Private metadata · No public image URL</small>
@@ -448,15 +574,15 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
         <p>This is an irreversible write-once private Storage upload. No owner-side delete or public publish follows.</p>
         {projects?.length===0?<p>First <a href="/app/projects">create a private project</a>.</p>:
           <form className="ws-asset-upload" onSubmit={event=>void upload(event)}>
-            <label>Owner project<select required value={projectId} onChange={event=>setProjectId(event.target.value)}>
+            <label>Owner project<select required disabled={busy} value={projectId} onChange={event=>setProjectId(event.target.value)}>
               <option value="">Select a private project</option>
               {projects?.map(project=><option key={project.id} value={project.id}>{project.title}</option>)}
             </select></label>
             <label htmlFor="kd-private-image-file">Private image file</label>
-            <input id="kd-private-image-file" type="file" required
+            <input id="kd-private-image-file" type="file" required disabled={busy}
               accept="image/png,image/jpeg,image/webp"
               onChange={event=>setFile(event.currentTarget.files?.[0]??null)}/>
-            <label>Image alt text<textarea rows={3} required maxLength={500} value={alt}
+            <label>Image alt text<textarea rows={3} required disabled={busy} maxLength={500} value={alt}
               onChange={event=>setAlt(event.target.value)}
               placeholder="Describe the image for assistive technology"/></label>
             <p className="ws-asset-limits">PNG, JPEG or WebP · 5 MB max. Your filename is never used as a public path.
@@ -475,10 +601,22 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
           <div><dt>Project</dt><dd>{projects?.find(item=>item.id===selected.projectId)?.title??selected.projectId}</dd></div>
           <div><dt>MIME type</dt><dd>{selected.mime}</dd></div>
           <div><dt>Size</dt><dd>{Math.ceil(selected.size/1024)} KB</dd></div>
-          <div><dt>Usage references</dt><dd>Not independently verified</dd></div>
+          <div><dt>Current working draft uses</dt><dd>{uses.length?uses.map(([key])=>key).join(', '):'None in current draft'}</dd></div>
           <div><dt>Focal point</dt><dd>Not stored</dd></div>
         </dl>
-        <p className="ws-asset-protection">Replacement must use a new immutable object and a separately authorized references workflow.</p>
+        <p className="ws-asset-protection">Place only a verified owner-private registration into an actual compatible slot. Replacing a pristine image stashes its previous assignment; historical asset bytes are not deleted. No public URL or digest is fabricated.</p>
+        {targets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
+          <label>Compatible image slot<select value={target?.key??''} onChange={event=>setTargetKey(event.target.value)}>
+            <option value="">Choose an image-compatible slot</option>
+            {targets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
+          </select></label>
+          <label>Placement alt text<textarea rows={3} value={placementAlt}
+            aria-invalid={!placementAlt.trim()||placementAlt.length>300}
+            onChange={event=>setPlacementAlt(event.target.value)}/></label>
+          <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
+          <button type="button" className="ws-primary" disabled={!target||placementDisabled||busy||placing||!placementAlt.trim()||placementAlt.length>300}
+            onClick={()=>void place()}>{placing?'Verifying placement…':target?.state==='S0'?'Replace image and stash previous':'Assign image to selected slot'}</button>
+        </>}
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Register another image</button>
       </>:<><h2>No asset selected.</h2>
         <p>Select a private image to inspect its verified metadata, or use the uploader.</p>
@@ -493,9 +631,9 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
   </div>;
 }
 
-export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
+export function RevisionHistory({port,id,revision,onRestore,working,buffered,active}: {
   port:SupabaseBrowserAuthPort;id:string;revision:number;
-  onRestore:(snapshot:PortfolioSnapshot)=>boolean;working:PortfolioSnapshot;buffered:boolean;
+  onRestore:(snapshot:PortfolioSnapshot)=>boolean;working:PortfolioSnapshot;buffered:boolean;active:boolean;
 }) {
   const [items,setItems]=useState<{revision:number;createdAt:string}[]|null>(null);
   const [selected,setSelected]=useState<number|null>(null);
@@ -516,14 +654,30 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
     });
     return ()=>{active=false;};
   },[port,id,revision]);
+  // A read can resolve after the owner edits, saves, changes account/route,
+  // or closes History. Never use the old captured editor callback to restore.
+  const latest=useRef<{port:SupabaseBrowserAuthPort;id:string;revision:number;
+    working:PortfolioSnapshot;buffered:boolean;active:boolean;epoch:number;onRestore:(snapshot:PortfolioSnapshot)=>boolean}|null>(null);
+  useLayoutEffect(()=>{
+    latest.current={port,id,revision,working,buffered,active,epoch:port.getOwnerSessionEpoch(),onRestore};
+    return ()=>{latest.current=null;};
+  },[port,id,revision,working,buffered,active,onRestore]);
   // A comparison describes one exact working snapshot, not later edits/restores.
   useEffect(()=>{setComparison(null);},[working]);
   async function compare(){
-    if(!selected||busy)return;
+    if(!selected||busy||!active)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
     setBusy(true);setError('');setComparison(null);
     try{
       const historical=await readSelectedUnsafe(selected);
       if(!historical)return;
+      const current=latest.current;
+      if(!current||!current.active||current.port!==port||current.id!==id||current.revision!==revision||
+        current.epoch!==epoch||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(current.working!==working){
+        setError('The working draft changed during comparison. Compare again.');
+        return;
+      }
       const paths=new Set([...Object.keys(working.files),...Object.keys(historical.files)]);
       const keys=new Set([...Object.keys(working.slots),...Object.keys(historical.slots)]);
       const changedFiles=[...paths].filter(path=>working.files[path]!==historical.files[path]).length;
@@ -548,11 +702,19 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
     }
   }
   async function restore(){
-    if(!selected||busy||buffered)return;
+    if(!selected||busy||buffered||!active)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
     setBusy(true);setError('');
     try{
       const snapshot=await readSelectedUnsafe(selected);
-      if(snapshot&&onRestore(snapshot)){setSelected(null);setComparison(null);}
+      const current=latest.current;
+      if(!snapshot||!current||!current.active||current.port!==port||current.id!==id||current.revision!==revision||
+        current.epoch!==epoch||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(current.working!==working||current.buffered){
+        setError('The working draft or its unapplied edits changed during restore. Review them and retry.');
+        return;
+      }
+      if(current.onRestore(snapshot)){setSelected(null);setComparison(null);}
     }finally{setBusy(false);}
   }
   return <div className="ws-editor-tool ws-revision-list">
@@ -573,7 +735,7 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
         <div className="ws-revision-buttons">
           <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void compare()}>
             Compare to working copy</button>
-          <button type="button" className="ws-secondary" disabled={busy||buffered} onClick={()=>void restore()}>
+          <button type="button" className="ws-secondary" disabled={busy||buffered||!active} onClick={()=>void restore()}>
             Restore selected checkpoint to draft</button>
         </div>
       </>}
@@ -590,9 +752,9 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
 
 /** EDIT-08: the approved history layout is a three-pane private workbench,
  * not a small history list inside the Content inspector. */
-export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered,onRestore,back}:{
+export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered,active,onRestore,back}:{
   port:SupabaseBrowserAuthPort;id:string;revision:number;
-  working:PortfolioSnapshot;title:string;dirty:boolean;buffered:boolean;
+  working:PortfolioSnapshot;title:string;dirty:boolean;buffered:boolean;active:boolean;
   onRestore:(snapshot:PortfolioSnapshot)=>boolean;back:()=>void;
 }){
   const [tab,setTab]=useState<'History'|'Problems'|'Conflicts'>('History');
@@ -641,7 +803,7 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered
         <div id="kd-revision-panel" role="tabpanel" tabIndex={0}
           aria-labelledby={'kd-revision-tab-'+tab.toLowerCase()}>
           {tab==='History'?<RevisionHistory port={port} id={id} revision={revision}
-            working={working} onRestore={onRestore} buffered={buffered}/>:
+            working={working} onRestore={onRestore} buffered={buffered} active={active}/>:
           tab==='Problems'?<div className="ws-revision-honest-state">
             <h3>Validation has not been run here.</h3>
             <p>Saved revision integrity is checked on read. This history page does not run source lint, custom-code analysis, media attestation or public host checks.</p>
