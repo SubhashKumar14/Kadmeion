@@ -804,26 +804,41 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                     }
                   };
                   return <div key={inputKey} className="ws-inspector-secondary-field">
-                    <label htmlFor={id}>{field}</label><input id={id}
+                    <label htmlFor={id}>{field}</label>
+                    {/* Place explicit actions before the input in keyboard order.
+                        Forward Tab still validates/applies as it did previously;
+                        Shift+Tab or a pointer can explicitly choose Discard. */}
+                    {draft!==stored&&<div className="ws-actions">
+                      <button type="button" className="ws-secondary" data-inspector-buffer-action={inputKey}
+                        disabled={saving} onMouseDown={event=>event.preventDefault()}
+                        onClick={()=>{document.getElementById(id)?.focus();applySecondary();}}>Apply {field} edit</button>
+                      <button type="button" className="ws-secondary" data-inspector-buffer-action={inputKey}
+                        disabled={saving} onMouseDown={event=>event.preventDefault()}
+                        onClick={()=>{document.getElementById(id)?.focus();changeFieldBuffer(inputKey,stored,stored);}}>Discard {field} edit</button>
+                    </div>}
+                    <input id={id}
                     type={field==='url'?'url':'text'} maxLength={field==='url'?2048:12000}
                     value={draft} aria-invalid={!!issue}
                     aria-describedby={issue?id+'-error':undefined}
                     onChange={event=>changeFieldBuffer(inputKey,event.target.value,stored)}
                     onBlur={event=>{
-                      // Keep the existing blur-to-apply behavior, except when
-                      // focus is explicitly moving to an Apply/Discard control.
-                      if(event.relatedTarget instanceof HTMLElement&&
-                         event.relatedTarget.dataset.inspectorBufferAction==='true')return;
+                      // Validation must run even when leaving for an explicit
+                      // buffer action. Such an action may defer a valid commit.
+                      const warning=draft!==stored&&field==='url'?ownerLinkError(draft):null;
+                      if(warning){
+                        setFieldIssues(values=>({...values,[inputKey]:warning}));
+                        return;
+                      }
+                      const action=event.relatedTarget instanceof HTMLElement?
+                        event.relatedTarget.dataset.inspectorBufferAction:undefined;
+                      if(action===inputKey||action==='true')return;
                       applySecondary();
-                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}
-                    {draft!==stored&&<div className="ws-actions">
-                      <button type="button" className="ws-secondary" data-inspector-buffer-action="true"
-                        disabled={saving} onMouseDown={event=>event.preventDefault()}
-                        onClick={applySecondary}>Apply {field} edit</button>
-                      <button type="button" className="ws-secondary" data-inspector-buffer-action="true"
-                        disabled={saving} onMouseDown={event=>event.preventDefault()}
-                        onClick={()=>changeFieldBuffer(inputKey,stored,stored)}>Discard {field} edit</button>
-                    </div>}</div>;
+                    }}
+                    onKeyDown={event=>{
+                      if(event.key==='Escape'&&draft!==stored){
+                        event.preventDefault();changeFieldBuffer(inputKey,stored,stored);
+                      }
+                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</div>;
                 })}
               {pendingFields&&<p className="ws-field-hint" role="status">
                 One or more content fields have unapplied edits. Apply or discard them before saving this draft.
