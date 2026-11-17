@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { OwnerProfile, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import { normalizeOwnerProfileLinks } from '../../auth-web/src/supabase-auth-port.ts';
+import type { OwnerProfile, OwnerProfileLink, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 
 import { Icon } from './landing.tsx';
 import type { PrivatePlatformLink, PlatformProvider } from '../../../packages/contracts/src/private-platform-links-service.ts';
@@ -240,10 +241,10 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             {skillError && <p id="profile-skill-error" role="alert" className="ws-inline-alert">{skillError}</p>}
             <p>{draft.skills.length} of 20 skills added to this private draft.</p>
             <button type="button" className="ws-secondary" disabled={!skill.trim() || draft.skills.length >= 20} onClick={addSkill}>Add skill</button>
-            <p>Manage self-supplied private platform links below. Project URLs are managed in the <a href="/app/projects">project library</a>.</p>
+            <p>Manage private authored HTTPS links and self-supplied platform handles below. Project URLs are managed in the <a href="/app/projects">project library</a>.</p>
           </>}
           {panel === 'Visibility' && <>
-            <p>Choose which eligible fields to include in the private preview, or inspect your saved sharing preferences. These selections do not save sharing consent or publish anything. Skills, platform links, email and account details stay out of this projection.</p>
+            <p>Choose which eligible fields to include in the private preview, or inspect your saved sharing preferences. These selections do not save sharing consent or publish anything. Skills, authored links, platform links, email and account details stay out of this projection.</p>
             <a className="ws-secondary" href="/app/settings/privacy">Open privacy settings</a>
           </>}
           {panel === 'Public preview' && <p>Compare the selected draft or last saved fields. This is an owner-only approximation, not a live visitor route.</p>}
@@ -291,7 +292,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
         </div>
       </div>}
     </form>
-    {draft&&openedLinks&&<div hidden={panel!=='Skills & links'}><PrivateProfileLinks port={port}/></div>}
+    {draft&&openedLinks&&<div hidden={panel!=='Skills & links'}><AuthoredProfileLinks port={port}/><PrivateProfileLinks port={port}/></div>}
   </section>;
 }
 
@@ -422,5 +423,263 @@ function PrivateProfileLinks({port}:{port:SupabaseBrowserAuthPort}){
     </>}
     <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void operate('read')}>
       {error?'Retry or refresh private links':'Refresh private links'}</button>
+  </section>;
+}
+
+
+type AuthoredLinkRow = OwnerProfileLink & {key:number};
+type AuthoredLinkAttempt = {
+  expected:OwnerProfileLink[];
+  desired:OwnerProfileLink[];
+  acknowledged:boolean;
+  checkOnly:boolean;
+};
+const sameAuthoredLinks=(a:readonly OwnerProfileLink[],b:readonly OwnerProfileLink[]) =>
+  a.length===b.length&&a.every((link,index)=>link.label===b[index]?.label&&link.url===b[index]?.url);
+const authoredValues=(rows:readonly AuthoredLinkRow[])=>rows.map(({label,url})=>({label,url}));
+function boundedAuthoredLinks(rows:readonly OwnerProfileLink[]):OwnerProfileLink[]{
+  const normalized=normalizeOwnerProfileLinks(rows);
+  // PostgreSQL's jsonb text adds whitespace to compact JSON. Leave space for
+  // separators as well as enforce the actual UTF-8 budget on the canonical list.
+  if(new TextEncoder().encode(JSON.stringify(normalized)).byteLength+normalized.length*4>32768)
+    throw new Error('Private profile links exceed the saved-list size limit.');
+  return normalized;
+}
+function authoredLinkDenial(message:string){
+  return /access was denied|session (?:changed|verification is required)|owner session (?:changed|verification is required)/i.test(message);
+}
+
+/** Authenticated owner-private list, not a provider connection or public
+ * projection. CAS compares the entire ordered list and replays only the
+ * original desired state. A separate authoritative read reconciles receipts.
+ */
+function AuthoredProfileLinks({port}:{port:SupabaseBrowserAuthPort}){
+  const [saved,setSaved]=useState<OwnerProfileLink[]|null>(null);
+  const [rows,setRows]=useState<AuthoredLinkRow[]>([]);
+  const [remote,setRemote]=useState<OwnerProfileLink[]|null>(null);
+  const [operation,setOperation]=useState<AuthoredLinkAttempt|null>(null);
+  const [busy,setBusy]=useState(true);
+  const [needsCheck,setNeedsCheck]=useState(true);
+  const [expired,setExpired]=useState(false);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const [confirmReapply,setConfirmReapply]=useState(false);
+  const sequence=useRef(0);
+  const generation=useRef(0);
+  const pending=useRef(true);
+  const mounted=useRef(false);
+  const epoch=useRef(port.getOwnerSessionEpoch());
+  const current=(id:number)=>mounted.current&&id===generation.current&&epoch.current===port.getOwnerSessionEpoch();
+  const freshRows=(links:readonly OwnerProfileLink[])=>links.map(link=>({...link,key:++sequence.current}));
+  const raw=authoredValues(rows);
+  const dirty=saved!==null&&!sameAuthoredLinks(saved,raw);
+  const editable=!busy&&!operation&&!remote&&!expired&&saved!==null;
+
+  function clearPrivate(message:string,sessionChanged=false){
+    setSaved(null);setRows([]);setRemote(null);setOperation(null);
+    setConfirmReapply(false);setNeedsCheck(true);setNotice('');setError(message);
+    if(sessionChanged)setExpired(true);
+  }
+  function accept(links:OwnerProfileLink[],message:string){
+    setSaved(links);setRows(freshRows(links));setRemote(null);setOperation(null);
+    setNeedsCheck(false);setConfirmReapply(false);setError('');setNotice(message);
+  }
+  function compareRemote(links:OwnerProfileLink[],message:string){
+    setRemote(links);setOperation(null);setNeedsCheck(true);setConfirmReapply(false);
+    setError(message);setNotice('');
+  }
+  function fail(message:string){
+    setNotice('');
+    if(authoredLinkDenial(message)){
+      clearPrivate('Private authored links are unavailable. Verify your owner session and reload.',
+        epoch.current!==port.getOwnerSessionEpoch());return;
+    }
+    setError(message);setNeedsCheck(true);
+  }
+  async function read(id:number,attempt:AuthoredLinkAttempt|null,baseline:OwnerProfileLink[]|null,local:OwnerProfileLink[]){
+    try{
+      const result=await port.readOwnerProfileLinks(epoch.current);
+      if(!current(id))return;
+      if(result.error||!result.data||result.data.publicDeliveryAllowed!==false){
+        fail(result.error?.message??'Private authored links could not be verified.');return;
+      }
+      const links=boundedAuthoredLinks(result.data.links);
+      if(!sameAuthoredLinks(links,result.data.links))throw new Error('Noncanonical private links.');
+      if(attempt){
+        if(sameAuthoredLinks(links,attempt.desired)){
+          accept(links,'Private authored links confirmed saved.');return;
+        }
+        if(!attempt.acknowledged&&sameAuthoredLinks(links,attempt.expected)){
+          // A verified unchanged base permits explicit replay only; no auto write.
+          setRemote(null);setNeedsCheck(false);setOperation({...attempt,checkOnly:false});
+          setError('The original saved list is unchanged. Retry the original save or keep the draft.');
+          return;
+        }
+        compareRemote(links,'Saved authored links changed. Compare the current saved list and your retained draft.');return;
+      }
+      if(baseline===null||sameAuthoredLinks(baseline,local)){
+        accept(links,'Private authored links checked.');return;
+      }
+      // A manually refreshed dirty buffer must remain intact. Do not auto
+      // adopt a new CAS baseline even when some rows happen to overlap.
+      if(sameAuthoredLinks(links,baseline)){
+        setRemote(null);setNeedsCheck(false);setConfirmReapply(false);
+        setError('');setNotice('Saved list checked. Unsaved edits retained.');return;
+      }
+      compareRemote(links,'Saved authored links changed. Compare before replacing either list.');
+    }catch{
+      if(current(id))fail('Could not verify the saved authored links. Retry the read; your draft is retained.');
+    }
+  }
+  function begin(){
+    if(pending.current||!mounted.current||expired)return null;
+    if(epoch.current!==port.getOwnerSessionEpoch()){
+      clearPrivate('Your owner session changed. Reopen your profile.',true);return null;
+    }
+    pending.current=true;setBusy(true);setError('');setNotice('');
+    return ++generation.current;
+  }
+  function finish(id:number){
+    if(!mounted.current||id!==generation.current)return;
+    pending.current=false;setBusy(false);
+    if(!current(id))clearPrivate('Your owner session changed. Reopen your profile.',true);
+  }
+  useEffect(()=>{
+    mounted.current=true;epoch.current=port.getOwnerSessionEpoch();
+    pending.current=true;setBusy(true);
+    const id=++generation.current;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(!mounted.current||next===epoch.current)return;
+      ++generation.current;pending.current=false;setBusy(false);
+      clearPrivate('Your owner session changed. Reopen your profile.',true);
+    });
+    void read(id,null,null,[]).finally(()=>finish(id));
+    return ()=>{mounted.current=false;++generation.current;pending.current=false;unsubscribe();};
+  },[port]);
+
+  function change(update:(previous:AuthoredLinkRow[])=>AuthoredLinkRow[]){
+    if(!editable||pending.current)return;
+    if(epoch.current!==port.getOwnerSessionEpoch()){
+      clearPrivate('Your owner session changed. Reopen your profile.',true);return;
+    }
+    setRows(update);setNotice('');if(!needsCheck)setError('');
+  }
+  function refresh(){
+    const id=begin();if(id===null)return;
+    setRemote(null);setConfirmReapply(false);
+    void read(id,operation,saved,raw).finally(()=>finish(id));
+  }
+  async function save(){
+    if(pending.current||expired||remote||saved===null)return;
+    if(operation&&(operation.acknowledged||operation.checkOnly))return;
+    if(!operation&&(needsCheck||!dirty))return;
+    let attempt=operation;
+    if(!attempt){
+      let desired:OwnerProfileLink[];
+      try{desired=boundedAuthoredLinks(raw);}
+      catch(cause){setError(cause instanceof Error?cause.message:'Enter valid private HTTPS links.');return;}
+      if(sameAuthoredLinks(saved,desired)){
+        accept(saved,'No changes to save after link normalization.');return;
+      }
+      attempt={expected:saved.map(link=>({...link})),desired,acknowledged:false,checkOnly:false};
+    }
+    const id=begin();if(id===null)return;
+    setOperation(attempt);
+    try{
+      const outcome=await port.saveOwnerProfileLinks(attempt.expected,attempt.desired,epoch.current);
+      if(!current(id))return;
+      if(outcome.error||!outcome.data||outcome.data.publicDeliveryAllowed!==false||
+          !sameAuthoredLinks(outcome.data.links,attempt.desired)){
+        const message=outcome.error?.message??'The save response could not be verified.';
+        if(authoredLinkDenial(message)){fail(message);return;}
+        const conflict=/another session|workspace conflict/i.test(message);
+        setOperation({...attempt,checkOnly:conflict});
+        fail(conflict?'Saved authored links changed. Check the latest list before retrying.':
+          message+' Your original save is retained; check the saved list or retry the exact request.');
+        return;
+      }
+      const received={...attempt,acknowledged:true,checkOnly:true};
+      setOperation(received);setNeedsCheck(true);
+      // A verified mutation receipt is not a fresh read after a concurrent edit.
+      // Never replay an acknowledged mutation because its readback failed.
+      await read(id,received,saved,raw);
+    }catch{
+      if(current(id)){
+        fail('Private authored link save could not be verified. Check the saved list or retry the original request.');
+      }
+    }finally{finish(id);}
+  }
+  function loadRemote(reapply:boolean){
+    if(pending.current||expired||!remote||(reapply&&!confirmReapply))return;
+    if(epoch.current!==port.getOwnerSessionEpoch()){
+      clearPrivate('Your owner session changed. Reopen your profile.',true);return;
+    }
+    if(reapply){
+      setSaved(remote);setRemote(null);setOperation(null);setNeedsCheck(false);setConfirmReapply(false);
+      setError('');setNotice('Latest saved list checked. Your draft is retained; save explicitly to replace it.');
+    }else accept(remote,'Latest saved authored links loaded; unsaved edits discarded.');
+  }
+  function keepDraft(){
+    if(pending.current||expired||!operation||operation.acknowledged||operation.checkOnly||needsCheck)return;
+    if(epoch.current!==port.getOwnerSessionEpoch()){
+      clearPrivate('Your owner session changed. Reopen your profile.',true);return;
+    }
+    // Only a successful read of the unchanged base permits releasing the
+    // original ambiguous attempt to edit it again.
+    setOperation(null);setError('');setNotice('Unsaved draft retained; no new request was sent.');
+  }
+  return <section className="ws-project-fields" aria-labelledby="profile-authored-links-title" aria-busy={busy}>
+    <h2 id="profile-authored-links-title">Private authored links</h2>
+    <p>Save up to 12 personal HTTPS links with labels. These are private, self-supplied destinations, not verified profiles or public sharing choices.</p>
+    <div aria-live="polite">{busy&&<p>Checking or saving private authored links…</p>}{notice&&<p>{notice}</p>}
+      {dirty&&<p>Unsaved authored link changes.</p>}</div>
+    {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
+    {saved!==null&&!expired&&<>
+      <fieldset disabled={!editable}>
+        <legend>Edit authored links ({rows.length} of 12)</legend>
+        {rows.length===0&&<p>No authored links in this draft.</p>}
+        {rows.map((row,index)=><fieldset key={row.key}>
+          <legend>Link {index+1}</legend>
+          <label>Label {index+1}<input value={row.label} maxLength={80} autoComplete="off"
+            onChange={event=>{const label=event.target.value;change(previous=>previous.map(item=>item.key===row.key?{...item,label}:item));}}/></label>
+          <label>HTTPS URL {index+1}<input type="url" value={row.url} maxLength={2048} autoComplete="off" spellCheck={false}
+            onChange={event=>{const url=event.target.value;change(previous=>previous.map(item=>item.key===row.key?{...item,url}:item));}}/></label>
+          <div className="ws-actions">
+            <button type="button" className="ws-secondary" aria-label={'Move link '+(index+1)+' up'} disabled={index===0} onClick={()=>change(previous=>{
+              const at=previous.findIndex(item=>item.key===row.key);if(at<=0)return previous;
+              const next=[...previous];const item=next.splice(at,1)[0];if(item)next.splice(at-1,0,item);return next;
+            })}>Move up</button>
+            <button type="button" className="ws-secondary" aria-label={'Move link '+(index+1)+' down'} disabled={index===rows.length-1} onClick={()=>change(previous=>{
+              const at=previous.findIndex(item=>item.key===row.key);if(at<0||at>=previous.length-1)return previous;
+              const next=[...previous];const item=next.splice(at,1)[0];if(item)next.splice(at+1,0,item);return next;
+            })}>Move down</button>
+            <button type="button" className="ws-secondary" aria-label={'Remove authored link '+(index+1)}
+              onClick={()=>change(previous=>previous.filter(item=>item.key!==row.key))}>Remove link</button>
+          </div>
+        </fieldset>)}
+        <button type="button" className="ws-secondary" disabled={rows.length>=12}
+          onClick={()=>{const key=++sequence.current;change(previous=>previous.length>=12?previous:[...previous,{key,label:'',url:''}]);}}>Add authored link</button>
+      </fieldset>
+      {remote!==null&&<fieldset disabled={busy}>
+        <legend>Compare latest saved authored links</legend>
+        <p>Your draft above is retained. The current saved list is:</p>
+        {remote.length?<ol>{remote.map((link,index)=><li key={index}><strong>{link.label}</strong>{' '}<span>{link.url}</span></li>)}</ol>:<p>No links are currently saved.</p>}
+        <label className="ws-profile-check"><input type="checkbox" checked={confirmReapply} onChange={event=>setConfirmReapply(event.target.checked)}/>
+          I reviewed this list and want to keep my draft for a separate save that replaces it.</label>
+        <button type="button" className="ws-secondary" disabled={!confirmReapply} onClick={()=>loadRemote(true)}>Keep draft against latest list</button>
+        <button type="button" className="ws-secondary" onClick={()=>loadRemote(false)}>Discard draft and load latest list</button>
+      </fieldset>}
+      {!remote&&<div className="ws-actions">
+        {!operation&&<button type="button" className="ws-primary" disabled={busy||needsCheck||!dirty} onClick={()=>void save()}>Save authored links</button>}
+        {operation&&!operation.checkOnly&&!operation.acknowledged&&<button type="button" className="ws-primary" disabled={busy} onClick={()=>void save()}>Retry original authored link save</button>}
+        {operation&&!operation.checkOnly&&!operation.acknowledged&&!needsCheck&&<button type="button" className="ws-secondary" disabled={busy} onClick={keepDraft}>Keep editing unsaved links</button>}
+        {!operation&&dirty&&<button type="button" className="ws-secondary" disabled={busy} onClick={()=>{
+          if(pending.current||epoch.current!==port.getOwnerSessionEpoch())return;
+          setRows(freshRows(saved));setNotice('Unsaved authored link changes discarded.');if(!needsCheck)setError('');
+        }}>Discard authored link changes</button>}
+      </div>}
+    </>}
+    {!expired&&<button type="button" className="ws-secondary" disabled={busy} onClick={refresh}>
+      {operation?.acknowledged?'Verify saved authored links':saved===null?'Retry authored links':'Check latest authored links'}</button>}
   </section>;
 }
