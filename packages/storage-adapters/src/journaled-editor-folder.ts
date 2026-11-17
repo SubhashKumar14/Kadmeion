@@ -48,6 +48,10 @@ function verifyEditor(head:unknown):asserts head is EditorHead {
     record(head.operations)&&Object.keys(head.operations).length<=10000,'INVALID');
   try{
     validateSnapshot(head.snapshot as EditorHead['snapshot']);
+    // A raw filesystem source must round-trip through UTF-8. Reject lone
+    // surrogate code units before any journal or source file is created.
+    for(const source of Object.values((head.snapshot as EditorHead['snapshot']).files))
+      requireSafe(td.decode(te.encode(source))===source,'INVALID');
     for(const old of head.undo)validateSnapshot(old);
     for(const old of head.redo)validateSnapshot(old);
   }catch{throw new FolderCommitError('INVALID');}

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { IndexedDbEditorDraftStore, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
 import { JournaledEditorFolderStore, FolderCommitError, type FolderDirectory } from '../../../packages/storage-adapters/src/journaled-editor-folder.ts';
+import { exportPortableSnapshot, importPortableSnapshot } from '../../../packages/storage-adapters/src/portable-editor-snapshot.ts';
 import { unappliedSourceBufferCount } from './behavior.ts';
 import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
@@ -460,6 +461,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryNotice,setRecoveryNotice]=useState('');
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
   const [folderNotice,setFolderNotice]=useState('');
+  const [portableNotice,setPortableNotice]=useState('');
+  const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;
+    changedFiles:string[];changedSlots:string[]}|null>(null);
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
     cloudRevision:number;changedFiles:string[];changedSlots:string[]}|null>(null);
   const folderPicker=(window as Window&{showDirectoryPicker?:(options:{mode:'readwrite'})=>Promise<FolderDirectory>}).showDirectoryPicker;
@@ -995,6 +999,58 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       }
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
+  async function portableOperation(action:'export'|'compare'|'restore',file?:File){
+    const view=captureRecovery(),previewed=portableComparison;
+    if(!view||!view.head||!view.record||recoveryLock.current||pendingFields||sourceDirty||
+      (action!=='export'&&view.dirty))return;
+    if(action==='compare'&&!file||action==='restore'&&!previewed)return;
+    recoveryLock.current=true;setRecoveryBusy(true);setPortableNotice('');
+    if(action==='compare')setPortableComparison(null);
+    try{
+      if(action==='export'){
+        const data=exportPortableSnapshot(view.head.snapshot);
+        if(!draftCurrent(view))return;
+        const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+        const link=document.createElement('a');
+        link.href=url;link.download='kadmeion-private-project-'+view.id+'.json';
+        try{document.body.append(link);link.click();}
+        finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+        setPortableNotice('Private snapshot download requested. No cloud save or media-file export occurred.');return;
+      }
+      if(action==='compare'&&(!file||file.size<1||file.size>1024*1024)){
+        setPortableNotice('Choose a Kadmeion private project JSON file within 1 MiB. Nothing was imported.');return;
+      }
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!draftCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
+         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+        setPortableComparison(null);setPortableNotice('Current cloud revision changed or could not be verified. Reload the saved draft and compare again.');return;
+      }
+      if(action==='compare'){
+        const bytes=await file!.arrayBuffer();
+        if(!draftCurrent(view))return;
+        if(bytes.byteLength<1||bytes.byteLength>1024*1024)throw new Error('Invalid snapshot byte length.');
+        const source=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+        const snapshot=importPortableSnapshot(source);
+        setPortableComparison({snapshot,cloudRevision:fresh.data.revision,
+          ...portableDifference(fresh.data.snapshot,snapshot)});
+        setPortableNotice('Private project JSON parsed and compared. This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
+      }
+      if(!previewed||previewed.cloudRevision!==fresh.data.revision){
+        setPortableComparison(null);setPortableNotice('Cloud version changed after comparison. Compare again; no draft was replaced.');return;
+      }
+      if(!window.confirm('Restore the compared private snapshot as an unsaved draft in this portfolio? The original file and saved cloud revision remain unchanged until a separate Save. Review imported source and asset references.'))return;
+      if(!draftCurrent(view))return;
+      const next=restoreHistoricalSnapshot(view.head,previewed.snapshot,crypto.randomUUID());
+      setHead(next);setRecord(fresh.data);setOperation(crypto.randomUUID());
+      setSlot(resolveInitialEditorSlot(next.snapshot,null).key);
+      setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
+      setSourceReset(value=>value+1);setPortableComparison(null);
+      setPortableNotice('Imported as an unsaved draft. Undo is available. No cloud save, media-byte verification or source execution occurred.');
+    }catch{
+      if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON; your draft remains intact.');}
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
   function exportWorkingRecovery(){
     // This exports only bytes currently visible to an already verified,
     // mounted owner. It never loads local copies or bypasses the gate.
@@ -1177,6 +1233,31 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty||!folderSupported}
             onClick={()=>void folderOperation('restore')}>Restore compared folder as unsaved draft</button>
           <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setFolderComparison(null)}>Close folder comparison</button>
+        </div>
+      </div>}
+    </details>}
+    {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
+      <summary>Private project JSON import &amp; export</summary>
+      <p>Portable applied snapshot only (1 MiB maximum). This is not an editable ZIP, a media backup, a published page or a browser recovery file with raw buffers. Authored source and text may contain sensitive information.</p>
+      <div className="ws-actions">
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>void portableOperation('export')}>Export private project JSON</button>
+        <label>Compare private project JSON
+          <input type="file" accept=".json,application/json" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
+              if(file)void portableOperation('compare',file);}}/>
+        </label>
+      </div>
+      {portableNotice&&<p role="status">{portableNotice}</p>}
+      {portableComparison&&<div aria-label="Portable snapshot comparison">
+        <p>Compared to saved cloud revision {portableComparison.cloudRevision}: {portableComparison.changedFiles.length} different files and {portableComparison.changedSlots.length} different slot/stash keys.</p>
+        <details><summary>Different file paths</summary><ul>{portableComparison.changedFiles.map(path=><li key={path}><code>{path}</code></li>)}</ul></details>
+        <details><summary>Different slots or stashes</summary><ul>{portableComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            onClick={()=>void portableOperation('restore')}>Restore compared JSON as unsaved draft</button>
+          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setPortableComparison(null)}>Close JSON comparison</button>
         </div>
       </div>}
     </details>}
