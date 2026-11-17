@@ -1,0 +1,12 @@
+{
+  "status": "STRUCTURAL_VALIDATION_PASSED",
+  "sessions": 16,
+  "workflow_rows": 53,
+  "requirement_ids": 468,
+  "known_paths": 431,
+  "document_paths": 165,
+  "contracts": 14,
+  "application_tests_run_by_this_planning_task": false,
+  "notion_plan_url": "https://app.notion.com/p/41bb082297c781948335e8728d512fa9",
+  "activation": "PREPARED_NOT_ACTIVE"
+}
