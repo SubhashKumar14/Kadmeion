@@ -88,7 +88,13 @@ jobs:
         env:
           VITE_SUPABASE_URL: https://scyooqjitjzjdxgtanso.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_test_only
+      - name: Focused batch04 independent successor contract suites
+        id: focused_successors
+        run: node --experimental-strip-types --test --test-timeout=90000 tests/auth-web/supabase-auth-port.test.ts tests/contracts/private-goals-service.test.ts tests/contracts/private-moderation-service.test.ts tests/editor/host-revocation-probe.test.ts tests/editor/private-account-data-export.test.ts
+        env:
+          KADMEION_REQUIRE_REAUTH_CANDIDATE: '1'
       - run: npm test
+        if: ${{ success() || (!cancelled() && steps.focused_successors.outcome == 'failure') }}
         env:
           KADMEION_REQUIRE_REAUTH_CANDIDATE: '1'
       - name: Validate D01-D90, UI, workflow, case and proof evidence indexes
