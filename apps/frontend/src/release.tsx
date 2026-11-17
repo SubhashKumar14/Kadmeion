@@ -885,31 +885,52 @@ function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
 /** A diagnostic is displayed only when emitted by the real frozen-snapshot
  * preflight engine. Never label an unexecuted check as passed. */
 type PreflightIssue=SafePreviewResult['blockers'][number];
-/** Only navigate to existing routes or local targets. The editor currently
- * accepts Metadata as its sole panel query; other panels need explicit manual selection. */
-function issueDestination(item:PreflightIssue,portfolioId:string,mode:'publish'|'releases'){
-  const editor='/app/portfolios/'+portfolioId+'/edit';
+/** C09 initial editor selection hints only. Match the committed consumer's
+ * allowlist and key grammar; the current authorized draft still validates
+ * own declared-slot membership and falls back if a historical slot is gone. */
+type RemediationPanel='Content'|'Theme'|'Metadata'|'Assets'|'Source';
+type IssueDestination={href:string;label:string;hint:string;secondary?:{href:string;label:string}};
+const slotIssueCodes=new Set([
+  'REQUIRED_SLOT_EMPTY','OPTIONAL_SLOT_EMPTY','CUSTOM_SOURCE_UNTRUSTED',
+  'COMPONENT_PIN_MISMATCH','INVALID_IMAGE_REFERENCE','IMAGE_BYTES_UNVERIFIED',
+  'UNKNOWN_PUBLIC_FIELD','INVALID_HEADING','INVALID_PARAGRAPH','INVALID_BADGE',
+  'INVALID_METRIC','INVALID_LIST','INVALID_PROJECT_CARD','UNSAFE_LINK','INVALID_LINK',
+  'UNMAPPED_ACTIVE_SLOT'
+]);
+function issueDestination(item:PreflightIssue,portfolioId:string,mode:'publish'|'releases'):IssueDestination{
+  const editor='/app/portfolios/'+encodeURIComponent(portfolioId)+'/edit';
+  const slot=slotIssueCodes.has(item.code)&&/^[a-z0-9_-]{1,64}$/.test(item.target)&&
+    !['__proto__','constructor','prototype'].includes(item.target)?item.target:null;
+  const editorLink=(panel:RemediationPanel,includeSlot=false)=>{
+    const query=new URLSearchParams({panel});
+    if(includeSlot&&slot)query.set('slot',slot);
+    return editor+'?'+query.toString();
+  };
   if(item.target==='hosting')return {
     href:mode==='publish'?'#publication-controls-title':'#private-portable-title',
     label:'Review delivery restrictions',hint:'Editing content cannot clear the independent host gate.'};
   if(item.target==='revision')return {href:'#frozen-history-title',label:'Review frozen request history',
     hint:'Reverify the selected immutable owner pin before continuing.'};
-  if(item.target==='kadmeion.json')return {href:editor+'?panel=Metadata',label:'Edit SEO metadata in private editor',
+  if(item.target==='kadmeion.json')return {href:editorLink('Metadata'),label:'Edit SEO metadata in private editor',
     hint:'Save changes as a new revision and run preflight on that revision.'};
-  if(item.target==='theme/tokens.json')return {href:editor,label:'Open editor for theme',hint:'Choose Theme in the editor.'};
-  if(item.target==='source'||item.code==='CUSTOM_SOURCE_UNTRUSTED')return {href:editor,
-    label:'Open editor for source',hint:'Choose Source or Content. Do not execute untrusted code in the release.'};
-  if(item.code==='IMAGE_BYTES_UNVERIFIED'||item.code==='INVALID_IMAGE_REFERENCE')return {href:editor,
-    label:'Open editor for image',hint:'Choose Content and Assets; use an authorized image with valid alt/decorative metadata. Unverified bytes remain blocked.'};
-  if(item.target==='pages/home.page.json'||item.target==='content'||item.target==='plan'||item.target==='snapshot'||item.target==='preview')
-    return {href:editor,label:'Open editor to review structure',hint:'Inspect Structure & layers and Content; save a valid new revision.'};
-  return {href:editor,label:'Open editor for this slot',hint:'Choose Content and locate the indicated slot in Structure & layers.'};
+  if(item.target==='theme/tokens.json')return {href:editorLink('Theme'),label:'Open editor for theme',
+    hint:'Review saved theme tokens; save a new revision and recheck.'};
+  if(item.target==='source'||item.code==='CUSTOM_SOURCE_UNTRUSTED')return {href:editorLink('Source',true),
+    label:'Open editor for source',hint:'Inspect the owned source, or return to Content to replace an unsupported assignment. Untrusted code is never executed in this release.'};
+  if(item.code==='IMAGE_BYTES_UNVERIFIED'||item.code==='INVALID_IMAGE_REFERENCE')return {href:editorLink('Content',true),
+    label:'Open editor for image',hint:'Review the slot and its alt/decorative metadata. Unverified bytes remain blocked.',
+    secondary:{href:editorLink('Assets',true),label:'Review private assets'}};
+  if(slotIssueCodes.has(item.code))return {href:editorLink('Content',true),label:'Open editor for this slot',
+    hint:slot?'Open the requested slot in the current saved draft. If it no longer exists, choose an available slot.':
+      'Choose an available slot in Structure & layers; this target is not a supported slot key.'};
+  return {href:editorLink('Content'),label:'Open editor to review structure',
+    hint:'Inspect Structure & layers and Content; save a valid new revision.'};
 }
 function PreflightResults({result,portfolioId,revision,mode}:{result:SafePreviewResult;portfolioId:string;revision:number;mode:'publish'|'releases'}) {
   return <section className="ws-release-action" role="group" aria-labelledby="preflight-results">
     <h3 id="preflight-results">Preflight results</h3>
     <p role="status">Private renderability check for frozen revision {revision}. No published release or host readiness proof.</p>
-    <p>Issues describe the immutable pin; edits affect a new saved revision only.</p>
+    <p>Issues describe the immutable pin. Remediation links open the current private editor, not the frozen snapshot. Save a new revision and run preflight again; a historical slot may no longer exist.</p>
     {(result.blockers.length>0||result.warnings.length>0)&&<nav aria-label="Preflight issue navigation">
       <h4>Jump to issue</h4>
       <ul>{([['blocker',result.blockers],['warning',result.warnings]] as const).flatMap(([kind,items])=>
@@ -930,7 +951,9 @@ function PreflightResults({result,portfolioId,revision,mode}:{result:SafePreview
         return <li key={item.code+':'+index} id={'preflight-'+kind+'-'+index} tabIndex={-1}>
           <strong>{item.code}</strong>: {item.message}
           <p>Target: <code style={{overflowWrap:'anywhere'}}>{item.target}</code></p>
-          {destination&&<p><a href={destination.href}>{destination.label}</a> · {destination.hint}</p>}
+          {destination&&<p><a href={destination.href}>{destination.label}</a> · {destination.hint}
+            {destination.secondary&&<> · <a href={destination.secondary.href}>{destination.secondary.label}</a></>}
+          </p>}
         </li>;
       })}</ul>:<p>None in this category.</p>}
     </div>)}
