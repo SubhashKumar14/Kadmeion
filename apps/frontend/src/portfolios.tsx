@@ -467,7 +467,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }, [port, id, attempt, allowed]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
-    if (!allowed || !head || saving || recoveryLock.current) return false;
+    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
     // Changing an assignment or restoring another working snapshot must not
     // strand inspector/source buffers against a different component version.
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
@@ -493,7 +493,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   function restore(snapshot: PortfolioSnapshot): boolean {
-    if (!head || !allowed || saving || recoveryLock.current) return false;
+    if (!head || !allowed || saving || saveFlight.current || recoveryLock.current) return false;
     if (pendingFields || sourceDirty) {
       setError('Apply or discard unapplied content and source buffers before restoring a saved checkpoint.');
       return false;
@@ -660,7 +660,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   },[port,id,verifiedOwner?.id,verifiedOwner?.epoch,recoveryRecordId]);
   function captureRecovery():RecoveryView|null {
     const view=latestRecovery.current;
-    return view?.owner&&view.record?.id===id&&view.head&&view.allowed&&!view.saving&&scopeCurrent(view)?view:null;
+    return view?.owner&&view.record?.id===id&&view.head&&view.allowed&&!view.saving&&!saveFlight.current&&scopeCurrent(view)?view:null;
   }
   async function refreshRecovery(view:RecoveryView,store:IndexedDbEditorDraftStore){
     const request=++catalogueRequest.current;

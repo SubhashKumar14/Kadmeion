@@ -340,26 +340,28 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
     owned.componentId===savedSlot.componentId&&head.snapshot.files[owned.sourcePath]===committed?.files[savedSlot.sourcePath];
   const [refresh,setRefresh]=useState(0);
   const attempt=useRef<{signature:string;id:string}|null>(null);
+  const componentSaveFlight=useRef(false);
+  const componentListGeneration=useRef(0);
   const catalogueEpoch=useRef<number|null>(null);
   const mounted=useRef(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
 
   useEffect(() => {
     let active = true;
-    const epoch=port.reconcileOwnerSessionEpoch();
+    const epoch=port.reconcileOwnerSessionEpoch(),generation=++componentListGeneration.current;
     setMessage('');setVersions(null);
     void port.listOwnerComponents().then(result => {
-      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(!active||generation!==componentListGeneration.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(result.data){catalogueEpoch.current=epoch;setVersions(result.data);}
       else setMessage(result.error?.message??'My Components could not be loaded.');
-    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)setMessage('My Components could not be loaded.');});
+    }).catch(()=>{if(active&&generation===componentListGeneration.current&&port.reconcileOwnerSessionEpoch()===epoch)setMessage('My Components could not be loaded.');});
     return ()=>{active=false;};
   }, [port,refresh]);
 
   async function save() {
-    if(!committed||!canSave||blocked||!name.trim()||busy)return;
+    if(!committed||!canSave||blocked||!name.trim()||busy||componentSaveFlight.current)return;
     const epoch=port.reconcileOwnerSessionEpoch();
-    setBusy(true);setMessage('');
+    componentSaveFlight.current=true;setBusy(true);setMessage('');
     try {
       const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55);
       if (!/^[a-z][a-z0-9-]{2,63}$/.test(key)) {setMessage('Choose a component name with at least three letters or digits, beginning with a letter.'); return;}
@@ -373,11 +375,14 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
       if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if (!result.data) {setMessage(result.error?.message ?? 'Component save could not be confirmed.'); return;}
       const saved = result.data;
+      // Invalidate an older pending catalogue read, then reload the actual list.
+      ++componentListGeneration.current;catalogueEpoch.current=epoch;
       setVersions(current => [saved, ...(current ?? []).filter(version => version.id !== saved.id)]);
+      setRefresh(n=>n+1);
       attempt.current=null;setName('');setMessage('Private component version saved.');
     }catch(error){if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
       setMessage(error instanceof Error?error.message:'Component save could not be confirmed.');}
-    finally{if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
+    finally{componentSaveFlight.current=false;if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
 
   return <div className="ws-editor-tool"><h2>My Components</h2>
@@ -400,7 +405,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
         {state==='EMPTY'?'Reuse in selected slot':'Reuse and stash previous'}
       </button>
     </li>)}</ul>
-    {canSave && <><label>Component name<input value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
+    {canSave && <><label>Component name<input disabled={busy} value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
       <button type="button" className="ws-secondary" disabled={busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
     {!canSave&&(state==='S1'||state==='S2')&&<p>Save the portfolio and resolve unapplied source edits before keeping this exact owned version.</p>}
   </div>;
@@ -421,43 +426,51 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [targetKey,setTargetKey]=useState('');
   const [placementAlt,setPlacementAlt]=useState('');
   const [placing,setPlacing]=useState(false);
+  const placementFlight=useRef(false);
+  const uploadFlight=useRef(false);
+  const assetMounted=useRef(false);
+  useEffect(()=>{assetMounted.current=true;return()=>{assetMounted.current=false;};},[]);
   const [uploadOpen,setUploadOpen]=useState(false);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
   const [busy,setBusy]=useState(false);
   const [refresh,setRefresh]=useState(0);
   useEffect(()=>{
-    let active=true;setError('');
+    let active=true;const epoch=port.reconcileOwnerSessionEpoch();setError('');setAssets(null);setProjects(null);
     void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
-      if(!active)return;
+      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!assetReply.data||!projectReply.data){
         setError(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');
         setAssets(null);setProjects(null);return;
       }
       setAssets(assetReply.data);setProjects(projectReply.data);
-    }).catch(()=>{if(active){setError('Private asset records could not be loaded.');setAssets(null);setProjects(null);}});
+    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch){setError('Private asset records could not be loaded.');setAssets(null);setProjects(null);}});
     return ()=>{active=false;};
   },[port,refresh]);
   const visible=assets?.filter(item=>!collection||item.projectId===collection)??[];
   const selected=visible.find(item=>item.id===selectedAssetId);
-  const target=targets.find(item=>item.key===targetKey)??targets.find(item=>item.key===selectedSlot);
+  // Explicitly selected target disappearing must not redirect a placement.
+  const target=targets.find(item=>item.key===(targetKey||selectedSlot));
   const uses=selected?Object.entries(snapshot.slots).filter(([,assignment])=>
     assignment.state!=='EMPTY'&&assignment.content.asset_id===selected.id):[];
   async function place(){
-    if(!selected||!target||placing||busy||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
-    setPlacing(true);setNotice('');
+    if(!selected||!target||placing||busy||placementFlight.current||uploadFlight.current||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
+    const epoch=port.reconcileOwnerSessionEpoch();placementFlight.current=true;setPlacing(true);setNotice('');
     try{
-      if(await onPlace(selected.id,target.key,placementAlt.trim()))
-        setNotice('Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.');
-      else setNotice('Image placement was not completed. Existing assignment and selected image were retained.');
-    }finally{setPlacing(false);}
+      const placed=await onPlace(selected.id,target.key,placementAlt.trim());
+      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      setNotice(placed?'Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.':
+        'Image placement was not completed. Existing assignment and selected image were retained.');
+    }finally{placementFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setPlacing(false);}
   }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(busy||!file||!projectId||!alt.trim())return;
-    setBusy(true);setError('');setNotice('');
+    if(busy||uploadFlight.current||placementFlight.current||!file||!projectId||!alt.trim())return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    uploadFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       const receipt=await port.uploadOwnerProjectImage(projectId,file,alt.trim());
+      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!receipt.data||receipt.data.publicDeliveryAllowed!==false||
         receipt.data.verifiedMetadata!==true)
         throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
@@ -466,8 +479,9 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       setAlt('');setFile(null);setUploadOpen(false);setRefresh(n=>n+1);
       const input=document.getElementById('kd-private-image-file');
       if(input instanceof HTMLInputElement)input.value='';
-    }catch(cause){setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
-    finally{setBusy(false);}
+    }catch(cause){if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
+      setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
+    finally{uploadFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
   return <div className="ws-asset-library ws-asset-manager" role="group" aria-label="Private asset manager">
     <aside className="ws-asset-collections">
@@ -525,15 +539,15 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         <p>This is an irreversible write-once private Storage upload. No owner-side delete or public publish follows.</p>
         {projects?.length===0?<p>First <a href="/app/projects">create a private project</a>.</p>:
           <form className="ws-asset-upload" onSubmit={event=>void upload(event)}>
-            <label>Owner project<select required value={projectId} onChange={event=>setProjectId(event.target.value)}>
+            <label>Owner project<select required disabled={busy} value={projectId} onChange={event=>setProjectId(event.target.value)}>
               <option value="">Select a private project</option>
               {projects?.map(project=><option key={project.id} value={project.id}>{project.title}</option>)}
             </select></label>
             <label htmlFor="kd-private-image-file">Private image file</label>
-            <input id="kd-private-image-file" type="file" required
+            <input id="kd-private-image-file" type="file" required disabled={busy}
               accept="image/png,image/jpeg,image/webp"
               onChange={event=>setFile(event.currentTarget.files?.[0]??null)}/>
-            <label>Image alt text<textarea rows={3} required maxLength={500} value={alt}
+            <label>Image alt text<textarea rows={3} required disabled={busy} maxLength={500} value={alt}
               onChange={event=>setAlt(event.target.value)}
               placeholder="Describe the image for assistive technology"/></label>
             <p className="ws-asset-limits">PNG, JPEG or WebP · 5 MB max. Your filename is never used as a public path.

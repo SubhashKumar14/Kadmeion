@@ -60,21 +60,42 @@ function assertSlotKey(key: string) {
     throw new ContractError('VALIDATION', 'Invalid or reserved slot key.');
 }
 
+/** undefined = older layoutless snapshot; null = declared layout but no
+ * unique valid target. Never infer compatibility from an arbitrary suffix. */
+export function declaredLayoutSlotKind(snapshot:PortfolioSnapshot,key:string):string|null|undefined{
+  try{
+    const page=JSON.parse(snapshot.files['pages/home.page.json']??'null') as {sections?:unknown}|null;
+    if(!page||!Object.hasOwn(page,'sections'))return undefined;
+    if(!Array.isArray(page.sections)||!Object.hasOwn(snapshot.slots,key))return null;
+    const matches:string[]=[];
+    for(const raw of page.sections){
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))continue;
+      const section=raw as {id?:unknown;layout?:unknown};
+      if(typeof section.id!=='string'||typeof section.layout!=='string')continue;
+      for(const name of portfolioLayout(section.layout)?.slots??[]){
+        const kind=name.toLowerCase();
+        if(section.id+'-'+kind===key)matches.push(kind);
+      }
+    }
+    return matches.length===1?matches[0]!:null;
+  }catch{return null;}
+}
+const libraryKinds:Readonly<Record<string,readonly string[]>>={
+  'title-stacked@1':['title'],'body-copy@1':['text','text1','text2','note'],
+  'external-link@1':['cta','cta1','cta2','btn1','btn2','links'],
+  'project-card@1':['project','card'],'skills-list@1':['items','entries'],
+  'experience-list@1':['entries'],'technology-tag@1':['badge'],'author-metric@1':['meta']
+};
+export function canAssignCompatibleComponent(snapshot:PortfolioSnapshot,key:string,pin:string):boolean{
+  const kind=declaredLayoutSlotKind(snapshot,key);
+  return typeof kind==='string'&&Object.hasOwn(libraryKinds,pin)&&libraryKinds[pin]!.includes(kind);
+}
 /** A real declared media slot, not merely a key ending in "-image". */
 export function canPlacePrivateImage(snapshot:PortfolioSnapshot,key:string):boolean {
   const slot=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
   if(!slot||(slot.state!=='EMPTY'&&(slot.state!=='S0'||slot.componentId!=='image@1')))return false;
-  try{
-    const page=JSON.parse(snapshot.files['pages/home.page.json']??'null') as {sections?:unknown[]}|null;
-    return !!page&&Array.isArray(page.sections)&&page.sections.some(raw=>{
-      if(!raw||typeof raw!=='object'||Array.isArray(raw))return false;
-      const section=raw as {id?:unknown;layout?:unknown};
-      if(typeof section.id!=='string'||typeof section.layout!=='string')return false;
-      return portfolioLayout(section.layout)?.slots.some(name=>
-        ['avatar','image','imagea','imageb','media','thumbs'].includes(name.toLowerCase())&&
-        section.id+'-'+name.toLowerCase()===key)===true;
-    });
-  }catch{return false;}
+  const kind=declaredLayoutSlotKind(snapshot,key);
+  return typeof kind==='string'&&['avatar','image','imagea','imageb','media','thumbs'].includes(kind);
 }
 
 /** Same pinned, documented text fields only; unknown fields stay in full stash. */
@@ -330,6 +351,8 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         break;
       case 'ASSIGN_COMPONENT':
         if (!COMPONENT_PIN.test(intent.componentId)) throw new ContractError('VALIDATION', 'Unpinned component.');
+        if(declaredLayoutSlotKind(next,intent.slotKey)!==undefined&&!canAssignCompatibleComponent(next,intent.slotKey,intent.componentId))
+          throw new ContractError('VALIDATION','Component is incompatible with the declared layout slot. Use private image placement for media.');
         if (isOwned(slot) && !intent.confirmOwnedReplacement)
           throw new ContractError('VALIDATION', 'Owned source needs explicit replace-and-stash confirmation.');
         if (slot.state!=='EMPTY') stash.push(structuredClone(slot));
@@ -390,7 +413,9 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         if (!Object.hasOwn(ownerSavedComponents,id))
           throw new ContractError('VALIDATION','Saved component must be fetched and validated.');
         const saved=ownerSavedComponents[id];
-        const kind=intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1);
+        const declaredKind=declaredLayoutSlotKind(next,intent.slotKey);
+        if(declaredKind===null)throw new ContractError('VALIDATION','Saved component needs a unique declared target.');
+        const kind=declaredKind===undefined?intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1):declaredKind;
         if (!saved||saved.id!==id||typeof saved.base_component_pin!=='string'||
             !COMPONENT_PIN.test(saved.base_component_pin)||
             !Array.isArray(saved.compatible_slot_kinds)||
