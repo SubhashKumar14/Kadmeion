@@ -34,29 +34,109 @@ function validPortfolioRoute(handle:unknown,slug:unknown):boolean {
     typeof slug==='string'&&PORTFOLIO_SLUG.test(slug);
 }
 
-function safeDeliveryHeaders(headers:Headers,indexable:boolean):boolean {
-  const cacheHeaders=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control'];
-  for(const name of cacheHeaders){
+const CACHE_HEADERS=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control'] as const;
+const SERVED_SHA='x-kadmeion-served-sha256';
+const cacheTokens=(value:string)=>value.toLowerCase().split(',').map(part=>part.trim()).filter(Boolean);
+
+function safeCacheHeaders(headers:Headers):boolean {
+  // An explicit positive Age is inconsistent with a fresh no-store sample.
+  const age=headers.get('age');
+  if(age!==null&&!/^0+$/.test(age.trim()))return false;
+  return CACHE_HEADERS.every(name=>{
     const value=headers.get(name);
-    if(value===null&&name!=='cache-control')continue;
-    const directives=(value??'').toLowerCase().split(',').map(part=>part.trim());
-    if(!directives.includes('no-store')||directives.includes('public')||
-       directives.some(part=>/^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*"?\d*[1-9]/.test(part)))
-      return false;
+    if(value===null)return name!=='cache-control';
+    const directives=cacheTokens(value);
+    return directives.includes('no-store')&&!directives.includes('public')&&
+      !directives.includes('immutable')&&
+      directives.every(part=>!/^(?:s?max-age|stale-while-revalidate|stale-if-error)\b/.test(part)||
+        /^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*(?:0+|"0+")$/.test(part));
+  });
+}
+
+function safeRobots(value:string,indexable:boolean):boolean {
+  const robots=cacheTokens(value);
+  return robots.includes(indexable?'index':'noindex')&&
+    !robots.includes(indexable?'noindex':'index')&&!robots.includes('none')&&
+    !robots.some(part=>part.includes(':'));
+}
+
+function safeCsp(value:string):boolean {
+  return value.toLowerCase().split(',').some(policy=>{
+    const csp=policy.split(';').map(directive=>directive.trim().split(/\s+/));
+    const defaults=csp.filter(([name])=>name==='default-src');
+    const overrides=csp.filter(([name])=>
+      ['script-src','script-src-elem','script-src-attr','child-src','worker-src'].includes(name));
+    return defaults.length===1&&[...defaults,...overrides].every(directive=>
+      directive.length===2&&directive[1]==="'none'");
+  });
+}
+
+function safeDeliveryResponse(response:Response,route:URL,indexable:boolean,media=false):boolean {
+  const h=response.headers;
+  if(response.status!==200||response.redirected||h.has('location')||
+      (response.url!==''&&response.url!==route.href)||!safeCacheHeaders(h))return false;
+  const type=h.get('content-type')??'';
+  if(media){
+    // PNG delivery never inherits the indexability of the surrounding page.
+    // Some static origins omit document-only policy headers for binary media.
+    return /^image\/png$/i.test(type)&&
+      (!h.has('x-robots-tag')||safeRobots(h.get('x-robots-tag')!,false))&&
+      (!h.has('content-security-policy')||safeCsp(h.get('content-security-policy')!));
   }
-  const robots=(headers.get('x-robots-tag')??'').toLowerCase().split(',').map(part=>part.trim());
-  if(!robots.includes(indexable?'index':'noindex')||robots.includes(indexable?'noindex':'index')||
-     robots.includes('none')||robots.some(part=>part.includes(':')))
+  return /^text\/html(?:;|$)/i.test(type)&&
+    safeRobots(h.get('x-robots-tag')??'',indexable)&&
+    safeCsp(h.get('content-security-policy')??'');
+}
+
+function sameDeliveryPolicy(get:Headers,head:Headers):boolean {
+  // Compare observable representation policy, not transport-only headers
+  // such as Content-Length, Date, or content encoding.
+  for(const name of [...CACHE_HEADERS,'x-robots-tag']){
+    const a=get.get(name),b=head.get(name);
+    if(a===null||b===null){if(a!==b)return false;continue;}
+    if(cacheTokens(a).sort().join(',')!==cacheTokens(b).sort().join(','))return false;
+  }
+  const mime=(h:Headers)=>(h.get('content-type')??'').toLowerCase().replace(/\s+/g,'');
+  const csp=(h:Headers)=>(h.get('content-security-policy')??'').split(';')
+    .map(part=>part.trim().replace(/\s+/g,' ')).filter(Boolean).join(';');
+  return mime(get)===mime(head)&&csp(get)===csp(head);
+}
+
+function optionalServedDigest(headers:Headers,sha:string):boolean {
+  const claimed=headers.get(SERVED_SHA);
+  // GET establishes the digest from actual bytes. HEAD has no bytes and
+  // the served SHA header is not a universal hosting/asset contract.
+  return claimed===null||claimed===sha;
+}
+
+async function bodylessHead(response:Response):Promise<boolean> {
+  if(!response.body)return true;
+  const reader=response.body.getReader();
+  try{
+    // Do not confuse an initial empty chunk with end of stream.
+    for(let i=0;i<16;i++){
+      const part=await reader.read();
+      if(part.done)return true;
+      if(!(part.value instanceof Uint8Array)||part.value.byteLength!==0)return false;
+    }
     return false;
-  return !headers.has('location')&&(headers.get('content-security-policy')??'')
-    .toLowerCase().split(',').some(policy=>{
-      const csp=policy.split(';').map(directive=>directive.trim().split(/\s+/));
-      const defaults=csp.filter(([name])=>name==='default-src');
-      const overrides=csp.filter(([name])=>
-        ['script-src','script-src-elem','script-src-attr','child-src','worker-src'].includes(name));
-      return defaults.length===1&&[...defaults,...overrides].every(directive=>
-        directive.length===2&&directive[1]==="'none'");
-    });
+  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+}
+
+function deliveryFetch(http:typeof fetch,route:URL,method:'GET'|'HEAD'):Promise<Response>{
+  return http(route,{method,credentials:'omit',cache:'no-store',redirect:'error',
+    signal:AbortSignal.timeout(5000)});
+}
+
+async function verifyHead(http:typeof fetch,route:URL,get:Response,
+  sha:string,indexable:boolean,media=false):Promise<boolean>{
+  const head=await deliveryFetch(http,route,'HEAD');
+  if(!safeDeliveryResponse(head,route,indexable,media)||
+      !sameDeliveryPolicy(get.headers,head.headers)||!optionalServedDigest(head.headers,sha)){
+    await head.body?.cancel();
+    return false;
+  }
+  return bodylessHead(head);
 }
 
 const DELIVERY_IMAGE=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
@@ -80,15 +160,15 @@ async function readBounded(response:Response, limit:number):Promise<Buffer|null>
 
 async function digestHtml(response:Response, indexable:boolean, route:URL,
   host:URL, http:typeof fetch, expectedSha:string):Promise<string|null> {
-  if(response.status!==200 ||
-      !/^text\/html(?:;|$)/i.test(response.headers.get('content-type')??'') ||
-      !safeDeliveryHeaders(response.headers,indexable)){
+  if(!safeDeliveryResponse(response,route,indexable)){
     await response.body?.cancel();
     return null;
   }
   const bytes=await readBounded(response,MAX_HTML_BYTES);
   if(!bytes)return null;
-  let html=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+  const servedSha=createHash('sha256').update(bytes).digest('hex');
+  if(!optionalServedDigest(response.headers,servedSha))return null;
+  let html=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
   if(indexable){
     const marker='<meta name="robots" content="index,follow">';
     if(html.split(marker).length!==2)return null;
@@ -98,7 +178,9 @@ async function digestHtml(response:Response, indexable:boolean, route:URL,
   const unlisted=route.pathname==='/api/unlisted';
   const [,handle,slug]=route.pathname.split('/');
   let manifest:string|undefined;
-  for(const [,src] of html.matchAll(DELIVERY_IMAGE)){
+  const images=[...html.matchAll(DELIVERY_IMAGE)];
+  if((html.match(/<img\b/gi)??[]).length!==images.length)return null;
+  for(const [,src] of images){
     const asset=new URL(src.replaceAll('&amp;','&'),host);
     const sha=asset.searchParams.get('asset');
     const candidate=asset.searchParams.get('manifest');
@@ -118,25 +200,19 @@ async function digestHtml(response:Response, indexable:boolean, route:URL,
     tag.replace(src,'./assets/'+media.get(src)+'.png'));
   const digest=createHash('sha256').update(frozen).digest('hex');
   if(digest!==expectedSha)return null;
+  // Verify the canonical representation before sampling any direct assets.
+  if(!await verifyHead(http,route,response,servedSha,indexable))return null;
   for(const [src,sha] of media){
-    const png=await http(new URL(src.replaceAll('&amp;','&'),host),{
-      method:'GET',credentials:'omit',cache:'no-store',redirect:'error',
-      signal:AbortSignal.timeout(5000)
-    });
-    const noStore=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control']
-      .every(name=>{
-        const value=png.headers.get(name);
-        if(value===null)return name!=='cache-control';
-        const tokens=value.toLowerCase().split(',').map(part=>part.trim());
-        return tokens.includes('no-store')&&!tokens.includes('public')&&
-          !tokens.some(part=>/^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*"?\d*[1-9]/.test(part));
-      });
-    if(png.status!==200||png.headers.get('content-type')!=='image/png'||!noStore){
+    const assetRoute=new URL(src.replaceAll('&amp;','&'),host);
+    const png=await deliveryFetch(http,assetRoute,'GET');
+    if(!safeDeliveryResponse(png,assetRoute,false,true)){
       await png.body?.cancel();
       return null;
     }
     const image=await readBounded(png,4_000_000);
-    if(!image||createHash('sha256').update(image).digest('hex')!==sha)return null;
+    if(!image||createHash('sha256').update(image).digest('hex')!==sha||
+       !optionalServedDigest(png.headers,sha))return null;
+    if(!await verifyHead(http,assetRoute,png,sha,false,true))return null;
   }
   return digest;
 }
@@ -162,10 +238,8 @@ export async function verifyActivatedUnlistedRelease(
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
   const checkHost = async(indexable:boolean):Promise<string|null>=>{
     try {
-      return await digestHtml(await http(route, {
-        method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error',
-        signal: AbortSignal.timeout(5_000)
-      }),indexable,route,host,http,htmlSha256);
+      return await digestHtml(await deliveryFetch(http,route,'GET'),
+        indexable,route,host,http,htmlSha256);
     }catch{return null;}
   };
   // A newly activated PUBLIC route serves a noindex canary UNTIL the

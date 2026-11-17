@@ -27,6 +27,7 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
 }={}) {
   const calls:{op:string;body:Record<string,string|number>}[]=[];
   const visits:string[]=[];
+  const methods:string[]=[];
   let acknowledged=state==='ACKNOWLEDGED';
   const object={...base,status:state,...(unlisted?{
     publicHandle:null,publicSlug:null}:{}),...prepare};
@@ -46,11 +47,14 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
     throw Error('Unsupported trusted RPC');
   };
   const http:typeof fetch=async(input,options)=>{
-    visits.push(String(input));
-    assert.equal(options?.method,'GET');
+    const method=options?.method;
+    assert.ok(method==='GET'||method==='HEAD');
+    methods.push(method);
+    if(method==='GET')visits.push(String(input));
     assert.equal(options?.credentials,'omit');
     assert.equal(options?.redirect,'error');
-    return response??new Response(unlisted||!acknowledged?html:publicHtml,{
+    if(response)return method==='HEAD'?new Response(null,{status:response.status,headers:response.headers}):response.clone();
+    return new Response(method==='HEAD'?null:unlisted||!acknowledged?html:publicHtml,{
       status:200,headers:{
         ...releaseHeaders,
         'X-Robots-Tag':unlisted||!acknowledged?'noindex, nofollow, noarchive':'index, follow'
@@ -59,13 +63,14 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
   };
   return {
     ports:{origin:'https://kadmeion.vercel.app',rpc,http},
-    calls,visits
+    calls,visits,methods
   };
 }
 test('acknowledged public release must re-fetch the same exact HTTP bytes',async()=>{
   const f=fixture('ACKNOWLEDGED');
   const result=await publishConsentedUnlistedRelease(id,f.ports);
   assert.deepEqual(result,{status:'DELIVERY_ACKNOWLEDGED',htmlSha256:sha});
+  assert.deepEqual(f.methods,['GET','HEAD']);
   assert.equal(f.calls.length,1);
   assert.equal(f.calls[0].op,'service_prepare_unlisted_release');
   assert.deepEqual(f.visits,['https://kadmeion.vercel.app/release_owner/release-fixture']);
@@ -95,6 +100,7 @@ test('newly activated publication must get a fresh host digest then database ack
     'service_prepare_unlisted_release','service_acknowledge_unlisted_release'
   ]);
   assert.equal(f.visits.length,2,'Verify private canary and post-ack indexable delivery');
+  assert.deepEqual(f.methods,['GET','HEAD','GET','HEAD']);
 });
 test('a matching digest cannot acknowledge unsafe cache, search or script headers',async()=>{
   for(const extra of [
@@ -117,7 +123,7 @@ test('a matching digest cannot acknowledge unsafe cache, search or script header
 test('public release cannot claim success if the host stays noindex after the DB acknowledgment',async()=>{
   const calls:string[]=[];
   const initial=fixture('AWAITING_VERIFICATION');
-  const http=async(_input:RequestInfo|URL):Promise<Response>=>new Response(html,{
+  const http=async(_input:RequestInfo|URL,options?:RequestInit):Promise<Response>=>new Response(options?.method==='HEAD'?null:html,{
     status:200,headers:{...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'}
   });
   const rpc=async(op:Parameters<typeof initial.ports.rpc>[0],body:Record<string,string|number>)=>{
@@ -197,6 +203,7 @@ test('image-backed release requires exact scoped PNG bytes before acknowledgemen
     'a'.repeat(64)+'&asset='+imageSha;
   for(const valid of [false,true]){
     let ack=false, visits=0;
+    const assetMethods:string[]=[];
     const result=await publishConsentedUnlistedRelease(id,{origin:'https://release.example',
       rpc:async operation=>{
         if(operation==='service_prepare_unlisted_release')
@@ -206,21 +213,47 @@ test('image-backed release requires exact scoped PNG bytes before acknowledgemen
           return {portfolioId,status:'REVOKED',releaseGeneration:null};
         assert.fail(operation);
       },
-      http:async input=>{
+      http:async (input,options)=>{
         const target=new URL(String(input));
         if(target.pathname==='/api/public-portfolio'){
           assert.equal(target.pathname+target.search,asset);
-          visits++;
-          return new Response(valid?png:Buffer.from('wrong'),{
+          assetMethods.push(options?.method??'');
+          if(options?.method==='GET')visits++;
+          return new Response(options?.method==='HEAD'?null:valid?png:Buffer.from('wrong'),{
             headers:{'cache-control':'private, no-store','content-type':'image/png'}});
         }
         const body=frozen.replace('./assets/'+imageSha+'.png',asset.replaceAll('&','&amp;'));
-        return new Response(ack?body.replace(marker,'<meta name="robots" content="index,follow">'):body,
+        return new Response(options?.method==='HEAD'?null:ack?body.replace(marker,'<meta name="robots" content="index,follow">'):body,
           {headers:{...releaseHeaders,'X-Robots-Tag':ack?'index, follow':'noindex, nofollow, noarchive'}});
       }
     });
     assert.equal(result.status,valid?'DELIVERY_ACKNOWLEDGED':'DELIVERY_REVOKED');
     assert.equal(ack,valid);
     assert.equal(visits,valid?2:1);
+    assert.deepEqual(assetMethods,valid?['GET','HEAD','GET','HEAD']:['GET']);
+  }
+});
+
+test('method-aware canonical HEAD fails closed on inconsistent delivery policy',async()=>{
+  // These assertions require the S4 method-aware candidate, not the older GET-only baseline.
+  for(const variant of ['status','redirect','location','age','body','digest','cache','robots'] as const){
+    const f=fixture('AWAITING_VERIFICATION');
+    let heads=0;
+    const http:typeof fetch=async(input,options)=>{
+      if(options?.method!=='HEAD')return f.ports.http(input,options);
+      heads++;
+      const headers=new Headers({...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'});
+      if(variant==='location')headers.set('Location','/other');
+      if(variant==='age')headers.set('Age','1');
+      if(variant==='digest')headers.set('x-kadmeion-served-sha256','0'.repeat(64));
+      if(variant==='cache')headers.set('Cache-Control','no-store, max-age=0');
+      if(variant==='robots')headers.set('X-Robots-Tag','index, follow');
+      if(variant==='redirect')return Response.redirect('https://release.example/elsewhere',302);
+      return new Response(variant==='body'?'unexpected':null,{status:variant==='status'?503:200,headers});
+    };
+    const result=await publishConsentedUnlistedRelease(id,{...f.ports,http});
+    assert.equal(heads,1,variant+' must independently probe HEAD');
+    assert.deepEqual(result,{status:'DELIVERY_REVOKED'},variant);
+    assert.equal(f.calls.some(x=>x.op==='service_acknowledge_unlisted_release'),false);
   }
 });
