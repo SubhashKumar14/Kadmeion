@@ -301,7 +301,10 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [prefsReload,setPrefsReload]=useState(0);
-  const [prefRetry,setPrefRetry]=useState<{reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean}|null>(null);
+  type PreferenceInput={reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean};
+  const [prefRetry,setPrefRetry]=useState<{key:keyof PreferenceInput;checked:boolean}|null>(null);
+  const preferencesReading=useRef(true);
+  const [preferencesLoading,setPreferencesLoading]=useState(true);
   const [inboxFilter, setInboxFilter] = useState<'ALL'|'UNREAD'|'HIGH'>('ALL');
   useEffect(() => {
     let active = true;
@@ -314,11 +317,14 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   }, [service,port,epoch,reload]);
   useEffect(()=>{
     let active=true;
+    preferencesReading.current=true;setPreferencesLoading(true);
     setPrefs(undefined);setPreferenceMessage(null);setPrefRetry(null);
     void service.getPreferences().then(settings=>{
-      if(active&&port.reconcileOwnerSessionEpoch()===epoch)setPrefs(settings);
+      if(active&&current())setPrefs(settings);
     }).catch(error=>{
-      if(active&&port.reconcileOwnerSessionEpoch()===epoch)setPreferenceMessage(failure(error));
+      if(active&&current())setPreferenceMessage(failure(error));
+    }).finally(()=>{
+      if(active&&current()){preferencesReading.current=false;setPreferencesLoading(false);}
     });
     return()=>{active=false;};
   },[service,port,epoch,prefsReload]);
@@ -366,35 +372,61 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
-  // The database enables reviewer and publishing notices when no row exists.
-  const effectivePrefs = {
-    reviewerEnabled: prefs?.reviewer_enabled ?? true,
-    publishEnabled: prefs?.publish_enabled ?? true,
-    syncEnabled: prefs?.sync_enabled ?? false
-  };
-  const displayedPrefs = pendingPrefs ?? effectivePrefs;
-
-  async function savePreferences(next:typeof effectivePrefs) {
-    if (busy || pendingAction.current || prefs===undefined || !current()) return;
+  // An absent row has database defaults, but presence is also part of
+  // the observed state. The legacy RPC replaces all three values.
+  const effective=(row:PrivateNotificationPreferences|null|undefined):PreferenceInput=>({
+    reviewerEnabled:row?.reviewer_enabled??true,
+    publishEnabled:row?.publish_enabled??true,
+    syncEnabled:row?.sync_enabled??false
+  });
+  const equal=(a:PreferenceInput,b:PreferenceInput)=>
+    a.reviewerEnabled===b.reviewerEnabled&&a.publishEnabled===b.publishEnabled&&a.syncEnabled===b.syncEnabled;
+  const effectivePrefs=effective(prefs);
+  const displayedPrefs=pendingPrefs??effectivePrefs;
+  function reloadPreferences(){
+    if(!current()||pendingAction.current||preferencesReading.current)return;
+    preferencesReading.current=true;setPreferencesLoading(true);setPrefsReload(n=>n+1);
+  }
+  async function savePreference(key:keyof PreferenceInput,checked:boolean){
+    if(busy||pendingAction.current||preferencesReading.current||prefs===undefined||!current())return;
+    const baseline=prefs;
+    const next={...effective(baseline),[key]:checked};
     pendingAction.current=true;setBusy(true);setPendingPrefs(next);
     setPreferenceMessage(null);setPrefRetry(null);
-    try {
-      const saved=await service.setPreferences(next);
+    try{
+      // Bounds stale writes across tabs and after lost ACK. The existing
+      // RPC has no atomic expected version; this is comparison, not CAS.
+      const latest=await service.getPreferences();
+      if(!current())return;
+      setPrefs(latest);
+      if((baseline===null)!==(latest===null)||!equal(effective(latest),effective(baseline))){
+        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Review the current values and choose the desired setting again. No preferences were overwritten.'});
+        return;
+      }
+      // Do not send an unnecessary whole-row write.
+      if(equal(next,effective(latest)))return;
+      await service.setPreferences(next);
+      if(!current())return;
+      const saved=await service.getPreferences();
       if(!current())return;
       setPrefs(saved);
+      if(!saved||!equal(effective(saved),next)){
+        setPreferenceMessage({error:true,text:'Notification preference readback differs from the requested change. Review the confirmed values and choose again.'});
+        return;
+      }
       setPreferenceMessage({error:false,text:'Notification preferences saved.'});
-    } catch {
+    }catch{
       if(!current())return;
-      setPrefRetry(next);
-      setPreferenceMessage({error:true,text:'Could not confirm the change. Showing the last confirmed preferences. Try again or reload to check the saved settings.'});
-    } finally {
+      // Retain only the intended single toggle, never a stale full row.
+      // Any later retry must re-read and compare before it writes.
+      setPrefRetry({key,checked});
+      setPreferenceMessage({error:true,text:'Could not confirm the change. Showing the last confirmed preferences. Try again to compare saved values or reload to check the saved settings.'});
+    }finally{
       pendingAction.current=false;
       if(current()){setPendingPrefs(null);setBusy(false);}
     }
   }
-  function preference(key:keyof typeof effectivePrefs,checked:boolean){
-    return savePreferences({...effectivePrefs,[key]:checked});
-  }
+
 
   const visibleNotices=inbox?.items.filter(item=>inboxFilter==='ALL' ||
     (inboxFilter==='UNREAD'&&!item.read_at) || (inboxFilter==='HIGH'&&item.priority==='HIGH'));
@@ -425,8 +457,8 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     {inbox?.items.length ? <p>Review opens an owner-only area. Unread notices are marked read only after the server acknowledges the action. Filters apply to loaded notices only.</p> : null}
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
-    {prefs===undefined&&!preferenceMessage&&<p role="status">Loading notification preferences…</p>}
-    {prefs===undefined&&preferenceMessage?.error&&<button type="button" className="ws-secondary" onClick={()=>setPrefsReload(n=>n+1)}>Retry notification preferences</button>}
+    {preferencesLoading&&<p role="status">Loading notification preferences…</p>}
+    {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" onClick={reloadPreferences}>Retry notification preferences</button>}
     {prefs === null && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
@@ -434,15 +466,15 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={busy}
-          onChange={event => void preference(key, event.target.checked)}/> {label}
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={busy||preferencesLoading}
+          onChange={event=>void savePreference(key,event.target.checked)}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
     <Status message={preferenceMessage}/>
-    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void savePreferences(prefRetry)}>Retry preference change</button>
-      <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setPrefsReload(n=>n+1)}>Reload confirmed preferences</button></div>}
-    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings.</p>
+    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void savePreference(prefRetry.key,prefRetry.checked)}>Retry preference change</button>
+      <button type="button" className="ws-secondary" disabled={busy||preferencesLoading} onClick={reloadPreferences}>Reload confirmed preferences</button></div>}
+    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes compare the last confirmed values with a fresh read before writing; simultaneous updates in another tab may still race until an atomic conditional-write contract is available.</p>
   </SettingsCard></div>;
 }
 
