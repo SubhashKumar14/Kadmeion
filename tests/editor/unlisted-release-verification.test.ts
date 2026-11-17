@@ -28,6 +28,7 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
   const calls:{op:string;body:Record<string,string|number>}[]=[];
   const visits:string[]=[];
   const methods:string[]=[];
+  let responseBytes:Promise<ArrayBuffer>|undefined;
   let acknowledged=state==='ACKNOWLEDGED';
   const object={...base,status:state,...(unlisted?{
     publicHandle:null,publicSlug:null}:{}),...prepare};
@@ -53,7 +54,9 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
     if(method==='GET')visits.push(String(input));
     assert.equal(options?.credentials,'omit');
     assert.equal(options?.redirect,'error');
-    if(response)return method==='HEAD'?new Response(null,{status:response.status,headers:response.headers}):response.clone();
+    // Ordinary fixtures never tee a stream into an unread original branch.
+    if(response)return new Response(method==='HEAD'?null:await (responseBytes??=response.arrayBuffer()),
+      {status:response.status,headers:response.headers});
     return new Response(method==='HEAD'?null:unlisted||!acknowledged?html:publicHtml,{
       status:200,headers:{
         ...releaseHeaders,
@@ -255,5 +258,135 @@ test('method-aware canonical HEAD fails closed on inconsistent delivery policy',
     assert.equal(heads,1,variant+' must independently probe HEAD');
     assert.deepEqual(result,{status:'DELIVERY_REVOKED'},variant);
     assert.equal(f.calls.some(x=>x.op==='service_acknowledge_unlisted_release'),false);
+  }
+});
+
+/** Test-side watchdog only: never mistake an unresolved promise for a denial. */
+async function within<T>(promise:Promise<T>,milliseconds=7000):Promise<T>{
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    return await Promise.race([promise,new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error('Delivery verifier did not settle within the probe budget')),milliseconds);
+    })]);
+  }finally{if(timer!==undefined)clearTimeout(timer);}
+}
+function assertRevokedWithoutAck(f:ReturnType<typeof fixture>,result:unknown){
+  assert.deepEqual(result,{status:'DELIVERY_REVOKED'});
+  assert.deepEqual(f.calls.map(x=>x.op),[
+    'service_prepare_unlisted_release','service_recover_failed_unlisted_release'
+  ]);
+}
+test('C03 unread sibling cannot hold invalid GET or HEAD recovery hostage',{timeout:22000},async()=>{
+  for(const method of ['GET','HEAD'] as const){
+    const f=fixture('AWAITING_VERIFICATION');
+    const original=new Response('unread fixture sibling',{status:503});
+    const returned=original.clone();
+    try{
+      const http:typeof fetch=async(input,options)=>{
+        if(options?.method===method)return returned;
+        return f.ports.http(input,options);
+      };
+      assertRevokedWithoutAck(f,await within(publishConsentedUnlistedRelease(id,{...f.ports,http})));
+      assert.equal(original.bodyUsed,false,'Verifier must not rely on consuming the sibling');
+    }finally{
+      // The verifier must settle BEFORE this cleanup; cleanup must not mask the regression.
+      void original.body?.cancel().catch(()=>{});
+      if(!returned.bodyUsed)void returned.body?.cancel().catch(()=>{});
+    }
+  }
+});
+test('C03 stalled GET, HEAD and uncancellable cleanup fail closed within one probe budget',{timeout:29000},async()=>{
+  for(const variant of ['GET-stalls','HEAD-stalls','cancel-stalls'] as const){
+    const f=fixture('AWAITING_VERIFICATION');
+    let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
+    let cancelAttempted=false;
+    let signal:AbortSignal|null|undefined;
+    let resolveCancel:(()=>void)|undefined;
+    try{
+      const http:typeof fetch=async(input,options)=>{
+        const target=variant==='HEAD-stalls'?'HEAD':'GET';
+        if(options?.method!==target)return f.ports.http(input,options);
+        signal=options?.signal;
+        const stream=new ReadableStream<Uint8Array>({
+          start(c){controller=c; if(variant==='HEAD-stalls')c.enqueue(new Uint8Array(0));},
+          cancel(){cancelAttempted=true;if(variant==='cancel-stalls')return new Promise<void>(r=>{resolveCancel=r;});}
+        });
+        return new Response(stream,{status:variant==='cancel-stalls'?503:200,
+          headers:{...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'}});
+      };
+      assertRevokedWithoutAck(f,await within(publishConsentedUnlistedRelease(id,{...f.ports,http})));
+      assert.ok(cancelAttempted||signal?.aborted,'Rejected or timed out body must be cancelled or aborted');
+    }finally{
+      resolveCancel?.();
+      try{controller?.close();}catch{/* already cancelled */}
+    }
+  }
+});
+test('C03 bodyless HEAD distinguishes empty chunks from a later nonempty chunk',async()=>{
+  for(const nonempty of [false,true]){
+    const f=fixture('AWAITING_VERIFICATION',{unlisted:true});
+    const http:typeof fetch=async(input,options)=>{
+      if(options?.method!=='HEAD')return f.ports.http(input,options);
+      const stream=new ReadableStream<Uint8Array>({start(c){
+        c.enqueue(new Uint8Array(0));c.enqueue(new Uint8Array(0));
+        if(nonempty)c.enqueue(Uint8Array.of(1));c.close();
+      }});
+      return new Response(stream,{headers:{...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'}});
+    };
+    const result=await within(publishConsentedUnlistedRelease(id,{...f.ports,http}));
+    if(nonempty)assertRevokedWithoutAck(f,result);
+    else assert.deepEqual(result,{status:'DELIVERY_ACKNOWLEDGED',htmlSha256:sha});
+  }
+});
+test('C03 canonical optional digest must match actual GET bytes, independent HEAD MIME/CSP must match',async()=>{
+  for(const variant of ['missing','matching','GET-forged','HEAD-forged','HEAD-mime','HEAD-csp'] as const){
+    const f=fixture('AWAITING_VERIFICATION',{unlisted:true});
+    const http:typeof fetch=async(input,options)=>{
+      const response=await f.ports.http(input,options);
+      const headers=new Headers(response.headers);
+      const isHead=options?.method==='HEAD';
+      if(variant==='matching'||(variant==='GET-forged'&&!isHead)||(variant==='HEAD-forged'&&isHead))
+        headers.set('x-kadmeion-served-sha256',variant==='matching'?sha:'0'.repeat(64));
+      if(isHead&&variant==='HEAD-mime')headers.set('Content-Type','text/plain');
+      if(isHead&&variant==='HEAD-csp')headers.set('Content-Security-Policy',"default-src 'none'; script-src 'self'");
+      return new Response(isHead?null:await response.arrayBuffer(),{status:response.status,headers});
+    };
+    const result=await within(publishConsentedUnlistedRelease(id,{...f.ports,http}));
+    if(variant==='missing'||variant==='matching')assert.deepEqual(result,{status:'DELIVERY_ACKNOWLEDGED',htmlSha256:sha});
+    else assertRevokedWithoutAck(f,result);
+  }
+});
+test('C03 direct media must independently pass HEAD before acknowledgement',async()=>{
+  const png=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64'));
+  const imageSha=createHash('sha256').update(png).digest('hex');
+  const frozen=html.replace('</main>','<img loading="lazy" decoding="async" src="./assets/'+imageSha+'.png" alt="Evidence" width="1" height="1"></main>');
+  const frozenSha=createHash('sha256').update(frozen).digest('hex');
+  const route='/api/unlisted?portfolioId='+portfolioId+'&manifest='+'a'.repeat(64)+'&asset='+imageSha;
+  const rendered=frozen.replace('./assets/'+imageSha+'.png',route.replaceAll('&','&amp;'));
+  for(const variant of ['valid','digest','mime','cache','location','body','status'] as const){
+    const f=fixture('AWAITING_VERIFICATION',{unlisted:true,prepare:{htmlSha256:frozenSha}});
+    const order:string[]=[];
+    const http:typeof fetch=async(input,options)=>{
+      const target=new URL(String(input));
+      const asset=target.searchParams.has('asset');
+      const isHead=options?.method==='HEAD';
+      order.push((asset?'media':'document')+':'+options?.method);
+      if(!asset)return new Response(isHead?null:rendered,{headers:{
+        ...releaseHeaders,'X-Robots-Tag':'noindex, nofollow, noarchive'
+      }});
+      assert.equal(target.pathname+target.search,route);
+      const headers=new Headers({'Cache-Control':'private, no-store','Content-Type':'image/png'});
+      if(isHead&&variant==='digest')headers.set('x-kadmeion-served-sha256','0'.repeat(64));
+      if(isHead&&variant==='mime')headers.set('Content-Type','text/html');
+      if(isHead&&variant==='cache')headers.set('Cache-Control','public, max-age=60');
+      if(isHead&&variant==='location')headers.set('Location','/other');
+      return new Response(isHead?(variant==='body'?Uint8Array.of(1):null):png,{
+        status:isHead&&variant==='status'?503:200,headers
+      });
+    };
+    const result=await within(publishConsentedUnlistedRelease(id,{...f.ports,http}));
+    assert.deepEqual(order,['document:GET','document:HEAD','media:GET','media:HEAD']);
+    if(variant==='valid')assert.deepEqual(result,{status:'DELIVERY_ACKNOWLEDGED',htmlSha256:frozenSha});
+    else assertRevokedWithoutAck(f,result);
   }
 });
