@@ -34,6 +34,8 @@ jobs:
           VITE_SUPABASE_URL: https://scyooqjitjzjdxgtanso.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_test_only
       - run: npm test
+        env:
+          KADMEION_REQUIRE_REAUTH_CANDIDATE: '1'
       - name: Validate D01-D90, UI, workflow, case and proof evidence indexes
         run: node scripts/verify-backend-traceability.mjs
       - name: Audit 52 approved LIGHT references and corrected full-screen preview
