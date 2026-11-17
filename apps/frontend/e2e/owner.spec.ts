@@ -14,7 +14,8 @@ test.beforeEach(async ({page}, info) => {
   const events: Array<{pathname:string;status:number|null;category:string}> = [];
   const paths = new Set(['/auth/v1/user','/auth/v1/token','/rest/v1/projects',
     '/rest/v1/profiles','/rest/v1/portfolios','/rest/v1/rpc/complete_private_account_exit_reauth',
-    '/rest/v1/private_account_erasure_requests']);
+    '/rest/v1/private_account_erasure_requests','/rest/v1/rpc/read_private_project_thumbnail',
+    '/rest/v1/rpc/set_private_project_thumbnail','/rest/v1/rpc/register_private_project_image']);
   const pathOf=(raw:string)=>{
     const u=new URL(raw);
     return u.origin===origin ? (paths.has(u.pathname)?u.pathname:'/private-api/other') : null;
@@ -1660,8 +1661,15 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
     if(confirmed)await expect(cover.getByText('Last verified private cover',{exact:true})).toBeVisible();
   };
   const choose=async(name:string,bytes:Buffer,alt:string)=>{
-    await cover.getByLabel(/Image file/).setInputFiles({name,mimeType:'image/png',buffer:bytes});
-    await cover.getByLabel('Image alt text').fill(alt);
+    const fileInput=cover.getByLabel(/Image file/);
+    const altInput=cover.getByLabel('Image alt text');
+    // setInputFiles does not wait for enabled; refresh() deliberately ignores
+    // upload input changes during the initial verified read/owner check.
+    await expect(fileInput).toBeEnabled();
+    await expect(altInput).toBeEnabled();
+    await fileInput.setInputFiles({name,mimeType:'image/png',buffer:bytes});
+    await altInput.fill(alt);
+    await expect(altInput).toHaveValue(alt);
   };
   await expect(cover.getByText('Folder cover',{exact:true})).toBeVisible();
   await choose('first.png',firstBytes,firstAlt);
@@ -2083,7 +2091,7 @@ test('B16 C07 real goal concurrent CAS and precise 105-entry chronological histo
   // 50-record cursor boundaries. Stable UUID suffix orders equal timestamp ties.
   runLocalFixtureSql("insert into public.private_goal_progress_events(id,goal_id,owner_user_id,operation_id,value,note,created_at) "+
     "select (left(:'actor_id',24)||lpad(g::text,12,'0'))::uuid,:'item_id'::uuid,:'actor_id'::uuid,gen_random_uuid(),g,"+
-    "'C07 history '||lpad(g::text,3,'0'),'2026-01-01 00:00:00+00'::timestamptz+(g/2)*interval '1 microsecond' "+
+    "'C07 history '||lpad(g::text,3,'0'),'2026-01-01 00:00:00+00'::timestamptz+((g+1)/2)*interval '1 microsecond' "+
     "from generate_series(1,105) g;",owner.id,id);
   await goalSelect.selectOption(id);
   const history=page.getByRole('region',{name:'Private manual progress history'});
