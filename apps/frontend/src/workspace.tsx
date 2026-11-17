@@ -63,6 +63,17 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
 }) {
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [offline, setOffline] = useState(() => !navigator.onLine);
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const editorOnly=!!portfolioIdFromRoute(route)&&(route.endsWith('/edit')||route.endsWith('/preview'));
   const overview = route === '/app' || route === '/app/onboarding';
@@ -71,7 +82,11 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     <aside className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
       if (event.key === 'Escape' && menuOpen) {
         setMenuOpen(false);
-        event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu')?.focus();
+        const trigger = event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu');
+        if (trigger?.getClientRects().length) {
+          event.preventDefault();
+          trigger.focus();
+        }
       }
     }}>
       <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home, Build · Showcase · Evolve">
@@ -115,6 +130,11 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
         </div>
       </header>
       <main id="ws-content" className="ws-content" tabIndex={-1}>
+        <p className="ws-network-status" data-state={offline ? 'offline' : 'online'} aria-live="polite" aria-atomic="true">
+          {offline
+            ? 'Browser reports offline. Cloud actions may fail; keep this page open and retry when connected.'
+            : 'Browser online · cloud actions verify separately.'}
+        </p>
         {message && <p role="alert" className="ws-inline-alert">{message}</p>}
         {children}
       </main>
@@ -126,12 +146,14 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
   const [choice, setChoice] = useState<StartChoice>('portfolio');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const skipFlight = useRef(false);
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Private portfolio chooser available' },
     { key: 'connections', title: 'Connect developer accounts', description: 'Optional. You can continue without GitHub or any external account.', state: 'Optional private handle links available' }
   ];
   function choose() {
+    if (skipFlight.current) return;
     if (choice === 'portfolio') { window.location.assign('/app/portfolios/new'); return; }
     if (choice === 'profile') { window.location.assign('/app/profile'); return; }
     window.location.assign('/app/integrations');
@@ -141,7 +163,7 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
       <h1 id="ws-title">Your developer identity starts here.</h1>
       <p>Choose where to begin. Your projects and portfolio stay private unless you explicitly publish them.</p>
     </div>
-    <fieldset className="ws-choice-set">
+    <fieldset className="ws-choice-set" disabled={saving}>
       <legend>Choose your next step</legend>
       <div className="ws-choice-grid">
         {cards.map(card => <label key={card.key} className={'ws-choice' + (choice === card.key ? ' selected' : '')}>
@@ -153,19 +175,25 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
         </label>)}
       </div>
     </fieldset>
-    {note && <p role="status" className="ws-inline-alert">{note}</p>}
+    <p role="status" className={note ? "ws-onboarding-note ws-inline-alert" : "ws-onboarding-note"}>{note}</p>
     <div className="ws-actions">
-      <button type="button" className="ws-primary" onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" disabled={saving} onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
       <button type="button" className="ws-secondary" disabled={saving} onClick={() => {
-        setSaving(true); setNote('');
-        void onSkip(choice).then(saved => {
+        if (skipFlight.current) return;
+        skipFlight.current = true;
+        const selectedStep = choice;
+        setSaving(true); setNote('Saving selected step…');
+        void onSkip(selectedStep).then(saved => {
           setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
-            'The server did not confirm this skipped step. Nothing was marked saved.');
+            'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying.');
         }).catch(() => {
-          setNote('The private onboarding update could not be completed. Nothing was marked skipped; retry when the connection is available.');
-        }).finally(()=>setSaving(false));
+          setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
+        }).finally(() => {
+          skipFlight.current = false;
+          setSaving(false);
+        });
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
-      <a href="/app" className="ws-secondary">Open workspace without saving</a>
+      <a href="/app" className="ws-secondary">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
     </div>
     <p className="ws-footnote">You can get started without connecting a developer account.</p>
   </section>;
