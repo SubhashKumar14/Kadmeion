@@ -11,6 +11,17 @@ type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyCompone
 const THEME_PATH = 'theme/tokens.json';
 const colors = ['surface', 'text', 'accent'] as const;
 type PortfolioTheme = {mode: 'light' | 'dark'; surface: string; text: string; accent: string};
+type ThemePalette=Pick<PortfolioTheme,typeof colors[number]>;
+function paletteOf(theme:PortfolioTheme):ThemePalette{
+  return {surface:theme.surface,text:theme.text,accent:theme.accent};
+}
+function objectRecord(value:unknown):Record<string,unknown>|undefined{
+  return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
+}
+function validPalette(value:unknown):value is ThemePalette{
+  const candidate=objectRecord(value);
+  return !!candidate&&colors.every(key=>typeof candidate[key]==='string'&&/^#[0-9a-f]{6}$/i.test(candidate[key] as string));
+}
 const defaultTheme: PortfolioTheme = {mode: 'light', surface: '#f9fafb', text: '#152738', accent: '#b9734d'};
 const defaultDarkTheme:PortfolioTheme={mode:'dark',surface:'#162433',text:'#f7f5ef',accent:'#eab087'};
 function themeContrast(foreground:string,background:string):number {
@@ -29,7 +40,7 @@ function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioThe
     if (!source) return defaultTheme;
     const value = JSON.parse(source) as Partial<PortfolioTheme>;
     return (value.mode === 'light' || value.mode === 'dark') && colors.every(key => /^#[0-9a-f]{6}$/i.test(value[key] ?? ''))
-      ? value as PortfolioTheme : defaultTheme;
+      ? {mode:value.mode,surface:value.surface!,text:value.text!,accent:value.accent!} : defaultTheme;
   } catch { return defaultTheme; }
 }
 
@@ -190,21 +201,39 @@ export function ThemeInspector({head, apply, width, resize}: {
 }) {
   const theme = readTheme(head.snapshot);
   const ratio=themeContrast(theme.text,theme.surface);
+  const previous=head.snapshot.files[THEME_PATH];
+  const tokens=previous?objectRecord(JSON.parse(previous))??{}:{};
+  // Retain the renderer's established flat active fields. This editor-only
+  // history is optional; unknown token fields are not rewritten.
+  const history=objectRecord(tokens.authorModePalettes);
+  const historySupported=tokens.authorModePalettes===undefined||!!history&&
+    ['light','dark'].every(mode=>history[mode]===undefined||validPalette(history[mode]));
   function setTheme(next: PortfolioTheme) {
-    const previous = head.snapshot.files[THEME_PATH];
-    const tokens = previous ? JSON.parse(previous) as Record<string, unknown> : {};
-    apply({kind: 'WRITE_MANAGED_FILE', path: THEME_PATH, source: JSON.stringify({...tokens, ...next}, null, 2)});
+    if(!historySupported){
+      if(next.mode!==theme.mode)return;
+      apply({kind:'WRITE_MANAGED_FILE',path:THEME_PATH,source:JSON.stringify({...tokens,...next},null,2)});
+      return;
+    }
+    const nextHistory={...history,
+      [theme.mode]:{...objectRecord(history?.[theme.mode]),...paletteOf(theme)},
+      [next.mode]:{...objectRecord(history?.[next.mode]),...paletteOf(next)}};
+    apply({kind:'WRITE_MANAGED_FILE',path:THEME_PATH,source:JSON.stringify({...tokens,...next,authorModePalettes:nextHistory},null,2)});
+  }
+  function switchMode(mode:PortfolioTheme['mode']){
+    if(!historySupported||mode===theme.mode)return;
+    const saved=history?.[mode];
+    const palette=validPalette(saved)?paletteOf({...saved,mode}):paletteOf(mode==='dark'?defaultDarkTheme:defaultTheme);
+    setTheme({mode,...palette});
   }
   return <div className="ws-editor-tool">
     <h2>Theme &amp; responsive</h2>
     <label>Preview width<select value={width} onChange={event => resize(Number(event.target.value))}>
       <option value={0}>Fit canvas</option><option value={1440}>Desktop · up to 1440 px</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
     </select></label>
-    <label>Portfolio theme<select value={theme.mode} onChange={event => {
-      const mode = event.target.value;
-      if (mode === 'dark') setTheme({...defaultDarkTheme});
-      else setTheme({...defaultTheme});
+    <label>Portfolio theme<select value={theme.mode} disabled={!historySupported} onChange={event=>{
+      if(event.target.value==='light'||event.target.value==='dark')switchMode(event.target.value);
     }}><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    {!historySupported&&<p role="alert">Existing palette-history data is unsupported. The current colors can be edited, but switching modes is blocked to avoid losing data.</p>}
     {colors.map(key => <label key={key}>{key}<input type="color" value={theme[key]} onChange={event =>
       setTheme({...theme, [key]: event.target.value})}/></label>)}
     <p>Global portfolio tokens · independent of the workspace theme. Preview widths do not authorize phone editing.</p>
@@ -214,7 +243,7 @@ export function ThemeInspector({head, apply, width, resize}: {
     <button type="button" className="ws-secondary"
       disabled={colors.every(key=>theme[key]===(theme.mode==='dark'?defaultDarkTheme:defaultTheme)[key])}
       onClick={()=>setTheme({... (theme.mode==='dark'?defaultDarkTheme:defaultTheme)})}>Reset global palette</button>
-    <p>Palette changes use the private transaction and Undo. Unsupported scoped tokens are left untouched; their static export parity is not yet verified.</p>
+    <p>Each mode retains its own global palette; reset affects only the active palette. Changes use the private transaction and Undo. Unsupported scoped tokens are left untouched; their static export parity is not yet verified.</p>
   </div>;
 }
 
@@ -325,8 +354,14 @@ export function SourceInspector({head,apply,back,buffers,setBuffers}:{
   </div>;
 }
 
-export function ComponentLibrary({port, head, committed, slot, apply, blocked}: {
+/** One editor mount retains the operation UUID even when the panel closes
+ * before an acknowledgement. This is not an offline login or cross-reload queue. */
+export type ComponentSaveRetryState={
+  pending:{signature:string;id:string;epoch:number}|null;inFlight:boolean;
+};
+export function ComponentLibrary({port, head, committed, slot, apply, blocked,saveRetry}: {
   port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;blocked:boolean;
+  saveRetry:{current:ComponentSaveRetryState};
 }) {
   const [versions, setVersions] = useState<MyComponentVersion[] | null>(null);
   const [message, setMessage] = useState('');
@@ -339,9 +374,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
     owned.sourcePath===savedSlot.sourcePath&&owned.originalSource===savedSlot.originalSource&&
     owned.componentId===savedSlot.componentId&&head.snapshot.files[owned.sourcePath]===committed?.files[savedSlot.sourcePath];
   const [refresh,setRefresh]=useState(0);
-  const attempt=useRef<{signature:string;id:string}|null>(null);
-  const componentSaveFlight=useRef(false);
-  const componentListGeneration=useRef(0);
+   const componentListGeneration=useRef(0);
   const catalogueEpoch=useRef<number|null>(null);
   const mounted=useRef(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
@@ -359,9 +392,11 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
   }, [port,refresh]);
 
   async function save() {
-    if(!committed||!canSave||blocked||!name.trim()||busy||componentSaveFlight.current)return;
+    if(!committed||!canSave||blocked||!name.trim()||busy)return;
+    const retry=saveRetry.current;
+    if(retry.inFlight){setMessage('A component save is still in progress. Retry after it completes.');return;}
     const epoch=port.reconcileOwnerSessionEpoch();
-    componentSaveFlight.current=true;setBusy(true);setMessage('');
+    retry.inFlight=true;setBusy(true);setMessage('');
     try {
       const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55);
       if (!/^[a-z][a-z0-9-]{2,63}$/.test(key)) {setMessage('Choose a component name with at least three letters or digits, beginning with a letter.'); return;}
@@ -369,8 +404,8 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
         operationId:crypto.randomUUID(),componentKey:key,displayName:name,compatibleSlotKinds:[slotKind]
       });
       const signature=JSON.stringify({...input,operationId:''});
-      if(attempt.current?.signature!==signature)attempt.current={signature,id:input.operationId};
-      input.operationId=attempt.current.id;
+      if(retry.pending?.signature!==signature||retry.pending.epoch!==epoch)retry.pending={signature,id:input.operationId,epoch};
+      input.operationId=retry.pending.id;
       const result=await port.saveOwnerComponent(input);
       if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if (!result.data) {setMessage(result.error?.message ?? 'Component save could not be confirmed.'); return;}
@@ -379,10 +414,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked}: 
       ++componentListGeneration.current;catalogueEpoch.current=epoch;
       setVersions(current => [saved, ...(current ?? []).filter(version => version.id !== saved.id)]);
       setRefresh(n=>n+1);
-      attempt.current=null;setName('');setMessage('Private component version saved.');
+      retry.pending=null;setName('');setMessage('Private component version saved.');
     }catch(error){if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
       setMessage(error instanceof Error?error.message:'Component save could not be confirmed.');}
-    finally{componentSaveFlight.current=false;if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
+    finally{retry.inFlight=false;if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
 
   return <div className="ws-editor-tool"><h2>My Components</h2>

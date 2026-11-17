@@ -12,7 +12,7 @@ import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
 import { MoveToTrash } from './settings.tsx';
-import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector } from './portfolio-tools.tsx';
+import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, type ComponentSaveRetryState } from './portfolio-tools.tsx';
 
 const presets = [
   {id: 'arc', title: 'Arc', tone: 'curved', detail: 'Curved hero and a project showcase.'},
@@ -416,6 +416,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [componentSearch,setComponentSearch]=useState('');
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
+  const componentSaveRetry=useRef<ComponentSaveRetryState>({pending:null,inFlight:false});
   const [openedSource, setOpenedSource] = useState(false);
   const [openedAssets,setOpenedAssets]=useState(false);
   const [openedHistory,setOpenedHistory]=useState(false);
@@ -1171,7 +1172,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
         </section>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null}
-          slot={slot} apply={apply} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}/>}
+          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}/>}
 
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
