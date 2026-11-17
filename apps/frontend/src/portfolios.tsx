@@ -4,7 +4,7 @@ import { unappliedSourceBufferCount } from './behavior.ts';
 import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
 import {
-  applyEditorTransaction, canPlacePrivateImage, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
+  applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
@@ -424,6 +424,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const sourceDirty=!!head&&unappliedSourceBufferCount(sourceDrafts,head.snapshot.files)>0;
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
   const [recoveryNotice,setRecoveryNotice]=useState('');
+  const [recoveryExpanded,setRecoveryExpanded]=useState(false);
+  const [recoveryComparison,setRecoveryComparison]=useState<{copyId:string;cloudRevision:number;
+    changedFiles:string[];changedSlots:string[];pendingCount:number}|null>(null);
+  const catalogueRequest=useRef(0);
   const [recoveryBusy,setRecoveryBusy]=useState(false);
   const recoveryLock=useRef(false);
   const recoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
@@ -509,10 +513,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setSaving(true); setError(''); setNotice('');
     try {
       const result = await port.saveOwnerPortfolio(id, operation, record.revision, head.snapshot);
-      if (!result.data) {setError(result.error?.message ?? 'Draft save could not be confirmed.'); return;}
+      if (!result.data) {
+        setError(result.error?.message ?? 'Draft save could not be confirmed.');
+        if(verifiedOwner)setRecoveryExpanded(true);
+        return;
+      }
       setRecord({...record, revision: result.data, snapshot: head.snapshot});
       setOperation(''); setNotice('Private portfolio draft saved.');
-    } catch {setError('Draft save could not be verified. Your edits remain in this editor.');}
+    } catch {
+      setError('Draft save could not be verified. Your edits remain in this editor.');
+      if(verifiedOwner)setRecoveryExpanded(true);
+    }
     finally {setSaving(false);}
   }
 
@@ -592,13 +603,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   // Local storage is not an identity authority. Gate context is mandatory.
   type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
     record:PortfolioRecord|null;head:EditorHead|null;operation:string;fieldDrafts:Record<string,string>;
-    sourceDrafts:Record<string,string>;seoDraft:{title:string;description:string}|null;dirty:boolean;saving:boolean;allowed:boolean};
+    sourceDrafts:Record<string,string>;seoDraft:{title:string;description:string}|null;dirty:boolean;saving:boolean;allowed:boolean;tool:string;preview:boolean};
   const latestRecovery=useRef<RecoveryView|null>(null);
   useLayoutEffect(()=>{
     latestRecovery.current={port,id,owner:verifiedOwner,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,
-      dirty:!!operation||pendingFields||sourceDirty,saving,allowed};
+      dirty:!!operation||pendingFields||sourceDirty,saving,allowed,tool,preview};
     return ()=>{latestRecovery.current=null;};
-  },[port,id,verifiedOwner?.id,verifiedOwner?.epoch,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,allowed]);
+  },[port,id,verifiedOwner?.id,verifiedOwner?.epoch,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,allowed,tool,preview]);
   function scopeCurrent(view:RecoveryView):boolean {
     const current=latestRecovery.current,owner=view.owner;
     if(!current||!owner||current.port!==view.port||current.id!==view.id||
@@ -613,16 +624,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
   const recoveryRecordId=record?.id;
   useEffect(()=>{
-    setRecoveryCopies(null);setRecoveryNotice('');recoveryAttempt.current=null;
+    setRecoveryCopies(null);setRecoveryNotice('');setRecoveryComparison(null);recoveryAttempt.current=null;
+    const request=++catalogueRequest.current;
     const view=latestRecovery.current;
     if(!view?.owner||!view.record||view.record.id!==id||!scopeCurrent(view))return;
     let active=true;
     void (async()=>{
       try{
         const copies=await new IndexedDbEditorDraftStore().listRecoveryCopies(view.owner!.id,id);
-        if(active&&scopeCurrent(view))setRecoveryCopies(copies);
+        if(active&&request===catalogueRequest.current&&scopeCurrent(view))setRecoveryCopies(copies);
       }catch{
-        if(active&&scopeCurrent(view))setRecoveryNotice('Browser recovery storage could not be read. Cloud draft unchanged.');
+        if(active&&request===catalogueRequest.current&&scopeCurrent(view))setRecoveryNotice('Browser recovery storage could not be read. Cloud draft unchanged.');
       }
     })();
     return ()=>{active=false;};
@@ -632,8 +644,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     return view?.owner&&view.record?.id===id&&view.head&&view.allowed&&!view.saving&&scopeCurrent(view)?view:null;
   }
   async function refreshRecovery(view:RecoveryView,store:IndexedDbEditorDraftStore){
+    const request=++catalogueRequest.current;
     const copies=await store.listRecoveryCopies(view.owner!.id,view.id);
-    if(scopeCurrent(view))setRecoveryCopies(copies);
+    if(request===catalogueRequest.current&&scopeCurrent(view))setRecoveryCopies(copies);
   }
   function installCloudDraft(fresh:PortfolioRecord){
     if(!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
@@ -681,7 +694,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   async function inspectRecovery(copyId:string,action:'compare'|'open'|'export'){
     const view=captureRecovery();
     if(!view||recoveryLock.current||!view.record||!view.head||(action==='open'&&view.dirty))return;
-    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
+    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');setRecoveryComparison(null);
     try{
       // No offline authentication bypass: all reopen/readback/export operations
       // require a fresh owner-scoped cloud read before retrieving copy bytes.
@@ -704,13 +717,16 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       }
       if(action==='compare'||recovered.cloudBaseRevision!==fresh.data.revision||view.dirty){
         const paths=new Set([...Object.keys(saved.files),...Object.keys(recovered.snapshot.files)]);
-        const changedFiles=[...paths].filter(path=>saved.files[path]!==recovered.snapshot.files[path]).length;
+        const changedFiles=[...paths].filter(path=>saved.files[path]!==recovered.snapshot.files[path]).sort();
         const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots)]);
         const stable=(value:unknown)=>JSON.stringify(value,(_key,v:unknown)=>
           v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
-        const changedSlots=[...keys].filter(key=>stable(saved.slots[key])!==stable(recovered.snapshot.slots[key])).length;
+        const changedSlots=[...keys].filter(key=>stable(saved.slots[key])!==stable(recovered.snapshot.slots[key])||
+          stable(saved.stashes[key])!==stable(recovered.snapshot.stashes[key])).sort();
+        setRecoveryComparison({copyId:copy.copyId,cloudRevision:fresh.data.revision,changedFiles,changedSlots,
+          pendingCount:Object.keys(recovered.fieldDrafts).length+Object.keys(recovered.sourceDrafts).length+(recovered.seoDraft?1:0)});
         setRecoveryNotice('Recovery base '+recovered.cloudBaseRevision+' · cloud revision '+fresh.data.revision+
-          ' · '+changedFiles+' differing files · '+changedSlots+' differing slots. '+
+          ' · '+changedFiles.length+' differing files · '+changedSlots.length+' differing slots/stashes. '+
           (recovered.cloudBaseRevision!==fresh.data.revision?'Cloud changed; copy retained separately. Export to recover manually.':'Copy remains separate; no cloud change.'));
         return;
       }
@@ -732,14 +748,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
    * No arbitrary URLs, storage keys or invented byte digests enter the slot. */
   async function placeAsset(assetId:string,target:string,altText:string):Promise<boolean>{
     const view=captureRecovery();
-    if(!view||!view.head||recoveryLock.current||!canPlacePrivateImage(view.head.snapshot,target))return false;
+    if(!view||!view.head||view.tool!=='Assets'||view.preview||recoveryLock.current||!canPlacePrivateImage(view.head.snapshot,target))return false;
     if(sourceDirty||Object.keys(view.fieldDrafts).some(key=>key.startsWith(target+':'))){
       setError('Apply or discard pending target/source edits before placing an image.');return false;
     }
     recoveryLock.current=true;setRecoveryBusy(true);
     try{
       const response=await view.port.listOwnerAssets();
-      if(!draftCurrent(view))return false;
+      if(!draftCurrent(view)||latestRecovery.current?.tool!=='Assets'||latestRecovery.current.preview)return false;
       const asset=response.data?.find(row=>row.id===assetId);
       if(!asset){setError('Current owner asset registration could not be verified. No slot was changed.');return false;}
       recoveryLock.current=false;
@@ -760,7 +776,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const store=new IndexedDbEditorDraftStore();
       await store.removeRecoveryCopy(view.owner!.id,view.id,copyId);
       if(!scopeCurrent(view))return;
-      recoveryAttempt.current=null;
+      recoveryAttempt.current=null;setRecoveryComparison(null);
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
       await refreshRecovery(view,store);
     }catch{if(scopeCurrent(view))setRecoveryNotice('Removal or catalogue refresh not confirmed. Reopen the editor to check.');}
@@ -807,7 +823,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
     }}>{operation || pendingFields || sourceDirty ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
-    {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
+    {verifiedOwner&&record&&head&&<details className="ws-editor-safety" open={recoveryExpanded}
+      onToggle={event=>setRecoveryExpanded(event.currentTarget.open)}>
       <summary>Browser recovery &amp; Keep Both</summary>
       <p>Copies stay on this device, separate from the saved cloud draft. Browser storage can be cleared; export important work. Opening requires a verified owner and fresh cloud read.</p>
       <div className="ws-actions">
@@ -820,6 +837,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       </div>
       {recoveryBusy&&<p>Working with browser recovery storage…</p>}
       {recoveryNotice&&<p role="status">{recoveryNotice}</p>}
+      {recoveryComparison&&<div aria-label="Recovery copy comparison">
+        <p>Compared with saved cloud revision {recoveryComparison.cloudRevision}. This comparison is a point-in-time read, not a new save.</p>
+        <p>{recoveryComparison.pendingCount} unapplied buffer entries in the recovery copy.</p>
+        <details><summary>Different file paths ({recoveryComparison.changedFiles.length})</summary>
+          <ul>{recoveryComparison.changedFiles.map(path=><li key={path}><code>{path}</code></li>)}</ul></details>
+        <details><summary>Different slots or stash entries ({recoveryComparison.changedSlots.length})</summary>
+          <ul>{recoveryComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
+      </div>}
       {recoveryCopies===null?<p>Local recovery catalogue not confirmed.</p>:recoveryCopies.length===0?
         <p>No browser recovery copies.</p>:<ul className="ws-editor-slots">{recoveryCopies.map(copy=>
           <li key={copy.copyId}><strong>{new Date(copy.savedAt).toLocaleString()} · base revision {copy.cloudBaseRevision}</strong>
@@ -877,14 +902,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         ).map(item=>{
           const fit=compatible.some(candidate=>candidate.id===item.id);
           return <li key={item.id}><button type="button" aria-pressed={chosenComponent?.id===item.id&&fit}
-            disabled={active?.state!=='EMPTY'||!fit||saving}
+            disabled={!active||!fit||saving||recoveryBusy}
             onClick={()=>setPickedComponent(item.id)}>
             <strong>{item.label}</strong>
             <small>{item.id}</small>
             <span>{fit?'Compatible with selected slot':'Choose another slot'}</span>
           </button></li>;
         })}</ul>
-        {active?.state!=='EMPTY'&&<p className="ws-footnote">Select an empty slot in Structure &amp; layers before adding components.</p>}
+        {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before adding or replacing components.</p>}
         <button type="button" className="ws-secondary" onClick={()=>setTool('Content')}>Return to layers</button>
       </div>:<><h2>Structure &amp; layers</h2>
         {!assigned.length && <p>This blank draft has no slots.</p>}
@@ -946,11 +971,24 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
               <strong>Selected component</strong><span>{chosenComponent?.label??'Unavailable'}</span>
               <strong>Required source</strong><span>{chosenComponent?.id??'Not verified'}</span>
             </div>
-            {active.state!=='EMPTY'?<p role="status">This slot already holds a component. Move it to unplaced from Content to preserve an Undo path.</p>:
-              chosenComponent?<button type="button" className="ws-primary" disabled={saving}
+            {chosenComponent&&active.state==='EMPTY'?<button type="button" className="ws-primary" disabled={saving||recoveryBusy}
                 onClick={()=>{if(apply({kind:'ASSIGN_COMPONENT',slotKey:slot,componentId:chosenComponent.id}))setTool('Content');}}>
-                Add to empty slot</button>:
-                <p role="status">No verified component is available for this media slot.</p>}
+                Add to empty slot</button>:chosenComponent&&
+                !(active.state==='S0'&&active.componentId===chosenComponent.id)?<>
+                  <p>Replace and stash preserves the entire outgoing assignment, including unmatched fields and owned source.</p>
+                  {active.sourcePath&&<p>Protected source: <code>{active.sourcePath}</code></p>}
+                  <p>Matching declared fields retained: {Object.keys(matchingReplacementContent(active,chosenComponent.id)).join(', ')||'None'}.</p>
+                  {(active.state==='S1'||active.state==='S2')&&<button type="button" className="ws-secondary"
+                    onClick={()=>setTool('My Components')}>Keep as My Component</button>}
+                  <button type="button" className="ws-primary" disabled={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+                    onClick={()=>{
+                      if(!window.confirm('Replace this component and stash all outgoing content'+(active.sourcePath?' and owned source '+active.sourcePath:'')+'? You can undo this transaction.'))return;
+                      if(apply({kind:'ASSIGN_COMPONENT',slotKey:slot,componentId:chosenComponent.id,
+                        confirmOwnedReplacement:active.state==='S1'||active.state==='S2',preserveMatchingContent:true}))setTool('Content');
+                    }}>Replace and stash</button>
+                  <button type="button" className="ws-secondary" onClick={()=>setTool('Content')}>Cancel replacement</button>
+                </>:chosenComponent?<p>This pristine pinned component is already assigned.</p>:
+                <p role="status">Use Assets for an owner-verified image placement; no generic media source is guessed.</p>}
           </>}
         </div>}
         {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
@@ -978,11 +1016,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             <p className="ws-field-hint">Metadata is in your working revision. Save the draft before another frozen preflight.</p>}
           <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
         </section>}
-        {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null} slot={slot} apply={apply}/>}
+        {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null}
+          slot={slot} apply={apply} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}/>}
 
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
+          {active.state!=='EMPTY'&&active.componentId!=='image@1'&&<button type="button" className="ws-secondary"
+            disabled={saving||recoveryBusy} onClick={()=>setTool('Components')}>Review compatible replacements</button>}
           {canPlacePrivateImage(head.snapshot,slot)&&<div className="ws-editor-tool">
             {active.componentId==='image@1'&&<p>Private image reference · {active.content.alt_text||'No alt text'}.
               {active.content.source_sha256?' Stored pin; release verification required.':' Metadata only; release blocked until trusted byte attestation.'}</p>}
@@ -1080,6 +1121,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     </div>{openedHistory&&record&&<div hidden={tool!=='History'}>
       <RevisionWorkspace port={port} id={id} revision={record.revision}
         working={head.snapshot} title={record.title} dirty={!!operation||pendingFields||sourceDirty}
+        active={tool==='History'&&!preview&&allowed&&!saving&&!recoveryBusy}
         buffered={pendingFields||sourceDirty} onRestore={restore} back={()=>setTool('Content')}/>
     </div>}
     {openedAssets&&<div hidden={tool!=='Assets'}>

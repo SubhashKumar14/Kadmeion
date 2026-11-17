@@ -33,12 +33,12 @@ export type EditorIntent =
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
   | { kind:'CLEAR_SLOT'; slotKey:string }
-  | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
+  | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
   /** Draft metadata placement only. Never grants media-byte attestation. */
   | { kind:'PLACE_PRIVATE_IMAGE'; slotKey:string; assetId:string; altText:string }
   | { kind:'CUSTOMIZE_COMPONENT'; slotKey:string; copiedSource:string }
-  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean }
+  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'EDIT_OWNED_SOURCE'; slotKey:string; source:string }
   | { kind:'RESTORE_STASH'; slotKey:string }
   | { kind:'UNDO' }
@@ -75,6 +75,19 @@ export function canPlacePrivateImage(snapshot:PortfolioSnapshot,key:string):bool
         section.id+'-'+name.toLowerCase()===key)===true;
     });
   }catch{return false;}
+}
+
+/** Same pinned, documented text fields only; unknown fields stay in full stash. */
+export function matchingReplacementContent(slot:SlotAssignment,pin:string):Record<string,string>{
+  const known:Readonly<Record<string,readonly string[]>>={
+    'title-stacked@1':['title','subtitle'],'body-copy@1':['text'],
+    'external-link@1':['label','url'],'project-card@1':['title','summary','url'],
+    'skills-list@1':['items'],'experience-list@1':['items'],
+    'technology-tag@1':['text'],'author-metric@1':['label','value']
+  };
+  if(slot.componentId!==pin||!Object.hasOwn(known,pin))return {};
+  return Object.fromEntries((known[pin]??[]).filter(field=>Object.hasOwn(slot.content,field))
+    .map(field=>[field,slot.content[field]!]));
 }
 
 function isOwned(slot: SlotAssignment): boolean {
@@ -188,11 +201,11 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
     CLEAR_SLOT:['kind','slotKey'],
-    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
+    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement','preserveMatchingContent'],
     UPDATE_CONTENT:['kind','slotKey','content'],
     PLACE_PRIVATE_IMAGE:['kind','slotKey','assetId','altText'],
     CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
-    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement'],
+    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement','preserveMatchingContent'],
     EDIT_OWNED_SOURCE:['kind','slotKey','source'],
     RESTORE_STASH:['kind','slotKey'],
     UNDO:['kind'],
@@ -202,7 +215,8 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
   if(!permitted||
      Object.keys(intent).some(k=>!permitted.includes(k))||
      ('confirmOwnedReplacement' in intent &&
-       typeof intent.confirmOwnedReplacement!=='boolean'))
+       typeof intent.confirmOwnedReplacement!=='boolean')||
+     ('preserveMatchingContent' in intent&&typeof intent.preserveMatchingContent!=='boolean'))
     throw new ContractError('VALIDATION','Unknown editor command kind or properties.');
   // Canonicalize only JSON commands, never source strings or managed file
   // bytes. Normalized UUID case is part of the idempotency key.
@@ -320,7 +334,8 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
           throw new ContractError('VALIDATION', 'Owned source needs explicit replace-and-stash confirmation.');
         if (slot.state!=='EMPTY') stash.push(structuredClone(slot));
         next.stashes[intent.slotKey]=stash;
-        next.slots[intent.slotKey]={state:'S0',componentId:intent.componentId,content:{}};
+        next.slots[intent.slotKey]={state:'S0',componentId:intent.componentId,
+          content:intent.preserveMatchingContent?matchingReplacementContent(slot,intent.componentId):{}};
         break;
       case 'UPDATE_CONTENT':
         if (slot.state==='EMPTY') throw new ContractError('VALIDATION', 'Assign a component first.');
@@ -410,7 +425,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
           saved.source_code!==saved.pristine_source?saved.pristine_source:fallback;
         next.slots[intent.slotKey]={
           state:pristine?'S1':'S2',componentId:saved.base_component_pin,
-          content:{},sourcePath:path,originalSource:original
+          content:intent.preserveMatchingContent?matchingReplacementContent(slot,saved.base_component_pin):{},sourcePath:path,originalSource:original
         };
         break;
       }

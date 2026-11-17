@@ -4,7 +4,7 @@ import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import { savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
+import { matchingReplacementContent, savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
   '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>) => boolean;
@@ -147,12 +147,10 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
                 <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="action"/>)}</div>
               {section.slots.includes('note')&&<div className="pv-hero-note"><PortfolioSlot {...slotProps} section={section} name="note" kind="tag"/></div>}
             </div>
-            <div className="pv-hero-art">
-              {section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).length>0?
-                section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).map(name=>
-                  <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="media"/>):
-                <div aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>}
-            </div>
+            {section.slots.some(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name))?
+              <div className="pv-hero-art">{section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).map(name=>
+                <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="media"/>)}</div>:
+              <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>}
           </div>:<>
             <div className="pv-section-heading">
               {headline&&<h2><PortfolioSlot {...slotProps} section={section} name="title" kind="title"/></h2>}
@@ -308,8 +306,8 @@ export function SourceInspector({head,apply,back,buffers,setBuffers}:{
   </div>;
 }
 
-export function ComponentLibrary({port, head, committed, slot, apply}: {
-  port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;
+export function ComponentLibrary({port, head, committed, slot, apply, blocked}: {
+  port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;blocked:boolean;
 }) {
   const [versions, setVersions] = useState<MyComponentVersion[] | null>(null);
   const [message, setMessage] = useState('');
@@ -317,49 +315,75 @@ export function ComponentLibrary({port, head, committed, slot, apply}: {
   const [busy, setBusy] = useState(false);
   const slotKind = slot.slice(slot.lastIndexOf('-') + 1);
   const state = head.snapshot.slots[slot]?.state;
-  const canSave = !!committed && ['S1', 'S2'].includes(committed.slots[slot]?.state ?? '');
+  const owned=head.snapshot.slots[slot],savedSlot=committed?.slots[slot];
+  const canSave=!!owned?.sourcePath&&!!savedSlot?.sourcePath&&['S1','S2'].includes(savedSlot.state)&&
+    owned.sourcePath===savedSlot.sourcePath&&owned.originalSource===savedSlot.originalSource&&
+    owned.componentId===savedSlot.componentId&&head.snapshot.files[owned.sourcePath]===committed?.files[savedSlot.sourcePath];
+  const [refresh,setRefresh]=useState(0);
+  const attempt=useRef<{signature:string;id:string}|null>(null);
+  const catalogueEpoch=useRef<number|null>(null);
+  const mounted=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
 
   useEffect(() => {
     let active = true;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    setMessage('');setVersions(null);
     void port.listOwnerComponents().then(result => {
-      if (!active) return;
-      if (result.data) setVersions(result.data);
-      else setMessage(result.error?.message ?? 'My Components could not be loaded.');
-    });
-    return () => {active = false;};
-  }, [port]);
+      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(result.data){catalogueEpoch.current=epoch;setVersions(result.data);}
+      else setMessage(result.error?.message??'My Components could not be loaded.');
+    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)setMessage('My Components could not be loaded.');});
+    return ()=>{active=false;};
+  }, [port,refresh]);
 
   async function save() {
-    if (!committed || !name.trim() || busy) return;
-    setBusy(true); setMessage('');
+    if(!committed||!canSave||blocked||!name.trim()||busy)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    setBusy(true);setMessage('');
     try {
       const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55);
       if (!/^[a-z][a-z0-9-]{2,63}$/.test(key)) {setMessage('Choose a component name with at least three letters or digits, beginning with a letter.'); return;}
-      const input = savedComponentInputFromOwnedSlot(committed, slot, {
-        operationId: crypto.randomUUID(), componentKey: key, displayName: name, compatibleSlotKinds: [slotKind]
+      const input=savedComponentInputFromOwnedSlot(committed,slot,{
+        operationId:crypto.randomUUID(),componentKey:key,displayName:name,compatibleSlotKinds:[slotKind]
       });
-      const result = await port.saveOwnerComponent(input);
+      const signature=JSON.stringify({...input,operationId:''});
+      if(attempt.current?.signature!==signature)attempt.current={signature,id:input.operationId};
+      input.operationId=attempt.current.id;
+      const result=await port.saveOwnerComponent(input);
+      if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if (!result.data) {setMessage(result.error?.message ?? 'Component save could not be confirmed.'); return;}
       const saved = result.data;
       setVersions(current => [saved, ...(current ?? []).filter(version => version.id !== saved.id)]);
-      setName(''); setMessage('Private component version saved.');
-    } catch (error) {setMessage(error instanceof Error ? error.message : 'Component save could not be confirmed.');}
-    finally {setBusy(false);}
+      attempt.current=null;setName('');setMessage('Private component version saved.');
+    }catch(error){if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
+      setMessage(error instanceof Error?error.message:'Component save could not be confirmed.');}
+    finally{if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
 
   return <div className="ws-editor-tool"><h2>My Components</h2>
     {message && <p role="status">{message}</p>}
+    {!versions&&message&&<button type="button" className="ws-secondary" onClick={()=>setRefresh(n=>n+1)}>Retry private components</button>}
     {!versions && !message && <p role="status">Loading saved components…</p>}
     {versions?.length === 0 && <p>You haven’t saved any component versions.</p>}
     <ul className="ws-editor-slots">{versions?.map(version => <li key={version.id}>
-      <strong>{version.display_name}</strong> <span>{version.compatible_slot_kinds.join(', ')}</span>
-      <button type="button" disabled={!state || state === 'S1' || state === 'S2' || !version.compatible_slot_kinds.includes(slotKind)}
-        onClick={() => apply({kind: 'REUSE_SAVED_COMPONENT', slotKey: slot, componentVersionId: version.id}, {[version.id]: version})}>
-        Reuse in selected slot
+      <strong>{version.display_name} · v{version.version}</strong> <span>{version.compatible_slot_kinds.join(', ')}</span>
+      <button type="button" disabled={!state||blocked||busy||!version.compatible_slot_kinds.includes(slotKind)}
+        onClick={()=>{
+          if(port.reconcileOwnerSessionEpoch()!==catalogueEpoch.current||!owned)return;
+          const protectedSource=state==='S1'||state==='S2';
+          if(state!=='EMPTY'&&!window.confirm('Reuse this private component version and stash the existing assignment'+
+            (owned.sourcePath?' ('+owned.sourcePath+')':'')+'? Matching fields: '+
+            (Object.keys(matchingReplacementContent(owned,version.base_component_pin)).join(', ')||'none')+'.'))return;
+          apply({kind:'REUSE_SAVED_COMPONENT',slotKey:slot,componentVersionId:version.id,
+            confirmOwnedReplacement:protectedSource,preserveMatchingContent:true},{[version.id]:version});
+        }}>
+        {state==='EMPTY'?'Reuse in selected slot':'Reuse and stash previous'}
       </button>
     </li>)}</ul>
     {canSave && <><label>Component name<input value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
-      <button type="button" className="ws-secondary" disabled={busy || !name.trim()} onClick={() => void save()}>Save committed component</button></>}
+      <button type="button" className="ws-secondary" disabled={busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
+    {!canSave&&(state==='S1'||state==='S2')&&<p>Save the portfolio and resolve unapplied source edits before keeping this exact owned version.</p>}
   </div>;
 }
 
@@ -539,9 +563,9 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   </div>;
 }
 
-export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
+export function RevisionHistory({port,id,revision,onRestore,working,buffered,active}: {
   port:SupabaseBrowserAuthPort;id:string;revision:number;
-  onRestore:(snapshot:PortfolioSnapshot)=>boolean;working:PortfolioSnapshot;buffered:boolean;
+  onRestore:(snapshot:PortfolioSnapshot)=>boolean;working:PortfolioSnapshot;buffered:boolean;active:boolean;
 }) {
   const [items,setItems]=useState<{revision:number;createdAt:string}[]|null>(null);
   const [selected,setSelected]=useState<number|null>(null);
@@ -565,21 +589,23 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
   // A read can resolve after the owner edits, saves, changes account/route,
   // or closes History. Never use the old captured editor callback to restore.
   const latest=useRef<{port:SupabaseBrowserAuthPort;id:string;revision:number;
-    working:PortfolioSnapshot;buffered:boolean;onRestore:(snapshot:PortfolioSnapshot)=>boolean}|null>(null);
+    working:PortfolioSnapshot;buffered:boolean;active:boolean;epoch:number;onRestore:(snapshot:PortfolioSnapshot)=>boolean}|null>(null);
   useLayoutEffect(()=>{
-    latest.current={port,id,revision,working,buffered,onRestore};
+    latest.current={port,id,revision,working,buffered,active,epoch:port.getOwnerSessionEpoch(),onRestore};
     return ()=>{latest.current=null;};
-  },[port,id,revision,working,buffered,onRestore]);
+  },[port,id,revision,working,buffered,active,onRestore]);
   // A comparison describes one exact working snapshot, not later edits/restores.
   useEffect(()=>{setComparison(null);},[working]);
   async function compare(){
-    if(!selected||busy)return;
+    if(!selected||busy||!active)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
     setBusy(true);setError('');setComparison(null);
     try{
       const historical=await readSelectedUnsafe(selected);
       if(!historical)return;
       const current=latest.current;
-      if(!current||current.port!==port||current.id!==id||current.revision!==revision)return;
+      if(!current||!current.active||current.port!==port||current.id!==id||current.revision!==revision||
+        current.epoch!==epoch||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(current.working!==working){
         setError('The working draft changed during comparison. Compare again.');
         return;
@@ -608,12 +634,14 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
     }
   }
   async function restore(){
-    if(!selected||busy||buffered)return;
+    if(!selected||busy||buffered||!active)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
     setBusy(true);setError('');
     try{
       const snapshot=await readSelectedUnsafe(selected);
       const current=latest.current;
-      if(!snapshot||!current||current.port!==port||current.id!==id||current.revision!==revision)return;
+      if(!snapshot||!current||!current.active||current.port!==port||current.id!==id||current.revision!==revision||
+        current.epoch!==epoch||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(current.working!==working||current.buffered){
         setError('The working draft or its unapplied edits changed during restore. Review them and retry.');
         return;
@@ -639,7 +667,7 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
         <div className="ws-revision-buttons">
           <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void compare()}>
             Compare to working copy</button>
-          <button type="button" className="ws-secondary" disabled={busy||buffered} onClick={()=>void restore()}>
+          <button type="button" className="ws-secondary" disabled={busy||buffered||!active} onClick={()=>void restore()}>
             Restore selected checkpoint to draft</button>
         </div>
       </>}
@@ -656,9 +684,9 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
 
 /** EDIT-08: the approved history layout is a three-pane private workbench,
  * not a small history list inside the Content inspector. */
-export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered,onRestore,back}:{
+export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered,active,onRestore,back}:{
   port:SupabaseBrowserAuthPort;id:string;revision:number;
-  working:PortfolioSnapshot;title:string;dirty:boolean;buffered:boolean;
+  working:PortfolioSnapshot;title:string;dirty:boolean;buffered:boolean;active:boolean;
   onRestore:(snapshot:PortfolioSnapshot)=>boolean;back:()=>void;
 }){
   const [tab,setTab]=useState<'History'|'Problems'|'Conflicts'>('History');
@@ -707,7 +735,7 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered
         <div id="kd-revision-panel" role="tabpanel" tabIndex={0}
           aria-labelledby={'kd-revision-tab-'+tab.toLowerCase()}>
           {tab==='History'?<RevisionHistory port={port} id={id} revision={revision}
-            working={working} onRestore={onRestore} buffered={buffered}/>:
+            working={working} onRestore={onRestore} buffered={buffered} active={active}/>:
           tab==='Problems'?<div className="ws-revision-honest-state">
             <h3>Validation has not been run here.</h3>
             <p>Saved revision integrity is checked on read. This history page does not run source lint, custom-code analysis, media attestation or public host checks.</p>
