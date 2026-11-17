@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { IndexedDbEditorDraftStore, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
+import { unappliedSourceBufferCount } from './behavior.ts';
 import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
 import {
@@ -387,7 +389,11 @@ export function PortfolioChooser({port}: {port: SupabaseBrowserAuthPort}) {
   </section>;
 }
 
-export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
+/** Supplied exclusively by the live verified workspace gate. */
+export type VerifiedEditorOwner = Readonly<{id:string;epoch:number}>;
+export function PortfolioEditor({port,id,verifiedOwner}: {
+  port:SupabaseBrowserAuthPort;id:string;verifiedOwner?:VerifiedEditorOwner;
+}) {
   const allowed = useAuthoringViewport();
   const [record, setRecord] = useState<PortfolioRecord | null>(null);
   const [head, setHead] = useState<EditorHead | null>(null);
@@ -414,7 +420,13 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [openedAssets,setOpenedAssets]=useState(false);
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
-  const [sourceDirty,setSourceDirty]=useState(false);
+  const [sourceDrafts,setSourceDrafts]=useState<Record<string,string>>({});
+  const sourceDirty=!!head&&unappliedSourceBufferCount(sourceDrafts,head.snapshot.files)>0;
+  const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
+  const [recoveryNotice,setRecoveryNotice]=useState('');
+  const [recoveryBusy,setRecoveryBusy]=useState(false);
+  const recoveryLock=useRef(false);
+  const recoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
   const [sourceReset,setSourceReset]=useState(0);
   const editorPanels=['Content','Components','My Components','Theme','Metadata','Assets','Source','History'] as const;
 
@@ -436,14 +448,27 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setSlot(chosen);
       setOperation('');
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
-      setSourceDirty(false);
+      setSourceDrafts({});
       setError('');
     }).catch(()=>{if(active)setError('Private portfolio loading failed. Check your connection and retry.');});
     return () => {active = false;};
   }, [port, id, attempt, allowed]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
-    if (!allowed || !head || saving) return false;
+    if (!allowed || !head || saving || recoveryLock.current) return false;
+    // Changing an assignment or restoring another working snapshot must not
+    // strand inspector/source buffers against a different component version.
+    const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
+      intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
+      intent.kind === 'CUSTOMIZE_COMPONENT';
+    if (((intent.kind === 'UNDO' || intent.kind === 'REDO') && (pendingFields || sourceDirty)) ||
+        (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
+          if (!key.startsWith(intent.slotKey + ':')) return false;
+          return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
+        })))) {
+      setError('Apply or discard unapplied content and source edits before changing this assignment or revision.');
+      return false;
+    }
     try {
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
       setHead(next);
@@ -456,7 +481,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   }
 
   function restore(snapshot: PortfolioSnapshot): boolean {
-    if (!head || !allowed || saving) return false;
+    if (!head || !allowed || saving || recoveryLock.current) return false;
     if (pendingFields || sourceDirty) {
       setError('Apply or discard unapplied content and source buffers before restoring a saved checkpoint.');
       return false;
@@ -470,7 +495,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       // A formerly clean source explorer must not carry an old snapshot's
       // buffer into the newly restored revision.
       setSourceReset(value => value + 1);
-      setSourceDirty(false);
+      setSourceDrafts({});
       setNotice('Revision restored into the working draft. Save to keep it.');
       return true;
     } catch (failure) {
@@ -480,7 +505,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   }
 
   async function save() {
-    if (!allowed || !record || !head || !operation || saving || sourceDirty || pendingFields) return;
+    if (!allowed || !record || !head || !operation || saving || recoveryLock.current || sourceDirty || pendingFields) return;
     setSaving(true); setError(''); setNotice('');
     try {
       const result = await port.saveOwnerPortfolio(id, operation, record.revision, head.snapshot);
@@ -544,12 +569,180 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setError(failure instanceof Error?failure.message:'SEO metadata could not be applied.');
     }
   }
+  function changeFieldBuffer(key:string, value:string, stored:string) {
+    setFieldDrafts(previous=>{
+      const next={...previous};
+      if(value===stored)delete next[key];else next[key]=value;
+      return next;
+    });
+    setFieldIssues(previous=>{const next={...previous};delete next[key];return next;});
+  }
+  function changeSeoBuffer(field:'title'|'description',value:string){
+    setSeoDraft(previous=>{
+      const next={...(previous??savedSeo),[field]:value};
+      return next.title===savedSeo.title&&next.description===savedSeo.description?null:next;
+    });
+  }
   const pendingFields=Object.entries(fieldDrafts).some(([key,draft])=>{
     const pivot=key.lastIndexOf(':');
     if(pivot<0)return false;
     const parent=key.slice(0,pivot),field=key.slice(pivot+1);
     return (head?.snapshot.slots[parent]?.content[field]??'')!==draft;
   }) || seoPending;
+  // Local storage is not an identity authority. Gate context is mandatory.
+  type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
+    record:PortfolioRecord|null;head:EditorHead|null;operation:string;fieldDrafts:Record<string,string>;
+    sourceDrafts:Record<string,string>;seoDraft:{title:string;description:string}|null;dirty:boolean;saving:boolean;allowed:boolean};
+  const latestRecovery=useRef<RecoveryView|null>(null);
+  useLayoutEffect(()=>{
+    latestRecovery.current={port,id,owner:verifiedOwner,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,
+      dirty:!!operation||pendingFields||sourceDirty,saving,allowed};
+    return ()=>{latestRecovery.current=null;};
+  },[port,id,verifiedOwner?.id,verifiedOwner?.epoch,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,allowed]);
+  function scopeCurrent(view:RecoveryView):boolean {
+    const current=latestRecovery.current,owner=view.owner;
+    if(!current||!owner||current.port!==view.port||current.id!==view.id||
+       current.owner?.id!==owner.id||current.owner?.epoch!==owner.epoch)return false;
+    return view.port.reconcileOwnerSessionEpoch()===owner.epoch;
+  }
+  function draftCurrent(view:RecoveryView):boolean {
+    const current=latestRecovery.current;
+    return !!current&&scopeCurrent(view)&&current.allowed&&current.record===view.record&&current.head===view.head&&
+      current.operation===view.operation&&current.fieldDrafts===view.fieldDrafts&&current.sourceDrafts===view.sourceDrafts&&
+      current.seoDraft===view.seoDraft&&!current.saving;
+  }
+  const recoveryRecordId=record?.id;
+  useEffect(()=>{
+    setRecoveryCopies(null);setRecoveryNotice('');recoveryAttempt.current=null;
+    const view=latestRecovery.current;
+    if(!view?.owner||!view.record||view.record.id!==id||!scopeCurrent(view))return;
+    let active=true;
+    void (async()=>{
+      try{
+        const copies=await new IndexedDbEditorDraftStore().listRecoveryCopies(view.owner!.id,id);
+        if(active&&scopeCurrent(view))setRecoveryCopies(copies);
+      }catch{
+        if(active&&scopeCurrent(view))setRecoveryNotice('Browser recovery storage could not be read. Cloud draft unchanged.');
+      }
+    })();
+    return ()=>{active=false;};
+  },[port,id,verifiedOwner?.id,verifiedOwner?.epoch,recoveryRecordId]);
+  function captureRecovery():RecoveryView|null {
+    const view=latestRecovery.current;
+    return view?.owner&&view.record?.id===id&&view.head&&view.allowed&&!view.saving&&scopeCurrent(view)?view:null;
+  }
+  async function refreshRecovery(view:RecoveryView,store:IndexedDbEditorDraftStore){
+    const copies=await store.listRecoveryCopies(view.owner!.id,view.id);
+    if(scopeCurrent(view))setRecoveryCopies(copies);
+  }
+  function installCloudDraft(fresh:PortfolioRecord){
+    if(!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
+    const next=createEditorHead(fresh.snapshot);
+    setRecord(fresh);setHead(next);setOperation('');
+    setSlot(orderedLayerGroups(fresh.snapshot).flatMap(group=>group.slots).find(item=>item.name==='title')?.key??'');
+    setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
+    setSourceReset(value=>value+1);setError('');setNotice('');
+  }
+  async function preserveRecovery(keepBoth:boolean){
+    const view=captureRecovery();
+    if(!view||!view.dirty||recoveryLock.current||!view.record||!view.head)return;
+    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
+    let acknowledged=false;
+    try{
+      const payload:EditorRecoveryPayload={formatVersion:1,cloudBaseRevision:view.record.revision,
+        localRevision:view.head.revision,cloudOperationId:view.operation||null,
+        snapshot:view.head.snapshot,fieldDrafts:view.fieldDrafts,sourceDrafts:view.sourceDrafts,seoDraft:view.seoDraft};
+      const signature=JSON.stringify(payload);
+      let attempt=recoveryAttempt.current;
+      if(!attempt||attempt.signature!==signature){
+        attempt={signature,copyId:crypto.randomUUID()};recoveryAttempt.current=attempt;
+      }
+      const store=new IndexedDbEditorDraftStore();
+      await store.saveRecoveryCopy(view.owner!.id,view.id,attempt.copyId,payload);
+      acknowledged=true;
+      if(!scopeCurrent(view))return;
+      setRecoveryNotice('Recovery copy saved on this browser only. Cloud draft unchanged.');
+      await refreshRecovery(view,store);
+      if(!keepBoth)return;
+      if(!draftCurrent(view)){setRecoveryNotice('Recovery copy saved. Working edits changed; no cloud draft was loaded.');return;}
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!scopeCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||!draftCurrent(view)){
+        setRecoveryNotice('Recovery copy saved. Latest cloud draft could not be safely loaded; current edits remain.');return;
+      }
+      installCloudDraft(fresh.data);
+      setRecoveryNotice('Both versions preserved: browser recovery copy and latest saved cloud draft. No cloud revision was overwritten.');
+    }catch{
+      if(scopeCurrent(view))setRecoveryNotice(acknowledged?
+        'Recovery copy saved, but the follow-up read failed. Working edits remain.':
+        'Recovery copy not confirmed. Keep the editor open; browser storage may be full or unavailable.');
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
+  async function inspectRecovery(copyId:string,action:'compare'|'open'|'export'){
+    const view=captureRecovery();
+    if(!view||recoveryLock.current||!view.record||!view.head||(action==='open'&&view.dirty))return;
+    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
+    try{
+      // No offline authentication bypass: all reopen/readback/export operations
+      // require a fresh owner-scoped cloud read before retrieving copy bytes.
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!scopeCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||!draftCurrent(view)){
+        setRecoveryNotice('Current cloud draft could not be verified. Recovery copy remains stored.');return;
+      }
+      const copy=await new IndexedDbEditorDraftStore().loadRecoveryCopy(view.owner!.id,view.id,copyId);
+      if(!scopeCurrent(view))return;
+      if(!copy||!draftCurrent(view)){setRecoveryNotice('Recovery copy unavailable or editor changed. Nothing was replaced.');return;}
+      const saved=fresh.data.snapshot,recovered=copy.payload;
+      if(action==='export'){
+        const url=URL.createObjectURL(new Blob([JSON.stringify(recovered,null,2)],{type:'application/json'}));
+        const link=document.createElement('a');
+        link.href=url;link.download='kadmeion-recovery-'+copy.copyId+'.json';
+        try{document.body.append(link);link.click();}
+        finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+        setRecoveryNotice('Recovery export requested. This private file may contain sensitive authored text.');return;
+      }
+      if(action==='compare'||recovered.cloudBaseRevision!==fresh.data.revision||view.dirty){
+        const paths=new Set([...Object.keys(saved.files),...Object.keys(recovered.snapshot.files)]);
+        const changedFiles=[...paths].filter(path=>saved.files[path]!==recovered.snapshot.files[path]).length;
+        const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots)]);
+        const stable=(value:unknown)=>JSON.stringify(value,(_key,v:unknown)=>
+          v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
+        const changedSlots=[...keys].filter(key=>stable(saved.slots[key])!==stable(recovered.snapshot.slots[key])).length;
+        setRecoveryNotice('Recovery base '+recovered.cloudBaseRevision+' · cloud revision '+fresh.data.revision+
+          ' · '+changedFiles+' differing files · '+changedSlots+' differing slots. '+
+          (recovered.cloudBaseRevision!==fresh.data.revision?'Cloud changed; copy retained separately. Export to recover manually.':'Copy remains separate; no cloud change.'));
+        return;
+      }
+      const next=restoreHistoricalSnapshot(createEditorHead(saved),recovered.snapshot,crypto.randomUUID());
+      const issues:Record<string,string>={};
+      for(const [key,value] of Object.entries(recovered.fieldDrafts)){
+        if(key.endsWith(':url')){const warning=ownerLinkError(value);if(warning)issues[key]=warning;}
+      }
+      installCloudDraft(fresh.data);
+      setHead(next);setOperation(crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
+      setFieldIssues(issues);setSeoDraft(recovered.seoDraft);setSourceDrafts(recovered.sourceDrafts);
+      if(Object.keys(recovered.sourceDrafts).length)setOpenedSource(true);
+      setRecoveryNotice('Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.');
+    }catch{
+      if(scopeCurrent(view))setRecoveryNotice('Recovery operation not completed. No working or cloud draft was replaced.');
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
+  async function removeRecovery(copyId:string){
+    const view=captureRecovery();
+    if(!view||recoveryLock.current||!window.confirm('Remove this browser recovery copy? This cannot be undone. Cloud draft is unaffected.'))return;
+    if(!scopeCurrent(view))return;
+    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
+    try{
+      const store=new IndexedDbEditorDraftStore();
+      await store.removeRecoveryCopy(view.owner!.id,view.id,copyId);
+      if(!scopeCurrent(view))return;
+      recoveryAttempt.current=null;
+      setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
+      await refreshRecovery(view,store);
+    }catch{if(scopeCurrent(view))setRecoveryNotice('Removal or catalogue refresh not confirmed. Reopen the editor to check.');}
+    finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
   // Browser navigation must not silently discard the owner's private, unsaved
   // transaction journal or uncommitted secondary fields. This guard never
   // persists draft text to a public origin or external service.
@@ -581,16 +774,51 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'} target="_blank" rel="noopener">Fullscreen saved preview</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/staging'}>Release workspace</a>
       </>}
-      <button type="button" className="ws-primary" disabled={!operation||saving||pendingFields||sourceDirty}
+      <button type="button" className="ws-primary" disabled={!operation||saving||recoveryBusy||pendingFields||sourceDirty}
         title={sourceDirty?'Apply or discard unapplied source before saving.':pendingFields?
           'Resolve or apply unfinished inspector fields before saving.':undefined}
         onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
-    {error && <button type="button" className="ws-secondary" onClick={() => {
+    {error && <button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={() => {
       setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
     }}>{operation || pendingFields || sourceDirty ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
+    {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
+      <summary>Browser recovery &amp; Keep Both</summary>
+      <p>Copies stay on this device, separate from the saved cloud draft. Browser storage can be cleared; export important work. Opening requires a verified owner and fresh cloud read.</p>
+      <div className="ws-actions">
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>void preserveRecovery(false)}>Save browser recovery copy</button>
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>void preserveRecovery(true)}>Keep Both and load latest cloud draft</button>
+      </div>
+      {recoveryBusy&&<p>Working with browser recovery storage…</p>}
+      {recoveryNotice&&<p role="status">{recoveryNotice}</p>}
+      {recoveryCopies===null?<p>Local recovery catalogue not confirmed.</p>:recoveryCopies.length===0?
+        <p>No browser recovery copies.</p>:<ul className="ws-editor-slots">{recoveryCopies.map(copy=>
+          <li key={copy.copyId}><strong>{new Date(copy.savedAt).toLocaleString()} · base revision {copy.cloudBaseRevision}</strong>
+            <div className="ws-actions">
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+                onClick={()=>void inspectRecovery(copy.copyId,'compare')}>Compare copy</button>
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty||copy.cloudBaseRevision!==record.revision}
+                onClick={()=>void inspectRecovery(copy.copyId,'open')}>Open recovery copy</button>
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+                onClick={()=>void inspectRecovery(copy.copyId,'export')}>Export recovery copy</button>
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+                onClick={()=>void removeRecovery(copy.copyId)}>Remove recovery copy</button>
+            </div>
+          </li>)}</ul>}
+    </details>}
+    {pendingFields&&<div className="ws-editor-safety">
+      <span>Unapplied inspector edits are held in this editor.</span>
+      <button type="button" className="ws-secondary" data-inspector-buffer-action="true"
+        disabled={saving} onMouseDown={event=>event.preventDefault()}
+        onClick={()=>{setFieldDrafts({});setFieldIssues({});setSeoDraft(null);}}>
+        Discard all unapplied inspector edits</button>
+    </div>}
     {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
     {!record && !error && <p role="status">Loading portfolio…</p>}
@@ -676,9 +904,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           </li>;})}</ul></details>
         </li>)}</ol>
         <div className="ws-actions">
-          <button type="button" className="ws-secondary" disabled={!head.undo.length || saving}
+          <button type="button" className="ws-secondary" disabled={!head.undo.length || saving || pendingFields || sourceDirty}
             onClick={() => apply({kind: 'UNDO'})}>Undo</button>
-          <button type="button" className="ws-secondary" disabled={!head.redo.length || saving}
+          <button type="button" className="ws-secondary" disabled={!head.redo.length || saving || pendingFields || sourceDirty}
             onClick={() => apply({kind: 'REDO'})}>Redo</button>
         </div></>}
       </aside>
@@ -708,19 +936,19 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           <p>This author-written information stays private until an independently verified release is explicitly published.</p>
           <label htmlFor="kd-seo-title">SEO page title</label>
           <input id="kd-seo-title" type="text" maxLength={120} value={seoValues.title}
-            aria-invalid={seoPending&&!seoTitleValid} onChange={event=>
-              setSeoDraft(previous=>({... (previous??savedSeo),title:event.target.value}))}/>
+            aria-invalid={seoPending&&!seoTitleValid} onChange={event=>changeSeoBuffer('title',event.target.value)}/>
           <p className="ws-field-hint">Required, 1–120 characters. No invented rankings or credentials.</p>
           <label htmlFor="kd-seo-description">SEO description</label>
           <textarea id="kd-seo-description" rows={5} maxLength={300} value={seoValues.description}
-            aria-invalid={seoPending&&!seoDescriptionValid} onChange={event=>
-              setSeoDraft(previous=>({... (previous??savedSeo),description:event.target.value}))}/>
+            aria-invalid={seoPending&&!seoDescriptionValid} onChange={event=>changeSeoBuffer('description',event.target.value)}/>
           <p className="ws-field-hint">Required, 1–300 characters. Not currently exposed to crawlers.</p>
           {seoPending&&(!seoTitleValid||!seoDescriptionValid)&&
             <p role="alert" className="ws-field-error">Enter a nonempty title and description within the limits.</p>}
           <button type="button" className="ws-secondary"
             disabled={saving||!seoPending||!seoTitleValid||!seoDescriptionValid}
             onClick={applySeoMetadata}>Apply SEO metadata to draft</button>
+          {seoPending&&<button type="button" className="ws-secondary" disabled={saving}
+            onClick={()=>setSeoDraft(null)}>Discard unapplied SEO metadata</button>}
           {seoPending&&<p role="status">Metadata edits are held in this private editor.
             Apply them and save the draft to create a new immutable revision.</p>}
           {!seoPending&&seoTitleValid&&seoDescriptionValid&&
@@ -738,7 +966,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
                 placeholder={active.componentId==='title-stacked@1'&&value===''?
                   'Example: Build things that make a difference. (not saved)':'Enter your own content'}
-                onChange={event => setFieldDrafts(drafts => ({...drafts, [primaryInputKey]: event.target.value}))}/></label>
+                onChange={event => changeFieldBuffer(primaryInputKey,event.target.value,savedPrimary)}/></label>
               <button type="button" className="ws-secondary" disabled={saving || value === savedPrimary}
                 onClick={() => {
                   if (apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})) {
@@ -758,34 +986,59 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                   const draft=Object.hasOwn(fieldDrafts,inputKey)?fieldDrafts[inputKey]!:stored;
                   const issue=fieldIssues[inputKey];
                   const id='kd-field-'+inputKey;
+                  const applySecondary=()=>{
+                    if(draft===stored){changeFieldBuffer(inputKey,stored,stored);return;}
+                    const warning=field==='url'?ownerLinkError(draft):null;
+                    if(warning){
+                      setFieldIssues(values=>({...values,[inputKey]:warning}));
+                      return;
+                    }
+                    if(apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
+                      changeFieldBuffer(inputKey,stored,stored);
+                    }
+                  };
                   return <div key={inputKey} className="ws-inspector-secondary-field">
-                    <label htmlFor={id}>{field}</label><input id={id}
+                    <label htmlFor={id}>{field}</label>
+                    {/* Place explicit actions before the input in keyboard order.
+                        Forward Tab still validates/applies as it did previously;
+                        Shift+Tab or a pointer can explicitly choose Discard. */}
+                    {draft!==stored&&<div className="ws-actions">
+                      <button type="button" className="ws-secondary" data-inspector-buffer-action={inputKey}
+                        disabled={saving} onMouseDown={event=>event.preventDefault()}
+                        onClick={()=>{document.getElementById(id)?.focus();applySecondary();}}>Apply {field} edit</button>
+                      <button type="button" className="ws-secondary" data-inspector-buffer-action={inputKey}
+                        disabled={saving} onMouseDown={event=>event.preventDefault()}
+                        onClick={()=>{document.getElementById(id)?.focus();changeFieldBuffer(inputKey,stored,stored);}}>Discard {field} edit</button>
+                    </div>}
+                    <input id={id}
                     type={field==='url'?'url':'text'} maxLength={field==='url'?2048:12000}
                     value={draft} aria-invalid={!!issue}
                     aria-describedby={issue?id+'-error':undefined}
-                    onChange={event=>{
-                      const changed=event.target.value;
-                      setFieldDrafts(values=>({...values,[inputKey]:changed}));
-                      setFieldIssues(values=>{const updated={...values};delete updated[inputKey];return updated;});
-                    }}
-                    onBlur={()=>{
-                      const warning=field==='url'?ownerLinkError(draft):null;
+                    onChange={event=>changeFieldBuffer(inputKey,event.target.value,stored)}
+                    onBlur={event=>{
+                      // Validation must run even when leaving for an explicit
+                      // buffer action. Such an action may defer a valid commit.
+                      const warning=draft!==stored&&field==='url'?ownerLinkError(draft):null;
                       if(warning){
                         setFieldIssues(values=>({...values,[inputKey]:warning}));
                         return;
                       }
-                      if(draft===stored){
-                        setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
-                      }else if(apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
-                        setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
+                      const action=event.relatedTarget instanceof HTMLElement?
+                        event.relatedTarget.dataset.inspectorBufferAction:undefined;
+                      if(action===inputKey||action==='true')return;
+                      applySecondary();
+                    }}
+                    onKeyDown={event=>{
+                      if(event.key==='Escape'&&draft!==stored){
+                        event.preventDefault();changeFieldBuffer(inputKey,stored,stored);
                       }
                     }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</div>;
                 })}
               {pendingFields&&<p className="ws-field-hint" role="status">
                 One or more content fields have unapplied edits. Apply or discard them before saving this draft.
               </p>}
-              <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts}
-                title={selectedSlotHasPendingDrafts ? 'Apply or discard edits in this slot before moving its component.' : undefined}
+              <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts || sourceDirty}
+                title={selectedSlotHasPendingDrafts || sourceDirty ? 'Apply or discard content/source edits before moving this component.' : undefined}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
             <button type="button" className="ws-secondary" disabled={saving}
@@ -800,10 +1053,13 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {openedAssets&&<div hidden={tool!=='Assets'}>
       <AssetList port={port} back={()=>setTool('Content')}/>
     </div>}
-    {openedSource&&<div hidden={tool!=='Source'}>
+    </>)}
+    {/* Author preview may hide the source panel, but must not unmount its
+        private buffers. Only an explicit reload/accepted restore resets it. */}
+    {head&&openedSource&&<div hidden={preview||tool!=='Source'}>
       <SourceInspector key={id+':'+attempt+':'+sourceReset} head={head} slot={slot} apply={apply}
-        onBufferDirtyChange={setSourceDirty} back={()=>setTool('Content')}/>
-    </div>}</>)}
+        buffers={sourceDrafts} setBuffers={setSourceDrafts} back={()=>setTool('Content')}/>
+    </div>}
   </section></>;
 }
 

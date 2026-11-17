@@ -363,7 +363,7 @@ export function WorkspaceApp() {
       release && authRef.current ? <PortfolioRelease port={authRef.current} id={release.id} mode={release.mode}/> :
       portfolioId && route.endsWith('/preview') && authRef.current
         ? <PortfolioPreviewModes port={authRef.current} id={portfolioId}/> :
-      portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId}/> :
+      portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId} verifiedOwner={{id:gate.owner.id,epoch:gate.epoch}}/> :
       route === '/app/portfolios/new' && authRef.current ? <PortfolioChooser port={authRef.current}/> :
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
       isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
