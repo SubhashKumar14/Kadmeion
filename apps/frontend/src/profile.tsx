@@ -18,6 +18,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [previewSaved,setPreviewSaved]=useState(false);
   const [projectionMode,setProjectionMode]=useState<'draft'|'preferences'>('draft');
   const [projectionFields,setProjectionFields]=useState<PreviewField[]|null>(null);
+  const [projectionSnapshot,setProjectionSnapshot]=useState<OwnerProfile|null>(null);
   const [projectionRequested,setProjectionRequested]=useState(false);
   const [projectionError,setProjectionError]=useState('');
   const [projectionLoading,setProjectionLoading]=useState(false);
@@ -25,24 +26,31 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const projectionPending=useRef(false);
   const projectionEpoch=useRef(port.getOwnerSessionEpoch());
   useEffect(()=>()=>{projectionAttempt.current++;projectionPending.current=false;},[port]);
+  function invalidateProjection(){
+    projectionAttempt.current++;projectionPending.current=false;setProjectionLoading(false);
+    setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
+  }
   async function readProjection(){
     if(projectionPending.current||operationPending.current)return;
     projectionPending.current=true;
     const attempt=++projectionAttempt.current,epoch=projectionEpoch.current;
     const current=()=>attempt===projectionAttempt.current&&epoch===port.getOwnerSessionEpoch();
-    setProjectionLoading(true);setProjectionFields(null);setProjectionRequested(false);setProjectionError('');
+    setProjectionLoading(true);setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
     try{
       if(!current())return;
-      const result=await port.ownerSharingPreferences();
+      const [result,profile]=await Promise.all([port.ownerSharingPreferences(),port.readOwnerProfile()]);
       if(!current())return;
-      if(result.error||!result.data){setProjectionError('Saved sharing preferences could not be verified. Retry to preview them.');return;}
+      if(result.error||!result.data||profile.error||!profile.data){
+        setProjectionError('Saved profile and sharing preferences could not both be verified. Retry to preview them.');return;
+      }
       const prefs=result.data;
+      setProjectionSnapshot(profile.data);
       setProjectionFields([...(prefs.shareDisplayName?['displayName' as const]:[]),
         ...(prefs.shareHeadline?['headline' as const]:[]),...(prefs.shareBio?['bio' as const]:[])]);
       setProjectionRequested(prefs.publicationRequested);
     }catch{if(current())setProjectionError('Saved sharing preferences are unavailable. Retry securely.');}
     finally{if(attempt===projectionAttempt.current){projectionPending.current=false;setProjectionLoading(false);
-      if(!current()){setProjectionFields(null);setProjectionRequested(false);setProjectionError('Your session changed. Reopen your profile.');}}}
+      if(!current()){setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('Your session changed. Reopen your profile.');}}}
   }
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
@@ -95,6 +103,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   function requestReload() {
     if (operationPending.current) return;
     operationPending.current = true;
+    invalidateProjection();
     setLoadingProfile(true);
     setError('');
     setNotice('');
@@ -132,6 +141,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     if (!saved || !draft || operationPending.current || needsReload) return;
     if (!draft.displayName.trim()) { setError('Enter a display name before saving.'); setPanel('Profile'); return; }
     operationPending.current = true;
+    invalidateProjection();
     setBusy(true);
     setError('');
     setNotice('');
@@ -162,7 +172,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     saved.bio !== draft.bio || saved.skills.join('\u0000') !== draft.skills.join('\u0000')
   ));
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
-  const preview=projectionMode==='preferences'||previewSaved?saved:draft;
+  const preview=projectionMode==='preferences'?projectionSnapshot:previewSaved?saved:draft;
   const previewSelection=projectionMode==='preferences'?(projectionFields??[]):visible;
 
   return <section aria-labelledby="profile-title" className="ws-profile ws-owner-page">
@@ -276,7 +286,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
               <button type="button" className="ws-secondary" disabled={!visible.length} onClick={()=>setVisible([])}>Clear preview selection</button>
               </>}
             </fieldset>
-            <p>{projectionMode==='preferences'?'Owner-only approximation using last saved profile and verified sharing preferences.':previewSaved?'Preview of last confirmed private profile.':'Preview of current unsaved or saved draft.'} This stays in your workspace; it does not publish.</p>
+            <p>{projectionMode==='preferences'?'Owner-only approximation using freshly read saved profile fields and sharing preferences, not an atomic public projection.':previewSaved?'Preview of last confirmed private profile.':'Preview of current unsaved or saved draft.'} This stays in your workspace; it does not publish.</p>
           </aside>
         </div>
       </div>}

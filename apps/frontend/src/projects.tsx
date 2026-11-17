@@ -798,6 +798,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
   canStart:()=>boolean;onPending:(value:boolean)=>void;onObserved:(revision:number)=>void;onSaved:(from:number,to:number)=>void;
 }){
   const [selection,setSelection]=useState<ThumbnailSelection|null>(null);
+  const [selectionVerified,setSelectionVerified]=useState(false);
   const [preview,setPreview]=useState<PreviewBytes|null>(null);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
@@ -817,7 +818,8 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
     setFile(null);setAlt('');setPendingOp(null);setConfirmDetach(false);
     if(input.current)input.current.value='';
   }
-  function clearPrivate(){clearPreview();setSelection(null);clearInputs();setNotice('');}
+  function clearPrivate(){clearPreview();setSelection(null);setSelectionVerified(false);clearInputs();setNotice('');}
+  function denied(message:string|undefined){return !!message&&/access was denied|owner session changed|session or project is unavailable/i.test(message);}
   async function renderSelection(api:ThumbnailApi,value:ThumbnailSelection,id:number){
     if(!current(id))return;
     if(!value.asset){clearPreview();return;}
@@ -825,6 +827,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
     const bytes=await api.readOwnerProjectThumbnailImage(projectId,asset.id,epoch.current);
     if(!current(id))return;
     if(bytes.error||!verifiedBlob(bytes.data,asset)){
+      if(denied(bytes.error?.message)){clearPreview();setSelectionVerified(false);}
       setError('The saved cover was read, but its private image bytes could not be verified. Retry the preview.');return;
     }
     const url=URL.createObjectURL(bytes.data);
@@ -842,16 +845,18 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
   async function refresh(initial=false){
     if(flight.current||(!initial&&!canStart()))return;
     const api=thumbnailApi(port);if(!api)return;
-    flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');setSelectionVerified(false);
     const id=++attempt.current;
     try{
       if(!current(id))return;
       const result=await api.readOwnerProjectThumbnail(projectId,epoch.current);
       if(!current(id))return;
       if(result.error||!verifiedSelection(result.data,projectId)||result.data.revision<knownRevision){
-        setError('Current cover could not be verified. The previous preview and input were retained.');return;
+        if(denied(result.error?.message)){clearPreview();setSelection(null);setError('Private cover access was denied. No current preview is displayed.');}
+        else setError('Current cover could not be verified. The previous preview and input were retained.');
+        return;
       }
-      setSelection(result.data);onObserved(result.data.revision);
+      setSelection(result.data);setSelectionVerified(true);onObserved(result.data.revision);
       await renderSelection(api,result.data,id);
     }catch{if(current(id))setError('Private cover read failed. Retry without uploading again.');}
     finally{if(id===attempt.current){flight.current=false;setBusy(false);onPending(false);
@@ -863,18 +868,22 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
     return ()=>{attempt.current++;flight.current=false;onPending(false);
       if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);currentUrl.current=null;};
   },[port,projectId]);
-  async function change(detach=false){
+  async function change(detach=false,reapply=false){
     if(flight.current||!canStart())return;
     const api=thumbnailApi(port);if(!api||!selection)return;
     if(epoch.current!==port.getOwnerSessionEpoch()){clearPrivate();setError('Your owner session changed. Reopen this project.');return;}
-    if(!pendingOp&&selection.revision<knownRevision){setError('Refresh the current cover before changing it.');return;}
+    if(!pendingOp&&(!selectionVerified||selection.revision<knownRevision)){setError('Refresh the current cover before changing it.');return;}
     if(!pendingOp&&!detach&&(!file||!imageTypes.includes(file.type)||file.size<12||file.size>5242880||!alt.trim()||alt.length>500)){
       setError('Choose a PNG, JPEG or WebP image up to 5 MB and enter descriptive alt text.');return;
     }
     if(!pendingOp&&detach&&(!selection.asset||!confirmDetach))return;
-    const op:CoverOperation=pendingOp??{base:selection.revision,uploadId:crypto.randomUUID(),attachId:crypto.randomUUID(),
-      file:detach?null:file,alt:alt.trim(),...(detach?{assetId:null}: {})};
-    setPendingOp(op);flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    if(reapply&&(!pendingOp||typeof pendingOp.assetId!=='string'||!selectionVerified||
+      selection.revision<=pendingOp.base||selection.revision<knownRevision||selection.asset?.id===pendingOp.assetId))return;
+    const op:CoverOperation=reapply&&pendingOp
+      ?{...pendingOp,base:selection.revision,attachId:crypto.randomUUID()}
+      :pendingOp??{base:selection.revision,uploadId:crypto.randomUUID(),attachId:crypto.randomUUID(),
+        file:detach?null:file,alt:alt.trim(),...(detach?{assetId:null}: {})};
+    setPendingOp(op);flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');setSelectionVerified(false);
     const id=++attempt.current;
     try{
       if(!current(id))return;
@@ -885,6 +894,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
         const value=registered.data;
         if(registered.error||!value||value.projectId!==projectId||value.mime!==op.file.type||
            value.size!==op.file.size||value.altText!==op.alt||value.publicDeliveryAllowed!==false||value.verifiedMetadata!==true){
+          if(denied(registered.error?.message)){clearPreview();setSelection(null);}
           setError('Private image registration could not be confirmed. Retry the same upload operation.');return;
         }
         assetId=value.id;setPendingOp({...op,assetId});
@@ -895,9 +905,11 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
       if(!current(id))return;
       if(result.error||!verifiedSelection(result.data,projectId)||result.data.revision!==op.base+1||
          (result.data.asset?.id??null)!==assetId){
-        setError('Cover change was not confirmed. The last verified preview remains. Retry the same change, or refresh and discard the pending operation.');return;
+        if(denied(result.error?.message)){clearPreview();setSelection(null);setError('Private cover access was denied. Refresh before another attempt.');}
+        else setError('Cover change was not confirmed. The last verified preview remains. Retry the same change, or refresh the current revision.');
+        return;
       }
-      setSelection(result.data);onSaved(op.base,result.data.revision);clearInputs();
+      setSelection(result.data);setSelectionVerified(true);onSaved(op.base,result.data.revision);clearInputs();
       setNotice(assetId?'Private cover selection saved. Checking its image bytes.':'Private cover removed. Folder cover restored.');
       await renderSelection(api,result.data,id);
       if(current(id)&&assetId)setNotice('Private cover selection saved. No public image was created.');
@@ -905,13 +917,16 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
     finally{if(id===attempt.current){flight.current=false;setBusy(false);onPending(false);
       if(!current(id)){clearPrivate();setError('Your owner session changed. Reopen this project.');}}}
   }
-  const currentPreview=!!preview&&preview.assetId===selection?.asset?.id;
+  const currentPreview=selectionVerified&&!!preview&&preview.assetId===selection?.asset?.id;
+  const refreshedPending=!!pendingOp&&selectionVerified&&!!selection&&selection.revision>=knownRevision&&selection.revision>pendingOp.base;
+  const desiredAlreadySaved=refreshedPending&&pendingOp!.assetId!==undefined&&
+    (selection!.asset?.id??null)===pendingOp!.assetId;
   return <section className="ws-project-fields" aria-labelledby="attached-cover-title">
     <h2 id="attached-cover-title">Project thumbnail</h2>
     <div className="ws-profile-card">
       {preview?<><img src={preview.url} alt={preview.alt} style={{display:'block',width:'100%',maxHeight:320,objectFit:'contain'}}
         onError={()=>{clearPreview();setError('The private image could not be displayed. Retry the preview.');}}/>
-        <p>{currentPreview?'Last verified private cover':'Previous verified cover – current bytes are unavailable'}</p></>
+        <p>{currentPreview?'Last verified private cover':'Previous verified cover – current selection or bytes are unconfirmed'}</p></>
         :<><span className="ws-preview-identity" aria-hidden="true"><Icon name="folder" size={22}/></span><strong>Folder cover</strong></>}
       {selection?.asset&&<p>Saved image description: {selection.asset.altText}</p>}
       <p>Manual private image only. Website capture and public delivery are unavailable.</p>
@@ -924,16 +939,23 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
         onChange={event=>{if(!flight.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');}}}/></label>
       <label>Image alt text<textarea value={alt} rows={2} maxLength={500}
         onChange={event=>{if(!flight.current)setAlt(event.target.value);}}/></label>
-      <button type="button" className="ws-primary" disabled={!selection||selection.revision<knownRevision||!file||!alt.trim()}
+      <button type="button" className="ws-primary" disabled={!selection||!selectionVerified||selection.revision<knownRevision||!file||!alt.trim()}
         onClick={()=>void change()}>{selection?.asset?'Replace thumbnail':'Upload and attach thumbnail'}</button>
       {selection?.asset&&<><label className="ws-profile-check"><input type="checkbox" checked={confirmDetach}
         onChange={event=>setConfirmDetach(event.target.checked)}/> Confirm remove saved cover</label>
-        <button type="button" className="ws-secondary" disabled={!confirmDetach||selection.revision<knownRevision}
+        <button type="button" className="ws-secondary" disabled={!confirmDetach||!selectionVerified||selection.revision<knownRevision}
           onClick={()=>void change(true)}>Remove thumbnail</button></>}
     </fieldset>
     {selection&&selection.revision<knownRevision&&<p>Another revision is known. Refresh the current cover before a new change.</p>}
     {pendingOp&&<div className="ws-actions">
-      <button type="button" className="ws-secondary" disabled={busy||otherPending} onClick={()=>void change()}>Retry same cover operation</button>
+      <button type="button" className="ws-secondary" disabled={busy||otherPending||!selection} onClick={()=>void change()}>Retry same cover operation</button>
+      {desiredAlreadySaved&&<button type="button" className="ws-secondary" disabled={busy||otherPending}
+        onClick={()=>{if(canStart()&&!flight.current){clearInputs();setNotice('The requested cover is confirmed in the latest saved selection. No additional write was made.');}}}>Accept current saved cover</button>}
+      {refreshedPending&&!desiredAlreadySaved&&typeof pendingOp.assetId==='string'&&<>
+        <p>Another revision is saved. Attach the already registered image to the verified latest revision only if you want to replace its cover.</p>
+        <button type="button" className="ws-secondary" disabled={busy||otherPending}
+          onClick={()=>void change(false,true)}>Attach registered image to latest revision</button>
+      </>}
       <button type="button" className="ws-secondary" disabled={busy||otherPending} onClick={()=>{
         if(!canStart()||flight.current)return;
         // Discard only the local operation; no server deletion or rollback.
