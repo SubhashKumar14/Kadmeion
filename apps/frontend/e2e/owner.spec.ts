@@ -1623,3 +1623,145 @@ test('S6 S3 candidate paginates 111 owner portfolios with truthful partial searc
   await page.getByLabel('Find a portfolio').fill(deepTitle);
   await expect(page.getByRole('link',{name:deepTitle,exact:true})).toBeVisible();
 });
+
+test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, replacement and detach', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Disposable local Supabase only.');
+  test.setTimeout(150_000);
+  const owner=await localUser('C01 thumbnail owner');
+  const foreign=await localUser('C01 other owner');
+  const title='B16 C01 private fixture';
+  const firstAlt='C01 original synthetic cover', replacementAlt='C01 replacement synthetic cover';
+  const firstBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project'}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill(title);
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  await page.getByRole('link',{name:title}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const projectPath=new URL(page.url()).pathname;
+  const cover=page.getByRole('region',{name:'Project thumbnail'});
+  const revision=page.getByRole('complementary',{name:'Saved project preview'}).getByText(/SAVED DRAFT · REVISION \d+/);
+  const readRevision=async()=>Number((await revision.innerText()).match(/\d+$/)?.[0]);
+  const expectImage=async(alt:string,bytes:Buffer)=>{
+    const image=cover.getByRole('img',{name:alt,exact:true});
+    await expect(image).toBeVisible();
+    await expect.poll(async()=>image.evaluate(async(element,expected)=>{
+      const img=element as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.naturalHeight||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const actual=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&response.headers.get('content-type')==='image/png'&&
+        actual.length===expected.length&&actual.every((byte,i)=>byte===expected[i]);
+    },Array.from(bytes))).toBe(true);
+    await expect(cover.getByText('Saved image description: '+alt,{exact:true})).toBeVisible();
+    await expect(cover.getByText('Last verified private cover',{exact:true})).toBeVisible();
+  };
+  const choose=async(name:string,bytes:Buffer,alt:string)=>{
+    await cover.getByLabel(/Image file/).setInputFiles({name,mimeType:'image/png',buffer:bytes});
+    await cover.getByLabel('Image alt text').fill(alt);
+  };
+  await expect(cover.getByText('Folder cover',{exact:true})).toBeVisible();
+  await choose('first.png',firstBytes,firstAlt);
+  const attach=cover.getByRole('button',{name:'Upload and attach thumbnail'});
+  await expect(attach).toBeEnabled(); // Required capability: no absent-API skip.
+  const base=await readRevision();
+  expect(Number.isSafeInteger(base)).toBe(true);
+  let uploads=0,registrations=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin!==origin||request.method()!=='POST')return;
+    if(url.pathname.startsWith('/storage/v1/object/kadmeion-private-assets/'))uploads++;
+    if(url.pathname==='/rest/v1/rpc/register_private_project_image')registrations++;
+  });
+  // Only synthetic operation fields held in memory; never output payload, URL, headers or IDs.
+  type AttachInput={p_project_id:string;p_base_revision:number;p_asset_id:string|null;p_operation_id:string};
+  const operations:AttachInput[]=[];
+  const statuses:number[]=[];
+  let dropFirst=true;
+  await page.route('**/rest/v1/rpc/set_private_project_thumbnail',async route=>{
+    const data=route.request().postDataJSON() as AttachInput;
+    operations.push(data);
+    const response=await route.fetch();
+    try{
+      statuses.push(response.status());
+      if(dropFirst&&response.ok()){dropFirst=false;await route.abort('failed');}
+      else await route.fulfill({response});
+    }finally{await response.dispose();}
+  });
+  await attach.click();
+  await expect(cover.getByRole('alert')).toContainText(/Cover change was not confirmed|Private cover change could not be verified/);
+  expect(statuses[0]>=200&&statuses[0]<300).toBe(true);
+  expect(uploads).toBe(1);expect(registrations).toBe(1);
+  await cover.getByRole('button',{name:'Retry same cover operation'}).click();
+  await expectImage(firstAlt,firstBytes);
+  expect(operations.length).toBe(2);
+  expect(JSON.stringify(operations[0])===JSON.stringify(operations[1])).toBe(true);
+  expect(uploads).toBe(1);expect(registrations).toBe(1);
+  await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+1));
+  await page.reload();
+  await expectImage(firstAlt,firstBytes);
+  await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+1));
+
+  // Distinct bytes generated in browser (no third-party network or synthetic server success).
+  const replacementBytes=Buffer.from(await page.evaluate(()=>{
+    const canvas=document.createElement('canvas');canvas.width=2;canvas.height=2;
+    const ctx=canvas.getContext('2d')!;ctx.fillStyle='#31506b';ctx.fillRect(0,0,2,2);
+    return canvas.toDataURL('image/png').split(',')[1];
+  }),'base64');
+  const other=await page.context().newPage();
+  try{
+    await other.goto(projectPath);
+    await expect(other.getByRole('region',{name:'Project thumbnail'}).getByRole('img',{name:firstAlt})).toBeVisible();
+    await other.getByLabel('Short description').fill('C01 concurrent saved summary');
+    await other.getByRole('button',{name:'Save changes'}).click();
+    await expect(other.getByRole('status').filter({hasText:'Private draft saved.'})).toBeVisible();
+    await expect(other.getByRole('complementary',{name:'Saved project preview'}).getByText('SAVED DRAFT · REVISION '+(base+2))).toBeVisible();
+    await choose('replacement.png',replacementBytes,replacementAlt);
+    await cover.getByRole('button',{name:'Replace thumbnail'}).click();
+    await expect(cover.getByRole('alert')).toContainText('Cover change was not confirmed.');
+    expect(statuses[2]).toBe(409);
+    await expect(cover.getByRole('img',{name:firstAlt})).toBeVisible();
+    await expect(cover.getByRole('img',{name:replacementAlt})).toHaveCount(0);
+    expect(uploads).toBe(2);expect(registrations).toBe(2);
+    await cover.getByRole('button',{name:'Refresh private cover'}).click();
+    const reapply=cover.getByRole('button',{name:'Attach registered image to latest revision'});
+    await expect(reapply).toBeEnabled();
+    await reapply.click();
+    await expectImage(replacementAlt,replacementBytes);
+    expect(operations.length).toBe(4);
+    expect(operations[2].p_asset_id===operations[3].p_asset_id&&
+      operations[2].p_operation_id!==operations[3].p_operation_id&&
+      operations[3].p_base_revision===operations[2].p_base_revision+1).toBe(true);
+    expect(uploads).toBe(2);expect(registrations).toBe(2);
+    await page.reload();
+    await expectImage(replacementAlt,replacementBytes);
+    await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+3));
+    await expect(page.getByLabel('Short description')).toHaveValue('C01 concurrent saved summary');
+    await page.getByRole('link',{name:'Back to project library'}).click();
+    const cardImage=page.getByRole('img',{name:replacementAlt,exact:true});
+    await expect(cardImage).toBeVisible();
+    await page.getByRole('link',{name:title}).click();
+    await expectImage(replacementAlt,replacementBytes);
+    await cover.getByLabel('Confirm remove saved cover').check();
+    await cover.getByRole('button',{name:'Remove thumbnail'}).click();
+    await expect(cover.getByText('Private cover removed. Folder cover restored.',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(cover.getByText('Folder cover',{exact:true})).toBeVisible();
+    await expect(cover.getByRole('img')).toHaveCount(0);
+    await expect(revision).toHaveText('SAVED DRAFT · REVISION '+(base+4));
+    expect(operations.length).toBe(5);
+    expect(operations[4].p_asset_id===null).toBe(true);
+    expect(uploads).toBe(2);expect(registrations).toBe(2);
+  }finally{await other.close();}
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto(projectPath);
+  await expect(page.getByRole('alert')).toContainText('Project unavailable.');
+  await expect(page.getByRole('region',{name:'Project thumbnail'})).toHaveCount(0);
+  await expect(page.getByText(firstAlt,{exact:true})).toHaveCount(0);
+  await expect(page.getByText(replacementAlt,{exact:true})).toHaveCount(0);
+});
