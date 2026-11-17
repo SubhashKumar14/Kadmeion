@@ -934,8 +934,6 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!view||!view.head||!view.record||recoveryLock.current||!folderSupported||
        pendingFields||sourceDirty||((action==='compare'||action==='restore')&&view.dirty))return;
     if(action==='restore'&&!previewed)return;
-    if(action==='backup'&&!window.confirm('Create a new private folder backup of the applied working snapshot? Choose a new dedicated folder. No cloud save, raw buffers, image bytes or editor undo history will be included.'))return;
-    if(action==='compare'&&!window.confirm('Choose an existing backup folder for this owner and portfolio. A verified interrupted journal may be repaired; no cloud revision will be changed.'))return;
     if(!draftCurrent(view))return;
     recoveryLock.current=true;setRecoveryBusy(true);setFolderNotice('');
     if(action!=='restore')setFolderComparison(null);
@@ -943,6 +941,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       // Invoke the picker directly in the user action, before any await of
       // network/other APIs; browsers require transient user activation.
       const directory=action==='restore'?previewed!.directory:await folderPicker!.call(window,{mode:'readwrite'});
+      if(!draftCurrent(view))return;
+      if(action==='backup'&&!window.confirm('Create a new private folder backup of the applied working snapshot? No cloud save, raw buffers, image bytes or editor undo history will be included.')){
+        setFolderNotice('Folder backup cancelled. Draft unchanged.');return;
+      }
+      if(action==='compare'&&!window.confirm('Inspect this folder for an existing backup? A verified interrupted journal may be repaired; no cloud revision will be changed.')){
+        setFolderNotice('Folder comparison cancelled. Draft unchanged.');return;
+      }
       if(!draftCurrent(view))return;
       const store=new JournaledEditorFolderStore(directory,view.owner!.id,view.id,undefined,()=>draftCurrent(view));
       if(action==='backup'){
@@ -1150,7 +1155,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     </details>}
     {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
       <summary>Private folder backup &amp; recovery</summary>
-      <p>Folder backups contain the applied managed and owned source snapshot, slot data and stashes, not unpublished inspector buffers, media files, credentials or cloud history. Keep backups private. Folder writes use a recovery journal, not filesystem-wide atomicity.</p>
+      <p>Folder backups contain the applied managed and owned source snapshot, slot data and stashes, not unapplied inspector buffers, media files, account-session data or cloud history. Authored code and text may themselves contain sensitive information; keep backups private. Folder writes use a recovery journal, not filesystem-wide atomicity.</p>
       {!folderSupported?<p role="status">Folder access requires a supported secure desktop browser and Web Locks. Use browser recovery and the private working recovery export instead.</p>:<>
         <p>Choose a new dedicated folder for each backup. An existing backup is never silently overwritten. To restore, compare it against the currently verified cloud draft first.</p>
         <div className="ws-actions">

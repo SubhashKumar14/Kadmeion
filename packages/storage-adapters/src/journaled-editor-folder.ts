@@ -189,9 +189,11 @@ export class JournaledEditorFolderStore {
     const oldFiles=oldHead?.head.snapshot.files??{},newFiles=newHead.head.snapshot.files;
     const expected=Object.keys({...oldFiles,...newFiles}).filter(p=>oldFiles[p]!==newFiles[p]).sort();
     requireSafe(expected.length===journal.changes.length &&
-      expected.every((p,i)=>journal.changes[i].path===p&&
-        journal.changes[i].before===(oldFiles[p]??null)&&
-        journal.changes[i].after===(newFiles[p]??null)),'RECOVERY_REQUIRED');
+      expected.every((p,i)=>{
+        const change=journal.changes[i];
+        return !!change&&change.path===p&&change.before===(oldFiles[p]??null)&&
+          change.after===(newFiles[p]??null);
+      }),'RECOVERY_REQUIRED');
     const headOnDisk=await this.read(META+'/'+HEAD);
     if(headOnDisk===journal.next){
       await this.actualMatches(newFiles);
