@@ -109,65 +109,125 @@ function optionalServedDigest(headers:Headers,sha:string):boolean {
   return claimed===null||claimed===sha;
 }
 
-async function bodylessHead(response:Response):Promise<boolean> {
+const DELIVERY_TIMEOUT_MS=5_000;
+
+// Cancelling a tee branch or an injected transport can return a promise that
+// never settles. Cleanup must never gate a verification or recovery receipt.
+function cancelQuietly(body:{cancel:()=>Promise<void>}|null|undefined):void {
+  try{void body?.cancel().catch(()=>{});}catch{/* best-effort cleanup only */}
+}
+
+// A single deadline covers fetch AND body consumption, including injected
+// transports that ignore AbortSignal. Late responses are discarded.
+async function sampleDelivery<T>(http:typeof fetch,route:URL,method:'GET'|'HEAD',
+  consume:(response:Response,signal:AbortSignal)=>Promise<T>):Promise<T>{
+  const controller=new AbortController();
+  let response:Response|undefined;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const deadline=new Promise<never>((_resolve,reject)=>{
+    timer=setTimeout(()=>{
+      reject(new Error('Release delivery sample timed out.'));
+      controller.abort();
+    },DELIVERY_TIMEOUT_MS);
+  });
+  try{
+    const sample=(async()=>{
+      const received=await http(route,{method,credentials:'omit',cache:'no-store',redirect:'error',
+        signal:controller.signal});
+      response=received;
+      if(controller.signal.aborted){
+        cancelQuietly(received.body);
+        throw new Error('Release delivery sample expired.');
+      }
+      return consume(received,controller.signal);
+    })();
+    return await Promise.race([sample,deadline]);
+  }finally{
+    if(timer!==undefined)clearTimeout(timer);
+    controller.abort();
+    if(response?.body&&!response.body.locked)cancelQuietly(response.body);
+  }
+}
+
+async function bodylessHead(response:Response,signal:AbortSignal):Promise<boolean> {
+  if(signal.aborted)return false;
   if(!response.body)return true;
   const reader=response.body.getReader();
+  const stop=()=>cancelQuietly(reader);
+  signal.addEventListener('abort',stop,{once:true});
   try{
     // Do not confuse an initial empty chunk with end of stream.
     for(let i=0;i<16;i++){
       const part=await reader.read();
+      if(signal.aborted)return false;
       if(part.done)return true;
       if(!(part.value instanceof Uint8Array)||part.value.byteLength!==0)return false;
     }
     return false;
-  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-}
-
-function deliveryFetch(http:typeof fetch,route:URL,method:'GET'|'HEAD'):Promise<Response>{
-  return http(route,{method,credentials:'omit',cache:'no-store',redirect:'error',
-    signal:AbortSignal.timeout(5000)});
-}
-
-async function verifyHead(http:typeof fetch,route:URL,get:Response,
-  sha:string,indexable:boolean,media=false):Promise<boolean>{
-  const head=await deliveryFetch(http,route,'HEAD');
-  if(!safeDeliveryResponse(head,route,indexable,media)||
-      !sameDeliveryPolicy(get.headers,head.headers)||!optionalServedDigest(head.headers,sha)){
-    await head.body?.cancel();
-    return false;
+  }finally{
+    signal.removeEventListener('abort',stop);
+    stop();
+    reader.releaseLock();
   }
-  return bodylessHead(head);
+}
+
+async function verifyHead(http:typeof fetch,route:URL,get:Headers,
+  sha:string,indexable:boolean,media=false):Promise<boolean>{
+  return sampleDelivery(http,route,'HEAD',async(head,signal)=>{
+    if(!safeDeliveryResponse(head,route,indexable,media)||
+        !sameDeliveryPolicy(get,head.headers)||!optionalServedDigest(head.headers,sha))return false;
+    return bodylessHead(head,signal);
+  });
 }
 
 const DELIVERY_IMAGE=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
 
-async function readBounded(response:Response, limit:number):Promise<Buffer|null> {
+async function readBounded(response:Response,limit:number,signal:AbortSignal):Promise<Buffer|null> {
+  if(signal.aborted)return null;
   const reader=response.body?.getReader();
-  if(!reader) return null;
+  if(!reader)return null;
+  const stop=()=>cancelQuietly(reader);
+  signal.addEventListener('abort',stop,{once:true});
   const chunks:Uint8Array[]=[];
-  let size=0;
+  let size=0,empty=0;
   try{
     for(;;){
       const chunk=await reader.read();
-      if(chunk.done) break;
+      if(signal.aborted)return null;
+      if(chunk.done)break;
+      if(!(chunk.value instanceof Uint8Array))return null;
+      if(chunk.value.byteLength===0){
+        if(++empty>=16)return null;
+        continue;
+      }
+      empty=0;
       size+=chunk.value.byteLength;
-      if(size>limit){await reader.cancel();return null;}
+      if(size>limit)return null;
       chunks.push(chunk.value);
     }
-    return size ? Buffer.concat(chunks) : null;
-  }finally{reader.releaseLock();}
+    return size?Buffer.concat(chunks):null;
+  }finally{
+    signal.removeEventListener('abort',stop);
+    stop();
+    reader.releaseLock();
+  }
 }
 
-async function digestHtml(response:Response, indexable:boolean, route:URL,
-  host:URL, http:typeof fetch, expectedSha:string):Promise<string|null> {
-  if(!safeDeliveryResponse(response,route,indexable)){
-    await response.body?.cancel();
-    return null;
-  }
-  const bytes=await readBounded(response,MAX_HTML_BYTES);
-  if(!bytes)return null;
+async function readGet(http:typeof fetch,route:URL,indexable:boolean,media=false){
+  return sampleDelivery(http,route,'GET',async(response,signal)=>{
+    if(!safeDeliveryResponse(response,route,indexable,media))return null;
+    const bytes=await readBounded(response,media?4_000_000:MAX_HTML_BYTES,signal);
+    return bytes?{bytes,headers:new Headers(response.headers)}:null;
+  });
+}
+
+async function digestHtml(indexable:boolean,route:URL,
+  host:URL,http:typeof fetch,expectedSha:string):Promise<string|null> {
+  const get=await readGet(http,route,indexable);
+  if(!get)return null;
+  const {bytes,headers}=get;
   const servedSha=createHash('sha256').update(bytes).digest('hex');
-  if(!optionalServedDigest(response.headers,servedSha))return null;
+  if(!optionalServedDigest(headers,servedSha))return null;
   let html=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
   if(indexable){
     const marker='<meta name="robots" content="index,follow">';
@@ -201,18 +261,13 @@ async function digestHtml(response:Response, indexable:boolean, route:URL,
   const digest=createHash('sha256').update(frozen).digest('hex');
   if(digest!==expectedSha)return null;
   // Verify the canonical representation before sampling any direct assets.
-  if(!await verifyHead(http,route,response,servedSha,indexable))return null;
+  if(!await verifyHead(http,route,headers,servedSha,indexable))return null;
   for(const [src,sha] of media){
     const assetRoute=new URL(src.replaceAll('&amp;','&'),host);
-    const png=await deliveryFetch(http,assetRoute,'GET');
-    if(!safeDeliveryResponse(png,assetRoute,false,true)){
-      await png.body?.cancel();
-      return null;
-    }
-    const image=await readBounded(png,4_000_000);
-    if(!image||createHash('sha256').update(image).digest('hex')!==sha||
+    const png=await readGet(http,assetRoute,false,true);
+    if(!png||createHash('sha256').update(png.bytes).digest('hex')!==sha||
        !optionalServedDigest(png.headers,sha))return null;
-    if(!await verifyHead(http,assetRoute,png,sha,false,true))return null;
+    if(!await verifyHead(http,assetRoute,png.headers,sha,false,true))return null;
   }
   return digest;
 }
@@ -238,8 +293,7 @@ export async function verifyActivatedUnlistedRelease(
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
   const checkHost = async(indexable:boolean):Promise<string|null>=>{
     try {
-      return await digestHtml(await deliveryFetch(http,route,'GET'),
-        indexable,route,host,http,htmlSha256);
+      return await digestHtml(indexable,route,host,http,htmlSha256);
     }catch{return null;}
   };
   // A newly activated PUBLIC route serves a noindex canary UNTIL the

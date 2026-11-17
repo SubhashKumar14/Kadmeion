@@ -82,6 +82,54 @@ export type OwnerProject = {
   repositoryUrl: string | null; liveUrl: string | null; revision: number; updatedAt: string;
 };
 export type OwnerPrivateImageMime = 'image/png'|'image/jpeg'|'image/webp';
+export type OwnerMediaErrorCode = 'VALIDATION'|'DENIED'|'AUTH_CHANGED'|'CONFLICT'|
+  'LIMIT_EXCEEDED'|'RATE_LIMITED'|'PROVIDER_UNAVAILABLE'|'INTEGRITY'|'ATTESTATION_UNAVAILABLE';
+export type OwnerMediaFailure = AuthFailure & {code:OwnerMediaErrorCode};
+export type OwnerMediaOutcome<T> = {data:T;error:OwnerMediaFailure|null};
+/** A locally computed SHA is useful for private preview, never a publication pin. */
+export type OwnerPrivateAssetRead = Readonly<{
+  asset:OwnerProjectThumbnailAsset;bytes:Blob;
+  integrity:Readonly<{status:'OWNER_BYTES_VERIFIED';computedSha256:string}>;
+  serverAttestation:'NOT_VERIFIED';publicDeliveryAllowed:false;
+}>;
+export type OwnerPrivateAssetAttestationReceipt=Readonly<{
+  assetId:string;status:'WRITE_ONCE_ATTESTED';publicPublishingAllowed:false;accountDeletionAllowed:false;
+}>;
+class OwnerMediaError extends Error {
+  constructor(code:OwnerMediaErrorCode,message:string,status?:number){
+    super(message);this.code=code;this.status=status;
+  }
+  readonly code:OwnerMediaErrorCode;
+  readonly status:number|undefined;
+}
+function mediaError(code:OwnerMediaErrorCode,message:string,status?:number):OwnerMediaError {
+  return new OwnerMediaError(code,message,status);
+}
+function mediaHttpError(status:number,payload:unknown,attestation=false,storage=false):OwnerMediaError {
+  const row=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload as Json:null;
+  const code=row?.code;
+  // Older Storage gateways may wrap an actual denial/conflict/limit in HTTP 400.
+  // Interpret only allowlisted codes on the Storage endpoint, never raw provider text.
+  const legacy=storage&&status===400?String(row?.statusCode??''):'';
+  const storageCode=storage&&status===400?String(code??''):'';
+  // PostgREST serialization errors need not use HTTP 409.
+  if(status===401||status===403||code==='42501'||(!attestation&&status===404)||
+    ['401','403','404'].includes(legacy)||['AccessDenied','InvalidJWT','NoSuchKey','NoSuchBucket'].includes(storageCode))
+    return mediaError('DENIED','Private media access was denied.',status);
+  if(status===429||legacy==='429')return mediaError('RATE_LIMITED','Too many private media requests. Try again later.',status);
+  if(status===413||code==='54000'||legacy==='413'||storageCode==='EntityTooLarge')
+    return mediaError('LIMIT_EXCEEDED','The private media limit was exceeded.',status);
+  if(status===409||code==='40001'||code==='23505'||legacy==='409'||
+    ['ResourceAlreadyExists','KeyAlreadyExists'].includes(storageCode))
+    return mediaError(attestation?'INTEGRITY':'CONFLICT',attestation?'Private asset attestation did not verify.':
+      'This project changed while you were editing. Load the latest revision before saving again.',status);
+  if(code==='22023'&&row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE')
+    return mediaError('INTEGRITY','Private thumbnail could not be verified.',status);
+  if(code==='22023'||(attestation&&status===400)||['InvalidMimeType','InvalidKey','InvalidRequest'].includes(storageCode))
+    return mediaError('VALIDATION','Invalid private media request.',status);
+  return mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE',
+    attestation?'Private asset attestation is unavailable.':'Private media service is unavailable.',status);
+}
 export type OwnerPrivateImageUploadContext = Readonly<{operationId:string;expectedEpoch:number}>;
 export type OwnerProjectThumbnailAsset = Readonly<{
   id:string;projectId:string;mime:OwnerPrivateImageMime;size:number;altText:string;createdAt:string;
@@ -322,7 +370,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if (!response.ok) {
       const data = (payload && typeof payload === 'object' ? payload : {}) as Json;
       const code = typeof data.error_code === 'string' ? data.error_code : '';
-      if (response.status === 429) throw new Error('Too many requests. Try again later.');
+      if (response.status === 429) throw new AuthHttpError(429,'Too many requests. Try again later.');
       if (response.status === 401 || response.status === 403) throw new AuthHttpError(response.status, 'The authentication session or credentials were rejected.');
       if (code === 'otp_expired') throw new Error('This email link has expired. Request a new one.');
       throw new Error('Authentication request failed (' + response.status + ').');
@@ -1332,7 +1380,77 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
 
-  private async validateOwnerRaster(file:Blob):Promise<{ext:string;mime:OwnerPrivateImageMime}> {
+  /** Keep legacy AuthOutcome callers structurally compatible; don't change AuthPort or its security gate. */
+  private async mediaOutcome<T>(epoch:number,task:()=>Promise<T>):Promise<OwnerMediaOutcome<T>>{
+    try{
+      if(this.reconcileOwnerSessionEpoch()!==epoch)throw mediaError('AUTH_CHANGED','Owner session changed before private media access.');
+      const data=await task();
+      if(this.reconcileOwnerSessionEpoch()!==epoch)throw mediaError('AUTH_CHANGED','Owner session changed during private media access.');
+      return {data,error:null};
+    }catch(error){
+      const cause=this.reconcileOwnerSessionEpoch()!==epoch?
+        mediaError('AUTH_CHANGED','Owner session changed during private media access.'):
+        error instanceof OwnerMediaError?error:mediaError('PROVIDER_UNAVAILABLE','Private media service is unavailable.');
+      return {data:null as T,error:{code:cause.code,message:cause.message,
+        ...(cause.status===undefined?{}:{status:cause.status})}};
+    }
+  }
+
+  /** Parse one bounded JSON stream; distinguish invalid data from interrupted transport. */
+  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+    const reader=response.body?.getReader();
+    if(!reader)throw mediaError('INTEGRITY','Private media response could not be verified.');
+    const parts:Uint8Array[]=[];let size=0;
+    try{
+      for(;;){
+        let part:ReadableStreamReadResult<Uint8Array>;
+        try{part=await reader.read();}
+        catch{throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');}
+        this.assertOwnerImageEpoch(session,epoch);
+        if(part.done)break;
+        size+=part.value.byteLength;
+        if(size>max)throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
+        parts.push(part.value);
+      }
+      const bytes=new Uint8Array(size);let offset=0;
+      for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
+      try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+      catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
+    }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+  }
+
+  private async mediaResponseError(response:Response,session:StoredSession,epoch:number,attestation=false,storage=false):Promise<OwnerMediaError>{
+    let raw:unknown=null;
+    try{raw=await this.readMediaJsonBody(response,session,epoch,8192);}
+    catch(error){if(error instanceof OwnerMediaError&&error.code==='AUTH_CHANGED')throw error;}
+    this.assertOwnerImageEpoch(session,epoch);
+    return mediaHttpError(response.status,raw,attestation,storage);
+  }
+
+  /** Owner-only metadata receipt. Bounded error and success bodies; no raw provider diagnostics. */
+  private async mediaJson(path:string,session:StoredSession,epoch:number,body?:Json,attestation=false):Promise<unknown>{
+    this.assertOwnerImageEpoch(session,epoch);
+    let response:Response;
+    try{
+      response=await this.fetcher(this.origin+path,{
+        method:body===undefined?'GET':'POST',
+        headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+          Accept:'application/json','Content-Type':'application/json'},
+        body:body===undefined?undefined:JSON.stringify(body),
+        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15000)
+      });
+    }catch{throw mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE','Private media service is unavailable.');}
+    try{
+      this.assertOwnerImageEpoch(session,epoch);
+      if(!response.ok)throw await this.mediaResponseError(response,session,epoch,attestation,path.startsWith('/storage/v1/'));
+      const raw=await this.readMediaJsonBody(response,session,epoch,65536);
+      this.assertOwnerImageEpoch(session,epoch);
+      if(raw===null)throw mediaError('INTEGRITY','Private media response could not be verified.');
+      return raw;
+    }finally{void response.body?.cancel().catch(()=>{});}
+  }
+
+  private async validateOwnerRaster(file:Blob,reading=false):Promise<{ext:string;mime:OwnerPrivateImageMime}> {
     const formats:Readonly<Record<string,{ext:string;magic:(bytes:Uint8Array)=>boolean}>>={
       'image/png':{ext:'png',magic:bytes=>bytes.length>=8&&
         [137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n)},
@@ -1343,10 +1461,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         String.fromCharCode(...bytes.slice(8,12))==='WEBP'}
     };
     if(file.size<12||file.size>5242880||!Object.hasOwn(formats,file.type))
-      throw new Error('Choose a PNG/JPEG/WebP image under 5 MB.');
+      throw mediaError(reading?'INTEGRITY':file.size>5242880?'LIMIT_EXCEEDED':'VALIDATION','Choose a PNG/JPEG/WebP image under 5 MB.');
     const format=formats[file.type];
     const bytes=new Uint8Array(await file.slice(0,16).arrayBuffer());
-    if(!format||!format.magic(bytes))throw new Error('File bytes do not match the selected image format.');
+    if(!format||!format.magic(bytes))throw mediaError(reading?'INTEGRITY':'VALIDATION','File bytes do not match the selected image format.');
     // Header/MIME checks do not detect truncated or decompression-bomb
     // images. Browser-native decoding must succeed before write-once upload.
     // Node contract tests independently test bytes and RPC protocol without
@@ -1356,24 +1474,24 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if(typeof createImageBitmap==='function'){
         let bitmap:ImageBitmap;
         try{bitmap=await createImageBitmap(file);}
-        catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
+        catch{throw mediaError(reading?'INTEGRITY':'VALIDATION',reading?'Private image bytes cannot be decoded.':'The selected image cannot be decoded. No private bytes were uploaded.');}
         try{width=bitmap.width;height=bitmap.height;}
         finally{bitmap.close();}
       }else{
         if(typeof Image==='undefined'||typeof URL.createObjectURL!=='function')
-        throw new Error('Private image validation is unavailable in this browser.');
+        throw mediaError('PROVIDER_UNAVAILABLE','Private image validation is unavailable in this browser.');
         const temporary=URL.createObjectURL(file);
         try{
         const image=new Image();
         image.src=temporary;
         await image.decode();
         width=image.naturalWidth;height=image.naturalHeight;
-        }catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
+        }catch{throw mediaError(reading?'INTEGRITY':'VALIDATION',reading?'Private image bytes cannot be decoded.':'The selected image cannot be decoded. No private bytes were uploaded.');}
         finally{URL.revokeObjectURL(temporary);}
       }
       if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||
         width<1||height<1||width>8192||height>8192||width*height>24_000_000)
-        throw new Error('Image dimensions exceed the private preview safety limit.');
+        throw mediaError('LIMIT_EXCEEDED','Image dimensions exceed the private preview safety limit.');
     }
 
     return {ext:format.ext,mime:file.type as OwnerPrivateImageMime};
@@ -1381,7 +1499,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   private assertOwnerImageEpoch(session:StoredSession,epoch:number):void {
     if(this.reconcileOwnerSessionEpoch()!==epoch||!this.isCurrentSession(session))
-      throw new Error('Owner session changed during private image access.');
+      throw mediaError('AUTH_CHANGED','Owner session changed during private image access.');
   }
 
   /** Download only a previously verified private object, never an external URL.
@@ -1394,13 +1512,14 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token},
         credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
       });
-    }catch{throw new Error('Private image bytes could not be read. Retry or use the folder cover.');}
+    }catch{throw mediaError('PROVIDER_UNAVAILABLE','Private image bytes could not be read. Retry or use the folder cover.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
       const declared=response.headers.get('content-length');
-      if(!response.ok||response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
+      if(!response.ok)throw await this.mediaResponseError(response,session,epoch,false,true);
+      if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
         (declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==size))||!response.body)
-        throw new Error('Private image readback was not verified.');
+        throw mediaError('INTEGRITY','Private image readback was not verified.');
       const reader=response.body.getReader();
       const chunks:BlobPart[]=[];
       let total=0;
@@ -1410,42 +1529,41 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           this.assertOwnerImageEpoch(session,epoch);
           if(part.done)break;
           total+=part.value.byteLength;
-          if(total>size||total>5242880)throw new Error('Private image exceeds its verified size.');
+          if(total>size||total>5242880)throw mediaError('INTEGRITY','Private image exceeds its verified size.');
           chunks.push(new Uint8Array(part.value));
         }
-      }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-      if(total!==size)throw new Error('Private image size did not match its registered metadata.');
+      }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+      if(total!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
       const blob=new Blob(chunks,{type:mime});
-      await this.validateOwnerRaster(blob);
+      await this.validateOwnerRaster(blob,true);
       this.assertOwnerImageEpoch(session,epoch);
       return blob;
-    }finally{await response.body?.cancel().catch(()=>{});}
+    }finally{void response.body?.cancel().catch(()=>{});}
   }
 
   /** Private-only, write-once upload. With the optional stable operation UUID,
    * a lost response is recovered only by exact-byte readback of the same object.
    * Metadata registration is NOT a server-attested publication byte pin. */
   async uploadOwnerProjectImage(projectId:string,file:File,altText:string,context?:OwnerPrivateImageUploadContext):
-    Promise<AuthOutcome<{id:string;projectId:string;mime:string;size:number;altText:string;verifiedMetadata:true;publicDeliveryAllowed:false}>> {
-    return this.outcome(async()=>{
-      const request=context?{...context}:null;
+    Promise<OwnerMediaOutcome<{id:string;projectId:string;mime:string;size:number;altText:string;verifiedMetadata:true;publicDeliveryAllowed:false}>> {
+    const request=context?{...context}:null;
+    const expectedEpoch=request?.expectedEpoch??this.reconcileOwnerSessionEpoch();
+    return this.mediaOutcome(expectedEpoch,async()=>{
       if(!PROJECT_ID_PATTERN.test(projectId)||!(file instanceof File)||
         typeof altText!=='string'||altText.trim().length<1||altText.length>500||
-        (request&&(!PROJECT_ID_PATTERN.test(request.operationId)||
-          this.reconcileOwnerSessionEpoch()!==request.expectedEpoch)))
-        throw new Error('Choose a private project, a PNG/JPEG/WebP image under 5 MB, and descriptive alt text.');
+        (request&&!PROJECT_ID_PATTERN.test(request.operationId)))
+        throw mediaError('VALIDATION','Choose a private project, a PNG/JPEG/WebP image under 5 MB, and descriptive alt text.');
       const format=await this.validateOwnerRaster(file);
-      if(request&&this.reconcileOwnerSessionEpoch()!==request.expectedEpoch)
-        throw new Error('Owner session changed before private image upload.');
-      const {session,userId,epoch}=await this.ownerSession();
-      if(request&&epoch!==request.expectedEpoch)throw new Error('Owner session changed before private image upload.');
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        throw mediaError('AUTH_CHANGED','Owner session changed before private image upload.');
+      const {session,userId,epoch}=await this.ownerThumbnailSession(projectId,expectedEpoch);
       const params=new URLSearchParams({select:'id,owner_user_id',
         id:'eq.'+projectId,owner_user_id:'eq.'+userId,trashed_at:'is.null',limit:'1'});
-      const project=await this.ownerRest('projects?'+params,session.access_token);
+      const project=await this.mediaJson('/rest/v1/projects?'+params,session,epoch);
       this.assertOwnerImageEpoch(session,epoch);
       if(!Array.isArray(project)||project.length!==1||
         project[0]?.id!==projectId.toLowerCase()||project[0]?.owner_user_id!==userId)
-        throw new Error('The selected private project could not be verified.');
+        throw mediaError('DENIED','The selected private project could not be verified.');
       // Stable object identity is independent of MIME so a reused operation
       // cannot create a second object simply by changing file format.
       const objectPath=userId+'/'+projectId.toLowerCase()+'/'+
@@ -1459,20 +1577,33 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         });
       }catch{ /* An uncertain result is recoverable only for a stable operation. */ }
       const accepted=upload?.ok===true;
-      const ambiguous=!upload||upload.status===400||upload.status===409||upload.status>=500;
-      await upload?.body?.cancel().catch(()=>{});
+      let rejected:OwnerMediaError|null=null;
+      try{
+        this.assertOwnerImageEpoch(session,epoch);
+        if(upload&&!accepted)rejected=await this.mediaResponseError(upload,session,epoch,false,true);
+      }finally{void upload?.body?.cancel().catch(()=>{});}
       this.assertOwnerImageEpoch(session,epoch);
       if(!accepted){
+        const ambiguous=!upload||rejected?.code==='CONFLICT'||
+          (rejected?.code==='PROVIDER_UNAVAILABLE'&&(upload.status===400||upload.status>=500));
         if(!request||!ambiguous)
-          throw new Error('Private image upload was not confirmed. No public image was created.');
-        const existing=await this.readOwnerImageBytes(session,epoch,objectPath,format.mime,file.size);
+          throw rejected??mediaError('PROVIDER_UNAVAILABLE','Private image upload was not confirmed. No public image was created.');
+        let existing:Blob;
+        try{existing=await this.readOwnerImageBytes(session,epoch,objectPath,format.mime,file.size);}
+        catch(error){
+          // A missing object after an uncertain upload is not proof the owner lost access.
+          // Preserve stable retry context; never recapture/write here.
+          if(error instanceof OwnerMediaError&&error.code==='DENIED'&&rejected?.code!=='CONFLICT')
+            throw mediaError('PROVIDER_UNAVAILABLE','Private image upload was not confirmed. Retry the same operation.');
+          throw error;
+        }
         const [stored,selected]=await Promise.all([existing.arrayBuffer(),file.arrayBuffer()]);
         this.assertOwnerImageEpoch(session,epoch);
         const a=new Uint8Array(stored),b=new Uint8Array(selected);
         if(a.length!==b.length||a.some((byte,i)=>byte!==b[i]))
-          throw new Error('This upload operation already refers to different bytes. Choose a new operation.');
+          throw mediaError('CONFLICT','This upload operation already refers to different bytes. Choose a new operation.');
       }
-      const receipt=await this.ownerRest('rpc/register_private_project_image',session.access_token,'POST',{
+      const receipt=await this.mediaJson('/rest/v1/rpc/register_private_project_image',session,epoch,{
         p_project_id:projectId,p_object_path:objectPath,p_mime_type:format.mime,
         p_byte_size:file.size,p_alt_text:altText.trim()
       });
@@ -1481,16 +1612,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         !('id' in receipt)||typeof receipt.id!=='string'||!PROJECT_ID_PATTERN.test(receipt.id)||
         !('object_path' in receipt)||receipt.object_path!==objectPath||
         !('storage_metadata_matched' in receipt)||receipt.storage_metadata_matched!==true)
-        throw new Error('Private upload registration was not confirmed; orphaned private bytes may require cleanup.');
+        throw mediaError('INTEGRITY','Private upload registration was not confirmed; orphaned private bytes may require cleanup.');
       if(request){
         const query=new URLSearchParams({select:'id,owner_user_id,project_id,object_path,mime_type,byte_size,alt_text',
           id:'eq.'+receipt.id,owner_user_id:'eq.'+userId,project_id:'eq.'+projectId,limit:'1'});
-        const rows=await this.ownerRest('project_assets?'+query,session.access_token);
+        const rows=await this.mediaJson('/rest/v1/project_assets?'+query,session,epoch);
         this.assertOwnerImageEpoch(session,epoch);
         const row=Array.isArray(rows)&&rows.length===1?rows[0]:null;
         if(!row||row.id!==receipt.id||row.owner_user_id!==userId||row.project_id!==projectId.toLowerCase()||
           row.object_path!==objectPath||row.mime_type!==format.mime||row.byte_size!==file.size||row.alt_text!==altText.trim())
-          throw new Error('Private upload registration did not match the exact selected image.');
+          throw mediaError('INTEGRITY','Private upload registration did not match the exact selected image.');
       }
       return {id:receipt.id,projectId:projectId.toLowerCase(),mime:format.mime,size:file.size,
         altText:altText.trim(),verifiedMetadata:true as const,publicDeliveryAllowed:false as const};
@@ -1503,7 +1634,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if(!row||Array.isArray(row)||row.projectId!==projectId.toLowerCase()||
       row.ownerUserId!==ownerId||row.publicDeliveryAllowed!==false||
       typeof row.revision!=='number'||!Number.isSafeInteger(row.revision)||row.revision<0)
-      throw new Error('Private thumbnail response could not be verified.');
+      throw mediaError('INTEGRITY','Private thumbnail response could not be verified.');
     if(row.asset===null)return {value:{projectId:projectId.toLowerCase(),revision:row.revision,asset:null,publicDeliveryAllowed:false},path:null};
     const asset=row.asset as Json|null;
     if(!asset||Array.isArray(asset)||typeof asset.id!=='string'||!PROJECT_ID_PATTERN.test(asset.id)||
@@ -1512,37 +1643,46 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       typeof asset.altText!=='string'||!asset.altText.trim()||asset.altText.length>500||
       typeof asset.createdAt!=='string'||!Number.isFinite(Date.parse(asset.createdAt))||
       typeof asset.objectPath!=='string')
-      throw new Error('Private thumbnail asset response could not be verified.');
+      throw mediaError('INTEGRITY','Private thumbnail asset response could not be verified.');
     const prefix=ownerId+'/'+projectId.toLowerCase()+'/';
     const name=asset.objectPath.slice(prefix.length);
     const extension=asset.mime==='image/png'?'png':asset.mime==='image/jpeg'?'jpg':'webp';
     const suffix=name.endsWith('.img')?'img':extension;
     if(!asset.objectPath.startsWith(prefix)||!name.endsWith('.'+suffix)||
       !PROJECT_ID_PATTERN.test(name.slice(0,-suffix.length-1)))
-      throw new Error('Private thumbnail path was rejected.');
+      throw mediaError('INTEGRITY','Private thumbnail path was rejected.');
     return {value:{projectId:projectId.toLowerCase(),revision:row.revision,publicDeliveryAllowed:false,
       asset:{id:asset.id,projectId:projectId.toLowerCase(),mime:asset.mime as OwnerPrivateImageMime,
         size:asset.size,altText:asset.altText,createdAt:asset.createdAt}},path:asset.objectPath};
   }
 
   private async ownerThumbnailSession(projectId:string,expectedEpoch:number){
-    if(!PROJECT_ID_PATTERN.test(projectId)||this.reconcileOwnerSessionEpoch()!==expectedEpoch)
-      throw new Error('Private thumbnail session or project is unavailable.');
-    const checked=await this.ownerSession();
+    if(!PROJECT_ID_PATTERN.test(projectId))throw mediaError('VALIDATION','Invalid private project.');
+    if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      throw mediaError('AUTH_CHANGED','Owner session changed before private media access.');
+    if(!this.session)throw mediaError('DENIED','Private media access was denied.');
+    let checked:Awaited<ReturnType<SupabaseBrowserAuthPort['verifyLiveSession']>>;
+    try{checked=await this.verifyLiveSession();}
+    catch(error){
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        throw mediaError('AUTH_CHANGED','Owner session changed before private media access.');
+      if(error instanceof AuthHttpError)throw mediaHttpError(error.status,null);
+      throw mediaError('PROVIDER_UNAVAILABLE','Owner session could not be verified for private media.');
+    }
     this.assertOwnerImageEpoch(checked.session,expectedEpoch);
-    return checked;
+    return {session:checked.session,userId:checked.user.id,epoch:checked.epoch};
   }
 
   private async readProjectThumbnail(session:StoredSession,userId:string,projectId:string,epoch:number){
     this.assertOwnerImageEpoch(session,epoch);
-    const raw=await this.ownerRest('rpc/read_private_project_thumbnail',session.access_token,'POST',{p_project_id:projectId});
+    const raw=await this.mediaJson('/rest/v1/rpc/read_private_project_thumbnail',session,epoch,{p_project_id:projectId});
     this.assertOwnerImageEpoch(session,epoch);
     return this.parseProjectThumbnail(raw,projectId,userId);
   }
 
   /** Exact selected metadata, independent of bounded asset-library pagination. */
-  async readOwnerProjectThumbnail(projectId:string,expectedEpoch:number):Promise<AuthOutcome<OwnerProjectThumbnail>>{
-    return this.outcome(async()=>{
+  async readOwnerProjectThumbnail(projectId:string,expectedEpoch:number):Promise<OwnerMediaOutcome<OwnerProjectThumbnail>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
       const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
       return (await this.readProjectThumbnail(session,userId,projectId,expectedEpoch)).value;
     });
@@ -1550,43 +1690,149 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   /** Attach/detach via the project's existing revision CAS; no public mutation. */
   async setOwnerProjectThumbnail(projectId:string,baseRevision:number,assetId:string|null,operationId:string,expectedEpoch:number):
-    Promise<AuthOutcome<OwnerProjectThumbnail>>{
-    return this.outcome(async()=>{
+    Promise<OwnerMediaOutcome<OwnerProjectThumbnail>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
       if(!Number.isSafeInteger(baseRevision)||baseRevision<0||baseRevision>=Number.MAX_SAFE_INTEGER||
         !PROJECT_ID_PATTERN.test(operationId)||(assetId!==null&&!PROJECT_ID_PATTERN.test(assetId)))
-        throw new Error('Invalid private thumbnail change.');
+        throw mediaError('VALIDATION','Invalid private thumbnail change.');
       const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
-      const raw=await this.ownerRest('rpc/set_private_project_thumbnail',session.access_token,'POST',{
+      const raw=await this.mediaJson('/rest/v1/rpc/set_private_project_thumbnail',session,expectedEpoch,{
         p_project_id:projectId,p_base_revision:baseRevision,p_asset_id:assetId,p_operation_id:operationId
       });
       this.assertOwnerImageEpoch(session,expectedEpoch);
       const {value}=this.parseProjectThumbnail(raw,projectId,userId);
       if(value.revision!==baseRevision+1||(value.asset?.id??null)!==(assetId?.toLowerCase()??null))
-        throw new Error('Private thumbnail change was not confirmed. Reload the current project.');
+        throw mediaError('INTEGRITY','Private thumbnail change was not confirmed. Reload the current project.');
       // Confirm the current durable selection, not merely an operation acknowledgement.
       const current=(await this.readProjectThumbnail(session,userId,projectId,expectedEpoch)).value;
       if(current.revision!==value.revision||(current.asset?.id??null)!==(value.asset?.id??null))
-        throw new Error('The project changed after the thumbnail save. Reload the current revision.');
+        throw mediaError('CONFLICT','The project changed after the thumbnail save. Reload the current revision.');
       return current;
     });
   }
 
   /** Authenticated image bytes, not a URL. The consumer owns temporary blob URL
    * lifetime. Recheck the selected asset after download to reject replacements. */
-  async readOwnerProjectThumbnailImage(projectId:string,assetId:string,expectedEpoch:number):Promise<AuthOutcome<Blob>>{
-    return this.outcome(async()=>{
-      if(!PROJECT_ID_PATTERN.test(assetId))throw new Error('Private thumbnail is unavailable.');
+  async readOwnerProjectThumbnailImage(projectId:string,assetId:string,expectedEpoch:number):Promise<OwnerMediaOutcome<Blob>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!PROJECT_ID_PATTERN.test(assetId))throw mediaError('VALIDATION','Private thumbnail is unavailable.');
       const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
       const current=await this.readProjectThumbnail(session,userId,projectId,expectedEpoch);
       if(!current.path||current.value.asset?.id!==assetId.toLowerCase())
-        throw new Error('The selected thumbnail changed. Reload the project.');
+        throw mediaError('CONFLICT','The selected thumbnail changed. Reload the project.');
       const blob=await this.readOwnerImageBytes(session,expectedEpoch,current.path,current.value.asset.mime,current.value.asset.size);
       const latest=await this.readProjectThumbnail(session,userId,projectId,expectedEpoch);
       if(latest.value.revision!==current.value.revision||latest.path!==current.path||
          latest.value.asset?.id!==current.value.asset.id||latest.value.asset.mime!==current.value.asset.mime||
          latest.value.asset.size!==current.value.asset.size)
-        throw new Error('The private thumbnail changed during image readback.');
+        throw mediaError('CONFLICT','The private thumbnail changed during image readback.');
       return blob;
+    });
+  }
+
+  /** Independent of thumbnail selection and the bounded gallery list. RLS is necessary
+   * but not sufficient: also require the exact live project and canonical object path. */
+  private async readBoundProjectAsset(session:StoredSession,ownerId:string,epoch:number,projectId:string,assetId:string){
+    this.assertOwnerImageEpoch(session,epoch);
+    if(!PROJECT_ID_PATTERN.test(ownerId)||!PROJECT_ID_PATTERN.test(projectId)||!PROJECT_ID_PATTERN.test(assetId))
+      throw mediaError('VALIDATION','Invalid private media selection.');
+    projectId=projectId.toLowerCase();assetId=assetId.toLowerCase();
+    const projectQuery=new URLSearchParams({select:'id,owner_user_id',id:'eq.'+projectId,
+      owner_user_id:'eq.'+ownerId,trashed_at:'is.null',limit:'2'});
+    const projects=await this.mediaJson('/rest/v1/projects?'+projectQuery,session,epoch);
+    if(!Array.isArray(projects)||projects.length!==1||
+      projects[0]?.id!==projectId||projects[0]?.owner_user_id!==ownerId)
+      throw mediaError('DENIED','Private media access was denied.');
+    const query=new URLSearchParams({select:'id,project_id,owner_user_id,object_path,mime_type,byte_size,alt_text,created_at',
+      id:'eq.'+assetId,project_id:'eq.'+projectId,owner_user_id:'eq.'+ownerId,limit:'2'});
+    const rows=await this.mediaJson('/rest/v1/project_assets?'+query,session,epoch);
+    if(!Array.isArray(rows)||rows.length!==1||rows[0]?.id!==assetId||
+      rows[0]?.project_id!==projectId||rows[0]?.owner_user_id!==ownerId)
+      throw mediaError('DENIED','Private media access was denied.');
+    const row=rows[0] as Json;
+    if(!['image/png','image/jpeg','image/webp'].includes(String(row.mime_type))||
+      typeof row.byte_size!=='number'||!Number.isSafeInteger(row.byte_size)||row.byte_size<12||row.byte_size>5242880||
+      typeof row.alt_text!=='string'||!row.alt_text.trim()||row.alt_text.length>500||
+      typeof row.created_at!=='string'||!Number.isFinite(Date.parse(row.created_at))||
+      typeof row.object_path!=='string')
+      throw mediaError('INTEGRITY','Private asset is not supported for verified byte preview.');
+    const mime=row.mime_type as OwnerPrivateImageMime;
+    const extension=mime==='image/png'?'png':mime==='image/jpeg'?'jpg':'webp';
+    const prefix=ownerId+'/'+projectId+'/';
+    const name=row.object_path.slice(prefix.length);
+    const suffix=name.endsWith('.img')?'img':extension;
+    if(!row.object_path.startsWith(prefix)||!name.endsWith('.'+suffix)||
+      !PROJECT_ID_PATTERN.test(name.slice(0,-suffix.length-1)))
+      throw mediaError('DENIED','Private media access was denied.');
+    const asset:OwnerProjectThumbnailAsset={id:assetId,projectId,mime,size:row.byte_size,
+      altText:row.alt_text,createdAt:row.created_at};
+    return {asset,path:row.object_path};
+  }
+
+  /** The same owner-authorized Storage info endpoint is used by the trusted worker.
+   * Version identity is not a server SHA pin, and absence/mismatch fails closed. */
+  private async readPrivateObjectIdentity(session:StoredSession,ownerId:string,epoch:number,
+    binding:{asset:OwnerProjectThumbnailAsset;path:string}){
+    const path=binding.path.split('/').map(encodeURIComponent).join('/');
+    const raw=await this.mediaJson('/storage/v1/object/info/authenticated/kadmeion-private-assets/'+path,session,epoch);
+    const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+    const meta=row?.metadata&&typeof row.metadata==='object'?row.metadata as Json:null;
+    const size=row?.size??meta?.size,mime=row?.content_type??meta?.mimetype;
+    const modified=row?.last_modified??row?.updated_at;
+    if(!row||typeof row.id!=='string'||!PROJECT_ID_PATTERN.test(row.id)||
+      row.name!==binding.path||row.bucket_id!=='kadmeion-private-assets'||
+      (row.owner_id!==undefined&&row.owner_id!==ownerId)||
+      typeof row.version!=='string'||!row.version||row.version.length>128||
+      typeof modified!=='string'||!Number.isFinite(Date.parse(modified))||
+      !((typeof size==='number'&&Number.isSafeInteger(size))||
+        (typeof size==='string'&&/^\d{1,10}$/.test(size)))||
+      Number(size)!==binding.asset.size||typeof mime!=='string'||mime.toLowerCase()!==binding.asset.mime)
+      throw mediaError('INTEGRITY','Private Storage object identity could not be verified.');
+    return {id:row.id,version:row.version,modified};
+  }
+
+  private async confirmBoundProjectAsset(session:StoredSession,ownerId:string,epoch:number,
+    before:{asset:OwnerProjectThumbnailAsset;path:string},identity:{id:string;version:string;modified:string}){
+    const current=await this.readBoundProjectAsset(session,ownerId,epoch,before.asset.projectId,before.asset.id);
+    const after=await this.readPrivateObjectIdentity(session,ownerId,epoch,current);
+    if(current.path!==before.path||JSON.stringify(current.asset)!==JSON.stringify(before.asset)||
+       after.id!==identity.id||after.version!==identity.version||after.modified!==identity.modified)
+      throw mediaError('INTEGRITY','Private asset changed during verification.');
+  }
+
+  /** Owner-only actual bytes + local digest, never a trusted source_sha256 or a public URL. */
+  async readOwnerPrivateAsset(projectId:string,assetId:string,expectedEpoch:number):Promise<OwnerMediaOutcome<OwnerPrivateAssetRead>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!PROJECT_ID_PATTERN.test(assetId))throw mediaError('VALIDATION','Invalid private asset.');
+      const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
+      const binding=await this.readBoundProjectAsset(session,userId,expectedEpoch,projectId,assetId);
+      const identity=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+      const bytes=await this.readOwnerImageBytes(session,expectedEpoch,binding.path,binding.asset.mime,binding.asset.size);
+      const digest=await crypto.subtle.digest('SHA-256',await bytes.arrayBuffer());
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      await this.confirmBoundProjectAsset(session,userId,expectedEpoch,binding,identity);
+      return {asset:binding.asset,bytes,integrity:{status:'OWNER_BYTES_VERIFIED',
+        computedSha256:Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('')},
+        serverAttestation:'NOT_VERIFIED',publicDeliveryAllowed:false};
+    });
+  }
+
+  /** Separate explicit request using the existing default-disabled Edge contract.
+   * Its receipt does not contain a digest; never promote a preview hash to a pin. */
+  async requestOwnerPrivateAssetAttestation(projectId:string,assetId:string,expectedEpoch:number):
+    Promise<OwnerMediaOutcome<OwnerPrivateAssetAttestationReceipt>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!PROJECT_ID_PATTERN.test(assetId))throw mediaError('VALIDATION','Invalid private asset.');
+      const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
+      const binding=await this.readBoundProjectAsset(session,userId,expectedEpoch,projectId,assetId);
+      const identity=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+      const raw=await this.mediaJson('/functions/v1/complete-private-asset',session,expectedEpoch,{assetId:binding.asset.id},true);
+      const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+      if(!row||row.assetId!==binding.asset.id||row.status!=='WRITE_ONCE_ATTESTED'||
+        row.publicPublishingAllowed!==false||row.accountDeletionAllowed!==false)
+        throw mediaError('INTEGRITY','Private asset attestation receipt could not be verified.');
+      await this.confirmBoundProjectAsset(session,userId,expectedEpoch,binding,identity);
+      return {assetId:binding.asset.id,status:'WRITE_ONCE_ATTESTED',publicPublishingAllowed:false,accountDeletionAllowed:false};
     });
   }
 

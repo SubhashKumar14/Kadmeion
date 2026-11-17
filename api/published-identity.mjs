@@ -5,7 +5,7 @@ const entities = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const textWithin = (value, max) => value === undefined ||
   (typeof value === 'string' && value.length <= max &&
-   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
+   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value));
 function validProjection(row, handle, slug) {
   if (!isRecord(row) || row.handle !== handle) return false;
   const keys = slug
@@ -21,8 +21,8 @@ function validProjection(row, handle, slug) {
       !Array.isArray(row.sections) || row.sections.length > 24) return false;
   return row.sections.every(section => isRecord(section) &&
     Object.keys(section).every(key => key === 'title' || key === 'body') &&
-    typeof section.title === 'string' && section.title.length <= 200 &&
-    typeof section.body === 'string' && section.body.length <= 12000);
+    typeof section.title === 'string' && textWithin(section.title,200) &&
+    typeof section.body === 'string' && textWithin(section.body,12000));
 }
 
 function escape(value) {
@@ -30,6 +30,7 @@ function escape(value) {
 }
 
 function link(label, value) {
+  if (typeof value !== 'string' || /[\s\\\u0000-\u001f\u007f]/u.test(value)) return '';
   try {
     const url = new URL(value);
     if (url.protocol === 'https:' && !url.username && !url.password) {
@@ -56,12 +57,18 @@ function render(projection, slug) {
   // SEO text is taken only from already-consented public projection fields.
   // Do not synthesize an author biography, claim verification or expose raw JSON.
   const visibleDescription = slug ? projection.summary : (projection.headline || projection.bio);
-  const description = typeof visibleDescription === 'string' && visibleDescription.trim()
-    ? '<meta name="description" content="' +
-      escape(visibleDescription.trim().slice(0, 300)) + '">' : '';
+  const summary = typeof visibleDescription === 'string' && visibleDescription.trim()
+    ? escape(visibleDescription.trim().slice(0, 300)) : '';
+  const description = summary ? '<meta name="description" content="' + summary + '">' : '';
+  // Text-only share metadata from this exact authorized projection. Do not
+  // infer an absolute canonical origin from request headers, or claim a public
+  // image, delivery receipt, verification or discoverability not in the RPC.
+  const shareMetadata = '<meta property="og:type" content="website">' +
+    '<meta property="og:title" content="' + title + '">' +
+    (summary ? '<meta property="og:description" content="' + summary + '">' : '');
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title +
-    '</title>' + description + '</head><body><main><h1>' + title + '</h1>' +
+    '</title>' + description + shareMetadata + '</head><body><main><h1>' + title + '</h1>' +
     content + '</main></body></html>';
 }
 
@@ -126,7 +133,9 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
       signal: AbortSignal.timeout(5000)
     });
     if (!upstream.ok) {
-      await upstream.body?.cancel();
+      // Cancellation of one branch of a tee can remain pending. Never let
+      // cleanup delay a fail-closed public response or leak upstream details.
+      void upstream.body?.cancel().catch(() => {});
       return reply(503, 'Temporarily unavailable');
     }
     const row = await readBoundedRpcJson(upstream);

@@ -2,8 +2,10 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import type {FormEvent} from 'react';
 import type {SupabaseBrowserAuthPort} from '../../auth-web/src/supabase-auth-port.ts';
 import type {
-  SupabasePrivateGoalsService, PrivateGoal, GoalProgress, GoalMilestone, GoalStatus
+  SupabasePrivateGoalsService, PrivateGoal, GoalProgress, GoalMilestone, GoalStatus,
+  GoalProgressChronologicalPage
 } from '../../../packages/contracts/src/private-goals-service.ts';
+import {PrivateGoalsError} from '../../../packages/contracts/src/private-goals-service.ts';
 import type {
   SupabasePrivatePlatformLinksService, PrivatePlatformLink, PlatformProvider
 } from '../../../packages/contracts/src/private-platform-links-service.ts';
@@ -32,21 +34,43 @@ function presentError(err:unknown):string {
     return 'The private server did not confirm the requested change. Verify your session and retry.';
   return 'Private growth data is currently unavailable. No saved value was assumed.';
 }
+function goalNeedsReconciliation(err:unknown):boolean{
+  return !(err instanceof PrivateGoalsError) ||
+    (err.code==='CONFLICT'||err.code==='INVALID_ACK'||err.code==='PROVIDER_UNAVAILABLE');
+}
 function useGoals(service:SupabasePrivateGoalsService){
   const [goals,setGoals]=useState<PrivateGoal[]|null>(null);
   const [error,setError]=useState('');
   const [revision,setRevision]=useState(0);
+  const listGeneration=useRef(0);
+  const listPending=useRef(false);
   useEffect(()=>{
     let active=true;
+    const generation=++listGeneration.current;
+    listPending.current=true;
     void service.listGoals().then(items=>{
-      if(active){setGoals(items);setError('');}
-    }).catch(err=>{if(active){setError(presentError(err));setGoals(null);}});
+      if(active&&generation===listGeneration.current){setGoals(items);setError('');}
+    }).catch(err=>{
+      if(active&&generation===listGeneration.current){
+        setError(presentError(err));
+        // Retain same-scope drafts during transient failure only, not after
+        // authorization or receipt integrity denial.
+        if(!(err instanceof PrivateGoalsError)||
+          (err.code!=='PROVIDER_UNAVAILABLE'&&err.code!=='RATE_LIMITED'))setGoals(null);
+      }
+    }).finally(()=>{
+      if(active&&generation===listGeneration.current)listPending.current=false;
+    });
     return ()=>{active=false;};
   },[service,revision]);
-  return {goals,error,reload:()=>setRevision(value=>value+1)};
+  function acceptGoal(row:PrivateGoal){
+    if(listPending.current){listGeneration.current++;setRevision(value=>value+1);}
+    setGoals(current=>current?.map(goal=>goal.id===row.id?row:goal)??null);
+  }
+  return {goals,error,reload:()=>setRevision(value=>value+1),acceptGoal};
 }
 function LoadingOrError({goals,error,retry}:{goals:PrivateGoal[]|null;error:string;retry:()=>void}){
-  if(error)return <div role="alert" className="ws-inline-alert">{error}
+  if(error)return <div role="alert" className="ws-inline-alert">{error}{goals&&' Previously confirmed records may be stale.'}
     <button type="button" className="ws-secondary" onClick={retry}>Retry private records</button></div>;
   if(goals===null)return <p role="status">Loading owner-private goal records…</p>;
   return null;
@@ -81,12 +105,12 @@ function GrowthHome({service}: {service:SupabasePrivateGoalsService}){
   </div>;
 }
 
-/** Existing backend cursor is UUID-ordered, not chronological. Sort only
- * loaded records and never claim a partial page is the latest history. */
+/** Retain the service's raw microsecond cursor and append in its verified
+ * newest-first PostgreSQL timestamp/UUID order. */
 function ProgressHistory({service,goalId,onCorrection,busy=false}:{
   service:SupabasePrivateGoalsService;goalId:string;onCorrection?:(item:GoalProgress)=>void;busy?:boolean
 }){
-  const [page,setPage]=useState<{items:GoalProgress[];nextCursor:string|null}|null>(null);
+  const [page,setPage]=useState<GoalProgressChronologicalPage|null>(null);
   const [error,setError]=useState('');
   const [attempt,setAttempt]=useState(0);
   const [loadingMore,setLoadingMore]=useState(false);
@@ -95,11 +119,11 @@ function ProgressHistory({service,goalId,onCorrection,busy=false}:{
   // StrictMode replays mount effects. Share the initial request for the exact
   // service/goal/attempt, including its rejection, instead of silently
   // replacing a failed first read with an unrequested second read.
-  const initial=useRef<{service:SupabasePrivateGoalsService;goalId:string;attempt:number;promise:ReturnType<SupabasePrivateGoalsService['listProgressPage']>}|null>(null);
+  const initial=useRef<{service:SupabasePrivateGoalsService;goalId:string;attempt:number;promise:ReturnType<SupabasePrivateGoalsService['listProgressChronologicalPage']>}|null>(null);
   useEffect(()=>{
     let active=true;alive.current=true;setPage(null);setError('');
     if(initial.current?.service!==service||initial.current.goalId!==goalId||initial.current.attempt!==attempt)
-      initial.current={service,goalId,attempt,promise:Promise.resolve().then(()=>service.listProgressPage(goalId,50))};
+      initial.current={service,goalId,attempt,promise:Promise.resolve().then(()=>service.listProgressChronologicalPage(goalId,50))};
     void initial.current.promise.then(result=>{if(active)setPage(result);})
       .catch(err=>{if(active)setError(presentError(err));});
     return()=>{active=false;alive.current=false;};
@@ -107,19 +131,24 @@ function ProgressHistory({service,goalId,onCorrection,busy=false}:{
   async function more(){
     if(!page?.nextCursor||inFlight.current||busy)return;
     const cursor=page.nextCursor;
+    const request=initial.current;
     inFlight.current=true;setLoadingMore(true);setError('');
     try{
-      const next=await service.listProgressPage(goalId,50,cursor);
-      if(!alive.current)return;
+      const next=await service.listProgressChronologicalPage(goalId,50,cursor);
+      if(!alive.current||initial.current!==request)return;
+      const seen=new Set(page.items.map(item=>item.id));
+      if(next.items.some(item=>seen.has(item.id)))
+        throw new PrivateGoalsError('INVALID_ACK');
       setPage(previous=>{
         if(!previous||previous.nextCursor!==cursor)return previous;
-        const seen=new Set(previous.items.map(item=>item.id));
-        return {...next,items:[...previous.items,...next.items.filter(item=>!seen.has(item.id))]};
+        return {...next,items:[...previous.items,...next.items]};
       });
-    }catch(err){if(alive.current)setError(presentError(err));}
-    finally{inFlight.current=false;if(alive.current)setLoadingMore(false);}
+    }catch(err){if(alive.current&&initial.current===request)setError(presentError(err));}
+    finally{
+      if(initial.current===request){inFlight.current=false;if(alive.current)setLoadingMore(false);}
+    }
   }
-  const events=page?.items.slice().sort((a,b)=>b.created_at.localeCompare(a.created_at)||b.id.localeCompare(a.id));
+  const events=page?.items;
   return <section aria-label="Private manual progress history">
     {error&&<div><p role="alert">{error}</p>
       <button type="button" className="ws-secondary" disabled={busy||loadingMore}
@@ -127,7 +156,7 @@ function ProgressHistory({service,goalId,onCorrection,busy=false}:{
     </div>}
     {!page&&!error&&<p role="status">Loading manual progress history…</p>}
     {page?.items.length===0&&<p>No manual progress has been recorded for this goal.</p>}
-    {!!events?.length&&<><p>{events.length} loaded self-reported entries. {page?.nextCursor?'More entries exist; the date order applies only to loaded records.':'All pages reached for this read; refresh to check for changes.'}</p>
+    {!!events?.length&&<><p>{events.length} loaded self-reported entries. {page?.nextCursor?'More older entries exist; newest confirmed records are shown first.':'All pages reached for this read; refresh to check for changes.'}</p>
       <ol className="ws-growth-events">{events.map(item=><li key={item.id}>
         <strong>{item.value.toLocaleString()} · Self-reported</strong>
         <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
@@ -188,7 +217,7 @@ const goalTemplates=[
   {id:'study',label:'Study a topic',title:'Study a new topic',description:'Record completed study sessions and review notes.',target:'5',unit:'sessions',milestones:['Choose learning resources','Complete the first study session','Summarise what I learned']}
 ] as const;
 
-function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{service:SupabasePrivateGoalsService;goal:PrivateGoal;onGoalUpdated:()=>void;onGoalDeleted:()=>void;templateId:string}){
+function GoalDetail({service,goal,onGoalUpdated,onGoalRecord,onGoalDeleted,templateId}:{service:SupabasePrivateGoalsService;goal:PrivateGoal;onGoalUpdated:()=>void;onGoalRecord:(row:PrivateGoal)=>void;onGoalDeleted:()=>void;templateId:string}){
   const [progress,setProgress]=useState<GoalProgress[]|null>(null);
   const [milestonePage,setMilestonePage]=useState<{items:GoalMilestone[];nextCursor:string|null}|null>(null);
   const milestones=milestonePage?.items;
@@ -197,7 +226,9 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
   const milestoneRead=useRef(false);
   const [milestoneAttempt,setMilestoneAttempt]=useState(0);
   const [milestoneEdit,setMilestoneEdit]=useState<{id:string;title:string;due:string}|null>(null);
-  const [deleting,setDeleting]=useState<{kind:'goal'|'milestone';id:string;title:string}|null>(null);
+  const [deleting,setDeleting]=useState<
+    {kind:'goal';id:string;title:string;expectedUpdatedAt:string}|
+    {kind:'milestone';id:string;title:string}|null>(null);
   const [confirmation,setConfirmation]=useState('');
   const [suggestion,setSuggestion]=useState('');
   const mutation=useRef(false);
@@ -215,32 +246,62 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
   const [milestoneOp,setMilestoneOp]=useState(()=>crypto.randomUUID());
   const [reload,setReload]=useState(0);
   const [editing,setEditing]=useState(false);
+  const [editBase,setEditBase]=useState(goal.updated_at);
+  const [reconcileRequired,setReconcileRequired]=useState(false);
+  const [conflictGoal,setConflictGoal]=useState<PrivateGoal|null>(null);
   const [editTitle,setEditTitle]=useState(goal.title);
   const [editDescription,setEditDescription]=useState(goal.description);
   const [editTarget,setEditTarget]=useState(goal.target_value===null?'':String(goal.target_value));
   const [editUnit,setEditUnit]=useState(goal.unit??'');
   const [editDue,setEditDue]=useState(goal.due_on??'');
   function beginEdit(){
+    setEditBase(goal.updated_at);setReconcileRequired(false);setConflictGoal(null);
     setEditTitle(goal.title);setEditDescription(goal.description);
     setEditTarget(goal.target_value===null?'':String(goal.target_value));
     setEditUnit(goal.unit??'');setEditDue(goal.due_on??'');setEditing(true);
   }
+  async function readConflictVersion(){
+    setConflictGoal(null);
+    try{
+      const latest=await service.readGoal(goal.id);
+      if(!mounted.current)return;
+      if(latest){setConflictGoal(latest);onGoalRecord(latest);}
+      else setError('This goal is no longer available. The unsaved draft has been kept; no change was confirmed.');
+    }catch(err){
+      if(mounted.current)setError('Could not refresh the saved version. Your draft is still here. '+presentError(err));
+    }
+  }
+  async function retryConflictRead(){
+    if(busy||mutation.current||!reconcileRequired)return;
+    mutation.current=true;setBusy(true);setError('');
+    try{await readConflictVersion();}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
+  }
   async function saveGoal(event:FormEvent<HTMLFormElement>){
-    event.preventDefault();if(busy||mutation.current||milestoneRead.current||!editing||!editTitle.trim())return;
+    event.preventDefault();if(busy||mutation.current||milestoneRead.current||!editing||reconcileRequired||!editTitle.trim())return;
     mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
-      await service.updateGoal(goal.id,{title:editTitle.trim(),description:editDescription.trim(),
+      const saved=await service.updateGoalIfUnchanged(goal.id,editBase,{title:editTitle.trim(),description:editDescription.trim(),
         target_value:editTarget.trim()?Number(editTarget):null,
         unit:editTarget.trim()?editUnit.trim()||null:null,due_on:editDue||null});
       if(!mounted.current)return;
-      setEditing(false);setStatus('Goal details updated privately.');onGoalUpdated();
-    }catch(err){if(mounted.current)setError(presentError(err));}
+      setEditBase(saved.updated_at);setEditing(false);setConflictGoal(null);
+      setStatus('Goal details updated privately.');onGoalRecord(saved);
+    }catch(err){
+      if(mounted.current){
+        if(goalNeedsReconciliation(err)){
+          setReconcileRequired(true);
+          setError('Goal details were not confirmed. Compare the latest saved version with your draft before saving again.');
+          await readConflictVersion();
+        }else setError(presentError(err));
+      }
+    }
     finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   useEffect(()=>{
     let active=true;setProgress(null);
-    void service.listProgress(goal.id).then(records=>{
-      if(active)setProgress(records);
+    void service.listProgressChronologicalPage(goal.id,1).then(page=>{
+      if(active)setProgress(page.items);
     }).catch(err=>{if(active)setError(presentError(err));});
     return ()=>{active=false;};
   },[service,goal.id,reload]);
@@ -282,7 +343,7 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     const deletion=deleting;mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       if(deletion.kind==='goal'){
-        await service.deleteGoal(deletion.id);
+        await service.deleteGoalIfUnchanged(deletion.id,deletion.expectedUpdatedAt);
         if(mounted.current)onGoalDeleted();
       }else{
         await service.deleteMilestone(deletion.id);
@@ -348,8 +409,23 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
       <label className="ws-growth-field">Edit target value<input type="number" min="0.01" step="0.01" max="9999999999.99" disabled={busy} value={editTarget} onChange={event=>setEditTarget(event.target.value)}/></label>
       <label className="ws-growth-field">Edit target unit<input maxLength={32} disabled={busy||!editTarget.trim()} value={editUnit} onChange={event=>setEditUnit(event.target.value)}/></label>
       <label className="ws-growth-field">Edit due date<input type="date" disabled={busy} value={editDue} onChange={event=>setEditDue(event.target.value)}/></label>
-      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||milestoneLoading||!editTitle.trim()}>Save goal details</button>
-        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setEditing(false)}>Cancel goal edit</button></div>
+      {reconcileRequired&&<section aria-label="Goal edit conflict">
+        <p role="status">Your draft is retained. Review the saved version before choosing a new base; no write is retried automatically.</p>
+        {conflictGoal&&<dl>
+          <dt>Saved title</dt><dd>{conflictGoal.title}</dd>
+          <dt>Saved description</dt><dd>{conflictGoal.description||'None'}</dd>
+          <dt>Saved target</dt><dd>{conflictGoal.target_value??'None'} {conflictGoal.unit??''}</dd>
+          <dt>Saved due date</dt><dd>{conflictGoal.due_on??'None'}</dd>
+          <dt>Saved status</dt><dd>{conflictGoal.status}</dd>
+        </dl>}
+        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void retryConflictRead()}>Refresh saved version</button>
+        {conflictGoal&&<button type="button" className="ws-secondary" disabled={busy} onClick={()=>{
+          setEditBase(conflictGoal.updated_at);setReconcileRequired(false);setError('');
+          setStatus('Saved version reviewed. Saving will replace its details with the displayed draft.');
+        }}>Use reviewed version as base and keep draft</button>}
+      </section>}
+      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||milestoneLoading||reconcileRequired||!editTitle.trim()}>Save goal details</button>
+        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{setEditing(false);setReconcileRequired(false);setConflictGoal(null);setError('');}}>Cancel goal edit</button></div>
     </form>}
     <h4>Record or correct progress</h4>
     {archived&&<p>Archived goals are read-only for new progress and milestone edits. Change the goal status to resume tracking.</p>}
@@ -405,7 +481,7 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     </form>
     <h4>Goal lifecycle</h4>
     <p>Archive to keep progress and milestones. Deletion removes this goal and its associated records from the active private database; it does not use the 15-day project and portfolio Trash.</p>
-    <button type="button" className="ws-secondary" disabled={busy||milestoneLoading} onClick={()=>{setDeleting({kind:'goal',id:goal.id,title:goal.title});setConfirmation('');}}>Delete selected goal</button>
+    <button type="button" className="ws-secondary" disabled={busy||milestoneLoading} onClick={()=>{setDeleting({kind:'goal',id:goal.id,title:goal.title,expectedUpdatedAt:goal.updated_at});setConfirmation('');}}>Delete selected goal</button>
     {deleting&&<form className="ws-growth-form" onSubmit={event=>void removeConfirmed(event)}>
       <p>Delete {deleting.title}? {deleting.kind==='goal'?'Associated milestone and progress rows are removed by the database.':'Only this milestone is affected.'} No Undo or backup erasure is promised.</p>
       <label className="ws-growth-field">Type {deleting.kind==='goal'?'DELETE GOAL':'DELETE MILESTONE'} to confirm<input value={confirmation} disabled={busy} onChange={event=>setConfirmation(event.target.value)}/></label>
@@ -416,7 +492,10 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
 }
 
 function Goals({service}:{service:SupabasePrivateGoalsService}){
-  const {goals,error,reload}=useGoals(service);
+  const {goals,error,reload,acceptGoal}=useGoals(service);
+  const mutation=useRef(false);
+  const mounted=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const [title,setTitle]=useState('');
   const [description,setDescription]=useState('');
   const [target,setTarget]=useState('');
@@ -426,6 +505,7 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
   const [selected,setSelected]=useState('');
   const [templateId,setTemplateId]=useState('free');
   const [goalTemplateIds,setGoalTemplateIds]=useState<Record<string,string>>({});
+  const [statusBlocked,setStatusBlocked]=useState<ReadonlySet<string>>(()=>new Set());
   const [busy,setBusy]=useState(false);
   const [note,setNote]=useState('');
   function applyTemplate(id:string){
@@ -437,23 +517,51 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
   }
   const [failure,setFailure]=useState('');
   async function create(event:FormEvent<HTMLFormElement>){
-    event.preventDefault();if(busy||!title.trim())return;
-    setBusy(true);setFailure('');setNote('');
+    event.preventDefault();if(busy||mutation.current||!title.trim())return;
+    mutation.current=true;setBusy(true);setFailure('');setNote('');
     try{
       const created=await service.createGoal(operation,title.trim(),description.trim(),
         target.trim()?Number(target):null,target.trim()?(unit.trim()||null):null,due||null);
+      if(!mounted.current)return;
       if(templateId!=='free')setGoalTemplateIds(old=>({...old,[created.id]:templateId}));
       setTemplateId('free');setOperation(crypto.randomUUID());setTitle('');setDescription('');setTarget('');setUnit('');setDue('');
       setNote('Owner-private goal saved.');reload();
-    }catch(err){setFailure(presentError(err));}
-    finally{setBusy(false);}
+    }catch(err){if(mounted.current)setFailure(presentError(err));}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
+  }
+  async function refreshStatus(id:string){
+    try{
+      const latest=await service.readGoal(id);
+      if(!mounted.current)return;
+      if(latest){
+        acceptGoal(latest);
+        setStatusBlocked(current=>{const next=new Set(current);next.delete(id);return next;});
+        setFailure('Review the refreshed goal status before choosing again. No automatic retry was made.');
+      }else setFailure('This goal is unavailable. Refresh private records; no change was confirmed.');
+    }catch{if(mounted.current)setFailure('Could not refresh the saved goal. Refresh its status before trying again.');}
+  }
+  async function retryStatusRead(id:string){
+    if(busy||mutation.current)return;
+    mutation.current=true;setBusy(true);setFailure('');
+    try{await refreshStatus(id);}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   async function status(goal:PrivateGoal,next:GoalStatus){
-    if(busy||next===goal.status)return;
-    setBusy(true);setFailure('');setNote('');
-    try{await service.updateGoal(goal.id,{status:next});setNote('Private goal status updated.');reload();}
-    catch(err){setFailure(presentError(err));}
-    finally{setBusy(false);}
+    if(busy||mutation.current||statusBlocked.has(goal.id)||next===goal.status)return;
+    mutation.current=true;setBusy(true);setFailure('');setNote('');
+    try{
+      const saved=await service.updateGoalIfUnchanged(goal.id,goal.updated_at,{status:next});
+      if(mounted.current){acceptGoal(saved);setNote('Private goal status updated.');}
+    }catch(err){
+      if(mounted.current){
+        if(goalNeedsReconciliation(err)){
+          setStatusBlocked(current=>new Set([...current,goal.id]));
+          setFailure('Goal status was not confirmed. Refreshing the saved record; review it and choose a status again.');
+          await refreshStatus(goal.id);
+        }else setFailure(presentError(err));
+      }
+    }
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   const selectedGoal=goals?.find(goal=>goal.id===selected);
   return <div className="ws-growth-layout">
@@ -461,16 +569,18 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
       <h2>Your private goals</h2>
       <p>Target values, history and milestone updates are self-reported. Goals are never made public here.</p>
       <LoadingOrError goals={goals} error={error} retry={reload}/>
-      {failure&&<p role="alert">{failure}</p>}{note&&<p role="status">{note}</p>}
+      {failure&&<div><p role="alert">{failure}</p><button type="button" className="ws-secondary" disabled={busy} onClick={reload}>Refresh private goals</button></div>}{note&&<p role="status">{note}</p>}
       {goals?.length===0&&<p>No private goals yet. Create one below.</p>}
       <ul className="ws-growth-records">{goals?.map(goal=><li key={goal.id}>
         <button type="button" aria-pressed={selected===goal.id} className="ws-growth-pick"
           onClick={()=>setSelected(goal.id)}>{goal.title}</button>
         <span>{goal.status} {goal.due_on?'· Due '+goal.due_on:''}</span>
-        <label className="ws-growth-field">Change goal status<select value={goal.status} disabled={busy}
+        <label className="ws-growth-field">Change goal status<select value={goal.status} disabled={busy||statusBlocked.has(goal.id)}
           onChange={event=>void status(goal,event.target.value as GoalStatus)}>
           {(['ACTIVE','PAUSED','COMPLETED','ARCHIVED'] as const).map(item=><option key={item}>{item}</option>)}
         </select></label>
+        {statusBlocked.has(goal.id)&&<button type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>void retryStatusRead(goal.id)}>Refresh saved status</button>}
       </li>)}</ul>
       {goals?.length===100&&<p>Displaying at most 100 recent goals, not a lifetime total.</p>}
       <h3>Create a goal</h3>
@@ -499,7 +609,7 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
     </section>
     <section className="ws-project-aside">
       <h2>Selected goal</h2>
-      {selectedGoal?<GoalDetail key={selectedGoal.id} service={service} goal={selectedGoal} onGoalUpdated={reload} templateId={goalTemplateIds[selectedGoal.id]??'free'} onGoalDeleted={()=>{setSelected('');setNote('Private goal deletion acknowledged.');reload();}}/>:
+      {selectedGoal?<GoalDetail key={selectedGoal.id} service={service} goal={selectedGoal} onGoalUpdated={reload} onGoalRecord={acceptGoal} templateId={goalTemplateIds[selectedGoal.id]??'free'} onGoalDeleted={()=>{setSelected('');setNote('Private goal deletion acknowledged.');reload();}}/>:
         <p>Select a private goal to review manually recorded progress and milestones.</p>}
       <a href="/app/growth/activity" className="ws-secondary">Open manual activity</a>
     </section>

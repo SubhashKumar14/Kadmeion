@@ -106,6 +106,35 @@ function orderedLayerGroups(snapshot:PortfolioSnapshot | null | undefined):Array
 }
 
 
+const editorPanels=['Content','Components','My Components','Theme','Metadata','Assets','Source','History'] as const;
+type EditorPanel=typeof editorPanels[number];
+type InitialEditorLink={panel:EditorPanel;slot:string|null;invalidPanel:boolean;invalidSlot:boolean};
+const validLinkSlot=(key:string)=>/^[a-z0-9_-]{1,64}$/.test(key)&&
+  !['__proto__','constructor','prototype'].includes(key);
+
+/** C09 is a read-only initial selection hint, never an identity or write request.
+ * Bound parsing and reject ambiguous keys rather than accepting the first value. */
+function readInitialEditorLink(search:string):InitialEditorLink{
+  if(search.length>4096)return {panel:'Content',slot:null,invalidPanel:true,invalidSlot:true};
+  const params=new URLSearchParams(search);
+  const panels=params.getAll('panel'),slots=params.getAll('slot');
+  const panel=panels.length===1?editorPanels.find(value=>value===panels[0]):undefined;
+  const slot=slots.length===1&&validLinkSlot(slots[0]!)?slots[0]!:null;
+  return {panel:panel??'Content',slot,invalidPanel:panels.length>0&&!panel,
+    invalidSlot:slots.length>0&&slot===null};
+}
+
+function resolveInitialEditorSlot(snapshot:PortfolioSnapshot,requested:string|null){
+  const declared=orderedLayerGroups(snapshot).flatMap(group=>group.slots);
+  const counts=new Map<string,number>();
+  for(const item of declared)counts.set(item.key,(counts.get(item.key)??0)+1);
+  const available=declared.filter(item=>validLinkSlot(item.key)&&counts.get(item.key)===1&&
+    Object.hasOwn(snapshot.slots,item.key));
+  const found=requested!==null&&available.some(item=>item.key===requested);
+  return {key:found?requested!:available.find(item=>item.name==='title')?.key??'',
+    missing:requested!==null&&!found};
+}
+
 /** Known compatible pinned library components only. An empty slot must not
  * silently accept a mismatched component, an arbitrary code pin, or a media
  * source without independently verified private asset registration. */
@@ -412,7 +441,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const loaded = useRef('');
   const [sectionLayout, setSectionLayout] = useState('arc-hero@1');
   const [sectionPicker, setSectionPicker] = useState(false);
-  const [tool, setTool] = useState(()=>new URLSearchParams(window.location.search).get('panel')==='Metadata'?'Metadata':'Content');
+  const [initialLink]=useState(()=>readInitialEditorLink(window.location.search));
+  const initialLinkConsumed=useRef(false);
+  const [linkNotice,setLinkNotice]=useState('');
+  const [tool, setTool] = useState<string>('Content');
   const [componentSearch,setComponentSearch]=useState('');
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
@@ -441,31 +473,48 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const recoveryLock=useRef(false);
   const recoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
   const [sourceReset,setSourceReset]=useState(0);
-  const editorPanels=['Content','Components','My Components','Theme','Metadata','Assets','Source','History'] as const;
-
   useEffect(() => {
     const key = id + ':' + attempt;
     if (!allowed || loaded.current === key) return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(verifiedOwner&&verifiedOwner.epoch!==epoch)return;
     let active = true;
+    const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
     void port.readOwnerPortfolio(id).then(result => {
-      if (!active) return;
-      if (!result.data) {setError(result.error?.message ?? 'Portfolio unavailable.'); return;}
+      if(!current())return;
+      if(!result.data||result.data.id!==id){
+        setError(result.error?.message??'Portfolio unavailable.');return;
+      }
+      const snapshot=result.data.snapshot;
+      const nextHead=snapshot?createEditorHead(snapshot):null;
+      if(!current())return;
       loaded.current = key;
       setRecord(result.data);
-      const snapshot=result.data.snapshot;
-      setHead(snapshot ? createEditorHead(snapshot) : null);
-      // Highlight the first actual managed title slot rather than whichever
-      // JSONB map key happened to deserialize first; never insert sample bytes.
-      const chosen=orderedLayerGroups(snapshot).flatMap(group=>group.slots)
-        .find(item=>item.name==='title')?.key??'';
-      setSlot(chosen);
+      setHead(nextHead);
+      // Consume only on the first authorized, validated snapshot. A missing
+      // snapshot keeps the existing setup flow; later reads never reapply URL.
+      if(snapshot&&!initialLinkConsumed.current){
+        const choice=resolveInitialEditorSlot(snapshot,initialLink.slot);
+        initialLinkConsumed.current=true;
+        setSlot(choice.key);setTool(initialLink.panel);
+        if(initialLink.panel==='Source')setOpenedSource(true);
+        if(initialLink.panel==='Assets')setOpenedAssets(true);
+        if(initialLink.panel==='History')setOpenedHistory(true);
+        const invalid=initialLink.invalidSlot||choice.missing;
+        setLinkNotice(initialLink.invalidPanel&&invalid?
+          'Requested editor panel and slot are unavailable. Using the default selection.':
+          initialLink.invalidPanel?'Requested editor panel is unavailable. Opened Content.':
+          invalid?'Requested slot is unavailable in this draft. Choose an available slot in Structure & layers.':'');
+      }else{
+        setSlot(snapshot?resolveInitialEditorSlot(snapshot,null).key:'');
+      }
       setOperation('');
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       setSourceDrafts({});
       setError('');
-    }).catch(()=>{if(active)setError('Private portfolio loading failed. Check your connection and retry.');});
+    }).catch(()=>{if(current())setError('Private portfolio loading failed. Check your connection and retry.');});
     return () => {active = false;};
-  }, [port, id, attempt, allowed]);
+  }, [port,id,attempt,allowed,verifiedOwner?.id,verifiedOwner?.epoch,initialLink]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
     if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
@@ -961,6 +1010,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     {error && <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
       onClick={()=>void reloadSavedDraft()}>{operation||pendingFields||sourceDirty?'Discard changes and load saved draft':'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
+    {linkNotice&&head&&<div className="ws-inline-alert">
+      <p role="status">{linkNotice}</p>
+      <button type="button" className="ws-secondary" onClick={()=>setLinkNotice('')}>Dismiss editor link notice</button>
+    </div>}
     {verifiedOwner&&record&&head&&<details className="ws-editor-safety" open={recoveryExpanded}
       onToggle={event=>setRecoveryExpanded(event.currentTarget.open)}>
       <summary>Browser recovery &amp; Keep Both</summary>
