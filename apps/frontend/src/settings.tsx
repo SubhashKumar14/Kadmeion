@@ -903,6 +903,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     </SettingsCard>
     <SettingsCard title="Private account data">
       <p>Choose an acknowledged application metadata JSON snapshot or bounded private recovery archive. Neither terminates access nor erases your account.</p>
+      {!inventory&&!quotaBlocked&&<p>Choosing an account download explicitly requests an inventory if this session has none. If an earlier capture was not acknowledged, the same operation is retried; it may allocate a snapshot only if the original did not commit. No inventory is captured when this page loads.</p>}
       <h3>Application metadata JSON</h3>
       <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category and a 12 MiB response limit; larger accounts may be refused. No uploaded bytes.</p>
       <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
