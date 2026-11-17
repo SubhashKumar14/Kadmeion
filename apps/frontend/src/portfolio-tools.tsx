@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import type { CSSProperties, KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent, Dispatch, SetStateAction } from 'react';
 import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
@@ -192,15 +192,13 @@ export function ThemeInspector({head, apply, width, resize}: {
   </div>;
 }
 
-export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
+export function SourceInspector({head,apply,back,buffers,setBuffers}:{
   head:EditorHead;slot:string;apply:Apply;back:()=>void;
-  onBufferDirtyChange:(dirty:boolean)=>void;
+  buffers:Record<string,string>;setBuffers:Dispatch<SetStateAction<Record<string,string>>>;
 }) {
   const [selected,setSelected]=useState('');
-  const [buffers,setBuffers]=useState<Record<string,string>>({});
   const [notice,setNotice]=useState('');
   const pendingSource=unappliedSourceBufferCount(buffers,head.snapshot.files);
-  useEffect(()=>onBufferDirtyChange(pendingSource>0),[onBufferDirtyChange,pendingSource]);
   const files=Object.keys(head.snapshot.files).sort((left,right)=>{
     const a=left.startsWith('slots/'),b=right.startsWith('slots/');
     return a===b?left.localeCompare(right):a?-1:1;
@@ -248,12 +246,20 @@ export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
     <section className="ws-source-editor" aria-label="Selected project source">
       <header className="ws-source-editor-header">
         <span>{path||'No source'} · {owned?'Owned editable text':'Protected generated composition'}</span>
-        <span>{changed?'Unsaved source buffer':'Saved local snapshot'}</span>
+        <span>{changed?'Unapplied source buffer':'Matches working snapshot'}</span>
       </header>
       {path?owned?<div className="ws-source-code-window">
         <label htmlFor="kd-source-editor">Owned source buffer</label>
         <textarea id="kd-source-editor" spellCheck={false} rows={22} value={buffer}
-          onChange={event=>{const next=event.target.value;setBuffers(current=>({...current,[path]:next}));setNotice('');}}/>
+          onChange={event=>{
+            const next=event.target.value;
+            setBuffers(previous=>{
+              const updated={...previous};
+              if(next===current)delete updated[path];else updated[path]=next;
+              return updated;
+            });
+            setNotice('');
+          }}/>
       </div>:<div className="ws-source-code-window ws-source-preview" role="group" aria-label="Readonly generated file">
         <pre><code>{current}</code></pre>
       </div>:<p>No source file is available.</p>}
@@ -516,6 +522,14 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
     });
     return ()=>{active=false;};
   },[port,id,revision]);
+  // A read can resolve after the owner edits, saves, changes account/route,
+  // or closes History. Never use the old captured editor callback to restore.
+  const latest=useRef<{port:SupabaseBrowserAuthPort;id:string;revision:number;
+    working:PortfolioSnapshot;buffered:boolean;onRestore:(snapshot:PortfolioSnapshot)=>boolean}|null>(null);
+  useLayoutEffect(()=>{
+    latest.current={port,id,revision,working,buffered,onRestore};
+    return ()=>{latest.current=null;};
+  },[port,id,revision,working,buffered,onRestore]);
   // A comparison describes one exact working snapshot, not later edits/restores.
   useEffect(()=>{setComparison(null);},[working]);
   async function compare(){
@@ -524,6 +538,12 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
     try{
       const historical=await readSelectedUnsafe(selected);
       if(!historical)return;
+      const current=latest.current;
+      if(!current||current.port!==port||current.id!==id||current.revision!==revision)return;
+      if(current.working!==working){
+        setError('The working draft changed during comparison. Compare again.');
+        return;
+      }
       const paths=new Set([...Object.keys(working.files),...Object.keys(historical.files)]);
       const keys=new Set([...Object.keys(working.slots),...Object.keys(historical.slots)]);
       const changedFiles=[...paths].filter(path=>working.files[path]!==historical.files[path]).length;
@@ -552,7 +572,13 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
     setBusy(true);setError('');
     try{
       const snapshot=await readSelectedUnsafe(selected);
-      if(snapshot&&onRestore(snapshot)){setSelected(null);setComparison(null);}
+      const current=latest.current;
+      if(!snapshot||!current||current.port!==port||current.id!==id||current.revision!==revision)return;
+      if(current.working!==working||current.buffered){
+        setError('The working draft or its unapplied edits changed during restore. Review them and retry.');
+        return;
+      }
+      if(current.onRestore(snapshot)){setSelected(null);setComparison(null);}
     }finally{setBusy(false);}
   }
   return <div className="ws-editor-tool ws-revision-list">
