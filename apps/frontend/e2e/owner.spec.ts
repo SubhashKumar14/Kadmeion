@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
@@ -47,9 +47,11 @@ test.afterEach(async ({page},info)=>{
   const gate=await page.locator('.ws-heading').first().isVisible().catch(()=>false)
     ?'WORKSPACE_VISIBLE':await page.getByRole('button',{name:'Retry verification'}).isVisible().catch(()=>false)
       ?'LOCKED':'UNKNOWN_OR_CHECKING';
-  await info.attach('sanitized-route-diagnostics',{body:JSON.stringify({
+  const dir='/tmp/kadmeion-owner-captures';
+  await mkdir(dir,{recursive:true});
+  await writeFile(dir+'/'+randomUUID()+'.route-diagnostics.json',JSON.stringify({
     pathname,gate,events:safeDiagnostics.get(page)??[]
-  }),contentType:'application/json'});
+  }),{encoding:'utf8',mode:0o600});
 });
 
 
