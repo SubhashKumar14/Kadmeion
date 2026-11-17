@@ -1614,3 +1614,27 @@ Previous new three-pane RevisionWorkspace `962d3b4` passed both [frontend CI 437
 **Remaining ownership:** S2 branch `b2a5820` unchanged; fix S2-only `templates.tsx` five serious sign-in accessible-label mismatches, rerun axe. S3 `84f22ad` and S4 `58ef03d` already merged, continue independently; S6 add same-port actual React shell A→B→A/delayed A and S5 private Settings tests, historical frozen >50 and secondary buffer tests. S5 PR #9 `d7b15b5` still DRAFT/UNMERGED, changed only its four owned auth/growth/settings/operations files; dedicated React TS/build and same-live-port A→B security acceptance absent. Do NOT merge until reviewed against S0 shell and S6 focused evidence. S1/S0 coordinate contract and code only within sole ownership. No main, hosted publication/revocation, production, provider/secret, migrations or paid-tier changes.
 
 **Next handoff:** verify final exact-SHA CI, fix actual combined failures in sole-owned modules, S2 Templates accessible names, S6 owner-epoch browser tests, then reassess S5 and full staged F0–F6 acceptance. New GitHub handoff commit advances HEAD and requires own CI verification.
+
+
+---
+
+## 17 November 2026 — Replacement Session 0 recovery (13:05 IST)
+
+Owner replaces all seven ChatGPT sessions; same run `20261117-7232a31`, immutable baseline `7232a312c821459e6d88ba400eed6a391738c979`, same dashboard and logs. No branch recreation/reset/force push or PR duplication. Verified integration head before this documentation update: `dcecbec5195d81a71364d3ceb89af65ddfde2118`.
+
+| Worker | Verified remote head | Latest PR | Disposition |
+|---|---|---|---|
+| S1 | 77ec72e3347a6d25e4597d0d5b2932d083eed2ae | #15 | merged 4d589935; no ahead commits |
+| S2 | b2a5820525363976317e1d3f15cb3455747ca7ee | #16 | merged 356960d8; no ahead commits |
+| S3 | 84f22adfa57cc0d3576e828b2850ba25d478ca99 | #4 | merged 5aa5ef0; no ahead commits; #14 closed without merge |
+| S4 | 58ef03d38a741df558a8c940d0577bf375249fae | #17 | merged a3519d6; no ahead commits |
+| S5 | d7b15b5fad779e90eb142d071257c5752e23b558 | #9 | open draft, 10 ahead, 75 behind; four owned TSX paths preserved |
+| S6 | 64cb3881ade065645f9f02c5b36f7996936db5a2 | #18 | merged 433768a4; no ahead commits |
+
+**Exact combined CI FAILED**: [frontend 43954590025](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43954590025) — TS/build completed before public Chromium 21 passed/1 failed/16 skipped, public.spec.ts:392 Templates label-content-name-mismatch (S2). [App/DB 43954590006](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43954590006) and [push 43954582724](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43954582724) — contracts SUCCESS, authenticated Chromium 15 passed/1 failed in both runs: settings-owner.spec.ts:232 Fresh sign-in verified receipt missing after account-exit reauth. S5 PR #9 remains unmerged, so this is a combined baseline problem, not proof against candidate. S6 previous worker CI 43952440468 passed 511 DB assertions and 16 browser cases; earlier passes do not override current failures.
+
+**QUESTION-0-010 (P0, S1/S5/S6; S0 owns workspace):** exact source settings.tsx verifyIdentity begins challenge, calls reauthenticateCurrentOwner then completeReauth and stores receipt in component state. Adapter stores new credentials and emits epoch synchronously; workspace clears gate/snapshot and keys descendants by epoch. Likely reauth unmount loses receipt, runtime confirmation needed. Preserve fail-closed transitions, live getUser, stale result rejection and A→B→A isolation. No suppressing unknown invalidation, password/token or reauth authority in localStorage, fake receipt or relaxed test. Prefer authoritative owner/session/request-bound recovery/readback if existing backend supports it; otherwise propose bounded contract. S1 traces session continuity/challenge semantics, S5 develops consumer correction after S0 agreement, S6 reproduces and tests actual proof/expiry/denial and delayed A→B→A. S0 coordinates shared gate changes once contract evidence is ready.
+
+**Immediate assignments:** S2 fix Templates accessible names without hiding controls/disabling axe; S1 reconcile contract inventory and investigate QUESTION-0-010; S3 secondary/source buffer, post-restore reload, stale CAS and offline recovery gaps; S4 historical >50 pin eligibility/invalid digest and retry + empty exit plan; S5 keep draft #9, sync safely and obtain dedicated React TS/build and negative browser proof; S6 verify failed exact-run trace, reauth and cross-account epoch, then editor/release cases. Existing task/question IDs and sole ownership authoritative. Only S0 integrates. All other worker heads ancestors; no additional merge now.
+
+Recovery coverage: fetched dashboard and seven logs, Git branch/PR metadata, exact CI jobs and failure logs, full tracked tree (430 paths, 165 project-docs), inventory and central coordination/handoff/contract register and targeted security/workflow/source. Full per-document/referenced visual review and exhaustive older discussion history not completed in replacement pass; inventory is not a read attestation. No checkout in accessible local workspace; prior chat sandbox/unpushed edits not recoverable/verified here. No new code or local browser tests in this replacement checkpoint. Keep source history; no main/production/provider/secrets/migrations/destructive or paid changes. Recheck current head and CI after this handoff-only commit.
