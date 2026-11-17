@@ -10,6 +10,8 @@ import { assertOwnedSourcePath, validateSnapshot, type EditorHead, type Portfoli
 export interface EditorRecoveryPayload {
   formatVersion: 1;
   cloudBaseRevision: number;
+  /** Older v1 copies remain readable; new editor writes include the local counter. */
+  localRevision?: number;
   cloudOperationId: string | null;
   snapshot: PortfolioSnapshot;
   fieldDrafts: Record<string,string>;
@@ -54,8 +56,11 @@ function validateRecoveryStrings(value:unknown,limit:number,checkKey:(key:string
 }
 function validateRecoveryPayload(value:EditorRecoveryPayload):void {
   if(!isPlainRecord(value)||!exactKeys(value,[
-    'formatVersion','cloudBaseRevision','cloudOperationId','snapshot','fieldDrafts','sourceDrafts','seoDraft'
-  ])||value.formatVersion!==1||!Number.isSafeInteger(value.cloudBaseRevision)||value.cloudBaseRevision<0)
+    'formatVersion','cloudBaseRevision','cloudOperationId','snapshot','fieldDrafts','sourceDrafts','seoDraft',
+    ...(Object.hasOwn(value,'localRevision')?['localRevision']:[])
+  ])||value.formatVersion!==1||!Number.isSafeInteger(value.cloudBaseRevision)||value.cloudBaseRevision<0||
+     (Object.hasOwn(value,'localRevision')&&
+      (!Number.isSafeInteger(value.localRevision)||typeof value.localRevision!=='number'||value.localRevision<0)))
     throw recoveryFailure('Invalid recovery payload.');
   if(value.cloudOperationId!==null)assertRecoveryId(value.cloudOperationId);
   validateSnapshot(value.snapshot);

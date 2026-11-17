@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, Dispatch, SetStateAction } from 'react';
 import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
@@ -192,15 +192,13 @@ export function ThemeInspector({head, apply, width, resize}: {
   </div>;
 }
 
-export function SourceInspector({head,apply,back,onBufferDirtyChange}:{
+export function SourceInspector({head,apply,back,buffers,setBuffers}:{
   head:EditorHead;slot:string;apply:Apply;back:()=>void;
-  onBufferDirtyChange:(dirty:boolean)=>void;
+  buffers:Record<string,string>;setBuffers:Dispatch<SetStateAction<Record<string,string>>>;
 }) {
   const [selected,setSelected]=useState('');
-  const [buffers,setBuffers]=useState<Record<string,string>>({});
   const [notice,setNotice]=useState('');
   const pendingSource=unappliedSourceBufferCount(buffers,head.snapshot.files);
-  useLayoutEffect(()=>onBufferDirtyChange(pendingSource>0),[onBufferDirtyChange,pendingSource]);
   const files=Object.keys(head.snapshot.files).sort((left,right)=>{
     const a=left.startsWith('slots/'),b=right.startsWith('slots/');
     return a===b?left.localeCompare(right):a?-1:1;
