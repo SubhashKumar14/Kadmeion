@@ -194,6 +194,7 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
   const milestones=milestonePage?.items;
   const [milestoneError,setMilestoneError]=useState('');
   const [milestoneLoading,setMilestoneLoading]=useState(false);
+  const milestoneRead=useRef(false);
   const [milestoneAttempt,setMilestoneAttempt]=useState(0);
   const [milestoneEdit,setMilestoneEdit]=useState<{id:string;title:string;due:string}|null>(null);
   const [deleting,setDeleting]=useState<{kind:'goal'|'milestone';id:string;title:string}|null>(null);
@@ -225,15 +226,16 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     setEditUnit(goal.unit??'');setEditDue(goal.due_on??'');setEditing(true);
   }
   async function saveGoal(event:FormEvent<HTMLFormElement>){
-    event.preventDefault();if(busy||!editing||!editTitle.trim())return;
-    setBusy(true);setError('');setStatus('');
+    event.preventDefault();if(busy||mutation.current||milestoneRead.current||!editing||!editTitle.trim())return;
+    mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       await service.updateGoal(goal.id,{title:editTitle.trim(),description:editDescription.trim(),
         target_value:editTarget.trim()?Number(editTarget):null,
         unit:editTarget.trim()?editUnit.trim()||null:null,due_on:editDue||null});
+      if(!mounted.current)return;
       setEditing(false);setStatus('Goal details updated privately.');onGoalUpdated();
-    }catch(err){setError(presentError(err));}
-    finally{setBusy(false);}
+    }catch(err){if(mounted.current)setError(presentError(err));}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   useEffect(()=>{
     let active=true;setProgress(null);
@@ -250,8 +252,8 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     return()=>{active=false;};
   },[service,goal.id,reload,milestoneAttempt]);
   async function moreMilestones(){
-    if(!milestonePage?.nextCursor||milestoneLoading||busy||mutation.current)return;
-    const cursor=milestonePage.nextCursor;setMilestoneLoading(true);setMilestoneError('');
+    if(!milestonePage?.nextCursor||milestoneRead.current||busy||mutation.current)return;
+    const cursor=milestonePage.nextCursor;milestoneRead.current=true;setMilestoneLoading(true);setMilestoneError('');
     try{
       const next=await service.listMilestonesPage(goal.id,50,cursor);
       if(!mounted.current)return;
@@ -261,11 +263,11 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
         return {...next,items:[...previous.items,...next.items.filter(item=>!seen.has(item.id))]};
       });
     }catch(err){if(mounted.current)setMilestoneError(presentError(err));}
-    finally{if(mounted.current)setMilestoneLoading(false);}
+    finally{milestoneRead.current=false;if(mounted.current)setMilestoneLoading(false);}
   }
   async function saveMilestone(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(busy||archived||mutation.current||!milestoneEdit?.title.trim())return;
+    if(busy||archived||mutation.current||milestoneRead.current||!milestoneEdit?.title.trim())return;
     const edit=milestoneEdit;mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       await service.updateMilestone(edit.id,{title:edit.title.trim(),due_on:edit.due||null});
@@ -276,7 +278,7 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
   }
   async function removeConfirmed(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!deleting||busy||mutation.current||confirmation!==(deleting.kind==='goal'?'DELETE GOAL':'DELETE MILESTONE'))return;
+    if(!deleting||busy||mutation.current||milestoneRead.current||confirmation!==(deleting.kind==='goal'?'DELETE GOAL':'DELETE MILESTONE'))return;
     const deletion=deleting;mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       if(deletion.kind==='goal'){
@@ -289,39 +291,45 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
         setStatus('Milestone deletion acknowledged.');setReload(n=>n+1);
       }
     }catch{
-      if(mounted.current)setError('Deletion was not confirmed. Reload the private records before deciding whether to retry. No recovery or backup erasure is claimed.');
+      if(mounted.current){
+        setDeleting(null);setConfirmation('');setReload(n=>n+1);onGoalUpdated();
+        setError('Deletion was not confirmed. Private records are being refreshed; check them before confirming another deletion. No recovery or backup erasure is claimed.');
+      }
     }finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   const template=goalTemplates.find(item=>item.id===templateId);
   const suggestions=template?.milestones.length?template.milestones:['Define the next step','Review progress','Record what I learned'];
   async function addProgress(event:FormEvent<HTMLFormElement>){
-    event.preventDefault();if(busy||archived||value.trim()==='')return;
-    setBusy(true);setError('');setStatus('');
+    event.preventDefault();if(busy||archived||mutation.current||milestoneRead.current||value.trim()==='')return;
+    mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       await service.addProgress(goal.id,operation,Number(value),note);
+      if(!mounted.current)return;
       setOperation(crypto.randomUUID());setValue('');setNote('');
       setStatus('Manual progress saved privately.');setReload(r=>r+1);
-    }catch(err){setError(presentError(err));}
-    finally{setBusy(false);}
+    }catch(err){if(mounted.current)setError(presentError(err));}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   async function milestone(event:FormEvent<HTMLFormElement>){
-    event.preventDefault();if(busy||archived||!name.trim())return;
-    setBusy(true);setError('');setStatus('');
+    event.preventDefault();if(busy||archived||mutation.current||milestoneRead.current||!name.trim())return;
+    mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       await service.addMilestone(goal.id,milestoneOp,name.trim(),due||null);
+      if(!mounted.current)return;
       setMilestoneOp(crypto.randomUUID());setName('');setDue('');
       setStatus('Milestone saved privately.');setReload(r=>r+1);
-    }catch(err){setError(presentError(err));}
-    finally{setBusy(false);}
+    }catch(err){if(mounted.current)setError(presentError(err));}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   async function toggle(item:GoalMilestone){
-    if(busy||archived)return;
-    setBusy(true);setError('');setStatus('');
+    if(busy||archived||mutation.current||milestoneRead.current)return;
+    mutation.current=true;setBusy(true);setError('');setStatus('');
     try{
       await service.updateMilestone(item.id,{completed_at:item.completed_at?null:new Date().toISOString()});
+      if(!mounted.current)return;
       setStatus('Milestone state confirmed by the private server.');setReload(r=>r+1);
-    }catch(err){setError(presentError(err));}
-    finally{setBusy(false);}
+    }catch(err){if(mounted.current)setError(presentError(err));}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
   const current=progress?.[0];
   return <div className="ws-growth-detail">
@@ -340,7 +348,7 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
       <label className="ws-growth-field">Edit target value<input type="number" min="0.01" step="0.01" max="9999999999.99" disabled={busy} value={editTarget} onChange={event=>setEditTarget(event.target.value)}/></label>
       <label className="ws-growth-field">Edit target unit<input maxLength={32} disabled={busy||!editTarget.trim()} value={editUnit} onChange={event=>setEditUnit(event.target.value)}/></label>
       <label className="ws-growth-field">Edit due date<input type="date" disabled={busy} value={editDue} onChange={event=>setEditDue(event.target.value)}/></label>
-      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||!editTitle.trim()}>Save goal details</button>
+      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||milestoneLoading||!editTitle.trim()}>Save goal details</button>
         <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setEditing(false)}>Cancel goal edit</button></div>
     </form>}
     <h4>Record or correct progress</h4>
@@ -348,15 +356,15 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     <p>Record a new absolute value to correct a mistake. Existing history is preserved; no external provider progress is assumed.</p>
     <form className="ws-growth-form" onSubmit={event=>void addProgress(event)}>
       <label className="ws-growth-field">New absolute progress value
-        <input type="number" required min="0" max="9999999999.99" step="0.01" value={value} disabled={busy||archived}
+        <input type="number" required min="0" max="9999999999.99" step="0.01" value={value} disabled={busy||milestoneLoading||archived}
           onChange={event=>{setValue(event.target.value);setOperation(crypto.randomUUID());}}/></label>
       <label className="ws-growth-field">Manual progress note
-        <input maxLength={500} value={note} disabled={busy||archived} onChange={event=>{setNote(event.target.value);setOperation(crypto.randomUUID());}}/></label>
-      <button type="submit" className="ws-secondary" disabled={busy||archived||value.trim()===''}>Record manual progress</button>
+        <input maxLength={500} value={note} disabled={busy||milestoneLoading||archived} onChange={event=>{setNote(event.target.value);setOperation(crypto.randomUUID());}}/></label>
+      <button type="submit" className="ws-secondary" disabled={busy||milestoneLoading||archived||value.trim()===''}>Record manual progress</button>
     </form>
     <h4>Manual progress history</h4>
-    <ProgressHistory key={goal.id+':'+reload} service={service} goalId={goal.id} busy={busy||archived}
-      onCorrection={item=>{if(busy)return;setValue(String(item.value));setNote('Correction using recorded value: '+item.value);setOperation(crypto.randomUUID());}}/>
+    <ProgressHistory key={goal.id+':'+reload} service={service} goalId={goal.id} busy={busy}
+      onCorrection={archived?undefined:item=>{if(busy)return;setValue(String(item.value));setNote('Correction using recorded value: '+item.value);setOperation(crypto.randomUUID());}}/>
     <h4>Milestones</h4>
     {!milestonePage&&!milestoneError&&<p role="status">Loading private milestones…</p>}
     {milestoneError&&<div><p role="alert">{milestoneError}</p><button type="button" className="ws-secondary"
@@ -366,23 +374,23 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     <ul className="ws-growth-milestones">{milestones?.map(item=><li key={item.id}>
       <span>{item.title}{item.due_on?' · Due '+item.due_on:''}{item.completed_at?' · Completed (manual)':' · Open'}</span>
       <div className="ws-actions">
-      <button type="button" disabled={busy||archived} className="ws-secondary" onClick={()=>void toggle(item)}>
+      <button type="button" disabled={busy||milestoneLoading||archived} className="ws-secondary" onClick={()=>void toggle(item)}>
         {item.completed_at?'Mark incomplete':'Mark complete'}</button>
-      <button type="button" className="ws-secondary" disabled={busy||archived} onClick={()=>setMilestoneEdit({id:item.id,title:item.title,due:item.due_on??''})}>Edit milestone</button>
-      <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{setDeleting({kind:'milestone',id:item.id,title:item.title});setConfirmation('');}}>Delete milestone</button></div>
+      <button type="button" className="ws-secondary" disabled={busy||milestoneLoading||archived} onClick={()=>setMilestoneEdit({id:item.id,title:item.title,due:item.due_on??''})}>Edit milestone</button>
+      <button type="button" className="ws-secondary" disabled={busy||milestoneLoading} onClick={()=>{setDeleting({kind:'milestone',id:item.id,title:item.title});setConfirmation('');}}>Delete milestone</button></div>
     </li>)}</ul>
     {milestonePage?.nextCursor&&!milestoneError&&<button type="button" className="ws-secondary" disabled={busy||milestoneLoading}
       onClick={()=>void moreMilestones()}>{milestoneLoading?'Loading more milestones…':'Load more milestones'}</button>}
     {milestoneEdit&&<form className="ws-growth-form" onSubmit={event=>void saveMilestone(event)}>
-      <label className="ws-growth-field">Edit milestone title<input required maxLength={160} disabled={busy||archived} value={milestoneEdit.title}
+      <label className="ws-growth-field">Edit milestone title<input required maxLength={160} disabled={busy||milestoneLoading||archived} value={milestoneEdit.title}
         onChange={event=>setMilestoneEdit({...milestoneEdit,title:event.target.value})}/></label>
-      <label className="ws-growth-field">Edit milestone due date<input type="date" disabled={busy||archived} value={milestoneEdit.due}
+      <label className="ws-growth-field">Edit milestone due date<input type="date" disabled={busy||milestoneLoading||archived} value={milestoneEdit.due}
         onChange={event=>setMilestoneEdit({...milestoneEdit,due:event.target.value})}/></label>
-      <div className="ws-actions"><button className="ws-secondary" type="submit" disabled={busy||archived||!milestoneEdit.title.trim()}>Save milestone details</button>
+      <div className="ws-actions"><button className="ws-secondary" type="submit" disabled={busy||milestoneLoading||archived||!milestoneEdit.title.trim()}>Save milestone details</button>
       <button className="ws-secondary" type="button" disabled={busy} onClick={()=>setMilestoneEdit(null)}>Cancel milestone edit</button></div>
     </form>}
     <label className="ws-growth-field">Suggested milestone draft
-      <select value={suggestion} disabled={busy||archived} onChange={event=>setSuggestion(event.target.value)}>
+      <select value={suggestion} disabled={busy||milestoneLoading||archived} onChange={event=>setSuggestion(event.target.value)}>
         <option value="">Choose a suggestion (optional)</option>{suggestions.map(item=><option key={item}>{item}</option>)}
       </select></label>
     <button type="button" className="ws-secondary" disabled={!suggestion||busy||archived||!!name.trim()}
@@ -390,19 +398,19 @@ function GoalDetail({service,goal,onGoalUpdated,onGoalDeleted,templateId}:{servi
     <p>Suggestions are drafts; adjust the title and due date before adding. No milestone is automatically recorded.</p>
     <form className="ws-growth-form" onSubmit={event=>void milestone(event)}>
       <label className="ws-growth-field">New milestone
-        <input required maxLength={160} value={name} disabled={busy||archived} onChange={event=>{setName(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
+        <input required maxLength={160} value={name} disabled={busy||milestoneLoading||archived} onChange={event=>{setName(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
       <label className="ws-growth-field">Milestone due date (optional)
-        <input type="date" value={due} disabled={busy||archived} onChange={event=>{setDue(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
-      <button type="submit" className="ws-secondary" disabled={busy||archived||!name.trim()}>Add milestone</button>
+        <input type="date" value={due} disabled={busy||milestoneLoading||archived} onChange={event=>{setDue(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
+      <button type="submit" className="ws-secondary" disabled={busy||milestoneLoading||archived||!name.trim()}>Add milestone</button>
     </form>
     <h4>Goal lifecycle</h4>
     <p>Archive to keep progress and milestones. Deletion removes this goal and its associated records from the active private database; it does not use the 15-day project and portfolio Trash.</p>
-    <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{setDeleting({kind:'goal',id:goal.id,title:goal.title});setConfirmation('');}}>Delete selected goal</button>
+    <button type="button" className="ws-secondary" disabled={busy||milestoneLoading} onClick={()=>{setDeleting({kind:'goal',id:goal.id,title:goal.title});setConfirmation('');}}>Delete selected goal</button>
     {deleting&&<form className="ws-growth-form" onSubmit={event=>void removeConfirmed(event)}>
       <p>Delete {deleting.title}? {deleting.kind==='goal'?'Associated milestone and progress rows are removed by the database.':'Only this milestone is affected.'} No Undo or backup erasure is promised.</p>
       <label className="ws-growth-field">Type {deleting.kind==='goal'?'DELETE GOAL':'DELETE MILESTONE'} to confirm<input value={confirmation} disabled={busy} onChange={event=>setConfirmation(event.target.value)}/></label>
-      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||confirmation!==(deleting.kind==='goal'?'DELETE GOAL':'DELETE MILESTONE')}>Confirm {deleting.kind} deletion</button>
-      <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{setDeleting(null);setConfirmation('');}}>Cancel deletion</button></div>
+      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||milestoneLoading||confirmation!==(deleting.kind==='goal'?'DELETE GOAL':'DELETE MILESTONE')}>Confirm {deleting.kind} deletion</button>
+      <button type="button" className="ws-secondary" disabled={busy||milestoneLoading} onClick={()=>{setDeleting(null);setConfirmation('');}}>Cancel deletion</button></div>
     </form>}
   </div>;
 }
