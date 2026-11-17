@@ -357,7 +357,7 @@ test('C03 canonical optional digest must match actual GET bytes, independent HEA
   }
 });
 test('C03 direct media must independently pass HEAD before acknowledgement',async()=>{
-  const png=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64'));
+  const png=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64'));
   const imageSha=createHash('sha256').update(png).digest('hex');
   const frozen=html.replace('</main>','<img loading="lazy" decoding="async" src="./assets/'+imageSha+'.png" alt="Evidence" width="1" height="1"></main>');
   const frozenSha=createHash('sha256').update(frozen).digest('hex');
