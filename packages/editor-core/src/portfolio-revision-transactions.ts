@@ -35,6 +35,8 @@ export type EditorIntent =
   | { kind:'CLEAR_SLOT'; slotKey:string }
   | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
+  /** Draft metadata placement only. Never grants media-byte attestation. */
+  | { kind:'PLACE_PRIVATE_IMAGE'; slotKey:string; assetId:string; altText:string }
   | { kind:'CUSTOMIZE_COMPONENT'; slotKey:string; copiedSource:string }
   | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean }
   | { kind:'EDIT_OWNED_SOURCE'; slotKey:string; source:string }
@@ -56,6 +58,23 @@ const OP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a
 function assertSlotKey(key: string) {
   if (typeof key!=='string' || !SLOT_KEY.test(key) || RESERVED_KEYS.has(key))
     throw new ContractError('VALIDATION', 'Invalid or reserved slot key.');
+}
+
+/** A real declared media slot, not merely a key ending in "-image". */
+export function canPlacePrivateImage(snapshot:PortfolioSnapshot,key:string):boolean {
+  const slot=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
+  if(!slot||(slot.state!=='EMPTY'&&(slot.state!=='S0'||slot.componentId!=='image@1')))return false;
+  try{
+    const page=JSON.parse(snapshot.files['pages/home.page.json']??'null') as {sections?:unknown[]}|null;
+    return !!page&&Array.isArray(page.sections)&&page.sections.some(raw=>{
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))return false;
+      const section=raw as {id?:unknown;layout?:unknown};
+      if(typeof section.id!=='string'||typeof section.layout!=='string')return false;
+      return portfolioLayout(section.layout)?.slots.some(name=>
+        ['avatar','image','imagea','imageb','media','thumbs'].includes(name.toLowerCase())&&
+        section.id+'-'+name.toLowerCase()===key)===true;
+    });
+  }catch{return false;}
 }
 
 function isOwned(slot: SlotAssignment): boolean {
@@ -171,6 +190,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     CLEAR_SLOT:['kind','slotKey'],
     ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
     UPDATE_CONTENT:['kind','slotKey','content'],
+    PLACE_PRIVATE_IMAGE:['kind','slotKey','assetId','altText'],
     CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
     REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement'],
     EDIT_OWNED_SOURCE:['kind','slotKey','source'],
@@ -307,6 +327,26 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         validateContent(intent.content);
         next.slots[intent.slotKey]={...slot,content:{...slot.content,...intent.content}};
         break;
+      case 'PLACE_PRIVATE_IMAGE': {
+        if(!canPlacePrivateImage(next,intent.slotKey))
+          throw new ContractError('VALIDATION','Choose an empty or pristine image-compatible layout slot. Owned source needs protected replacement.');
+        if(typeof intent.assetId!=='string'||!OP_ID.test(intent.assetId)||
+           typeof intent.altText!=='string'||!intent.altText.trim()||intent.altText.length>300||
+           /[\x00-\x1f\x7f]/.test(intent.altText))
+          throw new ContractError('VALIDATION','Choose an owner-verified asset and descriptive alt text (1–300 characters).');
+        const assetId=intent.assetId.toLowerCase(),altText=intent.altText.trim();
+        const content:Record<string,string>={asset_id:assetId,alt_text:altText};
+        // Preserve an existing pin only for the exact same asset; new metadata
+        // must not fabricate or inherit a digest belonging to different bytes.
+        if(slot.state==='S0'&&slot.content.asset_id===assetId&&
+           /^[0-9a-f]{64}$/.test(slot.content.source_sha256??''))
+          content.source_sha256=slot.content.source_sha256!;
+        if(slot.state!=='EMPTY'){
+          stash.push(structuredClone(slot));next.stashes[intent.slotKey]=stash;
+        }
+        next.slots[intent.slotKey]={state:'S0',componentId:'image@1',content};
+        break;
+      }
       case 'CUSTOMIZE_COMPONENT': {
         if (slot.state!=='S0' || !slot.componentId)
           throw new ContractError('VALIDATION', 'Only a trusted library component can be customized.');

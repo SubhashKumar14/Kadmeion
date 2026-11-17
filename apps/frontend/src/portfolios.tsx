@@ -4,7 +4,7 @@ import { unappliedSourceBufferCount } from './behavior.ts';
 import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
 import {
-  applyEditorTransaction, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
+  applyEditorTransaction, canPlacePrivateImage, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
@@ -460,7 +460,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     // strand inspector/source buffers against a different component version.
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
-      intent.kind === 'CUSTOMIZE_COMPONENT';
+      intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
     if (((intent.kind === 'UNDO' || intent.kind === 'REDO') && (pendingFields || sourceDirty)) ||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
@@ -728,6 +728,29 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(scopeCurrent(view))setRecoveryNotice('Recovery operation not completed. No working or cloud draft was replaced.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
+  /** Revalidate the selected owner metadata immediately before placement.
+   * No arbitrary URLs, storage keys or invented byte digests enter the slot. */
+  async function placeAsset(assetId:string,target:string,altText:string):Promise<boolean>{
+    const view=captureRecovery();
+    if(!view||!view.head||recoveryLock.current||!canPlacePrivateImage(view.head.snapshot,target))return false;
+    if(sourceDirty||Object.keys(view.fieldDrafts).some(key=>key.startsWith(target+':'))){
+      setError('Apply or discard pending target/source edits before placing an image.');return false;
+    }
+    recoveryLock.current=true;setRecoveryBusy(true);
+    try{
+      const response=await view.port.listOwnerAssets();
+      if(!draftCurrent(view))return false;
+      const asset=response.data?.find(row=>row.id===assetId);
+      if(!asset){setError('Current owner asset registration could not be verified. No slot was changed.');return false;}
+      recoveryLock.current=false;
+      if(!apply({kind:'PLACE_PRIVATE_IMAGE',slotKey:target,assetId:asset.id,altText}))return false;
+      setSlot(target);setNotice('Private image reference applied to working draft. Save draft to persist it. Verified media bytes are still required for release.');
+      return true;
+    }catch{
+      if(scopeCurrent(view))setError('Asset validation failed. No slot was changed.');
+      return false;
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
   async function removeRecovery(copyId:string){
     const view=captureRecovery();
     if(!view||recoveryLock.current||!window.confirm('Remove this browser recovery copy? This cannot be undone. Cloud draft is unaffected.'))return;
@@ -960,9 +983,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
+          {canPlacePrivateImage(head.snapshot,slot)&&<div className="ws-editor-tool">
+            {active.componentId==='image@1'&&<p>Private image reference · {active.content.alt_text||'No alt text'}.
+              {active.content.source_sha256?' Stored pin; release verification required.':' Metadata only; release blocked until trusted byte attestation.'}</p>}
+            <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+              onClick={()=>{setOpenedAssets(true);setTool('Assets');}}>{active.state==='EMPTY'?'Choose private image':'Replace private image'}</button>
+          </div>}
           {active.state === 'EMPTY'
             ? <button type="button" className="ws-secondary" disabled={saving}
                 onClick={() => setTool('Components')}>Choose compatible component</button>
+            : active.componentId==='image@1'&&active.state==='S0'?
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||sourceDirty}
+                onClick={()=>apply({kind:'CLEAR_SLOT',slotKey:slot})}>Move image to unplaced</button>
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
                 placeholder={active.componentId==='title-stacked@1'&&value===''?
                   'Example: Build things that make a difference. (not saved)':'Enter your own content'}
@@ -1051,7 +1083,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         buffered={pendingFields||sourceDirty} onRestore={restore} back={()=>setTool('Content')}/>
     </div>}
     {openedAssets&&<div hidden={tool!=='Assets'}>
-      <AssetList port={port} back={()=>setTool('Content')}/>
+      <AssetList port={port} back={()=>setTool('Content')} snapshot={head.snapshot}
+        targets={verifiedOwner?layerGroups.flatMap(group=>group.slots.filter(item=>canPlacePrivateImage(head.snapshot,item.key))
+          .map(item=>({key:item.key,label:group.title+' · '+item.name,state:item.state}))):[]}
+        selectedSlot={slot} placementDisabled={saving||recoveryBusy||sourceDirty} onPlace={placeAsset}/>
     </div>}
     </>)}
     {/* Author preview may hide the source panel, but must not unmount its

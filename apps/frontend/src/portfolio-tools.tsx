@@ -78,20 +78,24 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     const key=section.id+'-'+name.toLowerCase();
     const assignment=snapshot?.slots[key];
     const text=slotDisplay(assignment);
+    const imageReference=assignment?.state==='S0'&&assignment.componentId==='image@1'&&!!assignment.content.asset_id;
+    const imageLabel=imageReference?'Private image reference — '+(assignment.content.alt_text||'Alt text missing'):'';
     const label=SLOT_TITLES[name.toLowerCase()]??name;
     const example=editing&&!text?layoutExample(section.renderId,name):null;
-    const visibleLabel=text|| (kind==='media' ? '' : example??('Add '+label));
+    const visibleLabel=imageLabel||text|| (kind==='media' ? '' : example??('Add '+label));
     const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
     if(editing)return <button className={className} type="button"
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
-      {text||(
+      {imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:text||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
         example?<span className="pv-placeholder pv-layout-example">{example}</span>:
         <span className="pv-placeholder">Add {label}</span>
       )}
     </button>;
+    // Reference labels are author-only, never fabricated visitor imagery.
+    if(imageReference)return showMissing?<span className={className}>{imageLabel} · Preview bytes unavailable</span>:null;
     return text?<span className={className}>{text}</span>:
       !showMissing?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
   };
@@ -143,7 +147,12 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
                 <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="action"/>)}</div>
               {section.slots.includes('note')&&<div className="pv-hero-note"><PortfolioSlot {...slotProps} section={section} name="note" kind="tag"/></div>}
             </div>
-            <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>
+            <div className="pv-hero-art">
+              {section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).length>0?
+                section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).map(name=>
+                  <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="media"/>):
+                <div aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>}
+            </div>
           </div>:<>
             <div className="pv-section-heading">
               {headline&&<h2><PortfolioSlot {...slotProps} section={section} name="title" kind="title"/></h2>}
@@ -354,7 +363,11 @@ export function ComponentLibrary({port, head, committed, slot, apply}: {
   </div>;
 }
 
-export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>void}) {
+export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisabled,onPlace}:{
+  port:SupabaseBrowserAuthPort;back:()=>void;snapshot:PortfolioSnapshot;
+  targets:readonly {key:string;label:string;state:string}[];selectedSlot:string;placementDisabled:boolean;
+  onPlace:(assetId:string,slot:string,altText:string)=>Promise<boolean>;
+}) {
   const [assets,setAssets]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']>|null>(null);
   const [projects,setProjects]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerProjects']>>['data']>|null>(null);
   const [error,setError]=useState('');
@@ -362,6 +375,9 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
   const [projectId,setProjectId]=useState('');
   const [collection,setCollection]=useState('');
   const [selectedAssetId,setSelectedAssetId]=useState('');
+  const [targetKey,setTargetKey]=useState('');
+  const [placementAlt,setPlacementAlt]=useState('');
+  const [placing,setPlacing]=useState(false);
   const [uploadOpen,setUploadOpen]=useState(false);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
@@ -380,7 +396,19 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
     return ()=>{active=false;};
   },[port,refresh]);
   const visible=assets?.filter(item=>!collection||item.projectId===collection)??[];
-  const selected=assets?.find(item=>item.id===selectedAssetId);
+  const selected=visible.find(item=>item.id===selectedAssetId);
+  const target=targets.find(item=>item.key===targetKey)??targets.find(item=>item.key===selectedSlot);
+  const uses=selected?Object.entries(snapshot.slots).filter(([,assignment])=>
+    assignment.state!=='EMPTY'&&assignment.content.asset_id===selected.id):[];
+  async function place(){
+    if(!selected||!target||placing||busy||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
+    setPlacing(true);setNotice('');
+    try{
+      if(await onPlace(selected.id,target.key,placementAlt.trim()))
+        setNotice('Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.');
+      else setNotice('Image placement was not completed. Existing assignment and selected image were retained.');
+    }finally{setPlacing(false);}
+  }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
     if(busy||!file||!projectId||!alt.trim())return;
@@ -391,7 +419,7 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
         receipt.data.verifiedMetadata!==true)
         throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
       setNotice('Image uploaded and privately registered. Public delivery remains blocked; a trusted byte attestation is still required.');
-      setSelectedAssetId(receipt.data.id);setCollection('');
+      setSelectedAssetId(receipt.data.id);setPlacementAlt(receipt.data.altText);setCollection('');
       setAlt('');setFile(null);setUploadOpen(false);setRefresh(n=>n+1);
       const input=document.getElementById('kd-private-image-file');
       if(input instanceof HTMLInputElement)input.value='';
@@ -437,7 +465,7 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
       </div>}
       {visible.length>0&&<ul className="ws-asset-gallery">{visible.map(asset=><li key={asset.id}>
         <button type="button" aria-pressed={selectedAssetId===asset.id}
-          onClick={()=>{setSelectedAssetId(asset.id);setUploadOpen(false);}}>
+          onClick={()=>{setSelectedAssetId(asset.id);setPlacementAlt(asset.altText);setUploadOpen(false);}}>
           <span className="ws-asset-gallery-icon" aria-hidden="true">▧</span>
           <strong>{asset.altText}</strong><small>{asset.mime} · {Math.ceil(asset.size/1024)} KB</small>
           <small>Private metadata · No public image URL</small>
@@ -481,10 +509,22 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
           <div><dt>Project</dt><dd>{projects?.find(item=>item.id===selected.projectId)?.title??selected.projectId}</dd></div>
           <div><dt>MIME type</dt><dd>{selected.mime}</dd></div>
           <div><dt>Size</dt><dd>{Math.ceil(selected.size/1024)} KB</dd></div>
-          <div><dt>Usage references</dt><dd>Not independently verified</dd></div>
+          <div><dt>Current working draft uses</dt><dd>{uses.length?uses.map(([key])=>key).join(', '):'None in current draft'}</dd></div>
           <div><dt>Focal point</dt><dd>Not stored</dd></div>
         </dl>
-        <p className="ws-asset-protection">Replacement must use a new immutable object and a separately authorized references workflow.</p>
+        <p className="ws-asset-protection">Place only a verified owner-private registration into an actual compatible slot. Replacing a pristine image stashes its previous assignment; historical asset bytes are not deleted. No public URL or digest is fabricated.</p>
+        {targets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
+          <label>Compatible image slot<select value={target?.key??''} onChange={event=>setTargetKey(event.target.value)}>
+            <option value="">Choose an image-compatible slot</option>
+            {targets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
+          </select></label>
+          <label>Placement alt text<textarea rows={3} value={placementAlt}
+            aria-invalid={!placementAlt.trim()||placementAlt.length>300}
+            onChange={event=>setPlacementAlt(event.target.value)}/></label>
+          <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
+          <button type="button" className="ws-primary" disabled={!target||placementDisabled||busy||placing||!placementAlt.trim()||placementAlt.length>300}
+            onClick={()=>void place()}>{placing?'Verifying placement…':target?.state==='S0'?'Replace image and stash previous':'Assign image to selected slot'}</button>
+        </>}
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Register another image</button>
       </>:<><h2>No asset selected.</h2>
         <p>Select a private image to inspect its verified metadata, or use the uploader.</p>
