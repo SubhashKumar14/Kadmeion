@@ -16,6 +16,34 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [panel, setPanel] = useState('Profile');
   const [openedLinks,setOpenedLinks]=useState(false);
   const [previewSaved,setPreviewSaved]=useState(false);
+  const [projectionMode,setProjectionMode]=useState<'draft'|'preferences'>('draft');
+  const [projectionFields,setProjectionFields]=useState<PreviewField[]|null>(null);
+  const [projectionRequested,setProjectionRequested]=useState(false);
+  const [projectionError,setProjectionError]=useState('');
+  const [projectionLoading,setProjectionLoading]=useState(false);
+  const projectionAttempt=useRef(0);
+  const projectionPending=useRef(false);
+  const projectionEpoch=useRef(port.getOwnerSessionEpoch());
+  useEffect(()=>()=>{projectionAttempt.current++;projectionPending.current=false;},[port]);
+  async function readProjection(){
+    if(projectionPending.current||operationPending.current)return;
+    projectionPending.current=true;
+    const attempt=++projectionAttempt.current,epoch=projectionEpoch.current;
+    const current=()=>attempt===projectionAttempt.current&&epoch===port.getOwnerSessionEpoch();
+    setProjectionLoading(true);setProjectionFields(null);setProjectionRequested(false);setProjectionError('');
+    try{
+      if(!current())return;
+      const result=await port.ownerSharingPreferences();
+      if(!current())return;
+      if(result.error||!result.data){setProjectionError('Saved sharing preferences could not be verified. Retry to preview them.');return;}
+      const prefs=result.data;
+      setProjectionFields([...(prefs.shareDisplayName?['displayName' as const]:[]),
+        ...(prefs.shareHeadline?['headline' as const]:[]),...(prefs.shareBio?['bio' as const]:[])]);
+      setProjectionRequested(prefs.publicationRequested);
+    }catch{if(current())setProjectionError('Saved sharing preferences are unavailable. Retry securely.');}
+    finally{if(attempt===projectionAttempt.current){projectionPending.current=false;setProjectionLoading(false);
+      if(!current()){setProjectionFields(null);setProjectionRequested(false);setProjectionError('Your session changed. Reopen your profile.');}}}
+  }
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
   const [visible, setVisible] = useState<PreviewField[]>(['displayName', 'headline']);
@@ -134,7 +162,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     saved.bio !== draft.bio || saved.skills.join('\u0000') !== draft.skills.join('\u0000')
   ));
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
-  const preview=previewSaved?saved:draft;
+  const preview=projectionMode==='preferences'||previewSaved?saved:draft;
+  const previewSelection=projectionMode==='preferences'?(projectionFields??[]):visible;
 
   return <section aria-labelledby="profile-title" className="ws-profile ws-owner-page">
     <form onSubmit={event => void save(event)}>
@@ -204,7 +233,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             <p>Manage self-supplied private platform links below. Project URLs are managed in the <a href="/app/projects">project library</a>.</p>
           </>}
           {panel === 'Visibility' && <>
-            <p>Choose which eligible fields to include in the private preview. These selections do not save sharing consent or publish anything. Skills, platform links, email and account details stay out of this projection.</p>
+            <p>Choose which eligible fields to include in the private preview, or inspect your saved sharing preferences. These selections do not save sharing consent or publish anything. Skills, platform links, email and account details stay out of this projection.</p>
             <a className="ws-secondary" href="/app/settings/privacy">Open privacy settings</a>
           </>}
           {panel === 'Public preview' && <p>Compare the selected draft or last saved fields. This is an owner-only approximation, not a live visitor route.</p>}
@@ -215,13 +244,28 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             <div className="ws-profile-card">
               <span className="ws-preview-identity"><Icon name="user" size={22}/></span>
               <p className="ws-kicker">PREVIEW ONLY</p>
-              <h3>{visible.includes('displayName') && preview?.displayName.trim() ? preview.displayName : 'Developer profile'}</h3>
-              {visible.includes('headline') && preview?.headline.trim() && <p>{preview.headline}</p>}
-              {visible.includes('bio') && preview?.bio.trim() && <p>{preview.bio}</p>}
-              {!visible.length && <p>No fields selected for preview.</p>}
+              <h3>{previewSelection.includes('displayName') && preview?.displayName.trim() ? preview.displayName : 'Developer profile'}</h3>
+              {previewSelection.includes('headline') && preview?.headline.trim() && <p>{preview.headline}</p>}
+              {previewSelection.includes('bio') && preview?.bio.trim() && <p>{preview.bio}</p>}
+              {projectionMode==='preferences'&&projectionFields===null
+                ? <p>Saved sharing preferences have not been verified.</p>
+                : !previewSelection.length&&<p>No fields selected for preview.</p>}
             </div>
             <fieldset className="ws-preview-fields" disabled={locked}>
               <legend>Fields to preview</legend>
+              <div className="ws-actions" role="group" aria-label="Preview source">
+                <button type="button" className="ws-secondary" aria-pressed={projectionMode==='draft'} onClick={()=>setProjectionMode('draft')}>Draft selection</button>
+                <button type="button" className="ws-secondary" aria-pressed={projectionMode==='preferences'} disabled={projectionLoading}
+                  onClick={()=>{setProjectionMode('preferences');void readProjection();}}>Saved sharing preferences</button>
+              </div>
+              {projectionMode==='preferences'?<>
+                <p>{projectionFields===null?'No verified selection.':projectionFields.length+' of 3 eligible fields selected in saved preferences.'}</p>
+                {projectionFields!==null&&<p>{projectionRequested?'A later publication request is allowed by saved preferences.':'No publication request is enabled in saved preferences.'} This does not prove live visibility.</p>}
+                <div aria-live="polite">{projectionLoading&&<p>Checking saved sharing preferences…</p>}</div>
+                {projectionError&&<p role="alert" className="ws-inline-alert">{projectionError}</p>}
+                <button type="button" className="ws-secondary" disabled={projectionLoading} onClick={()=>void readProjection()}>{projectionError?'Retry sharing preferences':'Refresh sharing preferences'}</button>
+                <a href="/app/settings/privacy">Change sharing preferences in privacy settings</a>
+              </>:<>
               <label className="ws-profile-check"><input type="checkbox" checked={previewSaved}
                 onChange={event=>setPreviewSaved(event.target.checked)}/> Use last saved profile instead of current draft</label>
               {previewFields.map(({key, label}) => <label key={key} className="ws-profile-check">
@@ -230,8 +274,9 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
                   setVisible(current => checked ? [...current, key] : current.filter(field => field !== key));
                 }}/>{label}</label>)}
               <button type="button" className="ws-secondary" disabled={!visible.length} onClick={()=>setVisible([])}>Clear preview selection</button>
+              </>}
             </fieldset>
-            <p>{previewSaved?'Preview of last confirmed private profile.':'Preview of current unsaved or saved draft.'} This stays in your workspace; it does not publish.</p>
+            <p>{projectionMode==='preferences'?'Owner-only approximation using last saved profile and verified sharing preferences.':previewSaved?'Preview of last confirmed private profile.':'Preview of current unsaved or saved draft.'} This stays in your workspace; it does not publish.</p>
           </aside>
         </div>
       </div>}
