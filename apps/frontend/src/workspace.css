@@ -1287,3 +1287,21 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-exit-inventory dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:12px;
   border:1px solid var(--line);border-radius:8px;background:var(--surface-soft)}
 .ws-exit-inventory dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+
+/* WF-008/048: shared shell status and compact keyboard-accessible navigation. */
+.ws-network-status{font-size:.8125rem;color:var(--muted);line-height:1.5;margin:0 0 12px;overflow-wrap:anywhere}
+.ws-network-status[data-state="offline"]{color:var(--ink);background:var(--surface-soft);border-inline-start:3px solid var(--accent-strong);padding:10px 12px}
+.ws-editor-shell .ws-network-status{margin:0;padding:5px 12px;border-bottom:1px solid var(--line)}
+.ws-onboarding-note:empty{margin:0;padding:0}
+.ws-rail :is(a,button):focus-visible{outline-color:#f7f5ef}
+.ws-onboarding :is(.ws-primary,.ws-secondary):disabled{cursor:not-allowed;opacity:.7}
+.ws-choice-set:disabled .ws-choice{cursor:not-allowed}
+@media(max-width:440px){
+  .ws-rail{grid-template-columns:minmax(0,1fr) auto}
+  .ws-rail .ws-brand{grid-column:1;grid-row:1}
+  .ws-mobile-menu{grid-column:2;grid-row:1}
+  .ws-rail nav{grid-column:1/-1;grid-row:auto}
+  .ws-rail-bottom{grid-column:1/-1;grid-row:auto;justify-self:end}
+  .ws-rail nav a{min-width:0;overflow-wrap:anywhere}
+  .ws-rail nav a svg{flex:none}
+}

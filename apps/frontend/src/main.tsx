@@ -149,21 +149,74 @@ function UnavailableRoute() {
   </main>;
 }
 
+/** Code-loading failure is separate from owner verification and task-local
+ * errors. No private subtree has mounted in either of these states. */
+function WorkspaceLoading() {
+  useTheme();
+  return <main id="main" className="system-status-shell" aria-busy="true">
+    <section className="system-status" aria-labelledby="workspace-load-title">
+      <p className="system-status-kicker">PERSONAL WORKSPACE</p>
+      <h1 id="workspace-load-title">Loading workspace…</h1>
+      <p role="status" className="system-status-description">Loading the application before owner verification.</p>
+    </section>
+  </main>;
+}
+
+function WorkspaceLoadFailure() {
+  useTheme();
+  const [offline, setOffline] = useState(() => !navigator.onLine);
+  useEffect(() => {
+    document.title = 'Workspace unavailable · Kadmeion';
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+  return <main id="main" className="system-status-shell">
+    <section className="system-status" aria-labelledby="workspace-load-error">
+      <a href="/" className="system-status-brand" aria-label="Kadmeion home"><BrandMark/></a>
+      <p className="system-status-kicker">WORKSPACE UNAVAILABLE</p>
+      <h1 id="workspace-load-error">The workspace could not load.</h1>
+      <p role="status" className="system-status-description">{offline
+        ? 'Your browser reports no connection. Reconnect before retrying.'
+        : 'The application could not be loaded. Retry this address or return home.'}</p>
+      <div className="system-status-actions">
+        <button type="button" className="system-status-primary" disabled={offline}
+          onClick={() => { if (navigator.onLine) window.location.reload(); }}>Retry workspace</button>
+        <a className="system-status-secondary" href="/">Return to home</a>
+      </div>
+      <p className="system-status-note">Owner verification has not been completed on this page. No private workspace content is displayed.</p>
+    </section>
+  </main>;
+}
+
 const mount = document.getElementById('root');
 if (!mount) throw new Error('Kadmeion frontend root is missing.');
 const WorkspaceRoute=lazy(async()=>{
-  const {WorkspaceApp,isWorkspaceRoute}=await import('./workspace.tsx');
-  return {default:function WorkspaceEntry({path}:{path:string}) {
-    return isWorkspaceRoute(path) ? <WorkspaceApp/> : <UnavailableRoute/>;
-  }};
+  try {
+    const {WorkspaceApp,isWorkspaceRoute}=await import('./workspace.tsx');
+    return {default:function WorkspaceEntry({path}:{path:string}) {
+      return isWorkspaceRoute(path) ? <WorkspaceApp/> : <UnavailableRoute/>;
+    }};
+  } catch {
+    // Do not echo loader errors, chunk addresses or private route parameters.
+    return {default:function WorkspaceUnavailableEntry(_props:{path:string}) {
+      return <WorkspaceLoadFailure/>;
+    }};
+  }
 });
 const path = window.location.pathname.replace(/\/$/, '') || '/';
+if (path === '/app' || path.startsWith('/app/')) document.title = 'Loading workspace · Kadmeion';
 if (path === '/templates') document.title = 'Portfolio templates · Kadmeion';
 if (path === '/explore') document.title = 'Explore portfolios · Kadmeion';
 const page = path === '/templates' ? <TemplateExplorer/> :
   path === '/explore' ? <ExplorePortfolios/> :
   (path === '/app' || path.startsWith('/app/')) ?
-    <Suspense fallback={<main id="main"><p role="status">Loading workspace…</p></main>}>
+    <Suspense fallback={<WorkspaceLoading/>}>
       <WorkspaceRoute path={path}/>
     </Suspense> :
   isAuthRoute(path) ? <AuthApp/> :

@@ -4,7 +4,7 @@ import type { NewPrivateProject, OwnerProject } from '../../auth-web/src/supabas
 import type { AuthOutcome } from '../../../packages/contracts/src/auth-service.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
-import type { PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
+import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
 import type { CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
 import { Icon } from './landing.tsx';
 import { MoveToTrash } from './settings.tsx';
@@ -464,6 +464,24 @@ type RevisionRange = Readonly<{from: number; to: number}>;
 const projectConflict=(message:string)=>message.includes('changed while you were editing') ||
   message === 'Private workspace conflict. Reload the latest data before trying again.';
 
+type DestinationChange = {label:string;before:string|null;after:string|null};
+type DestinationReview = {changes:DestinationChange[];key:string|null;error:string};
+function projectDestinationReview(saved:PrivateProjectDraft&{revision:number},draft:PrivateProjectDraft):DestinationReview{
+  // Use the same normalizer as the private project write. Compare actual
+  // canonical destinations, not display strings or guesses about a live route.
+  const normalize=(value:string|null)=>value==null||value===''?null:normalizeExternalHttpsUrl(value);
+  const changes:DestinationChange[]=[];
+  for(const [field,label] of [['repositoryUrl','Repository URL'],['liveUrl','Live website URL']] as const){
+    let after:string|null;
+    try{after=normalize(draft[field]);}
+    catch{return {changes:[],key:null,error:label+': enter a valid HTTPS destination or remove the value.'};}
+    let before=saved[field];
+    try{before=normalize(before);}catch{/* Preserve a historical invalid address for comparison only. */}
+    if(before!==after)changes.push({label,before,after});
+  }
+  return {changes,key:changes.length?JSON.stringify([saved.revision,changes]):null,error:''};
+}
+
 export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAuthPort; projectId: string}) {
   const [detail, setDetail] = useState<DetailState>({status: 'loading'});
   const [reload, setReload] = useState(0);
@@ -476,6 +494,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [knownRevision, setKnownRevision] = useState(0);
   const [overviewAdvance, setOverviewAdvance] = useState<RevisionRange|null>(null);
   const [overviewConflict, setOverviewConflict] = useState(false);
+  const [reviewedDestinationChange,setReviewedDestinationChange]=useState<string|null>(null);
   const [casePending, setCasePending] = useState(false);
   const [caseDirty, setCaseDirty] = useState(false);
   const [imagePending,setImagePending]=useState(false);
@@ -524,6 +543,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
     if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    if(field==='repositoryUrl'||field==='liveUrl')setReviewedDestinationChange(null);
     setDetail(current => current.status === 'ready'
       ? {...current, draft: {...current.draft, [field]: value}}
       : current);
@@ -532,6 +552,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   async function compareLatest(baseRevision: number) {
     if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     overviewPending.current=true;
+    setReviewedDestinationChange(null);
     setChecking(true);
     setFeedback(null);
     setLatest(null);
@@ -559,15 +580,22 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     event.preventDefault();
     if (detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
         overviewConflict || knownRevision>detail.saved.revision || latest) return;
+    let submitted:PrivateProjectDraft;
+    try{submitted=normalizeProjectDraft(detail.draft);}
+    catch(cause){setFeedback({error:true,text:cause instanceof Error?cause.message:'Enter valid private project details.'});return;}
+    const review=projectDestinationReview(detail.saved,submitted);
+    if(review.error||(review.key!==null&&review.key!==reviewedDestinationChange)){
+      setFeedback({error:true,text:review.error||'Review and confirm the changed external destinations before saving.'});return;
+    }
     overviewPending.current=true;
     setSaving(true);
     setFeedback(null);
     const from=detail.saved.revision;
     try {
-      const result = await port.saveOwnerProject(projectId, from, detail.draft);
+      const result = await port.saveOwnerProject(projectId, from, submitted);
       if (!result.data || result.error || result.data.revision!==from+1) {
         const message=result.error?.message ?? 'Save could not be confirmed.';
-        if (projectConflict(message)) setOverviewConflict(true);
+        if (projectConflict(message)) {setOverviewConflict(true);setReviewedDestinationChange(null);}
         setFeedback({error:true,text:message});
         return;
       }
@@ -575,6 +603,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       observeRevision(to);
       setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
       setDetail({status:'ready',saved:result.data,draft:result.data});
+      setReviewedDestinationChange(null);
       setFeedback({error:false,text:'Private draft saved.'});
     } catch {
       setFeedback({error:true,text:'Project save could not be verified. Your edits remain available.'});
@@ -592,6 +621,9 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     (detail.saved.liveUrl ?? '') !== (detail.draft.liveUrl ?? '')
   );
   const blocked=saving || checking || casePending || imagePending;
+  const destinationReview=detail.status==='ready'?projectDestinationReview(detail.saved,detail.draft):null;
+  const destinationUnconfirmed=!!destinationReview&&(!!destinationReview.error||
+    (destinationReview.key!==null&&destinationReview.key!==reviewedDestinationChange));
   const stale=detail.status==='ready' && (overviewConflict || knownRevision>detail.saved.revision);
   const repository = detail.status === 'ready' ? safeProjectLink(detail.saved.repositoryUrl) : undefined;
   const liveSite = detail.status === 'ready' ? safeProjectLink(detail.saved.liveUrl) : undefined;
@@ -645,16 +677,33 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           </label>
           </div>
         </fieldset>
+        {destinationReview?.error&&<p role="alert" className="ws-inline-alert">{destinationReview.error}</p>}
+        {destinationReview?.key&&<fieldset disabled={blocked||stale||!!latest}>
+          <legend>Review changed external destinations</legend>
+          <p>Review the saved and proposed addresses. These are self-supplied links; saving this private draft does not publish or verify them.</p>
+          <dl>{destinationReview.changes.map(change=><div key={change.label}>
+            <dt>{change.label}</dt>
+            <dd>Saved: {change.before??'Not set'}</dd>
+            <dd>Proposed: {change.after??'Remove destination'}</dd>
+          </div>)}</dl>
+          <label className="ws-profile-check"><input type="checkbox"
+            checked={destinationReview.key===reviewedDestinationChange}
+            onChange={event=>{
+              if(overviewPending.current||casePendingRef.current||imagePendingRef.current)return;
+              setReviewedDestinationChange(event.target.checked?destinationReview.key:null);
+            }}/> I confirm these destination changes for this private revision.</label>
+        </fieldset>}
         {feedback && <p role={feedback.error ? 'alert' : 'status'} className="ws-inline-alert">{feedback.text}</p>}
         {stale && <p>Check the latest saved revision before saving overview changes. Your edits are retained.</p>}
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={blocked || stale || !!latest || !dirty}>{saving ? 'Saving…' : 'Save changes'}</button>
+          <button type="submit" className="ws-primary" disabled={blocked || stale || !!latest || !dirty || destinationUnconfirmed}>{saving ? 'Saving…' : 'Save changes'}</button>
           <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => void compareLatest(detail.saved.revision)}>{checking ? 'Checking…' : 'Check latest revision'}</button>
           {dirty && <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => {
               if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
               setDetail({status:'ready',saved:detail.saved,draft:detail.saved});
+              setReviewedDestinationChange(null);
               if (!stale) setLatest(null);
               setFeedback({error:false,text:'Unsaved changes discarded; your saved revision is unchanged.'});
             }}>Discard changes</button>}
@@ -688,6 +737,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           <button type="button" className="ws-secondary" disabled={blocked || latest.revision < knownRevision} onClick={() => {
             if (overviewPending.current || casePendingRef.current || imagePendingRef.current || latest.revision<knownRevision) return;
             setDetail({status:'ready',saved:latest,draft:latest});
+            setReviewedDestinationChange(null);
             setOverviewConflict(false);
             setLatest(null);
             setFeedback({error: false, text: 'Loaded the latest saved draft.'});
