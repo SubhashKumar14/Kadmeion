@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type {
@@ -30,13 +30,13 @@ type Props = {service: SupabasePrivateModerationService; cases: OperatorModerati
 
 // The server remains the authority; this gate only synchronizes form submissions
 // and discards completions from a panel that has been removed or reverified.
-function useOperatorActionGate() {
+function useScopedActionGate(scope: object) {
   const active = useRef(false);
   const pending = useRef<symbol|null>(null);
   useLayoutEffect(() => {
     active.current = true;
     return () => { active.current = false; pending.current = null; };
-  }, []);
+  }, [scope]);
   return {
     begin(): symbol|null {
       if (!active.current || pending.current !== null) return null;
@@ -68,7 +68,7 @@ function Users({service, cases, committed, recheck}: Props) {
   const [operation, setOperation] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const gate = useOperatorActionGate();
+  const gate = useScopedActionGate(service);
   const filtered = cases.filter(item =>
     item.targetUserId.toLowerCase().includes(query.trim().toLowerCase()) ||
     item.caseId.toLowerCase().includes(query.trim().toLowerCase()));
@@ -147,7 +147,7 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
   const [holdOperation, setHoldOperation] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const gate = useOperatorActionGate();
+  const gate = useScopedActionGate(service);
   async function review(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected || !confirmed || rationale.trim().length < 20 || busy) return;
@@ -253,7 +253,7 @@ function Appeals({service, cases, committed, recheck}: Props) {
   const [operation, setOperation] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const gate = useOperatorActionGate();
+  const gate = useScopedActionGate(service);
   const [holdPortfolio, setHoldPortfolio] = useState('');
   const [liftCase, setLiftCase] = useState('');
   const [liftReason, setLiftReason] = useState('');
@@ -265,9 +265,15 @@ function Appeals({service, cases, committed, recheck}: Props) {
     setEvidenceError(false);
     if (chosen) void service.readAppealEvidence(chosen)
       .then(data=>{if(active) setEvidence(data);})
-      .catch(()=>{if(active) setEvidenceError(true);});
+      .catch(error=>{
+        if (!active) return;
+        // The unavailable-evidence state remains closed; authoritative denial
+        // also discards the old role-verified snapshot before another action.
+        if (accessMustBeRechecked(error)) recheck();
+        else setEvidenceError(true);
+      });
     return ()=>{active=false;};
-  },[service,chosen,evidenceAttempt]);
+  },[service,chosen,evidenceAttempt,recheck]);
   async function close(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!chosen || evidence?.caseId!==chosen || !confirmed || rationale.trim().length < 20 || busy) return;
@@ -410,10 +416,10 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
     });
     return () => {active = false;};
   }, [scope, port, path]);
-  function recheck() {
+  const recheck = useCallback(() => {
     setLastNotice(null);
     setAttempt(value => value + 1);
-  }
+  }, []);
   function committed(message: string) {
     setLastNotice({port,path,text:message});
     setAttempt(value => value + 1);
@@ -466,7 +472,9 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   const selected=selection?.port===port?selection.id:'';
   const [statement,setStatement]=useState('');
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
-  const [busy,setBusy]=useState(false);
+  const [pendingScope,setPendingScope]=useState<typeof scope|null>(null);
+  const busy=pendingScope===scope;
+  const gate=useScopedActionGate(scope);
   const [failedScope,setFailedScope]=useState<typeof scope|null>(null);
   const loadError=failedScope===scope;
   const [messageState,setMessage]=useState<{port:SupabaseBrowserAuthPort;error:boolean;text:string}|null>(null);
@@ -489,19 +497,33 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   async function appeal(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || !records || current?.status!=='OPEN' || statement.trim().length<20) return;
-    setBusy(true);
+    const token=gate.begin();
+    if(token===null)return;
+    setPendingScope(scope);
     setMessage(null);
     try {
-      await records.service.appeal(current.id,operation,statement);
+      const receipt=await records.service.appeal(current.id,operation,statement);
+      if(!gate.current(token))return;
+      if(receipt.caseId!==current.id||receipt.status!=='APPEAL_RECORDED'||receipt.publicRevocationVerified!==false)
+        throw new Error('Unverified appeal receipt.');
       setStatement('');
       setOperation(crypto.randomUUID());
       setLoaded(null);
       setAttempt(value=>value+1);
       setMessage({port,error:false,text:'Private appeal submitted for review.'});
-    } catch {
-      setMessage({port,error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
+    } catch(error) {
+      if(!gate.current(token))return;
+      if(accessMustBeRechecked(error)){
+        setStatement('');
+        setOperation(crypto.randomUUID());
+        setLoaded(null);
+        setMessage({port,error:true,text:'Appeal access could not be verified. Checking your current account access before continuing.'});
+        setAttempt(value=>value+1);
+      }else{
+        setMessage({port,error:true,text:'The appeal could not be confirmed. Retry the unchanged statement for the same operation.'});
+      }
     } finally {
-      setBusy(false);
+      if(gate.finish(token))setPendingScope(null);
     }
   }
 
