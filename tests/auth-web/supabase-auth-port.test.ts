@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SupabaseBrowserAuthPort } from '../../apps/auth-web/src/supabase-auth-port.ts';
+import { SupabaseBrowserAuthPort, normalizeOwnerProfileLinks } from '../../apps/auth-web/src/supabase-auth-port.ts';
 
 const user = { id: '6d9e2f11-4f2e-4792-8401-7c4f1d61e233', email: 'dev@example.com' };
 function storage() {
@@ -1288,5 +1288,61 @@ test('C04 owner private bytes are bound to scope and immutable object identity, 
       assert.equal(result.error?.code,variant==='wrong-owner'||variant==='wrong-project-path'?'DENIED':'INTEGRITY');
       if(['wrong-owner','wrong-project-path','missing-version'].includes(variant))assert.equal(downloads,0);
     }
+  }
+});
+
+/** B16 C06: authored links are owner-private, never provider facts or website fetches. */
+test('C06 authored profile links are bounded, canonical HTTPS and exact shape',()=>{
+  const link={label:' Portfolio ',url:'https://Example.com'};
+  assert.deepEqual(normalizeOwnerProfileLinks([link]),[{label:'Portfolio',url:'https://example.com/'}]);
+  for(const input of [
+    [link,{label:'Duplicate',url:'https://example.com/'}],
+    Array.from({length:13},(_,i)=>({label:'Link',url:'https://example.com/'+i})),
+    [{label:'X',url:'http://example.com/'}],
+    [{label:'X',url:'javascript:alert(1)'}],
+    [{label:'X',url:'https://secret@example.com/'}],
+    [{label:'X',url:'https://example.com:8443/'}],
+    [{label:'X',url:'https://example.com/a b'}],
+    [{label:'X',url:'https://example.com/',verified:true}],
+    [{label:'',url:'https://example.com/'}],
+    [{label:'a'.repeat(81),url:'https://example.com/'}],
+    [{label:'X',url:'https://example.com/'+ 'a'.repeat(2048)}]
+  ])assert.throws(()=>normalizeOwnerProfileLinks(input));
+});
+test('C06 owner link save submits exact expected/desired and refuses stale or forged receipts',async()=>{
+  const expected=[{label:'Old',url:'https://example.com/old'}];
+  const desired=[{label:'Work',url:'https://example.com/work'}];
+  for(const variant of ['confirmed','stale','foreign','wrong-links','noncanonical'] as const){
+    let calls=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      assert.ok(String(url).endsWith('/rpc/owner_save_private_profile_links'));
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_expected:expected,p_links:desired});
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer '+tokens.access_token);
+      calls++;
+      if(variant==='stale')return json({code:'40001',message:'PROFILE_LINKS_CONFLICT'},500);
+      return json({user_id:variant==='foreign'?secondUser.id:user.id,
+        private_links:variant==='wrong-links'?expected:variant==='noncanonical'?[{label:' Work ',url:desired[0].url}]:desired});
+    });
+    const r=await port.saveOwnerProfileLinks(expected,desired,epoch);
+    if(variant==='confirmed'){
+      assert.equal(r.error,null);assert.deepEqual(r.data,{links:desired,publicDeliveryAllowed:false});
+    }else{assert.equal(r.data,null);assert.ok(r.error);}
+    assert.equal(calls,1);
+  }
+});
+test('C06 owner link read rejects cross-owner result, extra evidence claims and noncanonical link records',async()=>{
+  const desired=[{label:'Work',url:'https://example.com/work'}];
+  for(const variant of ['valid','foreign','extra','noncanonical'] as const){
+    const {port,epoch}=await c01Port(async(url)=>{
+      const q=new URL(String(url));assert.ok(q.pathname.endsWith('/profiles'));
+      assert.equal(q.searchParams.get('user_id'),'eq.'+user.id);
+      assert.equal(q.searchParams.get('select'),'user_id,private_links');
+      return json([{user_id:variant==='foreign'?secondUser.id:user.id,
+        private_links:variant==='extra'?[{...desired[0],verified:true}]:
+          variant==='noncanonical'?[{label:' Work ',url:desired[0].url}]:desired}]);
+    });
+    const r=await port.readOwnerProfileLinks(epoch);
+    if(variant==='valid')assert.deepEqual(r.data,{links:desired,publicDeliveryAllowed:false});
+    else{assert.equal(r.data,null);assert.ok(r.error);}
   }
 });
