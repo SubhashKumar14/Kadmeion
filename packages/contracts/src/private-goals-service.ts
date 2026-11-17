@@ -297,6 +297,18 @@ export class SupabasePrivateGoalsService {
   async listGoals():Promise<PrivateGoal[]> {
     return this.many(await this.send('private_goals?select=*&order=created_at.desc&limit=100','GET'),validGoal);
   }
+  /** Exact owner-RLS read for conflict reconciliation; missing and foreign
+   * records remain indistinguishable. */
+  async readGoal(id:string):Promise<PrivateGoal|null>{
+    if(!validId(id))throw new PrivateGoalsError('VALIDATION');
+    id=id.toLowerCase();
+    const raw=await this.send('private_goals?select=*&id=eq.'+id+'&limit=2','GET');
+    if(Array.isArray(raw)&&raw.length===0)return null;
+    const result=this.one(raw,validGoal);
+    if(result.id!==id||instantMicros(result.updated_at)===null)
+      throw new PrivateGoalsError('INVALID_ACK');
+    return result;
+  }
   /** Additive conditional update. Legacy callers retain their existing API. */
   async updateGoalIfUnchanged(id:string,expectedUpdatedAt:string,fields:GoalUpdate):Promise<PrivateGoal>{
     if(instantMicros(expectedUpdatedAt)===null)throw new PrivateGoalsError('VALIDATION');
@@ -326,12 +338,21 @@ export class SupabasePrivateGoalsService {
       result[k as keyof PrivateGoal]!==v))throw new PrivateGoalsError('INVALID_ACK');
     return result;
   }
-  async deleteGoal(id:string):Promise<string> {
+  async deleteGoalIfUnchanged(id:string,expectedUpdatedAt:string):Promise<string>{
+    if(instantMicros(expectedUpdatedAt)===null)throw new PrivateGoalsError('VALIDATION');
+    return this.deleteGoal(id,expectedUpdatedAt);
+  }
+  async deleteGoal(id:string,expectedUpdatedAt?:string):Promise<string> {
     if(!validId(id))throw new PrivateGoalsError('VALIDATION');
     id=id.toLowerCase();
-    const raw=await this.send('private_goals?id=eq.'+id+'&select=*','DELETE');
+    const expected=expectedUpdatedAt===undefined?null:instantMicros(expectedUpdatedAt);
+    if(expectedUpdatedAt!==undefined&&expected===null)throw new PrivateGoalsError('VALIDATION');
+    const filter=expectedUpdatedAt===undefined?'':'&updated_at=eq.'+encodeURIComponent(expectedUpdatedAt);
+    const raw=await this.send('private_goals?id=eq.'+id+'&select=*'+filter,'DELETE');
+    if(expected!==null&&Array.isArray(raw)&&raw.length===0)throw new PrivateGoalsError('CONFLICT');
     const result=this.one(raw,validGoal);
-    if(result.id!==id)throw new PrivateGoalsError('INVALID_ACK');
+    if(result.id!==id||(expected!==null&&instantMicros(result.updated_at)!==expected))
+      throw new PrivateGoalsError('INVALID_ACK');
     return result.id;
   }
   async addProgress(goalId:string,operationId:string,value:number,note=''):Promise<GoalProgress>{
