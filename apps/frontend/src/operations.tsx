@@ -137,7 +137,16 @@ function Users({service, cases, committed, recheck}: Props) {
 function Moderation({service, cases, reports, committed, recheck}: Props & {
   reports: OperatorPortfolioAbuseReport[];
 }) {
+  const pageSize=25;
+  const [page,setPage]=useState({after:null as string|null,rows:reports});
+  const [pageError,setPageError]=useState('');
+  const [failedCursor,setFailedCursor]=useState<{after:string|null}|null>(null);
   const [selected, setSelected] = useState('');
+  const [uncertain,setUncertain]=useState<{
+    reportId:string; decision:'CASE_OPENED'|'DISMISSED'; rationale:string
+  }|null>(null);
+  const [reviewConflict,setReviewConflict]=useState(false);
+  const [reviewError,setReviewError]=useState('');
   const [decision, setDecision] = useState<'CASE_OPENED'|'DISMISSED'>('CASE_OPENED');
   const [rationale, setRationale] = useState('');
   const [confirmed, setConfirmed] = useState(false);
@@ -148,30 +157,66 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const gate = useScopedActionGate(service);
-  async function review(event: FormEvent<HTMLFormElement>) {
+  function clearReview() {
+    setSelected('');setRationale('');setConfirmed(false);
+    setUncertain(null);setReviewConflict(false);setReviewError('');
+  }
+  // Keep one bounded page. Every page is a fresh role-checked RPC.
+  async function loadPage(after:string|null) {
+    if(busy||selected||uncertain)return;
+    const token=gate.begin();
+    if(token===null)return;
+    setBusy(true);setPageError('');setFailedCursor(null);
+    try{
+      const rows=await service.listAbuseReports(after,pageSize);
+      if(gate.current(token))setPage({after,rows});
+    }catch(error){
+      if(!gate.current(token))return;
+      if(accessMustBeRechecked(error))recheck();
+      else{
+        setPageError('The requested page could not be verified. The previous page is unchanged.');
+        setFailedCursor({after});
+      }
+    }finally{if(gate.finish(token))setBusy(false);}
+  }
+  async function review(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if (!selected || !confirmed || rationale.trim().length < 20 || busy) return;
-    const token = gate.begin();
-    if (token === null) return;
-    setBusy(true);setError('');
-    try {
-      const receipt = await service.reviewAbuseReport(selected, decision, rationale);
-      if (!gate.current(token)) return;
-      if (receipt.reportId !== selected) throw new Error('Unverified report receipt.');
-      setSelected('');setConfirmed(false);setRationale('');
-      committed(receipt.status === 'CASE_OPENED'
+    if(busy||reviewConflict)return;
+    if(!uncertain&&(!selected||!confirmed||rationale.trim().length<20||
+      !page.rows.some(report=>report.id===selected)))return;
+    // The server's replay identity is actor+report+decision+trimmed rationale.
+    const submitted=uncertain??{reportId:selected,decision,rationale:rationale.trim()};
+    const token=gate.begin();
+    if(token===null)return;
+    setBusy(true);setReviewError('');
+    try{
+      const receipt=await service.reviewAbuseReport(submitted.reportId,submitted.decision,submitted.rationale);
+      if(!gate.current(token))return;
+      if(receipt.reportId!==submitted.reportId||receipt.status!==submitted.decision)
+        throw new Error('Unverified report receipt.');
+      clearReview();
+      committed(receipt.status==='CASE_OPENED'
         ? 'Report reviewed. Private audit case opened; public revocation remains unverified.'
         : 'Report dismissed with an audited rationale.');
-    } catch (error) {
-      if (gate.current(token)) {
-        if (accessMustBeRechecked(error)) recheck();
-        else setError(errorMessage(error));
+    }catch(error){
+      if(!gate.current(token))return;
+      if(accessMustBeRechecked(error)){recheck();return;}
+      const code=error instanceof Error&&'code' in error?error.code:null;
+      if(code==='CONFLICT'){
+        setUncertain(submitted);setReviewConflict(true);
+        setReviewError('The server reported a conflicting review. Reload the queue; this is not confirmation of your decision.');
+      }else if(code==='VALIDATION'&&!uncertain){
+        setConfirmed(false);
+        setReviewError('The review was rejected as invalid. Check the decision and rationale.');
+      }else{
+        setUncertain(submitted);
+        setReviewError('The decision was not acknowledged. Retry the exact submission, or reload without claiming success.');
       }
-    } finally {if (gate.finish(token)) setBusy(false);}
+    }finally{if(gate.finish(token))setBusy(false);}
   }
   async function hold(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!holdConfirmed || busy) return;
+    if (!holdConfirmed || busy || !!selected || !!uncertain) return;
     const token = gate.begin();
     if (token === null) return;
     setBusy(true);setError('');
@@ -193,31 +238,47 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
     <section className="ws-project-aside">
       <h2>Submitted portfolio reports</h2>
       <p>Reports are untrusted text, shown only after the backend verifies the operator session.</p>
-      {reports.length === 0 && <p>No pending abuse reports were returned.</p>}
-      {reports.length === 25 && <p>At most 25 pending reports are shown. Further pages require a scoped request.</p>}
-      <ul className="ws-ops-records">{reports.map(report => <li key={report.id}>
+      <p>Pending reports are ordered by report ID, not submission time. The queue may change during review.</p>
+      {page.rows.length===0&&<p>{page.after===null?'No pending abuse reports were returned.':'No further pending reports were returned.'}</p>}
+      {pageError&&<p role="alert">{pageError}</p>}
+      <div className="ws-ops-nav" aria-label="Report queue pages">
+        <button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain}
+          onClick={()=>void loadPage(null)}>{page.after===null?'Refresh first page':'Return to first page'}</button>
+        {page.rows.length===pageSize&&<button type="button" className="ws-secondary"
+          disabled={busy||!!selected||!!uncertain}
+          onClick={()=>void loadPage(page.rows[page.rows.length-1]!.id)}>Next reports</button>}
+        {failedCursor&&<button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain}
+          onClick={()=>void loadPage(failedCursor.after)}>Retry requested page</button>}
+      </div>
+      <ul className="ws-ops-records">{page.rows.map(report => <li key={report.id}>
         <strong>{report.reason_code} · {report.target_path}</strong>
         <small>{dateText(report.created_at)}</small>
         <p className="ws-ops-evidence">{report.evidence}</p>
-        <button type="button" className="ws-secondary" aria-pressed={selected === report.id} disabled={busy}
-          onClick={() => {if(selected===report.id)return;setSelected(report.id);setRationale('');setConfirmed(false);setError('');}}>Review report</button>
+        <button type="button" className="ws-secondary" aria-pressed={selected === report.id} disabled={busy||!!uncertain||!!selected}
+          onClick={() => {setSelected(report.id);setRationale('');setConfirmed(false);setReviewError('');}}>Review report</button>
       </li>)}</ul>
       {selected && <form className="ws-ops-form" onSubmit={event => void review(event)}>
         <h3>Review selected report</h3>
-        <label className="ws-ops-field">Decision<select value={decision} disabled={busy}
+        <p>Report ID: {selected}</p>
+        <label className="ws-ops-field">Decision<select value={decision} disabled={busy||!!uncertain}
           onChange={event => {setDecision(event.target.value as 'CASE_OPENED'|'DISMISSED');setConfirmed(false);}}>
           <option value="CASE_OPENED">Open audited case</option>
           <option value="DISMISSED">Dismiss report</option>
         </select></label>
         <label className="ws-ops-field">Reasoned review
-          <textarea required minLength={20} maxLength={500} value={rationale} rows={4} disabled={busy}
+          <textarea required minLength={20} maxLength={500} value={rationale} rows={4} disabled={busy||!!uncertain}
             onChange={event => {setRationale(event.target.value);setConfirmed(false);}}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" checked={confirmed} required disabled={busy} onChange={event => setConfirmed(event.target.checked)}/>
+        <label className="ws-ops-confirm"><input type="checkbox" checked={confirmed} required disabled={busy||!!uncertain} onChange={event => setConfirmed(event.target.checked)}/>
           This decision is scoped to the selected report.
         </label>
-        {error && <p role="alert">{error}</p>}
-        <button type="submit" className="ws-primary" disabled={busy || !confirmed || rationale.trim().length < 20}>
-          {busy ? 'Reviewing…' : 'Submit report decision'}</button>
+        {reviewError&&<p role="alert">{reviewError}</p>}
+        <button type="submit" className="ws-primary"
+          disabled={busy||reviewConflict||(!uncertain&&(!confirmed||rationale.trim().length<20))}>
+          {busy?'Reviewing…':uncertain?'Retry exact decision':'Submit report decision'}
+        </button>
+        {uncertain?<button type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>recheck()}>Discard retry details and reload queue (outcome unverified)</button>:
+          <button type="button" className="ws-secondary" disabled={busy} onClick={clearReview}>Cancel review</button>}
       </form>}
     </section>
     <section className="ws-project-aside">
@@ -236,7 +297,7 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
         <label className="ws-ops-confirm"><input type="checkbox" checked={holdConfirmed} required disabled={busy}
           onChange={event => setHoldConfirmed(event.target.checked)}/>Apply only a case-bound private hold.</label>
         {error && <p role="alert">{error}</p>}
-        <button className="ws-primary" type="submit" disabled={!holdCase || !holdConfirmed || busy}>
+        <button className="ws-primary" type="submit" disabled={!holdCase || !holdConfirmed || busy || !!selected || !!uncertain}>
           {busy ? 'Applying…' : 'Apply private hold'}</button>
       </form>
     </section>

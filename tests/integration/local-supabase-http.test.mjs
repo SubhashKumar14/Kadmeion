@@ -21,6 +21,7 @@ import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapter
 import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
 import {SupabasePortfolioRevisionStore} from '../../packages/storage-adapters/src/supabase-portfolio-revisions.ts';
 import {SupabaseMyComponentsService} from '../../packages/contracts/src/private-my-components-service.ts';
+import {SupabasePrivateGoalsService} from '../../packages/contracts/src/private-goals-service.ts';
 
 
 function localSupabaseCredentials() {
@@ -1979,4 +1980,106 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   assert.deepEqual(retained.bytes,thumbnailPng,'Detach is not destructive byte deletion');
   // Browser-computed byte equality is NOT a trusted server attestation;
   // independently existing server-attestation tests remain mandatory.
+});
+
+test('C06/WF-009: real owner authored links CAS, replay, privacy and direct mutation denial (migration mandatory)',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('authored-link-owner'), outsider=await adminUser('authored-link-outsider');
+  const read=(actor)=>send('/rest/v1/profiles?select=user_id,private_links&user_id=eq.'+owner.id,bearer(actor));
+  const save=(expected,desired,actor=owner)=>send('/rest/v1/rpc/owner_save_private_profile_links',{
+    ...json(actor),method:'POST',body:{p_expected:expected,p_links:desired}
+  });
+  const first=[{label:'Portfolio',url:'https://example.com/work'}];
+  const next=[{label:'Notes',url:'https://example.com/notes'}];
+  const start=successful(await read(owner),'Mandatory private link column present');
+  assert.equal(start.length,1);assert.equal(start[0].user_id,owner.id);assert.deepEqual(start[0].private_links,[]);
+  const anonymous=await send('/rest/v1/rpc/owner_save_private_profile_links',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:{p_expected:[],p_links:first}
+  });
+  assert.ok(!anonymous.ok,'Anonymous authored link write denied');
+  const applied=successful(await save([],first),'Owner authored link CAS');
+  assert.deepEqual(applied,{user_id:owner.id,private_links:first});
+  assert.deepEqual(successful(await save([],first),'Exact desired-state replay'),applied);
+  assert.deepEqual(successful(await read(outsider),'Foreign RLS profile read'),[]);
+  const foreign=await save([],next,outsider);
+  assert.ok(foreign.ok,'Foreign owner may change only their own row');
+  assert.equal(foreign.data?.user_id,outsider.id);
+  assert.deepEqual(successful(await read(owner),'Owner unaffected by foreign save')[0].private_links,first);
+  const stale=await save([],next);
+  assert.ok(!stale.ok);assert.equal(stale.data?.code,'40001');
+  const invalid=[
+    [{label:'No',url:'http://example.com/'}],
+    [{label:'No',url:'https://name@example.com/'}],
+    [{label:'No',url:'https://example.com:444/'}],
+    [{label:' No ',url:'https://example.com/'}],
+    [{label:'No',url:'https://example.com/',verified:true}],
+    [first[0],first[0]],
+    Array.from({length:13},(_,i)=>({label:'Too many',url:'https://example.com/'+i}))
+  ];
+  for(const desired of invalid){
+    const failure=await save(first,desired);
+    assert.ok(!failure.ok);assert.equal(failure.data?.code,'22023');
+  }
+  const direct=await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+    ...json(owner),method:'PATCH',body:{private_links:next}
+  });
+  assert.ok(!direct.ok);assert.equal(direct.data?.code,'42501');
+  assert.deepEqual(successful(await read(owner),'Invalid writes preserve prior private links')[0].private_links,first);
+  assert.deepEqual(successful(await save(first,next),'Owner replace private links').private_links,next);
+  assert.deepEqual(successful(await save(next,[]),'Owner clear links').private_links,[]);
+  assert.deepEqual(successful(await read(owner),'Reload cleared private links')[0].private_links,[]);
+});
+
+test('C07/WF-041: real owner conditional goal writes and 105-event raw chronology',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('chronological-goal-owner'), outsider=await adminUser('chronological-goal-foreign');
+  const mine=new SupabasePrivateGoalsService(cfg.origin,cfg.anon,async()=>owner.token,fetch,owner.id);
+  const foreign=new SupabasePrivateGoalsService(cfg.origin,cfg.anon,async()=>outsider.token,fetch,outsider.id);
+  const original=await mine.createGoal(randomUUID(),'Original goal','',105,'sessions');
+  const read=await mine.readGoal(original.id);
+  assert.equal(read?.updated_at,original.updated_at);
+  assert.equal(await foreign.readGoal(original.id),null);
+  const attempts=await Promise.allSettled([
+    mine.updateGoalIfUnchanged(original.id,original.updated_at,{title:'Concurrent A'}),
+    mine.updateGoalIfUnchanged(original.id,original.updated_at,{title:'Concurrent B'})
+  ]);
+  const successes=attempts.filter(x=>x.status==='fulfilled');
+  const failures=attempts.filter(x=>x.status==='rejected');
+  assert.equal(successes.length,1,'Exactly one concurrent CAS may win');
+  assert.equal(failures.length,1);assert.equal(failures[0].reason?.code,'CONFLICT');
+  const current=await mine.readGoal(original.id);
+  assert.ok(current);assert.notEqual(current.updated_at,original.updated_at);
+  assert.deepEqual(current,successes[0].value);
+  await assert.rejects(foreign.updateGoalIfUnchanged(original.id,current.updated_at,{title:'Foreign'}),{code:'CONFLICT'});
+  await assert.rejects(mine.deleteGoalIfUnchanged(original.id,original.updated_at),{code:'CONFLICT'});
+  const bulk=Array.from({length:105},(_,i)=>({goal_id:original.id,operation_id:randomUUID(),
+    value:i,note:'Synthetic manual chronological evidence'}));
+  const inserted=successful(await send('/rest/v1/private_goal_progress_events?select=*',{
+    ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},body:bulk
+  }),'Insert 105 manual history fixtures');
+  assert.equal(inserted.length,105);
+  const seen=new Set();
+  let cursor=null;
+  let events=[];
+  for(let page=0;page<3;page++){
+    const part=await mine.listProgressChronologicalPage(original.id,100,cursor);
+    assert.ok(part.items.length<=100);
+    for(const item of part.items){
+      assert.equal(item.owner_user_id,owner.id);assert.equal(item.goal_id,original.id);
+      assert.equal(item.source,'MANUAL');assert.ok(!seen.has(item.id));seen.add(item.id);events.push(item);
+    }
+    if(!part.nextCursor){cursor=null;break;}
+    assert.equal(part.nextCursor.createdAt,part.items.at(-1).created_at);
+    assert.equal(part.nextCursor.id,part.items.at(-1).id);cursor=part.nextCursor;
+  }
+  assert.equal(cursor,null);assert.equal(seen.size,105);
+  const ordered=successful(await send('/rest/v1/private_goal_progress_events?'+new URLSearchParams({
+    select:'*',goal_id:'eq.'+original.id,order:'created_at.desc,id.desc',limit:'106'
+  }),bearer(owner)),'Authoritative chronological order');
+  assert.deepEqual(events,ordered);
+  const privateEvents=await foreign.listProgressChronologicalPage(original.id,100);
+  assert.deepEqual(privateEvents.items,[]);assert.equal(privateEvents.nextCursor,null);
+  await assert.rejects(foreign.deleteGoalIfUnchanged(original.id,current.updated_at),{code:'CONFLICT'});
+  assert.equal(await mine.deleteGoalIfUnchanged(original.id,current.updated_at),original.id);
+  assert.equal(await mine.readGoal(original.id),null);
 });

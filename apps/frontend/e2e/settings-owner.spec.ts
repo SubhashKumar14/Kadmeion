@@ -1,7 +1,8 @@
-import {randomUUID} from 'node:crypto';
-import {mkdir} from 'node:fs/promises';
+import {createHash,randomUUID} from 'node:crypto';
+import {mkdir,readFile} from 'node:fs/promises';
 import {test, expect} from '@playwright/test';
 import { auditAccessibility } from './accessibility.ts';
+import {readStrictStoredZip} from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const localApi='http://127.0.0.1:54321';
 
@@ -239,4 +240,71 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByText('Account deletion request withdrawn.')).toBeVisible();
   await expect(page.getByRole('list',{name:'Recent deletion requests'})).toContainText('Withdrawn');
   await expect(page.getByRole('button',{name:/Delete account/i})).toHaveCount(0);
+});
+
+test('B16 WF-047 actual private export downloads, receipt hashes and inventory retry/reuse',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await createLocalOwner();
+  await page.goto('/signin');
+  await page.getByRole('textbox',{name:'Email address'}).fill(owner.email);
+  await page.locator('#signin-password').fill(owner.password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Session verified'})).toBeVisible();
+
+  let downloads=0;
+  page.on('download',()=>downloads++);
+  const captureOperations:string[]=[];
+  let rejectFirst=true;
+  await page.route('**/rest/v1/rpc/create_private_account_exit_inventory',async route=>{
+    const body=route.request().postDataJSON() as {p_operation_id:string};
+    captureOperations.push(body.p_operation_id);
+    if(rejectFirst){rejectFirst=false;await route.fulfill({status:429,json:{message:'Disposable fixture rate limit'}});}
+    else await route.continue();
+  });
+  await page.goto('/app/export');
+  await expect(page.getByRole('heading',{name:'Export center',level:1})).toBeVisible();
+  await page.getByRole('button',{name:'Download application metadata'}).click();
+  await expect(page.getByRole('alert')).toContainText('temporarily rate-limited the export');
+  expect(downloads).toBe(0);
+  expect(captureOperations.length).toBe(1);
+  const readDownload=async(buttonName:string,filename:string,notice:string)=>{
+    const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:buttonName,exact:true}).click()]);
+    expect(download.suggestedFilename()).toBe(filename);
+    const path=await download.path();
+    if(!path)throw new Error('Disposable browser download did not yield a file.');
+    const bytes=await readFile(path);
+    await expect(page.getByText(notice,{exact:true})).toBeVisible();
+    const receipt=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Latest download receipt',exact:true})});
+    await expect(receipt.getByText(filename,{exact:true})).toBeVisible();
+    await expect(receipt.locator('code')).toHaveText(createHash('sha256').update(bytes).digest('hex'));
+    return bytes;
+  };
+  const metadataBytes=await readDownload('Retry failed export','kadmeion-account-metadata.json','Application metadata download prepared.');
+  expect(captureOperations.length).toBe(2);
+  expect(/^[0-9a-f-]{36}$/.test(captureOperations[0]!)&&captureOperations[0]===captureOperations[1]).toBe(true);
+  const metadata=JSON.parse(metadataBytes.toString('utf8')) as Record<string,unknown>;
+  expect(metadata.status==='APPLICATION_METADATA_SNAPSHOT'&&metadata.schemaVersion===1&&
+    metadata.storageBytesIncluded===false&&metadata.providerDataIncluded===false&&metadata.deletionAllowed===false&&
+    typeof metadata.snapshotId==='string'&&typeof metadata.ownerUserId==='string').toBe(true);
+  const jsonBytes=await readDownload('Download verified recovery JSON','kadmeion-private-account-partial-export.json','Verified recovery JSON download prepared.');
+  const recovery=JSON.parse(jsonBytes.toString('utf8')) as {
+    kind:string;schemaVersion:number;inventorySnapshotId:string;owner:{id:string};limitations:{completeAccountExport:boolean;deletionAllowed:boolean}
+  };
+  expect(recovery.kind==='kadmeion-bounded-private-account-export'&&recovery.schemaVersion===1&&
+    recovery.inventorySnapshotId===metadata.snapshotId&&recovery.owner.id===metadata.ownerUserId&&
+    recovery.limitations.completeAccountExport===false&&recovery.limitations.deletionAllowed===false).toBe(true);
+  const zipBytes=await readDownload('Download private recovery ZIP','kadmeion-private-account-partial.zip','Private recovery download prepared.');
+  const entries=readStrictStoredZip(new Uint8Array(zipBytes),{maxEntries:12,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024});
+  expect([...entries.keys()].sort()).toEqual(['README.txt','account/records.json','kadmeion-partial-bundle.json']);
+  const manifest=JSON.parse(new TextDecoder().decode(entries.get('kadmeion-partial-bundle.json')!)) as {
+    ownerId:string;inventorySnapshotId:string;privateData:boolean;completeAccountExport:boolean;deletionAllowed:boolean;recordsSha256:string
+  };
+  expect(manifest.ownerId===metadata.ownerUserId&&manifest.inventorySnapshotId===metadata.snapshotId&&
+    manifest.privateData===true&&manifest.completeAccountExport===false&&manifest.deletionAllowed===false&&
+    manifest.recordsSha256===createHash('sha256').update(entries.get('account/records.json')!).digest('hex')).toBe(true);
+  expect(downloads).toBe(3);
+  // All successful formats reused the one real acknowledged inventory.
+  expect(captureOperations.length).toBe(2);
+  // No private artifact bytes or owner identifiers are emitted to logs.
 });
