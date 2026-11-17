@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
+import {cancelRpcBody, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -69,7 +69,8 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
   }
   if (env.KADMEION_PUBLIC_PORTFOLIO_ENABLED !== 'true') return reply(404, 'Not found');
   try {
-    const target = new URL(req.url, 'https://kadmeion.invalid');
+    const target = parseDeliveryTarget(req.url);
+    if (!target) return reply(404, 'Not found');
     const path = target.pathname.match(/^\/([^/]+)\/([^/]+)$/);
     const rewritten = target.pathname === '/api/public-portfolio';
     const assetRequest = target.searchParams.has('asset') || target.searchParams.has('manifest');
@@ -118,7 +119,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       return reply(503, 'Temporarily unavailable');
     }
     if (!upstream.ok) {
-      await upstream.body?.cancel();
+      cancelRpcBody(upstream.body);
       return reply(503, 'Temporarily unavailable');
     }
 
