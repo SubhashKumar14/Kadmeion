@@ -35,21 +35,36 @@ function presentError(err:unknown):string {
   return 'Private growth data is currently unavailable. No saved value was assumed.';
 }
 function goalNeedsReconciliation(err:unknown):boolean{
-  return err instanceof PrivateGoalsError &&
+  return !(err instanceof PrivateGoalsError) ||
     (err.code==='CONFLICT'||err.code==='INVALID_ACK'||err.code==='PROVIDER_UNAVAILABLE');
 }
 function useGoals(service:SupabasePrivateGoalsService){
   const [goals,setGoals]=useState<PrivateGoal[]|null>(null);
   const [error,setError]=useState('');
   const [revision,setRevision]=useState(0);
+  const listGeneration=useRef(0);
+  const listPending=useRef(false);
   useEffect(()=>{
     let active=true;
+    const generation=++listGeneration.current;
+    listPending.current=true;
     void service.listGoals().then(items=>{
-      if(active){setGoals(items);setError('');}
-    }).catch(err=>{if(active){setError(presentError(err));}});
+      if(active&&generation===listGeneration.current){setGoals(items);setError('');}
+    }).catch(err=>{
+      if(active&&generation===listGeneration.current){
+        setError(presentError(err));
+        // Retain same-scope drafts during transient failure only, not after
+        // authorization or receipt integrity denial.
+        if(!(err instanceof PrivateGoalsError)||
+          (err.code!=='PROVIDER_UNAVAILABLE'&&err.code!=='RATE_LIMITED'))setGoals(null);
+      }
+    }).finally(()=>{
+      if(active&&generation===listGeneration.current)listPending.current=false;
+    });
     return ()=>{active=false;};
   },[service,revision]);
   function acceptGoal(row:PrivateGoal){
+    if(listPending.current){listGeneration.current++;setRevision(value=>value+1);}
     setGoals(current=>current?.map(goal=>goal.id===row.id?row:goal)??null);
   }
   return {goals,error,reload:()=>setRevision(value=>value+1),acceptGoal};
@@ -490,6 +505,7 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
   const [selected,setSelected]=useState('');
   const [templateId,setTemplateId]=useState('free');
   const [goalTemplateIds,setGoalTemplateIds]=useState<Record<string,string>>({});
+  const [statusBlocked,setStatusBlocked]=useState<ReadonlySet<string>>(()=>new Set());
   const [busy,setBusy]=useState(false);
   const [note,setNote]=useState('');
   function applyTemplate(id:string){
@@ -513,8 +529,25 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
     }catch(err){if(mounted.current)setFailure(presentError(err));}
     finally{mutation.current=false;if(mounted.current)setBusy(false);}
   }
+  async function refreshStatus(id:string){
+    try{
+      const latest=await service.readGoal(id);
+      if(!mounted.current)return;
+      if(latest){
+        acceptGoal(latest);
+        setStatusBlocked(current=>{const next=new Set(current);next.delete(id);return next;});
+        setFailure('Review the refreshed goal status before choosing again. No automatic retry was made.');
+      }else setFailure('This goal is unavailable. Refresh private records; no change was confirmed.');
+    }catch{if(mounted.current)setFailure('Could not refresh the saved goal. Refresh its status before trying again.');}
+  }
+  async function retryStatusRead(id:string){
+    if(busy||mutation.current)return;
+    mutation.current=true;setBusy(true);setFailure('');
+    try{await refreshStatus(id);}
+    finally{mutation.current=false;if(mounted.current)setBusy(false);}
+  }
   async function status(goal:PrivateGoal,next:GoalStatus){
-    if(busy||mutation.current||next===goal.status)return;
+    if(busy||mutation.current||statusBlocked.has(goal.id)||next===goal.status)return;
     mutation.current=true;setBusy(true);setFailure('');setNote('');
     try{
       const saved=await service.updateGoalIfUnchanged(goal.id,goal.updated_at,{status:next});
@@ -522,14 +555,9 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
     }catch(err){
       if(mounted.current){
         if(goalNeedsReconciliation(err)){
+          setStatusBlocked(current=>new Set([...current,goal.id]));
           setFailure('Goal status was not confirmed. Refreshing the saved record; review it and choose a status again.');
-          try{
-            const latest=await service.readGoal(goal.id);
-            if(mounted.current){
-              if(latest){acceptGoal(latest);setFailure('Review the refreshed goal status before choosing again. No automatic retry was made.');}
-              else setFailure('This goal is unavailable. Refresh private records; no change was confirmed.');
-            }
-          }catch{if(mounted.current)setFailure('Could not refresh the saved goal. Refresh private records before trying again.');}
+          await refreshStatus(goal.id);
         }else setFailure(presentError(err));
       }
     }
@@ -547,10 +575,12 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
         <button type="button" aria-pressed={selected===goal.id} className="ws-growth-pick"
           onClick={()=>setSelected(goal.id)}>{goal.title}</button>
         <span>{goal.status} {goal.due_on?'· Due '+goal.due_on:''}</span>
-        <label className="ws-growth-field">Change goal status<select value={goal.status} disabled={busy}
+        <label className="ws-growth-field">Change goal status<select value={goal.status} disabled={busy||statusBlocked.has(goal.id)}
           onChange={event=>void status(goal,event.target.value as GoalStatus)}>
           {(['ACTIVE','PAUSED','COMPLETED','ARCHIVED'] as const).map(item=><option key={item}>{item}</option>)}
         </select></label>
+        {statusBlocked.has(goal.id)&&<button type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>void retryStatusRead(goal.id)}>Refresh saved status</button>}
       </li>)}</ul>
       {goals?.length===100&&<p>Displaying at most 100 recent goals, not a lifetime total.</p>}
       <h3>Create a goal</h3>
