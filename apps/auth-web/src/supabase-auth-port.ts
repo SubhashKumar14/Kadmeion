@@ -16,6 +16,21 @@ import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adap
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
+import type { AccountExitReauthVerification } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+
+export type OwnerAccountExitReauthContext = Readonly<{
+  expectedEpoch:number; requestId:string; challengeId:string;
+}>;
+export type RecoveredOwnerAccountExitReauth = Readonly<{
+  requestId:string; verification:AccountExitReauthVerification;
+}>;
+// A pointer to an existing server challenge, NOT an authentication receipt.
+// Kept in this port's memory only; never copied to browser storage.
+type AccountExitContinuation = Readonly<{
+  ownerUserId:string; requestId:string; challengeId:string; deadline:number;
+}>;
+type PendingAccountExitContinuation = AccountExitContinuation & {epoch:number};
+
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
@@ -97,6 +112,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
   private ownerSessionEpoch = 0;
+  private accountExitContinuation:PendingAccountExitContinuation|null = null;
   private readonly ownerSessionEpochListeners = new Set<(epoch:number)=>void>();
   // Last-started explicit Auth action wins; old network responses cannot
   // replace a newer login or reinstate a session after explicit logout.
@@ -135,8 +151,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    */
   getOwnerSessionEpoch():number { return this.ownerSessionEpoch; }
 
-  private invalidateOwnerSessionEpoch():void {
+  private invalidateOwnerSessionEpoch(continuation:AccountExitContinuation|null=null):void {
     ++this.ownerSessionEpoch;
+    // Only an explicitly verified account-exit password rotation can carry a
+    // challenge pointer into its own new epoch. Every other transition clears it.
+    this.accountExitContinuation=continuation
+      ? {...continuation,epoch:this.ownerSessionEpoch} : null;
     for (const listener of this.ownerSessionEpochListeners) {
       // UI listener errors must not roll back an already-persisted auth change.
       try { listener(this.ownerSessionEpoch); } catch { /* isolated subscriber */ }
@@ -205,7 +225,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     } catch { return null; }
   }
 
-  private store(value: StoredSession | null): void {
+  private store(value: StoredSession | null, continuation:AccountExitContinuation|null=null): void {
     const previous=this.session;
     this.session = value;
     try {
@@ -213,12 +233,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       else this.storage.removeItem(STORAGE_KEY);
     } catch {
       // Failure to persist must never be mistaken for a durable browser session.
+      this.accountExitContinuation=null;
       if (value) this.session = null;
       if (!sameSession(previous,this.session)) this.invalidateOwnerSessionEpoch();
       throw new Error('Browser storage is unavailable. Enable storage to sign in.');
     }
     if (!sameSession(previous,value)) {
-      this.invalidateOwnerSessionEpoch();
+      this.invalidateOwnerSessionEpoch(continuation);
       for (const notify of ownerSessionWriteNotices) {
         try { notify(this.storage,this); } catch { /* isolated subscriber */ }
       }
@@ -407,29 +428,101 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  private async verifyCurrentOwnerPassword(password: string,attempt: number) {
+  private async verifyCurrentOwnerPassword(password: string,attempt: number,expectedEpoch?:number) {
     const {session,userId}=await this.ownerSession();
     const email=session.user.email;
     if (!email) throw new Error('Sign in with a verified email account first.');
     this.assertCurrentAuthAttempt(attempt);
+    if(expectedEpoch!==undefined && expectedEpoch!==this.ownerSessionEpoch)
+      throw new Error('Owner session changed before verifying identity.');
     const verified=this.decodeSession(await this.request('/token?grant_type=password','POST',{email,password}));
     this.assertCurrentAuthAttempt(attempt);
+    if(expectedEpoch!==undefined && expectedEpoch!==this.ownerSessionEpoch)
+      throw new Error('Owner session changed while verifying identity.');
     if (!this.isCurrentSession(session) || verified.user.id!==userId ||
         verified.user.email?.trim().toLowerCase()!==email.trim().toLowerCase())
       throw new Error('Current password verification did not match the active account.');
     return {session,verified};
   }
 
-  async reauthenticateCurrentOwner(password: string): Promise<AuthOutcome<{verified:true}>> {
+  async reauthenticateCurrentOwner(password: string,accountExit?:OwnerAccountExitReauthContext): Promise<AuthOutcome<{verified:true}>> {
     return this.outcome(async () => {
+      const context=accountExit ? {...accountExit} : null;
+      if(context && (this.reconcileOwnerSessionEpoch()!==context.expectedEpoch ||
+          !PROJECT_ID_PATTERN.test(context.requestId) || !PROJECT_ID_PATTERN.test(context.challengeId)))
+        throw new Error('Account-exit verification is no longer current.');
       const attempt=++this.authAttempt;
-      const {session,verified}=await this.verifyCurrentOwnerPassword(password,attempt);
+      const {session,verified}=await this.verifyCurrentOwnerPassword(password,attempt,context?.expectedEpoch);
       this.assertCurrentAuthAttempt(attempt);
-      if (!this.isCurrentSession(session) || verified.access_token===session.access_token)
+      if (!this.isCurrentSession(session) || verified.access_token===session.access_token ||
+          (context && context.expectedEpoch!==this.ownerSessionEpoch))
         throw new Error('A fresh sign-in could not be confirmed.');
-      this.store(verified);
+      // Store the non-authoritative pointer before synchronous epoch notification
+      // so a newly mounted, verified Settings consumer can recover the challenge.
+      this.store(verified,context ? {
+        ownerUserId:verified.user.id,requestId:context.requestId,
+        challengeId:context.challengeId,deadline:Date.now()+5*60*1000
+      } : null);
       return {verified:true};
     });
+  }
+
+  /** Re-read the server's short-lived proof after fail-closed workspace remount.
+   * Only call from a newly verified owner gate, with that mount's captured epoch.
+   * No local receipt, owner ID or challenge ID is itself reauthentication authority. */
+  async recoverOwnerAccountExitReauth(expectedEpoch:number):
+    Promise<AuthOutcome<RecoveredOwnerAccountExitReauth|null>> {
+    return this.outcome(async()=>{
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        throw new Error('Owner session changed before recovering identity verification.');
+      const pending=this.accountExitContinuation;
+      if(!pending || pending.epoch!==expectedEpoch)return null;
+      if(pending.deadline<=Date.now()){
+        this.accountExitContinuation=null;return null;
+      }
+      const attempt=this.authAttempt;
+      const {session,userId}=await this.ownerSession();
+      const stillCurrent=()=>this.reconcileOwnerSessionEpoch()===expectedEpoch &&
+        this.accountExitContinuation===pending && this.authAttempt===attempt &&
+        pending.ownerUserId===userId && pending.deadline>Date.now() &&
+        this.isCurrentSession(session);
+      if(!stillCurrent())throw new Error('Owner session changed during identity verification.');
+      const account=await import('../../../packages/contracts/src/private-account-erasure-service.ts');
+      if(!stillCurrent())throw new Error('Owner session changed during identity verification.');
+      // Pin the verified initiating credential rather than dynamically adopting
+      // a newly signed-in owner or even another session of the same owner.
+      const service=new account.SupabasePrivateAccountErasureService(
+        this.origin,this.publishableKey,async()=>stillCurrent()?session.access_token:null,this.fetcher);
+      try{
+        const requests=await service.list();
+        if(!stillCurrent())throw new Error('Owner session changed during identity verification.');
+        if(!requests.some(item=>item.id===pending.requestId && item.status==='REQUESTED_BLOCKED')){
+          this.discardOwnerAccountExitReauth(expectedEpoch);
+          throw new Error('The account-exit request is no longer pending.');
+        }
+        // Existing SQL validates the live auth.sessions row, owner, DIFFERENT
+        // initial session, creation time and expiry; repeated completion is
+        // idempotent only for the very same verified session.
+        const verification=await service.completeReauth(pending.challengeId);
+        if(!stillCurrent() || Date.parse(verification.expiresAt)<=Date.now())
+          throw new Error('Identity verification expired or the owner session changed.');
+        return {requestId:pending.requestId,verification};
+      }catch(error){
+        // A lost/failed RPC response can be retried with exactly this pointer.
+        // Definitive provider rejections and malformed acknowledgments do not
+        // become reusable authority.
+        if(this.accountExitContinuation===pending &&
+            error instanceof account.PrivateAccountErasureError &&
+            error.code!=='PROVIDER_UNAVAILABLE')this.accountExitContinuation=null;
+        throw error;
+      }
+    });
+  }
+
+  /** UI dismissal/withdrawal discards only the current mount's local pointer. */
+  discardOwnerAccountExitReauth(expectedEpoch:number):void {
+    if(this.reconcileOwnerSessionEpoch()===expectedEpoch)
+      this.accountExitContinuation=null;
   }
 
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
