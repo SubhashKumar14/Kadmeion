@@ -495,6 +495,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [overviewAdvance, setOverviewAdvance] = useState<RevisionRange|null>(null);
   const [overviewConflict, setOverviewConflict] = useState(false);
   const [reviewedDestinationChange,setReviewedDestinationChange]=useState<string|null>(null);
+  const [confirmOverviewRebase,setConfirmOverviewRebase]=useState(false);
   const [casePending, setCasePending] = useState(false);
   const [caseDirty, setCaseDirty] = useState(false);
   const [imagePending,setImagePending]=useState(false);
@@ -544,6 +545,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   function edit(field: keyof PrivateProjectDraft, value: string) {
     if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     if(field==='repositoryUrl'||field==='liveUrl')setReviewedDestinationChange(null);
+    setConfirmOverviewRebase(false);
     setDetail(current => current.status === 'ready'
       ? {...current, draft: {...current.draft, [field]: value}}
       : current);
@@ -553,6 +555,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     overviewPending.current=true;
     setReviewedDestinationChange(null);
+    setConfirmOverviewRebase(false);
     setChecking(true);
     setFeedback(null);
     setLatest(null);
@@ -574,6 +577,18 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       overviewPending.current=false;
       setChecking(false);
     }
+  }
+
+  function resolveOverviewComparison(keep:boolean){
+    if(detail.status!=='ready'||!latest||latest.revision<knownRevision||
+      overviewPending.current||casePendingRef.current||imagePendingRef.current||
+      (keep&&!confirmOverviewRebase))return;
+    // Rebase ONLY the overview baseline. Keep the case-study buffer and its
+    // own revision checks intact; changing a baseline is not a server write.
+    setDetail({status:'ready',saved:latest,draft:keep?{...detail.draft,slug:latest.slug}:latest});
+    setReviewedDestinationChange(null);setConfirmOverviewRebase(false);
+    setOverviewConflict(false);setLatest(null);
+    setFeedback({error:false,text:keep?'Latest saved revision compared. Your overview edits still need an explicit save.':'Loaded the latest saved draft.'});
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -659,6 +674,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       <form className="ws-project-fields" onSubmit={event => void save(event)}>
         <fieldset disabled={blocked}>
           <legend>Project details</legend>
+          <p>Changes remain unsaved until you choose Save changes. Saving changed project content can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
           <label>Project title
             <input maxLength={120} required value={detail.draft.title} onChange={e => edit('title', e.target.value)}/>
           </label>
@@ -703,7 +719,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
             onClick={() => {
               if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
               setDetail({status:'ready',saved:detail.saved,draft:detail.saved});
-              setReviewedDestinationChange(null);
+              setReviewedDestinationChange(null);setConfirmOverviewRebase(false);
               if (!stale) setLatest(null);
               setFeedback({error:false,text:'Unsaved changes discarded; your saved revision is unchanged.'});
             }}>Discard changes</button>}
@@ -734,14 +750,15 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
             <dt>Repository URL</dt><dd>{latest.repositoryUrl || '—'}</dd>
             <dt>Live website URL</dt><dd>{latest.liveUrl || '—'}</dd>
           </dl>
-          <button type="button" className="ws-secondary" disabled={blocked || latest.revision < knownRevision} onClick={() => {
-            if (overviewPending.current || casePendingRef.current || imagePendingRef.current || latest.revision<knownRevision) return;
-            setDetail({status:'ready',saved:latest,draft:latest});
-            setReviewedDestinationChange(null);
-            setOverviewConflict(false);
-            setLatest(null);
-            setFeedback({error: false, text: 'Loaded the latest saved draft.'});
-          }}>Discard my edits and load saved draft</button>
+          <p>Your unsaved overview is still in the editor. Keeping it replaces the comparison baseline, not the saved project; a separate save is required and may replace newer fields.</p>
+          {dirty&&<><label className="ws-profile-check"><input type="checkbox"
+            disabled={blocked||latest.revision<knownRevision} checked={confirmOverviewRebase}
+            onChange={event=>setConfirmOverviewRebase(event.target.checked)}/>
+            I reviewed the saved revision and want to keep my overview draft for a separate save.</label>
+            <button type="button" className="ws-secondary" disabled={blocked||latest.revision<knownRevision||!confirmOverviewRebase}
+              onClick={()=>resolveOverviewComparison(true)}>Keep overview draft against latest revision</button></>}
+          <button type="button" className="ws-secondary" disabled={blocked||latest.revision<knownRevision}
+            onClick={()=>resolveOverviewComparison(false)}>Discard my edits and load saved draft</button>
         </div>}
       </aside>
     </div>}
@@ -782,6 +799,14 @@ function verifiedSelection(value:ThumbnailSelection|null|undefined,projectId:str
       typeof value.asset.id==='string'&&typeof value.asset.altText==='string'&&!!value.asset.altText.trim()));
 }
 type PreviewBytes={url:string;assetId:string;alt:string};
+type CoverFailure={message?:string;code?:unknown};
+function coverDenied(error:CoverFailure|null|undefined){
+  if(!error)return false;
+  // S1's typed contract is authoritative. Keep the message fallback only
+  // for the preserved pre-typed #28 source; never classify arbitrary 500s.
+  if(typeof error.code==='string')return error.code==='DENIED'||error.code==='AUTH_CHANGED';
+  return /access was denied|owner session changed|session or project is unavailable/i.test(error.message??'');
+}
 function verifiedBlob(blob:Blob|null|undefined,asset:ThumbnailAsset):blob is Blob{
   return blob instanceof Blob&&blob.type===asset.mime&&blob.size===asset.size;
 }
@@ -849,6 +874,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
 }){
   const [selection,setSelection]=useState<ThumbnailSelection|null>(null);
   const [selectionVerified,setSelectionVerified]=useState(false);
+  const [previewVerified,setPreviewVerified]=useState(false);
   const [preview,setPreview]=useState<PreviewBytes|null>(null);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
@@ -857,52 +883,56 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const [confirmDetach,setConfirmDetach]=useState(false);
+  const [ownerExpired,setOwnerExpired]=useState(false);
   const attempt=useRef(0),flight=useRef(false),epoch=useRef(port.getOwnerSessionEpoch());
   const currentUrl=useRef<string|null>(null),input=useRef<HTMLInputElement>(null);
   const current=(id:number)=>id===attempt.current&&port.getOwnerSessionEpoch()===epoch.current;
   function clearPreview(){
     if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);
-    currentUrl.current=null;setPreview(null);
+    currentUrl.current=null;setPreview(null);setPreviewVerified(false);
   }
   function clearInputs(){
     setFile(null);setAlt('');setPendingOp(null);setConfirmDetach(false);
     if(input.current)input.current.value='';
   }
   function clearPrivate(){clearPreview();setSelection(null);setSelectionVerified(false);clearInputs();setNotice('');}
-  function denied(message:string|undefined){return !!message&&/access was denied|owner session changed|session or project is unavailable/i.test(message);}
-  async function renderSelection(api:ThumbnailApi,value:ThumbnailSelection,id:number){
-    if(!current(id))return;
-    if(!value.asset){clearPreview();return;}
+  async function renderSelection(api:ThumbnailApi,value:ThumbnailSelection,id:number):Promise<boolean>{
+    if(!current(id))return false;
+    setPreviewVerified(false);
+    if(!value.asset){clearPreview();return true;}
     const asset=value.asset;
     const bytes=await api.readOwnerProjectThumbnailImage(projectId,asset.id,epoch.current);
-    if(!current(id))return;
+    if(!current(id))return false;
     if(bytes.error||!verifiedBlob(bytes.data,asset)){
-      if(denied(bytes.error?.message)){clearPreview();setSelectionVerified(false);}
-      setError('The saved cover was read, but its private image bytes could not be verified. Retry the preview.');return;
+      if(coverDenied(bytes.error)){clearPrivate();setError('Private cover access was denied. No current preview is displayed.');}
+      else setError('The saved cover was read, but its private image bytes could not be verified. Retry the preview.');
+      return false;
     }
     const url=URL.createObjectURL(bytes.data);
     // Decode before replacing the previous verified preview.
     try{
       const image=new Image();image.src=url;await image.decode();
-      if(!current(id)){URL.revokeObjectURL(url);return;}
+      if(!current(id)){URL.revokeObjectURL(url);return false;}
       if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);
-      currentUrl.current=url;setPreview({url,assetId:asset.id,alt:asset.altText});
+      currentUrl.current=url;setPreview({url,assetId:asset.id,alt:asset.altText});setPreviewVerified(true);
+      return true;
     }catch{
       URL.revokeObjectURL(url);
       if(current(id))setError('The saved private image could not be decoded. Retry the preview.');
+      return false;
     }
   }
   async function refresh(initial=false){
-    if(flight.current||(!initial&&!canStart()))return;
+    if(ownerExpired||flight.current||(!initial&&!canStart()))return;
     const api=thumbnailApi(port);if(!api)return;
-    flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');setSelectionVerified(false);
+    flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');setSelectionVerified(false);setPreviewVerified(false);
     const id=++attempt.current;
     try{
       if(!current(id))return;
       const result=await api.readOwnerProjectThumbnail(projectId,epoch.current);
       if(!current(id))return;
       if(result.error||!verifiedSelection(result.data,projectId)||result.data.revision<knownRevision){
-        if(denied(result.error?.message)){clearPreview();setSelection(null);setError('Private cover access was denied. No current preview is displayed.');}
+        if(coverDenied(result.error)){clearPrivate();setError('Private cover access was denied. No current preview is displayed.');}
         else setError('Current cover could not be verified. The previous preview and input were retained.');
         return;
       }
@@ -913,13 +943,18 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
       if(!current(id)){clearPrivate();setError('Your owner session changed. Reopen this project.');}}}
   }
   useEffect(()=>{
-    epoch.current=port.getOwnerSessionEpoch();
+    epoch.current=port.getOwnerSessionEpoch();setOwnerExpired(false);
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next===epoch.current)return;
+      ++attempt.current;flight.current=false;onPending(false);setBusy(false);
+      clearPrivate();setOwnerExpired(true);setError('Your owner session changed. Reopen this project.');
+    });
     void refresh(true);
-    return ()=>{attempt.current++;flight.current=false;onPending(false);
+    return ()=>{attempt.current++;flight.current=false;onPending(false);unsubscribe();
       if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);currentUrl.current=null;};
   },[port,projectId]);
   async function change(detach=false,reapply=false){
-    if(flight.current||!canStart())return;
+    if(ownerExpired||flight.current||!canStart())return;
     const api=thumbnailApi(port);if(!api||!selection)return;
     if(epoch.current!==port.getOwnerSessionEpoch()){clearPrivate();setError('Your owner session changed. Reopen this project.');return;}
     if(!pendingOp&&(!selectionVerified||selection.revision<knownRevision)){setError('Refresh the current cover before changing it.');return;}
@@ -933,7 +968,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
       ?{...pendingOp,base:selection.revision,attachId:crypto.randomUUID()}
       :pendingOp??{base:selection.revision,uploadId:crypto.randomUUID(),attachId:crypto.randomUUID(),
         file:detach?null:file,alt:alt.trim(),...(detach?{assetId:null}: {})};
-    setPendingOp(op);flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');setSelectionVerified(false);
+    setPendingOp(op);flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');setSelectionVerified(false);setPreviewVerified(false);
     const id=++attempt.current;
     try{
       if(!current(id))return;
@@ -944,8 +979,9 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
         const value=registered.data;
         if(registered.error||!value||value.projectId!==projectId||value.mime!==op.file.type||
            value.size!==op.file.size||value.altText!==op.alt||value.publicDeliveryAllowed!==false||value.verifiedMetadata!==true){
-          if(denied(registered.error?.message)){clearPreview();setSelection(null);}
-          setError('Private image registration could not be confirmed. Retry the same upload operation.');return;
+          if(coverDenied(registered.error)){clearPrivate();setError('Private cover access was denied. Refresh before another attempt.');}
+          else setError('Private image registration could not be confirmed. '+(registered.error?.message??'Retry the same upload operation.'));
+          return;
         }
         assetId=value.id;setPendingOp({...op,assetId});
       }
@@ -955,19 +991,20 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
       if(!current(id))return;
       if(result.error||!verifiedSelection(result.data,projectId)||result.data.revision!==op.base+1||
          (result.data.asset?.id??null)!==assetId){
-        if(denied(result.error?.message)){clearPreview();setSelection(null);setError('Private cover access was denied. Refresh before another attempt.');}
+        if(coverDenied(result.error)){clearPrivate();setError('Private cover access was denied. Refresh before another attempt.');}
         else setError('Cover change was not confirmed. The last verified preview remains. Retry the same change, or refresh the current revision.');
         return;
       }
       setSelection(result.data);setSelectionVerified(true);onSaved(op.base,result.data.revision);clearInputs();
       setNotice(assetId?'Private cover selection saved. Checking its image bytes.':'Private cover removed. Folder cover restored.');
-      await renderSelection(api,result.data,id);
-      if(current(id)&&assetId)setNotice('Private cover selection saved. No public image was created.');
+      const rendered=await renderSelection(api,result.data,id);
+      if(current(id)&&assetId&&rendered)setNotice('Private cover selection saved. No public image was created.');
+      else if(current(id)&&assetId)setNotice('');
     }catch{if(current(id))setError('Private cover change could not be verified. Retry the same operation; the previous preview remains.');}
     finally{if(id===attempt.current){flight.current=false;setBusy(false);onPending(false);
       if(!current(id)){clearPrivate();setError('Your owner session changed. Reopen this project.');}}}
   }
-  const currentPreview=selectionVerified&&!!preview&&preview.assetId===selection?.asset?.id;
+  const currentPreview=selectionVerified&&previewVerified&&!!preview&&preview.assetId===selection?.asset?.id;
   const refreshedPending=!!pendingOp&&selectionVerified&&!!selection&&selection.revision>=knownRevision&&selection.revision>pendingOp.base;
   const desiredAlreadySaved=refreshedPending&&pendingOp!.assetId!==undefined&&
     (selection!.asset?.id??null)===pendingOp!.assetId;
@@ -983,7 +1020,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
     </div>
     <div aria-live="polite">{busy&&<p>Checking or saving the private cover…</p>}{notice&&<p>{notice}</p>}</div>
     {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
-    <fieldset disabled={busy||otherPending||!!pendingOp}>
+    <fieldset disabled={busy||otherPending||ownerExpired||!!pendingOp}>
       <legend>Choose a new private cover</legend>
       <label>Image file (PNG, JPEG, WebP; up to 5 MB)<input ref={input} type="file" accept="image/png,image/jpeg,image/webp"
         onChange={event=>{if(!flight.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');}}}/></label>
@@ -1012,7 +1049,7 @@ function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,can
         clearInputs();setSelection(null);void refresh();
       }}>Discard pending operation and refresh cover</button>
     </div>}
-    <button type="button" className="ws-secondary" disabled={busy||otherPending} onClick={()=>void refresh()}>Refresh private cover</button>
+    <button type="button" className="ws-secondary" disabled={busy||otherPending||ownerExpired} onClick={()=>void refresh()}>Refresh private cover</button>
   </section>;
 }
 /** WF-013: real private registered assets, not an inferred cover attachment.
