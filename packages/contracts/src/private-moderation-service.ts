@@ -154,7 +154,9 @@ async function readModerationJson(response:Response):Promise<unknown> {
       parts.push(part.value);
     }
   }catch{
-    await reader.cancel().catch(()=>{});
+    // Cancellation of a cloned/teed body can wait for an unread sibling.
+    // Fail closed immediately; best-effort cleanup must not block recovery.
+    void reader.cancel().catch(()=>{});
     throw new PrivateModerationError('INVALID_ACK','Moderation response stream was interrupted.');
   }finally{reader.releaseLock();}
   const encoding=response.headers.get('content-encoding');
