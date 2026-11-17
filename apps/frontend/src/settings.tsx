@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
@@ -55,23 +55,35 @@ function SettingsCard({title, children}: {title: string; children: ReactNode}) {
 }
 
 export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path: string}) {
-  const [services, setServices] = useState<Services | null>(null);
-  const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
+  // A new route, adapter or retry must never render the old account's settings
+  // while the current owner request is still pending.
+  const scope = useMemo(() => ({port, path, retry}), [port, path, retry]);
+  const [loaded, setLoaded] = useState<{
+    scope: typeof scope; services: Services | null; error: string; viewKey: string
+  } | null>(null);
+  const current = loaded?.scope === scope ? loaded : null;
+  const services = current?.services ?? null;
+  const error = current?.error ?? '';
   useEffect(() => {
     if (path === '/app/settings') return;
     let active = true;
-    setServices(null);
-    setError('');
     void port.ownerSettings().then(result => {
       if (!active) return;
-      if (result.data) {setServices(result.data); setError('');}
-      else setError(result.error?.message ?? 'Account settings are unavailable.');
+      setLoaded({
+        scope, services: result.data ?? null,
+        error: result.data ? '' : result.error?.message ?? 'Account settings are unavailable.',
+        viewKey: crypto.randomUUID()
+      });
     }).catch(() => {
-      if (active) setError('Account settings could not be loaded. Retry when the connection is available.');
+      if (active) setLoaded({
+        scope, services: null,
+        error: 'Account settings could not be loaded. Retry when the connection is available.',
+        viewKey: crypto.randomUUID()
+      });
     });
     return () => {active = false;};
-  }, [port, path, retry]);
+  }, [scope, port, path]);
 
   const title = settingsLinks.find(([href]) => href === path)?.[1] ?? 'Settings';
   let content: ReactNode = null;
@@ -89,15 +101,15 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path==='/app/settings/cases') content = <OwnerCaseHistory port={port}/>;
   else if (!services) content = error
     ? <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary" onClick={() => {
-      setError(''); setRetry(value => value + 1);
+      setRetry(value => value + 1);
     }}>Retry account settings</button></>
     : <p role="status">Loading private account settings…</p>;
-  else if (path === '/app/settings/privacy') content = <Privacy port={port} services={services}/>;
-  else if (path === '/app/notifications') content = <Notifications service={services.notifications}/>;
-  else if (path === '/app/settings/security') content = <Security port={port}/>;
-  else if (path === '/app/trash') content = <Trash service={services.trash}/>;
-  else if (path === '/app/export') content = <ExportCenter port={port} services={services}/>;
-  else content = <AccountExit port={port} service={services.account}/>;
+  else if (path === '/app/settings/privacy') content = <Privacy key={current!.viewKey} port={port} services={services}/>;
+  else if (path === '/app/notifications') content = <Notifications key={current!.viewKey} service={services.notifications}/>;
+  else if (path === '/app/settings/security') content = <Security key={current!.viewKey} port={port}/>;
+  else if (path === '/app/trash') content = <Trash key={current!.viewKey} service={services.trash}/>;
+  else if (path === '/app/export') content = <ExportCenter key={current!.viewKey} port={port} services={services}/>;
+  else content = <AccountExit key={current!.viewKey} port={port} service={services.account}/>;
 
   return <section className="ws-settings-page" aria-labelledby="settings-title">
     <div className="ws-heading">
@@ -555,29 +567,43 @@ export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: s
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState<'metadata'|'recovery'|'source'|null>(null);
-  const [portfolios, setPortfolios] = useState<{id:string;title:string}[]|null>(null);
-  const [portfolioError, setPortfolioError] = useState('');
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState('');
+  // A failed retry or owner change must not leave an old saved-portfolio list
+  // or a stale download/preflight target on an otherwise current settings page.
+  const listRequest = useMemo(()=>({port,retry}),[port,retry]);
+  const [listResult,setListResult] = useState<{
+    request:typeof listRequest;items:{id:string;title:string}[]|null;error:string
+  }|null>(null);
+  const currentList = listResult?.request===listRequest ? listResult : null;
+  const portfolios = currentList?.items??null;
+  const portfolioError = currentList?.error??'';
+  const selectedPortfolio = portfolios?.some(item=>item.id===selected) ? selected : '';
   useEffect(()=>{
     let active = true;
     void port.listOwnerPortfolios().then(({data})=>{
       if (!active) return;
       if (!data) throw new Error('Saved portfolios could not be loaded.');
-      setPortfolios(data.filter(item=>item.revision>0));
-    }).catch(()=>{if(active) setPortfolioError('Saved portfolios could not be loaded.');});
+      setListResult({
+        request:listRequest,items:data.filter(item=>item.revision>0),error:''
+      });
+    }).catch(()=>{
+      if(active)setListResult({
+        request:listRequest,items:null,error:'Saved portfolios could not be loaded.'
+      });
+    });
     return ()=>{active=false;};
-  },[port,retry]);
+  },[port,listRequest]);
 
   async function download(kind: NonNullable<typeof busy>) {
     if (busy) return;
     setBusy(kind); setMessage(null);
     try {
       if (kind==='source') {
-        if (!selected) return;
+        if (!selectedPortfolio) return;
         const {exportPortfolioSourceZip} = await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
-        const {data} = await port.readOwnerPortfolio(selected);
-        if (!data?.snapshot || data.id!==selected) throw new Error('Could not verify the saved portfolio revision.');
+        const {data} = await port.readOwnerPortfolio(selectedPortfolio);
+        if (!data?.snapshot || data.id!==selectedPortfolio) throw new Error('Could not verify the saved portfolio revision.');
         downloadPrivateFile('kadmeion-portfolio-revision-'+data.revision+'.zip', exportPortfolioSourceZip(data.snapshot), 'application/zip');
         setMessage({error:false,text:'Portfolio source download prepared.'});
       } else {
@@ -602,15 +628,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     <SettingsCard title="Editable portfolio ZIP">
       <p>Download the saved revision for editing or recovery. This archive contains private source and excludes uploaded media.</p>
       {portfolioError && <><p role="alert">{portfolioError}</p><button type="button" className="ws-secondary"
-        onClick={()=>{setPortfolioError('');setRetry(value=>value+1);}}>Retry portfolio list</button></>}
+        onClick={()=>{setSelected('');setRetry(value=>value+1);}}>Retry portfolio list</button></>}
       {!portfolios && !portfolioError && <p role="status">Loading saved portfolios…</p>}
       {portfolios?.length===0 && <p>No saved portfolio revisions to export.</p>}
+      {portfolios?.length===100 && <p>Showing up to 100 saved portfolios. Older saved revisions may require a later page; this is not a complete account-wide total.</p>}
       {!!portfolios?.length && <><label className="ws-export-select">Portfolio to export
-        <select value={selected} disabled={busy!==null} onChange={event=>setSelected(event.target.value)}>
+        <select value={selectedPortfolio} disabled={busy!==null} onChange={event=>setSelected(event.target.value)}>
           <option value="">Select a portfolio</option>
           {portfolios.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
         </select></label>
-        <button className="ws-primary" type="button" disabled={!selected || busy!==null}
+        <button className="ws-primary" type="button" disabled={!selectedPortfolio || busy!==null}
           onClick={()=>void download('source')}>{busy==='source'?'Preparing portfolio ZIP…':'Download portfolio source ZIP'}</button></>}
     </SettingsCard>
     <SettingsCard title="Private account data">
@@ -624,14 +651,20 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     </SettingsCard>
     <SettingsCard title="Offline static preview">
       <p>Run preflight on a saved revision to download an eligible scriptless HTML preview. The ZIP has no public URL and excludes custom code and private media.</p>
-      {selected
-        ? <a href={'/app/portfolios/'+selected+'/publish'}>Open preflight for selected portfolio</a>
+      {selectedPortfolio
+        ? <a href={'/app/portfolios/'+selectedPortfolio+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
   </div></>;
 }
 
 function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
+  // The shell mounts this consumer only after live owner verification.
+  // Capture the mount's epoch: never adopt a newer one from an old handler.
+  const [epoch] = useState(() => port.getOwnerSessionEpoch());
+  const mounted = useRef(false);
+  const [recovery, setRecovery] = useState<'checking'|'failed'|'ready'>('checking');
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const [inventory, setInventory] = useState<AccountExitPreflight | null>(null);
   const [requests, setRequests] = useState<PrivateAccountErasureEntry[] | null>(null);
   const [confirmation, setConfirmation] = useState('');
@@ -640,35 +673,128 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
-  const [reauth, setReauth] = useState<AccountExitReauthVerification|null>(null);
+  const [recoveredProof, setRecoveredProof] = useState<{requestId:string;verification:AccountExitReauthVerification}|null>(null);
   const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
   const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
+  const reauth = recoveredProof && activeRequest?.id === recoveredProof.requestId ? recoveredProof.verification : null;
+
+  const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  // A successful intentional password rotation replaces the private subtree.
+  // Recover the exact server-bound continuation in this new verified mount.
+  // No receipt/password is persisted in browser storage or passed by the shell.
+  useEffect(() => {
+    let active = true;
+    const stillCurrent = () => active && port.reconcileOwnerSessionEpoch() === epoch;
+    setRecovery('checking');
+    setMessage(null);
+    setRecoveredProof(null);
+    setWithdrawConfirmation('');
+    withdrawalOperation.current = null;
+    void (async () => {
+      try {
+        if (!stillCurrent()) return;
+        const recovered = await port.recoverOwnerAccountExitReauth(epoch);
+        if (!stillCurrent()) return;
+        if (recovered.error) throw new Error(recovered.error.message);
+        if (recovered.data) {
+          const {requestId, verification} = recovered.data;
+          const [result, history] = await Promise.all([service.preflight(),service.list()]);
+          if (!stillCurrent()) return;
+          if (history.find(item => item.status === 'REQUESTED_BLOCKED')?.id !== requestId ||
+              !Number.isFinite(Date.parse(verification.expiresAt)) ||
+              Date.parse(verification.expiresAt) <= Date.now()) {
+            port.discardOwnerAccountExitReauth(epoch);
+            throw new Error('The account-exit verification is expired or the request is no longer pending.');
+          }
+          setInventory(result);
+          setRequests(history);
+          setRecoveredProof({requestId,verification});
+        }
+        setRecovery('ready');
+      } catch (error) {
+        if (!stillCurrent()) return;
+        setInventory(null);
+        setRequests(null);
+        setRecoveredProof(null);
+        setMessage(failure(error));
+        setRecovery('failed');
+      }
+    })();
+    // Do not discard the pointer on cleanup: StrictMode and the intentional
+    // epoch remount are not explicit cancellation.
+    return () => { active = false; };
+  }, [port,service,epoch,recoveryAttempt]);
+
+  function discardProof() {
+    port.discardOwnerAccountExitReauth(epoch);
+    setRecoveredProof(null);
+    setWithdrawConfirmation('');
+    withdrawalOperation.current = null;
+  }
+
+  // A confirmed challenge is short-lived. Do not leave a success receipt or
+  // destructive confirmation visible after its deadline, even without a click.
+  useEffect(() => {
+    if (!reauth) return;
+    let timer: number | undefined;
+    const reviewExpiry = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      const remaining = Date.parse(reauth.expiresAt) - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) {
+        if (port.reconcileOwnerSessionEpoch() !== epoch) return;
+        port.discardOwnerAccountExitReauth(epoch);
+        setRecoveredProof(null);
+        setWithdrawConfirmation('');
+        withdrawalOperation.current = null;
+        setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
+        return;
+      }
+      timer = window.setTimeout(reviewExpiry, Math.min(remaining, 60_000));
+    };
+    reviewExpiry();
+    window.addEventListener('focus', reviewExpiry);
+    document.addEventListener('visibilitychange', reviewExpiry);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('focus', reviewExpiry);
+      document.removeEventListener('visibilitychange', reviewExpiry);
+    };
+  }, [reauth,port,epoch]);
 
   async function check() {
-    if (busy) return;
+    if (busy || recovery !== 'ready' || !current()) return;
     setBusy(true);
     setMessage(null);
+    discardProof();
+    challenge.current=null;
+    challengeOperation.current=null;
     setInventory(null);
     setRequests(null);
     setConfirmation('');
-    setReauth(null);
-    setWithdrawConfirmation('');
-    withdrawalOperation.current=null;
     try {
       const [result, history] = await Promise.all([service.preflight(),service.list()]);
+      if (!current()) return;
       setInventory(result);
       setRequests(history);
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   async function changeRequest(requestId: string | null) {
-    if (busy || !inventory || !requests) return;
+    if (busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
     if (requestId ? activeRequest?.id!==requestId : !!activeRequest || confirmation!=='DELETE MY ACCOUNT') return;
+    discardProof();
+    challenge.current=null;
+    challengeOperation.current=null;
     const key = requestId ?? 'request';
     if (operation.current?.key!==key) operation.current={key,id:crypto.randomUUID()};
     setBusy(true);
@@ -676,36 +802,32 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     try {
       if (requestId) await service.withdraw(requestId,operation.current.id);
       else await service.request(operation.current.id,'DELETE MY ACCOUNT');
+      if (!current()) return;
       // Hide old actions until a fresh read confirms the current request state.
       setRequests(null);
       setConfirmation('');
-      setReauth(null);
-      setWithdrawConfirmation('');
-      withdrawalOperation.current=null;
-      challenge.current=null;
-      challengeOperation.current=null;
       operation.current=null;
-      setRequests(await service.list());
+      const history=await service.list();
+      if (!current()) return;
+      setRequests(history);
       setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   async function verifyIdentity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !activeRequest) return;
+    if (busy || recovery !== 'ready' || !activeRequest || !current()) return;
     const form=event.currentTarget;
     const password=new FormData(form).get('current-password');
     if (typeof password!=='string' || !password) return;
     form.reset();
     setBusy(true);
     setMessage(null);
-    setReauth(null);
-    setWithdrawConfirmation('');
-    withdrawalOperation.current=null;
+    discardProof();
     try {
       if (challenge.current && Date.parse(challenge.current.expiresAt)<=Date.now()) {
         challenge.current=null;
@@ -713,27 +835,34 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       }
       challengeOperation.current ??= crypto.randomUUID();
       challenge.current ??= await service.beginReauth(challengeOperation.current);
-      const reauth=await port.reauthenticateCurrentOwner(password);
-      if (reauth.error) throw new Error(reauth.error.message);
-      const challengeId=challenge.current.challengeId;
-      // The next verification must begin a new challenge if this new session
-      // cannot be confirmed. A consumed challenge is bound to one session.
-      challenge.current=null;
-      challengeOperation.current=null;
-      const receipt=await service.completeReauth(challengeId);
-      setReauth(receipt);
+      if (!current()) return;
+      if (Date.parse(challenge.current.expiresAt)<=Date.now()) {
+        challenge.current=null;
+        challengeOperation.current=null;
+        throw new Error('Identity verification challenge expired. Try again.');
+      }
+      // S1 owns the intentional session rotation and continuation. Keep the
+      // same challenge/operation for a failed password before rotation.
+      const result=await port.reauthenticateCurrentOwner(password,{
+        expectedEpoch:epoch,requestId:activeRequest.id,challengeId:challenge.current.challengeId
+      });
+      if (!current()) return;
+      if (result.error) throw new Error(result.error.message);
+      // A successful rotation must invalidate this mount; never complete with
+      // this old service or announce success without authoritative readback.
+      throw new Error('A new verified session could not be established. Try again.');
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   async function withdrawAppContent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !activeRequest || !reauth || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
+    if (busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
     if (Date.parse(reauth.expiresAt)<=Date.now()) {
-      setReauth(null);
+      discardProof();
       setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
       return;
     }
@@ -743,22 +872,31 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     try {
       const receipt=await service.withdrawPublicContent(activeRequest.id,reauth.challengeId,
         withdrawalOperation.current,'WITHDRAW PUBLIC CONTENT');
-      setWithdrawConfirmation('');
-      setReauth(null);
-      withdrawalOperation.current=null;
+      if (!current()) return;
+      discardProof();
       setMessage({error:false,text:'Application withdrawal confirmed. Reviewer grants revoked: '+
         receipt.revokedReviewerGrants+'. Independent host withdrawal remains unverified.'});
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Deletion prerequisites">
+      {recovery === 'checking' && <p role="status">Checking current identity verification…</p>}
+      {recovery === 'failed' && <div className="ws-actions">
+        <button type="button" className="ws-secondary" onClick={()=>setRecoveryAttempt(value=>value+1)}>Retry identity verification recovery</button>
+        <button type="button" className="ws-secondary" onClick={()=>{
+          if (!current()) return;
+          discardProof();
+          setMessage(null);
+          setRecovery('ready');
+        }}>Cancel identity verification</button>
+      </div>}
       <p>Account deletion requires fresh identity verification, public revocation and storage checks. You can record or withdraw a request while these checks are pending.</p>
-      <button className="ws-primary" type="button" disabled={busy}
+      <button className="ws-primary" type="button" disabled={busy || recovery !== 'ready'}
         onClick={()=>void check()}>Review deletion prerequisites</button>
       {inventory && <section aria-label="Private inventory" className="ws-exit-inventory">
         <h3>Private inventory</h3>
@@ -786,6 +924,11 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
         </form>
         {reauth && <>
           <p role="status">Fresh sign-in verified. Proof expires at <time dateTime={reauth.expiresAt}>{new Date(reauth.expiresAt).toLocaleTimeString()}</time>. Deletion remains gated.</p>
+          <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{
+            if (!current()) return;
+            discardProof();
+            setMessage(null);
+          }}>Cancel identity verification</button>
           <form onSubmit={event=>void withdrawAppContent(event)}>
             <p>Withdraw app-managed profile and case-study projections and revoke reviewer grants. External host and cache withdrawal require separate proof.</p>
             <label className="ws-export-select">Type WITHDRAW PUBLIC CONTENT to confirm

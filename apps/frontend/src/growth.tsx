@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import type {FormEvent} from 'react';
 import type {SupabaseBrowserAuthPort} from '../../auth-web/src/supabase-auth-port.ts';
 import type {
@@ -386,21 +386,36 @@ function Connections({service}:{service:SupabasePrivatePlatformLinksService}){
   </section>;
 }
 
+type GrowthRequestScope = {port:SupabaseBrowserAuthPort;path:string;attempt:number};
+type GrowthLoad = {scope:GrowthRequestScope;data:GrowthServices|null;error:string;viewKey:string};
+
 export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}){
-  const [services,setServices]=useState<GrowthServices|null>(null);
-  const [error,setError]=useState('');
   const [attempt,setAttempt]=useState(0);
+  // Keep returned private data tied to the exact requesting adapter and route.
+  // A late response, account adapter change or retry must not briefly render
+  // a previous request's records while the next request is pending.
+  const scope=useMemo<GrowthRequestScope>(()=>({port,path,attempt}),[port,path,attempt]);
+  const [loaded,setLoaded]=useState<GrowthLoad|null>(null);
+  const current=loaded?.scope===scope?loaded:null;
+  const services=current?.data??null;
+  const error=current?.error??'';
   const view=path as GrowthRoute;
   useEffect(()=>{
     if(path==='/app/analytics'||path==='/app/growth/devscore')return;
     let active=true;
     void port.ownerGrowth().then(result=>{
       if(!active)return;
-      if(result.data){setServices(result.data);setError('');}
-      else setError(result.error?.message??'Private growth service unavailable.');
-    }).catch(err=>{if(active)setError(presentError(err));});
+      setLoaded({
+        scope,
+        data:result.data??null,
+        error:result.data?'':result.error?.message??'Private growth service unavailable.',
+        viewKey:crypto.randomUUID()
+      });
+    }).catch(err=>{
+      if(active)setLoaded({scope,data:null,error:presentError(err),viewKey:crypto.randomUUID()});
+    });
     return ()=>{active=false;};
-  },[port,path,attempt]);
+  },[scope,port,path]);
   return <section className="ws-growth" aria-labelledby="growth-title">
     <div className="ws-heading">
       <p className="ws-kicker">BUILD · SHOWCASE · EVOLVE</p>
@@ -416,9 +431,9 @@ export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}
       error?<div className="ws-project-aside"><p role="alert">{error}</p>
         <button type="button" className="ws-secondary" onClick={()=>setAttempt(n=>n+1)}>Retry private Growth</button></div>:
       !services?<p role="status">Checking your owner-private growth records…</p>:
-      path==='/app/growth'?<GrowthHome service={services.goals}/>:
-      path==='/app/growth/activity'?<Activity service={services.goals}/>:
-      path==='/app/growth/goals'?<Goals service={services.goals}/>:
-      <Connections service={services.links}/>}
+      path==='/app/growth'?<GrowthHome key={current!.viewKey} service={services.goals}/>:
+      path==='/app/growth/activity'?<Activity key={current!.viewKey} service={services.goals}/>:
+      path==='/app/growth/goals'?<Goals key={current!.viewKey} service={services.goals}/>:
+      <Connections key={current!.viewKey} service={services.links}/>}
   </section>;
 }
