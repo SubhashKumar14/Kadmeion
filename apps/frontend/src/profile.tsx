@@ -14,6 +14,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [draft, setDraft] = useState<OwnerProfile | null>(null);
   const [panel, setPanel] = useState('Profile');
   const [skill, setSkill] = useState('');
+  const [skillError, setSkillError] = useState('');
   const [visible, setVisible] = useState<PreviewField[]>(['displayName', 'headline']);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -44,10 +45,19 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
 
   function addSkill() {
     const value = skill.trim();
-    if (!draft || !value || draft.skills.length >= 20 ||
-        draft.skills.some(existing => existing.toLowerCase() === value.toLowerCase())) return;
+    if (!draft || !value) return;
+    if (draft.skills.length >= 20) {
+      setSkillError('You can list up to 20 skills.');
+      return;
+    }
+    if (draft.skills.some(existing => existing.toLocaleLowerCase('en') === value.toLocaleLowerCase('en'))) {
+      setSkillError('This skill is already in your profile.');
+      return;
+    }
     setDraft({...draft, skills: [...draft.skills, value]});
     setSkill('');
+    setSkillError('');
+    setWithdrawal(false);
     setNotice('');
   }
 
@@ -124,9 +134,16 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           {panel === 'Skills & links' && <>
             <ul className="ws-profile-skills" aria-label="Private skills">{draft.skills.map((item, index) =>
               <li key={index}><button type="button" aria-label={'Remove ' + item}
-                onClick={() => setDraft({...draft, skills: draft.skills.filter((_, pos) => pos !== index)})}>{item} ×</button></li>)}</ul>
-            <label>Add skill<input value={skill} maxLength={40} onChange={event => setSkill(event.target.value)}
+                onClick={() => {
+                  setDraft({...draft, skills: draft.skills.filter((_, pos) => pos !== index)});
+                  setSkillError(''); setWithdrawal(false); setNotice('');
+                }}>{item} ×</button></li>)}</ul>
+            <label>Add skill<input value={skill} maxLength={40}
+              aria-invalid={!!skillError} aria-describedby={skillError ? 'profile-skill-error' : undefined}
+              onChange={event => {setSkill(event.target.value); setSkillError('');}}
               onKeyDown={event => {if (event.key === 'Enter') {event.preventDefault(); addSkill();}}}/></label>
+            {skillError && <p id="profile-skill-error" role="alert" className="ws-inline-alert">{skillError}</p>}
+            <p>{draft.skills.length} of 20 skills added to this private draft.</p>
             <button type="button" className="ws-secondary" disabled={!skill.trim() || draft.skills.length >= 20} onClick={addSkill}>Add skill</button>
             {panel === 'Skills & links' && <p>Project links are managed in the <a href="/app/projects">project library</a>.</p>}
           </>}
