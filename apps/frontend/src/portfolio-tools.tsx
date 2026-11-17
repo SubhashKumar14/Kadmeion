@@ -367,6 +367,17 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const [message, setMessage] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [query,setQuery]=useState('');
+  const [category,setCategory]=useState('');
+  const [compatibleOnly,setCompatibleOnly]=useState(false);
+  const [review,setReview]=useState<{
+    versionId:string;slotKey:string;snapshot:PortfolioSnapshot;epoch:number;generation:number
+  }|null>(null);
+  const reviewHeading=useRef<HTMLHeadingElement>(null);
+  const reviewTrigger=useRef<HTMLButtonElement|null>(null);
+  const searchInput=useRef<HTMLInputElement>(null);
+  const componentNameInput=useRef<HTMLInputElement>(null);
+  const reviewSubmitting=useRef(false);
   const slotKind = slot.slice(slot.lastIndexOf('-') + 1);
   const state = head.snapshot.slots[slot]?.state;
   const owned=head.snapshot.slots[slot],savedSlot=committed?.slots[slot];
@@ -420,27 +431,123 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     finally{retry.inFlight=false;if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
   }
 
+  // Discovery is a projection of the verified private catalogue, not an
+  // invented public listing, popularity score or persisted Favorites service.
+  const categories=[...new Set(versions?.flatMap(version=>version.compatible_slot_kinds)??[])].sort();
+  const normalizedQuery=query.trim().toLowerCase();
+  const visibleVersions=versions?.filter(version=>
+    (!compatibleOnly||!!state&&version.compatible_slot_kinds.includes(slotKind))&&
+    (!category||version.compatible_slot_kinds.includes(category))&&
+    (!normalizedQuery||[version.display_name,version.component_key,version.base_component_pin,
+      'v'+version.version,...version.compatible_slot_kinds].some(value=>value.toLowerCase().includes(normalizedQuery))))??[];
+  const reviewedVersion=review&&versions?.find(version=>version.id===review.versionId);
+  const reviewCurrent=!!review&&!!reviewedVersion&&review.slotKey===slot&&review.snapshot===head.snapshot&&
+    review.epoch===catalogueEpoch.current&&review.generation===componentListGeneration.current&&
+    !!state&&state!=='EMPTY'&&!!owned&&reviewedVersion.compatible_slot_kinds.includes(slotKind);
+  const retainedFields=reviewCurrent&&owned&&reviewedVersion?
+    Object.keys(matchingReplacementContent(owned,reviewedVersion.base_component_pin)).sort():[];
+  const stashedOnlyFields=reviewCurrent&&owned?
+    Object.keys(owned.content).filter(key=>!retainedFields.includes(key)).sort():[];
+  const sourceBytes=reviewCurrent&&owned?.sourcePath&&Object.hasOwn(head.snapshot.files,owned.sourcePath)?
+    new TextEncoder().encode(head.snapshot.files[owned.sourcePath]!).byteLength:null;
+  const protectedSource=state==='S1'||state==='S2';
+
+  useLayoutEffect(()=>{if(review)reviewHeading.current?.focus();},[review]);
+  function closeReview(restoreFocus=true){
+    setReview(null);reviewSubmitting.current=false;
+    if(restoreFocus){
+      const trigger=reviewTrigger.current;
+      if(trigger?.isConnected&&!trigger.disabled)trigger.focus();
+      else searchInput.current?.focus();
+    }
+    reviewTrigger.current=null;
+  }
+  function openReuse(version:MyComponentVersion,trigger:HTMLButtonElement){
+    if(blocked||busy||!owned||!state||!versions?.some(item=>item.id===version.id)||
+      !version.compatible_slot_kinds.includes(slotKind))return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(epoch!==catalogueEpoch.current)return;
+    setMessage('');
+    if(state==='EMPTY'){
+      closeReview(false);
+      const ok=apply({kind:'REUSE_SAVED_COMPONENT',slotKey:slot,componentVersionId:version.id,
+        preserveMatchingContent:true},{[version.id]:version});
+      if(ok)setMessage('Private component applied to the working draft. Save to persist; source execution remains disabled.');
+      return;
+    }
+    reviewTrigger.current=trigger;reviewSubmitting.current=false;
+    setReview({versionId:version.id,slotKey:slot,snapshot:head.snapshot,epoch,
+      generation:componentListGeneration.current});
+  }
+  function confirmReplacement(){
+    if(reviewSubmitting.current||!reviewCurrent||!review||!reviewedVersion||blocked||busy)return;
+    if(port.reconcileOwnerSessionEpoch()!==review.epoch||
+      review.generation!==componentListGeneration.current){
+      closeReview();setMessage('The private component catalogue changed. Reload it and review the replacement again.');return;
+    }
+    reviewSubmitting.current=true;
+    const ok=apply({kind:'REUSE_SAVED_COMPONENT',slotKey:review.slotKey,componentVersionId:review.versionId,
+      confirmOwnedReplacement:protectedSource,preserveMatchingContent:true},{[reviewedVersion.id]:reviewedVersion});
+    closeReview();
+    if(ok)setMessage('Replacement applied to the working draft. Outgoing assignment is stashed; use Undo or Save.');
+    else setMessage('Replacement was not applied. Review current draft and resolve outstanding edits before retrying.');
+  }
+
   return <div className="ws-editor-tool"><h2>My Components</h2>
     {message && <p role="status">{message}</p>}
     {!versions&&message&&<button type="button" className="ws-secondary" onClick={()=>setRefresh(n=>n+1)}>Retry private components</button>}
     {!versions && !message && <p role="status">Loading saved components…</p>}
     {versions?.length === 0 && <p>You haven’t saved any component versions.</p>}
-    <ul className="ws-editor-slots">{versions?.map(version => <li key={version.id}>
-      <strong>{version.display_name} · v{version.version}</strong> <span>{version.compatible_slot_kinds.join(', ')}</span>
-      <button type="button" disabled={!state||blocked||busy||!version.compatible_slot_kinds.includes(slotKind)}
-        onClick={()=>{
-          if(port.reconcileOwnerSessionEpoch()!==catalogueEpoch.current||!owned)return;
-          const protectedSource=state==='S1'||state==='S2';
-          if(state!=='EMPTY'&&!window.confirm('Reuse this private component version and stash the existing assignment'+
-            (owned.sourcePath?' ('+owned.sourcePath+')':'')+'? Matching fields: '+
-            (Object.keys(matchingReplacementContent(owned,version.base_component_pin)).join(', ')||'none')+'.'))return;
-          apply({kind:'REUSE_SAVED_COMPONENT',slotKey:slot,componentVersionId:version.id,
-            confirmOwnedReplacement:protectedSource,preserveMatchingContent:true},{[version.id]:version});
-        }}>
-        {state==='EMPTY'?'Reuse in selected slot':'Reuse and stash previous'}
-      </button>
-    </li>)}</ul>
-    {canSave && <><label>Component name<input disabled={busy} value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
+    {!!versions?.length&&<>
+      <p>Selected target: {state?slotKind+' slot':'No slot selected'}. Private saved versions only.</p>
+      <label>Search saved components<input ref={searchInput} type="search" value={query} maxLength={120}
+        onChange={event=>setQuery(event.target.value)} placeholder="Name, version, pin or slot kind"/></label>
+      <label>Compatible slot category<select value={category} onChange={event=>setCategory(event.target.value)}>
+        <option value="">All categories</option>
+        {categories.map(kind=><option key={kind} value={kind}>{kind}</option>)}
+      </select></label>
+      <label><input type="checkbox" checked={compatibleOnly} disabled={!state}
+        onChange={event=>setCompatibleOnly(event.target.checked)}/> Only versions compatible with the selected slot</label>
+      <p role="status">{visibleVersions.length} of {versions.length} private versions shown.</p>
+      {visibleVersions.length===0&&<><p>No saved versions match these filters.</p>
+        <button type="button" className="ws-secondary" onClick={()=>{setQuery('');setCategory('');setCompatibleOnly(false);searchInput.current?.focus();}}>Clear filters</button></>}
+    </>}
+    <ul className="ws-editor-slots">{visibleVersions.map(version=>{
+      const compatible=!!state&&version.compatible_slot_kinds.includes(slotKind);
+      return <li key={version.id}>
+        <strong>{version.display_name} · v{version.version}</strong>
+        <span>Base: {version.base_component_pin} · Fits: {version.compatible_slot_kinds.join(', ')}</span>
+        <small>{compatible?'Fits selected slot':state?'Not compatible with selected slot':'Select a slot first'} · Private source, not trusted public code</small>
+        <button type="button" aria-expanded={review?.versionId===version.id}
+          disabled={!compatible||blocked||busy}
+          onClick={event=>openReuse(version,event.currentTarget)}>
+          {state==='EMPTY'?'Reuse in selected slot':'Review replacement'}
+        </button>
+      </li>;
+    })}</ul>
+    {review&&<section aria-label="Replacement impact" onKeyDown={event=>{
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeReview();}
+    }}>
+      <h3 ref={reviewHeading} tabIndex={-1}>Review replacement impact</h3>
+      {!reviewCurrent?<p role="alert">The selected slot, working draft or catalogue changed. Cancel and review the replacement again.</p>:<>
+        <p>Replace {owned?.componentId??'current assignment'} with {reviewedVersion?.display_name} · v{reviewedVersion?.version} in {slotKind}.</p>
+        <p>{protectedSource?(state==='S1'?'Owned pristine override (S1).':'Owned modified override (S2).'):'Pristine library assignment (S0).'} The entire outgoing assignment will be stashed.</p>
+        {owned?.sourcePath&&<p>Protected source: <code>{owned.sourcePath}</code>{sourceBytes===null?'': ' · '+sourceBytes+' bytes'}. Existing source is retained; reuse creates a separate owned file.</p>}
+        <dl>
+          <div><dt>Matching declared fields retained</dt><dd>{retainedFields.join(', ')||'None'}</dd></div>
+          <div><dt>Fields retained only in the outgoing stash</dt><dd>{stashedOnlyFields.join(', ')||'None'}</dd></div>
+          <div><dt>Incoming source</dt><dd>Private saved version; no arbitrary source execution or public trust granted.</dd></div>
+        </dl>
+        {protectedSource&&<button type="button" className="ws-secondary" disabled={!canSave||blocked||busy}
+          onClick={()=>{closeReview(false);componentNameInput.current?.focus();setMessage('Save the committed outgoing source as a private component before reviewing replacement again.');}}>Keep as My Component</button>}
+        {protectedSource&&!canSave&&<p>To keep this exact outgoing version, cancel and save the portfolio after resolving unapplied buffers.</p>}
+        {blocked&&<p role="status">Resolve pending source/content edits or saves before replacement.</p>}
+        <button type="button" className="ws-primary" disabled={blocked||busy}
+          onClick={confirmReplacement}>Replace and stash</button>
+      </>}
+      <button type="button" className="ws-secondary" onClick={()=>closeReview()}>Cancel replacement</button>
+    </section>}
+    {canSave && <><label>Component name<input ref={componentNameInput} disabled={busy} value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
       <button type="button" className="ws-secondary" disabled={busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
     {!canSave&&(state==='S1'||state==='S2')&&<p>Save the portfolio and resolve unapplied source edits before keeping this exact owned version.</p>}
   </div>;
