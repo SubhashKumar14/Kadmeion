@@ -105,7 +105,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
     }}>Retry account settings</button></>
     : <p role="status">Loading private account settings…</p>;
   else if (path === '/app/settings/privacy') content = <Privacy key={current!.viewKey} port={port} services={services}/>;
-  else if (path === '/app/notifications') content = <Notifications key={current!.viewKey} service={services.notifications}/>;
+  else if (path === '/app/notifications') content = <Notifications key={current!.viewKey} port={port} service={services.notifications}/>;
   else if (path === '/app/settings/security') content = <Security key={current!.viewKey} port={port}/>;
   else if (path === '/app/trash') content = <Trash key={current!.viewKey} service={services.trash}/>;
   else if (path === '/app/export') content = <ExportCenter key={current!.viewKey} port={port} services={services}/>;
@@ -223,7 +223,12 @@ function notificationDestination(item: PrivateNotification): string {
   return '/app/portfolios';
 }
 
-function Notifications({service}: {service: Services['notifications']}) {
+function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Services['notifications']}) {
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const mounted=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  const current=()=>mounted.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  const pendingAction=useRef(false);
   const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
   const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
   const [pendingPrefs, setPendingPrefs] = useState<{
@@ -233,54 +238,70 @@ function Notifications({service}: {service: Services['notifications']}) {
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [prefsReload,setPrefsReload]=useState(0);
+  const [prefRetry,setPrefRetry]=useState<{reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean}|null>(null);
   const [inboxFilter, setInboxFilter] = useState<'ALL'|'UNREAD'|'HIGH'>('ALL');
   useEffect(() => {
     let active = true;
     setInbox(null);
-    setPrefs(undefined);
     setMessage(null);
-    void Promise.all([service.listPage(), service.getPreferences()]).then(([items, settings]) => {
-      if (active) {setInbox(items); setPrefs(settings);}
-    }).catch(error => {if (active) setMessage(failure(error));});
+    void service.listPage().then(items=>{
+      if(active&&port.reconcileOwnerSessionEpoch()===epoch)setInbox(items);
+    }).catch(error=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)setMessage(failure(error));});
     return () => {active = false;};
-  }, [service, reload]);
+  }, [service,port,epoch,reload]);
+  useEffect(()=>{
+    let active=true;
+    setPrefs(undefined);setPreferenceMessage(null);setPrefRetry(null);
+    void service.getPreferences().then(settings=>{
+      if(active&&port.reconcileOwnerSessionEpoch()===epoch)setPrefs(settings);
+    }).catch(error=>{
+      if(active&&port.reconcileOwnerSessionEpoch()===epoch)setPreferenceMessage(failure(error));
+    });
+    return()=>{active=false;};
+  },[service,port,epoch,prefsReload]);
 
   async function acknowledge(item: PrivateNotification, dismiss: boolean) {
-    if (busy) return;
-    setBusy(true); setMessage(null);
+    if (busy || pendingAction.current || !current()) return;
+    pendingAction.current=true;setBusy(true); setMessage(null);
     try {
       const receipt = await service.acknowledge(item.id, dismiss);
+      if(!current())return;
       setInbox(current => current && {...current, items: dismiss ? current.items.filter(row => row.id !== item.id)
         : current.items.map(row => row.id === item.id ? {...row, read_at: receipt.read_at} : row)});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    } catch (error) {if(current())setMessage(failure(error));}
+    finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
   async function review(item: PrivateNotification) {
-    if (busy) return;
-    setBusy(true); setMessage(null);
+    if (busy || pendingAction.current || !current()) return;
+    pendingAction.current=true;setBusy(true); setMessage(null);
     try {
-      if (!item.read_at) await service.acknowledge(item.id, false);
-      window.location.assign(notificationDestination(item));
+      if (!item.read_at) {
+        const receipt=await service.acknowledge(item.id, false);
+        if(!current())return;
+        setInbox(value=>value&&({...value,items:value.items.map(row=>row.id===item.id?{...row,read_at:receipt.read_at}:row)}));
+      }
+      if(current())window.location.assign(notificationDestination(item));
     } catch (error) {
-      setMessage(failure(error));
-      setBusy(false);
-    }
+      if(current())setMessage(failure(error));
+    } finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
   async function more() {
-    if (!inbox?.nextCursor || busy) return;
+    if (!inbox?.nextCursor || busy || pendingAction.current || !current()) return;
     const requestedCursor = inbox.nextCursor;
-    setBusy(true); setMessage(null);
+    pendingAction.current=true;setBusy(true); setMessage(null);
     try {
       const next = await service.listPage(50, requestedCursor);
+      if(!current())return;
       setInbox(current => {
         if (!current || current.nextCursor !== requestedCursor) return current;
         const seen = new Set(current.items.map(item => item.id));
         return {...next, items: [...current.items, ...next.items.filter(item => !seen.has(item.id))]};
       });
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    } catch (error) {if(current())setMessage(failure(error));}
+    finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
   // The database enables reviewer and publishing notices when no row exists.
@@ -291,21 +312,26 @@ function Notifications({service}: {service: Services['notifications']}) {
   };
   const displayedPrefs = pendingPrefs ?? effectivePrefs;
 
-  async function preference(key: keyof typeof effectivePrefs, checked: boolean) {
-    if (busy) return;
-    const next = {...effectivePrefs, [key]: checked};
-    setBusy(true);
-    setPendingPrefs(next);
-    setPreferenceMessage(null);
+  async function savePreferences(next:typeof effectivePrefs) {
+    if (busy || pendingAction.current || prefs===undefined || !current()) return;
+    pendingAction.current=true;setBusy(true);setPendingPrefs(next);
+    setPreferenceMessage(null);setPrefRetry(null);
     try {
-      setPrefs(await service.setPreferences(next));
-      setPreferenceMessage({error: false, text: 'Notification preferences saved.'});
+      const saved=await service.setPreferences(next);
+      if(!current())return;
+      setPrefs(saved);
+      setPreferenceMessage({error:false,text:'Notification preferences saved.'});
     } catch {
-      setPreferenceMessage({error: true, text: 'Could not confirm the change. Showing the last confirmed preferences. Try again or reload to check the saved settings.'});
+      if(!current())return;
+      setPrefRetry(next);
+      setPreferenceMessage({error:true,text:'Could not confirm the change. Showing the last confirmed preferences. Try again or reload to check the saved settings.'});
     } finally {
-      setPendingPrefs(null);
-      setBusy(false);
+      pendingAction.current=false;
+      if(current()){setPendingPrefs(null);setBusy(false);}
     }
+  }
+  function preference(key:keyof typeof effectivePrefs,checked:boolean){
+    return savePreferences({...effectivePrefs,[key]:checked});
   }
 
   const visibleNotices=inbox?.items.filter(item=>inboxFilter==='ALL' ||
@@ -334,9 +360,11 @@ function Notifications({service}: {service: Services['notifications']}) {
         onClick={() => void acknowledge(item, false)}>Mark as read</button>}
         <button className="ws-secondary" type="button" disabled={busy} onClick={() => void acknowledge(item, true)}>Dismiss</button></div>
     </li>)}</ul>
-    {inbox?.items.length ? <p>Review opens an owner-only area. Unread notices are marked read only after the server acknowledges the action.</p> : null}
+    {inbox?.items.length ? <p>Review opens an owner-only area. Unread notices are marked read only after the server acknowledges the action. Filters apply to loaded notices only.</p> : null}
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
+    {prefs===undefined&&!preferenceMessage&&<p role="status">Loading notification preferences…</p>}
+    {prefs===undefined&&preferenceMessage?.error&&<button type="button" className="ws-secondary" onClick={()=>setPrefsReload(n=>n+1)}>Retry notification preferences</button>}
     {prefs === null && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
@@ -350,7 +378,9 @@ function Notifications({service}: {service: Services['notifications']}) {
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
     <Status message={preferenceMessage}/>
-    <p>Security and moderation notices use the required in-app channel.</p>
+    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void savePreferences(prefRetry)}>Retry preference change</button>
+      <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setPrefsReload(n=>n+1)}>Reload confirmed preferences</button></div>}
+    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings.</p>
   </SettingsCard></div>;
 }
 
@@ -693,7 +723,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       if(!current())return;
       downloadPrivateFile(file.filename,bytes,mime);
       setReceipt(file);
-      setMessage({error:false,text:'Download prepared and requested in this browser. Save it privately; local file persistence is not verified.'});
+      setMessage({error:false,text:kind==='recovery'?'Private recovery download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
     } catch (error) {
       if(!current())return;
       setFailedKind(kind);
@@ -727,7 +757,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         {receipt.categories!==undefined&&<><dt>Record categories</dt><dd>{receipt.categories}</dd><dt>Records in artifact (not unique entities)</dt><dd>{receipt.records}</dd></>}
         {receipt.assets!==undefined&&<><dt>Asset references</dt><dd>{receipt.assets}</dd><dt>Distinct archive files for assets</dt><dd>{receipt.assetFiles}</dd></>}
         <dt>SHA-256 (local artifact checksum)</dt><dd style={{overflowWrap:'anywhere'}}><code>{receipt.sha256}</code></dd></dl>
-      <p>This checksum identifies the prepared bytes, not a provider signature, proof of saved file, or erasure receipt.</p>
+      <p>The browser was asked to download these bytes. This checksum identifies the prepared bytes, not a provider signature, proof of saved file, or erasure receipt.</p>
     </SettingsCard>}
     <div className="ws-settings-grid">
     <SettingsCard title="Editable portfolio ZIP">
