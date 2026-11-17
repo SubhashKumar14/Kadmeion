@@ -238,14 +238,17 @@ export class JournaledEditorFolderStore {
    * can still modify the folder outside Web Locks; detect, never overwrite,
    * and require user-driven Compare/Keep Both instead of silent auto-merge.
    */
-  async save(head:EditorHead,expectedRevision:number|null):
+  async save(head:EditorHead,expectedRevision:number|null,initializeOnly=false):
     Promise<{status:'FOLDER_SAVED'|'FOLDER_SAVED_JOURNAL_PENDING';revision:number;
       externalProcessAtomic:false}> {
     verifyEditor(head);
     // Capture immutable bytes before waiting on the shared lock.
     head=structuredClone(head);
     return this.lock.run(this.lockName,async()=>{
-      await this.recoverUnlocked();
+      if(initializeOnly){
+        requireSafe(expectedRevision===null&&await this.read(META+'/'+HEAD)===null&&
+          await this.read(META+'/'+JOURNAL)===null,'CONFLICT');
+      }else await this.recoverUnlocked();
       const raw=await this.read(META+'/'+HEAD);
       const old=await this.stored(raw);
       const current=old?.head.revision??null;
