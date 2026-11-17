@@ -659,6 +659,12 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
 }
 
 function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
+  // The shell mounts this consumer only after live owner verification.
+  // Capture the mount's epoch: never adopt a newer one from an old handler.
+  const [epoch] = useState(() => port.getOwnerSessionEpoch());
+  const mounted = useRef(false);
+  const [recovery, setRecovery] = useState<'checking'|'failed'|'ready'>('checking');
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const [inventory, setInventory] = useState<AccountExitPreflight | null>(null);
   const [requests, setRequests] = useState<PrivateAccountErasureEntry[] | null>(null);
   const [confirmation, setConfirmation] = useState('');
@@ -672,6 +678,65 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
 
+  const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  // A successful intentional password rotation replaces the private subtree.
+  // Recover the exact server-bound continuation in this new verified mount.
+  // No receipt/password is persisted in browser storage or passed by the shell.
+  useEffect(() => {
+    let active = true;
+    const stillCurrent = () => active && port.reconcileOwnerSessionEpoch() === epoch;
+    setRecovery('checking');
+    setMessage(null);
+    setReauth(null);
+    setWithdrawConfirmation('');
+    withdrawalOperation.current = null;
+    void (async () => {
+      try {
+        if (!stillCurrent()) return;
+        const recovered = await port.recoverOwnerAccountExitReauth(epoch);
+        if (!stillCurrent()) return;
+        if (recovered.error) throw new Error(recovered.error.message);
+        if (recovered.data) {
+          const {requestId, verification} = recovered.data;
+          const [result, history] = await Promise.all([service.preflight(),service.list()]);
+          if (!stillCurrent()) return;
+          if (!history.some(item => item.id === requestId && item.status === 'REQUESTED_BLOCKED') ||
+              !Number.isFinite(Date.parse(verification.expiresAt)) ||
+              Date.parse(verification.expiresAt) <= Date.now()) {
+            port.discardOwnerAccountExitReauth(epoch);
+            throw new Error('The account-exit verification is expired or the request is no longer pending.');
+          }
+          setInventory(result);
+          setRequests(history);
+          setReauth(verification);
+        }
+        setRecovery('ready');
+      } catch (error) {
+        if (!stillCurrent()) return;
+        setInventory(null);
+        setRequests(null);
+        setReauth(null);
+        setMessage(failure(error));
+        setRecovery('failed');
+      }
+    })();
+    // Do not discard the pointer on cleanup: StrictMode and the intentional
+    // epoch remount are not explicit cancellation.
+    return () => { active = false; };
+  }, [port,service,epoch,recoveryAttempt]);
+
+  function discardProof() {
+    port.discardOwnerAccountExitReauth(epoch);
+    setReauth(null);
+    setWithdrawConfirmation('');
+    withdrawalOperation.current = null;
+  }
+
   // A confirmed challenge is short-lived. Do not leave a success receipt or
   // destructive confirmation visible after its deadline, even without a click.
   useEffect(() => {
@@ -681,6 +746,8 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       if (timer !== undefined) window.clearTimeout(timer);
       const remaining = Date.parse(reauth.expiresAt) - Date.now();
       if (!Number.isFinite(remaining) || remaining <= 0) {
+        if (port.reconcileOwnerSessionEpoch() !== epoch) return;
+        port.discardOwnerAccountExitReauth(epoch);
         setReauth(null);
         setWithdrawConfirmation('');
         withdrawalOperation.current = null;
@@ -697,12 +764,15 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       window.removeEventListener('focus', reviewExpiry);
       document.removeEventListener('visibilitychange', reviewExpiry);
     };
-  }, [reauth]);
+  }, [reauth,port,epoch]);
 
   async function check() {
-    if (busy) return;
+    if (busy || recovery !== 'ready' || !current()) return;
     setBusy(true);
     setMessage(null);
+    discardProof();
+    challenge.current=null;
+    challengeOperation.current=null;
     setInventory(null);
     setRequests(null);
     setConfirmation('');
@@ -711,18 +781,22 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     withdrawalOperation.current=null;
     try {
       const [result, history] = await Promise.all([service.preflight(),service.list()]);
+      if (!current()) return;
       setInventory(result);
       setRequests(history);
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   async function changeRequest(requestId: string | null) {
-    if (busy || !inventory || !requests) return;
+    if (busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
     if (requestId ? activeRequest?.id!==requestId : !!activeRequest || confirmation!=='DELETE MY ACCOUNT') return;
+    discardProof();
+    challenge.current=null;
+    challengeOperation.current=null;
     const key = requestId ?? 'request';
     if (operation.current?.key!==key) operation.current={key,id:crypto.randomUUID()};
     setBusy(true);
@@ -730,6 +804,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     try {
       if (requestId) await service.withdraw(requestId,operation.current.id);
       else await service.request(operation.current.id,'DELETE MY ACCOUNT');
+      if (!current()) return;
       // Hide old actions until a fresh read confirms the current request state.
       setRequests(null);
       setConfirmation('');
@@ -739,18 +814,20 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       challenge.current=null;
       challengeOperation.current=null;
       operation.current=null;
-      setRequests(await service.list());
+      const history=await service.list();
+      if (!current()) return;
+      setRequests(history);
       setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   async function verifyIdentity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !activeRequest) return;
+    if (busy || recovery !== 'ready' || !activeRequest || !current()) return;
     const form=event.currentTarget;
     const password=new FormData(form).get('current-password');
     if (typeof password!=='string' || !password) return;
@@ -767,31 +844,34 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       }
       challengeOperation.current ??= crypto.randomUUID();
       challenge.current ??= await service.beginReauth(challengeOperation.current);
-      const reauth=await port.reauthenticateCurrentOwner(password);
-      if (reauth.error) throw new Error(reauth.error.message);
-      const challengeId=challenge.current.challengeId;
-      // The next verification must begin a new challenge if this new session
-      // cannot be confirmed. A consumed challenge is bound to one session.
-      challenge.current=null;
-      challengeOperation.current=null;
-      const receipt=await service.completeReauth(challengeId);
-      if (Date.parse(receipt.expiresAt)<=Date.now())
-        throw new Error('Identity verification expired. Sign in again to withdraw content.');
-      setReauth(receipt);
+      if (!current()) return;
+      if (Date.parse(challenge.current.expiresAt)<=Date.now()) {
+        challenge.current=null;
+        challengeOperation.current=null;
+        throw new Error('Identity verification challenge expired. Try again.');
+      }
+      // S1 owns the intentional session rotation and continuation. Keep the
+      // same challenge/operation for a failed password before rotation.
+      const result=await port.reauthenticateCurrentOwner(password,{
+        expectedEpoch:epoch,requestId:activeRequest.id,challengeId:challenge.current.challengeId
+      });
+      if (!current()) return;
+      if (result.error) throw new Error(result.error.message);
+      // A successful rotation must invalidate this mount; never complete with
+      // this old service or announce success without authoritative readback.
+      throw new Error('A new verified session could not be established. Try again.');
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   async function withdrawAppContent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !activeRequest || !reauth || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
+    if (busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
     if (Date.parse(reauth.expiresAt)<=Date.now()) {
-      setReauth(null);
-      setWithdrawConfirmation('');
-      withdrawalOperation.current=null;
+      discardProof();
       setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
       return;
     }
@@ -801,22 +881,31 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     try {
       const receipt=await service.withdrawPublicContent(activeRequest.id,reauth.challengeId,
         withdrawalOperation.current,'WITHDRAW PUBLIC CONTENT');
-      setWithdrawConfirmation('');
-      setReauth(null);
-      withdrawalOperation.current=null;
+      if (!current()) return;
+      discardProof();
       setMessage({error:false,text:'Application withdrawal confirmed. Reviewer grants revoked: '+
         receipt.revokedReviewerGrants+'. Independent host withdrawal remains unverified.'});
     } catch (error) {
-      setMessage(failure(error));
+      if (current()) setMessage(failure(error));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Deletion prerequisites">
+      {recovery === 'checking' && <p role="status">Checking current identity verification…</p>}
+      {recovery === 'failed' && <div className="ws-actions">
+        <button type="button" className="ws-secondary" onClick={()=>setRecoveryAttempt(value=>value+1)}>Retry identity verification recovery</button>
+        <button type="button" className="ws-secondary" onClick={()=>{
+          if (!current()) return;
+          discardProof();
+          setMessage(null);
+          setRecovery('ready');
+        }}>Cancel identity verification</button>
+      </div>}
       <p>Account deletion requires fresh identity verification, public revocation and storage checks. You can record or withdraw a request while these checks are pending.</p>
-      <button className="ws-primary" type="button" disabled={busy}
+      <button className="ws-primary" type="button" disabled={busy || recovery !== 'ready'}
         onClick={()=>void check()}>Review deletion prerequisites</button>
       {inventory && <section aria-label="Private inventory" className="ws-exit-inventory">
         <h3>Private inventory</h3>
@@ -844,6 +933,11 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
         </form>
         {reauth && <>
           <p role="status">Fresh sign-in verified. Proof expires at <time dateTime={reauth.expiresAt}>{new Date(reauth.expiresAt).toLocaleTimeString()}</time>. Deletion remains gated.</p>
+          <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{
+            if (!current()) return;
+            discardProof();
+            setMessage(null);
+          }}>Cancel identity verification</button>
           <form onSubmit={event=>void withdrawAppContent(event)}>
             <p>Withdraw app-managed profile and case-study projections and revoke reviewer grants. External host and cache withdrawal require separate proof.</p>
             <label className="ws-export-select">Type WITHDRAW PUBLIC CONTENT to confirm
