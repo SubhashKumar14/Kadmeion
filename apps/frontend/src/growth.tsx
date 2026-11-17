@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import type {FormEvent} from 'react';
 import type {SupabaseBrowserAuthPort} from '../../auth-web/src/supabase-auth-port.ts';
 import type {
@@ -81,40 +81,76 @@ function GrowthHome({service}: {service:SupabasePrivateGoalsService}){
   </div>;
 }
 
+/** Existing backend cursor is UUID-ordered, not chronological. Sort only
+ * loaded records and never claim a partial page is the latest history. */
+function ProgressHistory({service,goalId,onCorrection,busy=false}:{
+  service:SupabasePrivateGoalsService;goalId:string;onCorrection?:(item:GoalProgress)=>void;busy?:boolean
+}){
+  const [page,setPage]=useState<{items:GoalProgress[];nextCursor:string|null}|null>(null);
+  const [error,setError]=useState('');
+  const [attempt,setAttempt]=useState(0);
+  const [loadingMore,setLoadingMore]=useState(false);
+  const alive=useRef(false);
+  const inFlight=useRef(false);
+  useEffect(()=>{
+    let active=true;alive.current=true;setPage(null);setError('');
+    void service.listProgressPage(goalId,50).then(result=>{if(active)setPage(result);})
+      .catch(err=>{if(active)setError(presentError(err));});
+    return()=>{active=false;alive.current=false;};
+  },[service,goalId,attempt]);
+  async function more(){
+    if(!page?.nextCursor||inFlight.current||busy)return;
+    const cursor=page.nextCursor;
+    inFlight.current=true;setLoadingMore(true);setError('');
+    try{
+      const next=await service.listProgressPage(goalId,50,cursor);
+      if(!alive.current)return;
+      setPage(previous=>{
+        if(!previous||previous.nextCursor!==cursor)return previous;
+        const seen=new Set(previous.items.map(item=>item.id));
+        return {...next,items:[...previous.items,...next.items.filter(item=>!seen.has(item.id))]};
+      });
+    }catch(err){if(alive.current)setError(presentError(err));}
+    finally{inFlight.current=false;if(alive.current)setLoadingMore(false);}
+  }
+  const events=page?.items.slice().sort((a,b)=>b.created_at.localeCompare(a.created_at)||b.id.localeCompare(a.id));
+  return <section aria-label="Private manual progress history">
+    {error&&<div><p role="alert">{error}</p>
+      <button type="button" className="ws-secondary" disabled={busy||loadingMore}
+        onClick={()=>page?void more():setAttempt(n=>n+1)}>Retry activity history</button>
+    </div>}
+    {!page&&!error&&<p role="status">Loading manual progress history…</p>}
+    {page?.items.length===0&&<p>No manual progress has been recorded for this goal.</p>}
+    {!!events?.length&&<><p>{events.length} loaded self-reported entries. {page?.nextCursor?'More entries exist; the date order applies only to loaded records.':'All pages reached for this read; refresh to check for changes.'}</p>
+      <ol className="ws-growth-events">{events.map(item=><li key={item.id}>
+        <strong>{item.value.toLocaleString()} · Self-reported</strong>
+        <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
+        <p>{item.note||'No note added.'}</p>
+        {onCorrection&&<button type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>onCorrection(item)}>Use value for correction</button>}
+      </li>)}</ol></>}
+    {page?.nextCursor&&!error&&<button type="button" className="ws-secondary" disabled={busy||loadingMore}
+      onClick={()=>void more()}>{loadingMore?'Loading more history…':'Load more history'}</button>}
+    {page&&!loadingMore&&<button type="button" className="ws-secondary" disabled={busy}
+      onClick={()=>setAttempt(n=>n+1)}>Refresh activity history</button>}
+  </section>;
+}
+
 function Activity({service}:{service:SupabasePrivateGoalsService}){
   const {goals,error,reload}=useGoals(service);
   const [id,setId]=useState('');
-  const [events,setEvents]=useState<GoalProgress[]|null>(null);
-  const [eventError,setEventError]=useState('');
-  const [attempt,setAttempt]=useState(0);
-  useEffect(()=>{
-    let active=true;setEvents(null);setEventError('');
-    if(!id)return;
-    void service.listProgress(id).then(items=>{if(active)setEvents(items);})
-      .catch(err=>{if(active)setEventError(presentError(err));});
-    return ()=>{active=false;};
-  },[service,id,attempt]);
+  const selected=goals?.find(goal=>goal.id===id);
   return <section className="ws-project-aside">
     <h2>Manual activity history</h2>
-    <p>Entries are self-recorded values, not GitHub commits, coding-platform statistics or a verified daily streak.</p>
+    <p>Entries are self-recorded absolute values, not GitHub commits, coding-platform statistics or verified daily streaks.</p>
     <LoadingOrError goals={goals} error={error} retry={reload}/>
-    {goals&&<label className="ws-growth-field">Activity goal<select aria-label="Activity goal" value={id}
+    {goals&&<label className="ws-growth-field">Activity goal<select aria-label="Activity goal" value={selected?.id??''}
       onChange={event=>setId(event.target.value)}>
       <option value="">Choose a goal to inspect</option>
       {goals.map(goal=><option key={goal.id} value={goal.id}>{goal.title}</option>)}
     </select></label>}
-    {eventError&&<div><p role="alert">{eventError}</p>
-      <button className="ws-secondary" type="button"
-        onClick={()=>setAttempt(value=>value+1)}>Retry activity history</button>
-    </div>}
-    {id&&events===null&&!eventError&&<p role="status">Loading manual progress history…</p>}
-    {events?.length===0&&<p>No manual progress has been recorded for this goal.</p>}
-    {!!events?.length&&<ol className="ws-growth-events">{events.map(item=><li key={item.id}>
-      <strong>{item.value.toLocaleString()} · Self-reported</strong>
-      <span>{new Date(item.created_at).toLocaleString()}</span>
-      <p>{item.note||'No note added.'}</p>
-    </li>)}</ol>}
-    {events?.length===100&&<p>Showing at most 100 recent events. Earlier records may exist.</p>}
+    {goals?.length===100&&<p>Showing up to 100 recent goals. Earlier goals may exist.</p>}
+    {selected&&<ProgressHistory key={selected.id} service={service} goalId={selected.id}/>}
     <a className="ws-secondary" href="/app/growth/goals">Add or correct progress manually</a>
   </section>;
 }
@@ -139,7 +175,7 @@ function DevScore(){
   </div>;
 }
 
-function GoalDetail({service,goal}:{service:SupabasePrivateGoalsService;goal:PrivateGoal}){
+function GoalDetail({service,goal,onGoalUpdated}:{service:SupabasePrivateGoalsService;goal:PrivateGoal;onGoalUpdated:()=>void}){
   const [progress,setProgress]=useState<GoalProgress[]|null>(null);
   const [milestones,setMilestones]=useState<GoalMilestone[]|null>(null);
   const [error,setError]=useState('');
@@ -152,6 +188,28 @@ function GoalDetail({service,goal}:{service:SupabasePrivateGoalsService;goal:Pri
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
   const [milestoneOp,setMilestoneOp]=useState(()=>crypto.randomUUID());
   const [reload,setReload]=useState(0);
+  const [editing,setEditing]=useState(false);
+  const [editTitle,setEditTitle]=useState(goal.title);
+  const [editDescription,setEditDescription]=useState(goal.description);
+  const [editTarget,setEditTarget]=useState(goal.target_value===null?'':String(goal.target_value));
+  const [editUnit,setEditUnit]=useState(goal.unit??'');
+  const [editDue,setEditDue]=useState(goal.due_on??'');
+  function beginEdit(){
+    setEditTitle(goal.title);setEditDescription(goal.description);
+    setEditTarget(goal.target_value===null?'':String(goal.target_value));
+    setEditUnit(goal.unit??'');setEditDue(goal.due_on??'');setEditing(true);
+  }
+  async function saveGoal(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();if(busy||!editing||!editTitle.trim())return;
+    setBusy(true);setError('');setStatus('');
+    try{
+      await service.updateGoal(goal.id,{title:editTitle.trim(),description:editDescription.trim(),
+        target_value:editTarget.trim()?Number(editTarget):null,
+        unit:editTarget.trim()?editUnit.trim()||null:null,due_on:editDue||null});
+      setEditing(false);setStatus('Goal details updated privately.');onGoalUpdated();
+    }catch(err){setError(presentError(err));}
+    finally{setBusy(false);}
+  }
   useEffect(()=>{
     let active=true;setProgress(null);setMilestones(null);setError('');
     void Promise.all([service.listProgress(goal.id),service.listMilestones(goal.id)]).then(([records,items])=>{
@@ -193,18 +251,36 @@ function GoalDetail({service,goal}:{service:SupabasePrivateGoalsService;goal:Pri
     <h3>{goal.title}</h3>
     <p>{goal.description||'No description provided.'}</p>
     <p>Manual target: {goal.target_value===null?'Not set':goal.target_value+' '+(goal.unit??'units')}.
-      Latest recorded value: {current ? current.value : 'Not recorded'}.</p>
+      Latest recorded value: {progress===null?'Not yet confirmed':current ? current.value : 'Not recorded'}.</p>
     {error&&<p role="alert">{error}</p>}{status&&<p role="status">{status}</p>}
     {progress===null&&!error&&<p role="status">Loading this goal's history…</p>}
+    {progress===null&&error&&<button type="button" className="ws-secondary" disabled={busy}
+      onClick={()=>setReload(n=>n+1)}>Retry goal details</button>}
+    {!editing&&<button type="button" className="ws-secondary" disabled={busy} onClick={beginEdit}>Edit selected goal</button>}
+    {editing&&<form className="ws-growth-form" onSubmit={event=>void saveGoal(event)}>
+      <label className="ws-growth-field">Edit goal title<input required maxLength={160} disabled={busy} value={editTitle} onChange={event=>setEditTitle(event.target.value)}/></label>
+      <label className="ws-growth-field">Edit goal description<textarea rows={3} maxLength={2000} disabled={busy} value={editDescription} onChange={event=>setEditDescription(event.target.value)}/></label>
+      <label className="ws-growth-field">Edit target value<input type="number" min="0.01" step="0.01" max="9999999999.99" disabled={busy} value={editTarget} onChange={event=>setEditTarget(event.target.value)}/></label>
+      <label className="ws-growth-field">Edit target unit<input maxLength={32} disabled={busy||!editTarget.trim()} value={editUnit} onChange={event=>setEditUnit(event.target.value)}/></label>
+      <label className="ws-growth-field">Edit due date<input type="date" disabled={busy} value={editDue} onChange={event=>setEditDue(event.target.value)}/></label>
+      <div className="ws-actions"><button type="submit" className="ws-secondary" disabled={busy||!editTitle.trim()}>Save goal details</button>
+        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setEditing(false)}>Cancel goal edit</button></div>
+    </form>}
+    <h4>Record or correct progress</h4>
+    <p>Record a new absolute value to correct a mistake. Existing history is preserved; no external provider progress is assumed.</p>
     <form className="ws-growth-form" onSubmit={event=>void addProgress(event)}>
       <label className="ws-growth-field">New absolute progress value
-        <input type="number" required min="0" max="9999999999.99" step="0.01" value={value}
+        <input type="number" required min="0" max="9999999999.99" step="0.01" value={value} disabled={busy}
           onChange={event=>{setValue(event.target.value);setOperation(crypto.randomUUID());}}/></label>
       <label className="ws-growth-field">Manual progress note
-        <input maxLength={500} value={note} onChange={event=>{setNote(event.target.value);setOperation(crypto.randomUUID());}}/></label>
+        <input maxLength={500} value={note} disabled={busy} onChange={event=>{setNote(event.target.value);setOperation(crypto.randomUUID());}}/></label>
       <button type="submit" className="ws-secondary" disabled={busy||value.trim()===''}>Record manual progress</button>
     </form>
+    <h4>Manual progress history</h4>
+    <ProgressHistory key={goal.id+':'+reload} service={service} goalId={goal.id} busy={busy}
+      onCorrection={item=>{if(busy)return;setValue(String(item.value));setNote('Correction using recorded value: '+item.value);setOperation(crypto.randomUUID());}}/>
     <h4>Milestones</h4>
+    {milestones?.length===100&&<p>Showing up to 100 milestones; additional milestones may exist.</p>}
     {milestones?.length===0&&<p>No milestones yet.</p>}
     <ul className="ws-growth-milestones">{milestones?.map(item=><li key={item.id}>
       <span>{item.title}{item.due_on?' · Due '+item.due_on:''}</span>
@@ -213,9 +289,9 @@ function GoalDetail({service,goal}:{service:SupabasePrivateGoalsService;goal:Pri
     </li>)}</ul>
     <form className="ws-growth-form" onSubmit={event=>void milestone(event)}>
       <label className="ws-growth-field">New milestone
-        <input required maxLength={160} value={name} onChange={event=>{setName(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
+        <input required maxLength={160} value={name} disabled={busy} onChange={event=>{setName(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
       <label className="ws-growth-field">Milestone due date (optional)
-        <input type="date" value={due} onChange={event=>{setDue(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
+        <input type="date" value={due} disabled={busy} onChange={event=>{setDue(event.target.value);setMilestoneOp(crypto.randomUUID());}}/></label>
       <button type="submit" className="ws-secondary" disabled={busy||!name.trim()}>Add milestone</button>
     </form>
   </div>;
@@ -272,25 +348,25 @@ function Goals({service}:{service:SupabasePrivateGoalsService}){
       <h3>Create a goal</h3>
       <form className="ws-growth-form" onSubmit={event=>void create(event)}>
         <label className="ws-growth-field">Goal title
-          <input value={title} required maxLength={160} onChange={event=>{setTitle(event.target.value);setOperation(crypto.randomUUID());}}/></label>
+          <input value={title} required maxLength={160} disabled={busy} onChange={event=>{setTitle(event.target.value);setOperation(crypto.randomUUID());}}/></label>
         <label className="ws-growth-field">Description
-          <textarea value={description} rows={3} maxLength={2000} onChange={event=>{setDescription(event.target.value);setOperation(crypto.randomUUID());}}/></label>
+          <textarea value={description} rows={3} maxLength={2000} disabled={busy} onChange={event=>{setDescription(event.target.value);setOperation(crypto.randomUUID());}}/></label>
         <div className="ws-growth-pair">
           <label className="ws-growth-field">Optional target value
-            <input value={target} type="number" min="0.01" step="0.01" max="9999999999.99"
+            <input value={target} type="number" min="0.01" step="0.01" max="9999999999.99" disabled={busy}
               onChange={event=>{setTarget(event.target.value);setOperation(crypto.randomUUID());}}/></label>
           <label className="ws-growth-field">Target unit
-            <input value={unit} maxLength={32} disabled={!target.trim()}
+            <input value={unit} maxLength={32} disabled={busy||!target.trim()}
               onChange={event=>{setUnit(event.target.value);setOperation(crypto.randomUUID());}}/></label>
         </div>
         <label className="ws-growth-field">Optional due date
-          <input type="date" value={due} onChange={event=>{setDue(event.target.value);setOperation(crypto.randomUUID());}}/></label>
+          <input type="date" value={due} disabled={busy} onChange={event=>{setDue(event.target.value);setOperation(crypto.randomUUID());}}/></label>
         <button className="ws-primary" type="submit" disabled={busy||!title.trim()}>{busy?'Saving…':'Create private goal'}</button>
       </form>
     </section>
     <section className="ws-project-aside">
       <h2>Selected goal</h2>
-      {selectedGoal?<GoalDetail key={selectedGoal.id} service={service} goal={selectedGoal}/>:
+      {selectedGoal?<GoalDetail key={selectedGoal.id} service={service} goal={selectedGoal} onGoalUpdated={reload}/>:
         <p>Select a private goal to review manually recorded progress and milestones.</p>}
       <a href="/app/growth/activity" className="ws-secondary">Open manual activity</a>
     </section>
