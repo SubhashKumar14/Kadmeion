@@ -83,6 +83,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [grants,setGrants]=useState<OwnerReviewerGrantSummary[]|null>(null);
   const [grantListError,setGrantListError]=useState('');
   const [validMinutes,setValidMinutes]=useState(60);
+  const [grantNow,setGrantNow]=useState(()=>Date.now());
   const [confirmRevoke,setConfirmRevoke]=useState(false);
   const [confirmBlock,setConfirmBlock]=useState(false);
   const [error,setError]=useState('');
@@ -274,7 +275,9 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       if (updated.data) {setGrants(updated.data);setGrantListError('');}
       else setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
       grantOperation.current=null;
-      setNotice('Private reviewer grant registered. The link remains disabled pending hosted delivery verification.');
+      setNotice(Date.parse(expiresAt)<=Date.now()
+        ? 'The recorded reviewer grant has expired. No reviewer link is available.'
+        : 'Private reviewer grant registered. The link remains disabled pending hosted delivery verification.');
     } catch {if (current()) setError('Reviewer registration failed. Retry the same request.');}
     finally {if (current()) setBusy(false);}
   }
@@ -376,7 +379,31 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     operation.current=null;
     setError('');setNotice('');
   }
-  const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=Date.now();
+  // A returned grant may expire while the owner stays on this page. Update
+  // the local display at the nearest expiry and on focus; this is not a
+  // server-side token authorization or hosted revocation check.
+  useEffect(()=>{
+    if (mode!=='staging') return;
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const expiries=[...(grants??[]).filter(item=>!item.revokedAt).map(item=>item.expiresAt),
+      ...(grant&&grant.status!=='REVOKED'?[grant.expiresAt]:[])].map(value=>Date.parse(value));
+    function refresh(){
+      if (timer!==undefined) clearTimeout(timer);
+      const now=Date.now();
+      setGrantNow(now);
+      const next=Math.min(...expiries.filter(time=>Number.isFinite(time)&&time>now));
+      if (Number.isFinite(next)) timer=setTimeout(refresh,Math.min(next-now+1,2147483647));
+    }
+    refresh();
+    window.addEventListener('focus',refresh);
+    document.addEventListener('visibilitychange',refresh);
+    return ()=>{
+      if (timer!==undefined) clearTimeout(timer);
+      window.removeEventListener('focus',refresh);
+      document.removeEventListener('visibilitychange',refresh);
+    };
+  },[mode,grant,grants]);
+  const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=grantNow;
   return <section aria-labelledby="release-title" data-release-mode={mode} className="ws-owner-page ws-release-page">
     <div className="ws-heading">
       <a href={base+'/edit'}>Back to portfolio editor</a>
@@ -523,7 +550,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Source digest</dt><dd><code>{frozen.snapshotSha256.slice(0,16)}…</code></dd>
               <dt>Public URL</dt><dd>Not issued</dd>
             </dl>
-            {(mode==='staging'||mode==='publish') && (!grant||grant.status==='REVOKED') &&
+            {(mode==='staging'||mode==='publish') && (!grant||grant.status==='REVOKED'||grantExpired) &&
               <button type="button" className="ws-secondary" disabled={busy}
                 onClick={()=>{
                   // A private preflight may examine another saved revision without
@@ -559,7 +586,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {grants===null && !grantListError && <p role="status">Loading private reviewer grant records…</p>}
             {grants?.length===0 && <p>No reviewer grants have been registered.</p>}
             {!!grants?.length && <ul className="ws-release-grant-list">{grants.map(item=><li key={item.grantId}>
-              <div><strong>{item.revokedAt?'Revoked':Date.parse(item.expiresAt)<=Date.now()?'Expired':'Registered (not servable)'}</strong>
+              <div><strong>{item.revokedAt?'Revoked':Date.parse(item.expiresAt)<=grantNow?'Expired':'Registered (not servable)'}</strong>
                 <p>Created <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>.
                   Expires <time dateTime={item.expiresAt}>{new Date(item.expiresAt).toLocaleString()}</time>.</p>
                 <p>Private frozen request {item.requestId.slice(0,8)}…</p></div>
@@ -593,8 +620,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               </dl>
               {grant.status!=='REVOKED' && !confirmRevoke && <button type="button" className="ws-secondary"
                 onClick={()=>setConfirmRevoke(true)}>Revoke private reviewer grant</button>}
-              {grant.status==='REVOKED' && frozen && <button type="button" className="ws-secondary"
-                onClick={()=>{setGrant(null);grantOperation.current=null;}}>Register another reviewer grant</button>}
+              {(grant.status==='REVOKED'||grantExpired) && frozen && <button type="button" className="ws-secondary" disabled={busy||confirmRevoke}
+                onClick={()=>{setGrant(null);setConfirmRevoke(false);grantOperation.current=null;}}>Register another reviewer grant</button>}
               {confirmRevoke && grant.status!=='REVOKED' && <div className="ws-release-confirm">
                 <p>Revoke this private grant? The saved snapshot will remain available to its owner.</p>
                 <button type="button" className="ws-primary" disabled={busy} onClick={()=>void revokeReviewer()}>
