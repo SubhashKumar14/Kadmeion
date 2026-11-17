@@ -997,3 +997,41 @@ test('S6 same-port A to B rejects delayed A cursor results and authenticates B r
   assert.equal(denied.data,null);
   assert.match(denied.error?.message??'',/cursor.*current owner/i);
 });
+
+test('S6 same live port A to B to A rejects the original delayed private page', async () => {
+  const b = {...tokens, access_token:'b'.repeat(64), refresh_token:'s'.repeat(64), user:secondUser};
+  const aAgain = {...tokens, access_token:'c'.repeat(64), refresh_token:'t'.repeat(64)};
+  const held = Promise.withResolvers<Response>();
+  const entered = Promise.withResolvers<void>();
+  let loginCount = 0;
+  const id = '11111111-1111-4111-8111-111111111111';
+  const row = {id, owner_user_id:user.id, slug:'owner-a-current', title:'Current A',
+    summary:'', description:'', repository_url:null, live_url:null, revision:0,
+    updated_at:'2026-11-16T00:00:00.123456+00:00'};
+  const {port} = mock(async (url, options) => {
+    const path = String(url);
+    const authorization = (options?.headers as Record<string,string>)?.Authorization;
+    if(path.includes('grant_type=password')) return json([tokens,b,aAgain][loginCount++]);
+    if(path.endsWith('/auth/v1/user')) return json(authorization === 'Bearer '+b.access_token ? secondUser : user);
+    if(path.includes('/rest/v1/projects?')){
+      if(authorization === 'Bearer '+tokens.access_token){entered.resolve();return held.promise;}
+      if(authorization === 'Bearer '+aAgain.access_token)return json([row]);
+    }
+    return json({},404);
+  });
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  const initialEpoch=port.getOwnerSessionEpoch();
+  const delayed=port.listOwnerProjectsPage(50,null);
+  try {
+    await entered.promise;
+    assert.equal((await port.signInWithPassword({email:secondUser.email,password:'fixture'})).error,null);
+    assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+    assert.ok(port.getOwnerSessionEpoch()>initialEpoch);
+  } finally {held.resolve(json([{...row,title:'Obsolete A'}]));}
+  const stale=await delayed;
+  assert.equal(stale.data,null);
+  assert.ok(stale.error);
+  const fresh=await port.listOwnerProjectsPage(50,null);
+  assert.equal(fresh.error,null);
+  assert.equal(fresh.data?.items[0]?.title,'Current A');
+});
