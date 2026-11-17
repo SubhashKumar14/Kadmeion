@@ -372,3 +372,127 @@ test('owner section reorder preserves slot ownership, is undoable, and rejects i
   assert.throws(()=>applyEditorTransaction(original,op(original,{
     kind:'MOVE_SECTION',sectionId:first,direction:'sideways' as never})),{code:'VALIDATION'});
 });
+
+/** C10 contract tests: must be composed with S3's real engine, never skipped.
+ * Local type bridge intentionally describes the approved pending public engine
+ * interface without requiring this test-only branch to own its declaration. */
+type C10Request={sectionId:string;expectedLayout:string;targetLayout:string;
+  mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>};
+type C10Intent=({kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;confirmStash:boolean;
+  confirmOwnedRelocation:boolean}&C10Request)|{kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;
+  stashIndex:number;toSlotKey:string;expectedRevision:number;confirmOwnedRelocation:boolean};
+async function c10Planner(){
+  const engine=await import('../../packages/editor-core/src/portfolio-revision-transactions.ts');
+  const planner=(engine as unknown as {planSectionLayoutChange?:(
+    head:EditorHead,request:C10Request)=>{requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean}})
+    .planSectionLayoutChange;
+  assert.equal(typeof planner,'function','Approved C10 engine planner must be present');
+  return planner!;
+}
+const c10Apply=(head:EditorHead,intent:C10Intent,operationId='75000000-0000-4000-8000-000000000001')=>
+  applyEditorTransaction(head,{operationId,baseRevision:head.revision,
+    intent:intent as Parameters<typeof applyEditorTransaction>[1]['intent']});
+const c10Fixture=()=>{
+  const draft=createPortfolioPresetDraft('arc');
+  const page=JSON.parse(draft.files['pages/home.page.json']);
+  page.privateUnknown={preserve:'opaque'};
+  page.sections[0].privateUnknown={preserve:'section metadata'};
+  draft.files['pages/home.page.json']=JSON.stringify(page,null,2);
+  const p='arc-hero-';
+  const source='\uFEFFimport {x} from "./relative";\r\nexport const link=x;\r\n';
+  const original='export const link="Original";';
+  const sourcePath='slots/arc-hero-cta1/index.tsx';
+  draft.files[sourcePath]=source;
+  draft.slots[p+'cta1']={state:'S2',componentId:'external-link@1',
+    content:{label:'Private CTA',url:'https://example.com/',unknown:'preserve field'},sourcePath,originalSource:original};
+  draft.slots[p+'text'].content={text:'Body goes to Unplaced'};
+  draft.stashes[p+'cta1']=[{state:'S0',componentId:'external-link@1',content:{label:'Older stash'}}];
+  const head=createEditorHead(draft);
+  const request:C10Request={sectionId:'arc-hero',expectedLayout:'arc-hero@1',targetLayout:'stepped-hero@1',
+    mappings:[
+      {fromSlotKey:p+'title',toSlotKey:p+'title'},
+      {fromSlotKey:p+'text',toSlotKey:null},
+      {fromSlotKey:p+'cta1',toSlotKey:p+'cta'},
+      {fromSlotKey:p+'cta2',toSlotKey:null},
+      {fromSlotKey:p+'note',toSlotKey:null}
+    ]};
+  const intent:C10Intent={kind:'CHANGE_SECTION_LAYOUT',...request,expectedRevision:0,
+    confirmStash:true,confirmOwnedRelocation:true};
+  return {head,request,intent,p,source,original,sourcePath};
+};
+test('C10 atomic layout preview and apply preserve opaque source, stashes and unrelated sections; Undo exact',async()=>{
+  const {head,request,intent,p,source,original,sourcePath}=c10Fixture();
+  const before=structuredClone(head),plan=await c10Planner();
+  const receipt=plan(head,request);
+  assert.equal(receipt.requiresStashConfirmation,true);
+  assert.equal(receipt.requiresOwnedRelocationConfirmation,true);
+  assert.deepEqual(head,before,'Pure preview must not modify the working head');
+  const changed=c10Apply(head,intent);
+  assert.equal(changed.revision,1);assert.equal(changed.undo.length,1);
+  const page=JSON.parse(changed.snapshot.files['pages/home.page.json']);
+  const oldPage=JSON.parse(before.snapshot.files['pages/home.page.json']);
+  assert.equal(page.sections[0].id,'arc-hero');assert.equal(page.sections[0].layout,'stepped-hero@1');
+  assert.deepEqual(page.sections[0].slotKeys,['title','cta']);
+  assert.deepEqual(page.sections.slice(1),oldPage.sections.slice(1));
+  assert.deepEqual(page.privateUnknown,oldPage.privateUnknown);
+  assert.deepEqual(page.sections[0].privateUnknown,oldPage.sections[0].privateUnknown);
+  assert.deepEqual(changed.snapshot.slots[p+'title'],before.snapshot.slots[p+'title']);
+  assert.equal(Object.hasOwn(changed.snapshot.slots,p+'text'),false);
+  assert.deepEqual(changed.snapshot.stashes[p+'text'].at(-1),before.snapshot.slots[p+'text']);
+  assert.deepEqual(changed.snapshot.stashes[p+'cta1'][0],before.snapshot.stashes[p+'cta1'][0]);
+  assert.deepEqual(changed.snapshot.stashes[p+'cta1'].at(-1),before.snapshot.slots[p+'cta1']);
+  const relocated=changed.snapshot.slots[p+'cta'];
+  assert.equal(relocated.state,'S2');assert.equal(relocated.originalSource,original);
+  assert.deepEqual(relocated.content,before.snapshot.slots[p+'cta1'].content);
+  assert.equal(relocated.sourcePath,'slots/arc-hero-cta/owned/75000000-0000-4000-8000-000000000001/component-source.tsx');
+  assert.equal(changed.snapshot.files[sourcePath],source);
+  assert.equal(changed.snapshot.files[relocated.sourcePath!],source);
+  assert.deepEqual(head,before);
+  assert.deepEqual(applyEditorTransaction(changed,{operationId:'75000000-0000-4000-8000-000000000001',
+    baseRevision:0,intent:intent as Parameters<typeof applyEditorTransaction>[1]['intent']}),changed,
+    'Identical operation replay does not advance revision');
+  const undone=applyEditorTransaction(changed,op(changed,{kind:'UNDO'}));
+  assert.deepEqual(undone.snapshot,before.snapshot);
+});
+test('C10 stale preview, missing confirmation, duplicate target, incompatible mapping and source collision are atomic denials',async()=>{
+  const {head,intent,request,p}=c10Fixture(),before=structuredClone(head);
+  const planner=await c10Planner();
+  for(const malformed of [
+    {...request,mappings:request.mappings.slice(1)},
+    {...request,mappings:request.mappings.map((row,i)=>i===2?{...row,toSlotKey:p+'title'}:row)},
+    {...request,mappings:request.mappings.map((row,i)=>i===1?{...row,toSlotKey:p+'cta'}:row)},
+    {...request,mappings:request.mappings.map((row,i)=>i===2?{...row,toSlotKey:'contact-cta1'}:row)}
+  ])assert.throws(()=>planner(head,malformed));
+  for(const denial of [{...intent,expectedRevision:1},{...intent,confirmStash:false},
+    {...intent,confirmOwnedRelocation:false}]){
+    assert.throws(()=>c10Apply(head,denial));assert.deepEqual(head,before);
+  }
+  const occupied=structuredClone(head);
+  occupied.snapshot.files['slots/arc-hero-cta/owned/75000000-0000-4000-8000-000000000001/component-source.tsx']='unrelated owner bytes';
+  const collisionBefore=structuredClone(occupied);
+  assert.throws(()=>c10Apply(occupied,intent));
+  assert.deepEqual(occupied,collisionBefore);
+});
+test('C10 Unplaced restore targets a declared EMPTY compatible slot and never rewrites original source',async()=>{
+  const {head,intent,p,source,sourcePath}=c10Fixture();
+  await c10Planner();
+  const changed=c10Apply(head,intent);
+  const cleared=applyEditorTransaction(changed,op(changed,{kind:'CLEAR_SLOT',slotKey:p+'cta'}));
+  const before=structuredClone(cleared);
+  const restore:C10Intent={kind:'RESTORE_LAYOUT_STASH',fromSlotKey:p+'cta1',
+    stashIndex:changed.snapshot.stashes[p+'cta1'].length-1,toSlotKey:p+'cta',
+    expectedRevision:cleared.revision,confirmOwnedRelocation:true};
+  assert.throws(()=>c10Apply(cleared,{...restore,confirmOwnedRelocation:false},
+    '75000000-0000-4000-8000-000000000002'));
+  assert.deepEqual(cleared,before);
+  const moved=c10Apply(cleared,restore,'75000000-0000-4000-8000-000000000002');
+  const result=moved.snapshot.slots[p+'cta'];
+  assert.equal(result.state,'S2');
+  assert.equal(moved.snapshot.files[sourcePath],source);
+  assert.equal(moved.snapshot.files[result.sourcePath!],source);
+  assert.equal(moved.snapshot.stashes[p+'cta1'].length,before.snapshot.stashes[p+'cta1'].length-1);
+  assert.deepEqual(moved.snapshot.stashes[p+'cta1'][0],before.snapshot.stashes[p+'cta1'][0]);
+  assert.deepEqual(cleared,before);
+  assert.throws(()=>c10Apply(changed,{...restore,expectedRevision:changed.revision},
+    '75000000-0000-4000-8000-000000000003'),'Occupied target must not replace current assignment');
+});
