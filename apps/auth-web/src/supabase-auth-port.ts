@@ -44,6 +44,29 @@ function sameSession(a:StoredSession|null,b:StoredSession|null):boolean {
 }
 export type ProfileDraft = { displayName: string; headline: string; bio: string; skills: string[] };
 export type OwnerProfile = ProfileDraft & { handle: string | null };
+export type OwnerProfileLink = Readonly<{label:string;url:string}>;
+export type OwnerPrivateProfileLinks = Readonly<{links:OwnerProfileLink[];publicDeliveryAllowed:false}>;
+export function normalizeOwnerProfileLinks(raw:unknown):OwnerProfileLink[] {
+  if(!Array.isArray(raw)||raw.length>12)throw new Error('Choose at most 12 private profile links.');
+  const seen=new Set<string>();
+  const result:OwnerProfileLink[]=[];
+  for(const item of raw){
+    if(!item||typeof item!=='object'||Array.isArray(item)||
+      Object.keys(item).sort().join(',')!=='label,url'||
+      typeof item.label!=='string'||typeof item.url!=='string'||
+      !item.label.trim()||item.label.trim().length>80||/[\u0000-\u001f\u007f]/.test(item.label)||
+      item.url.length>2048||/\s/.test(item.url)||/[\u0000-\u001f\u007f]/.test(item.url))
+      throw new Error('Use a descriptive label and a valid HTTPS profile link.');
+    let url:URL;
+    try{url=new URL(item.url);}catch{throw new Error('Profile links must use valid HTTPS URLs.');}
+    if(url.protocol!=='https:'||url.username||url.password||url.port||
+      !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(url.hostname)||
+      url.href.length>2048||seen.has(url.href))
+      throw new Error('Use unique HTTPS links without credentials or custom ports.');
+    seen.add(url.href);result.push({label:item.label.trim(),url:url.href});
+  }
+  return result;
+}
 
 export type OwnerPortfolio = {id: string; title: string; slug: string; templateId: string; revision: number};
 
@@ -58,6 +81,14 @@ export type OwnerProject = {
   id: string; title: string; slug: string; summary: string; description: string;
   repositoryUrl: string | null; liveUrl: string | null; revision: number; updatedAt: string;
 };
+export type OwnerPrivateImageMime = 'image/png'|'image/jpeg'|'image/webp';
+export type OwnerPrivateImageUploadContext = Readonly<{operationId:string;expectedEpoch:number}>;
+export type OwnerProjectThumbnailAsset = Readonly<{
+  id:string;projectId:string;mime:OwnerPrivateImageMime;size:number;altText:string;createdAt:string;
+}>;
+export type OwnerProjectThumbnail = Readonly<{
+  projectId:string;revision:number;asset:OwnerProjectThumbnailAsset|null;publicDeliveryAllowed:false;
+}>;
 export type NewPrivateProject = {
   title: string; slug: string; summary: string; repositoryUrl: string | null; liveUrl: string | null;
 };
@@ -782,11 +813,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         cache: 'no-store', credentials: 'omit', redirect: 'error'
       });
     } catch { throw new Error('Private workspace service is unavailable.'); }
-    if (!response.ok && ['rpc/update_private_project', 'rpc/owner_save_profile_draft', 'rpc/update_private_project_case_study'].includes(path)) {
+    if (!response.ok && ['rpc/update_private_project', 'rpc/owner_save_profile_draft', 'rpc/owner_save_private_profile_links', 'rpc/update_private_project_case_study', 'rpc/set_private_project_thumbnail'].includes(path)) {
       const payload: unknown = await response.json().catch(() => null);
       if (payload && typeof payload === 'object') {
         if ('code' in payload && payload.code === '40001')
-          throw new Error(path === 'rpc/owner_save_profile_draft'
+          throw new Error((path === 'rpc/owner_save_profile_draft' || path === 'rpc/owner_save_private_profile_links')
             ? 'Your profile changed in another session. Load the latest draft before saving.'
             : 'This project changed while you were editing. Load the latest revision before saving again.');
         if ('message' in payload && payload.message === 'PROFILE_WITHDRAWAL_CONFIRMATION_REQUIRED')
@@ -842,6 +873,53 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       });
       if (!this.isCurrentSession(session)) throw new Error('Owner session changed during profile save.');
       return this.parseOwnerProfile(result, userId);
+    });
+  }
+
+  private parsePrivateProfileLinks(raw:unknown,userId:string):OwnerPrivateProfileLinks{
+    const row=raw as Json|null;
+    if(!row||Array.isArray(row)||row.user_id!==userId)
+      throw new Error('Private profile links could not be verified.');
+    const links=normalizeOwnerProfileLinks(row.private_links);
+    if(!Array.isArray(row.private_links)||row.private_links.some((link,index)=>
+      link?.label!==links[index]?.label||link?.url!==links[index]?.url))
+      throw new Error('Private profile links were not in canonical form.');
+    return {links,publicDeliveryAllowed:false};
+  }
+
+  private async profileLinksSession(expectedEpoch:number){
+    if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      throw new Error('Owner session changed before profile link access.');
+    const checked=await this.ownerSession();
+    this.assertOwnerImageEpoch(checked.session,expectedEpoch);
+    return checked;
+  }
+
+  /** Owner-private authored HTTPS links; distinct from provider integrations. */
+  async readOwnerProfileLinks(expectedEpoch:number):Promise<AuthOutcome<OwnerPrivateProfileLinks>>{
+    return this.outcome(async()=>{
+      const {session,userId}=await this.profileLinksSession(expectedEpoch);
+      const query=new URLSearchParams({select:'user_id,private_links',user_id:'eq.'+userId,limit:'1'});
+      const rows=await this.ownerRest('profiles?'+query,session.access_token);
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      if(!Array.isArray(rows)||rows.length!==1)throw new Error('Private profile links are unavailable.');
+      return this.parsePrivateProfileLinks(rows[0],userId);
+    });
+  }
+
+  async saveOwnerProfileLinks(expected:readonly OwnerProfileLink[],draft:readonly OwnerProfileLink[],expectedEpoch:number):
+    Promise<AuthOutcome<OwnerPrivateProfileLinks>>{
+    return this.outcome(async()=>{
+      const input=normalizeOwnerProfileLinks(draft),base=normalizeOwnerProfileLinks(expected);
+      const {session,userId}=await this.profileLinksSession(expectedEpoch);
+      const receipt=await this.ownerRest('rpc/owner_save_private_profile_links',session.access_token,'POST',{
+        p_expected:base,p_links:input
+      });
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      const result=this.parsePrivateProfileLinks(receipt,userId);
+      if(JSON.stringify(result.links)!==JSON.stringify(input))
+        throw new Error('The requested private profile links were not confirmed.');
+      return result;
     });
   }
 
@@ -1254,95 +1332,261 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
 
-  /** Private-only, write-once Storage upload with server-validated registration.
-   * Registered metadata is NOT an attested media byte pin or publish authority.
-   */
-  async uploadOwnerProjectImage(projectId:string,file:File,altText:string):
+  private async validateOwnerRaster(file:Blob):Promise<{ext:string;mime:OwnerPrivateImageMime}> {
+    const formats:Readonly<Record<string,{ext:string;magic:(bytes:Uint8Array)=>boolean}>>={
+      'image/png':{ext:'png',magic:bytes=>bytes.length>=8&&
+        [137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n)},
+      'image/jpeg':{ext:'jpg',magic:bytes=>bytes.length>=3&&
+        bytes[0]===255&&bytes[1]===216&&bytes[2]===255},
+      'image/webp':{ext:'webp',magic:bytes=>bytes.length>=12&&
+        String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&
+        String.fromCharCode(...bytes.slice(8,12))==='WEBP'}
+    };
+    if(file.size<12||file.size>5242880||!Object.hasOwn(formats,file.type))
+      throw new Error('Choose a PNG/JPEG/WebP image under 5 MB.');
+    const format=formats[file.type];
+    const bytes=new Uint8Array(await file.slice(0,16).arrayBuffer());
+    if(!format||!format.magic(bytes))throw new Error('File bytes do not match the selected image format.');
+    // Header/MIME checks do not detect truncated or decompression-bomb
+    // images. Browser-native decoding must succeed before write-once upload.
+    // Node contract tests independently test bytes and RPC protocol without
+    // a browser decoder; authenticated Chromium covers real image decoding.
+    if(typeof window!=='undefined'){
+      let width=0,height=0;
+      if(typeof createImageBitmap==='function'){
+        let bitmap:ImageBitmap;
+        try{bitmap=await createImageBitmap(file);}
+        catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
+        try{width=bitmap.width;height=bitmap.height;}
+        finally{bitmap.close();}
+      }else{
+        if(typeof Image==='undefined'||typeof URL.createObjectURL!=='function')
+        throw new Error('Private image validation is unavailable in this browser.');
+        const temporary=URL.createObjectURL(file);
+        try{
+        const image=new Image();
+        image.src=temporary;
+        await image.decode();
+        width=image.naturalWidth;height=image.naturalHeight;
+        }catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
+        finally{URL.revokeObjectURL(temporary);}
+      }
+      if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||
+        width<1||height<1||width>8192||height>8192||width*height>24_000_000)
+        throw new Error('Image dimensions exceed the private preview safety limit.');
+    }
+
+    return {ext:format.ext,mime:file.type as OwnerPrivateImageMime};
+  }
+
+  private assertOwnerImageEpoch(session:StoredSession,epoch:number):void {
+    if(this.reconcileOwnerSessionEpoch()!==epoch||!this.isCurrentSession(session))
+      throw new Error('Owner session changed during private image access.');
+  }
+
+  /** Download only a previously verified private object, never an external URL.
+   * Bound streamed bytes before constructing a Blob, and reject stale sessions. */
+  private async readOwnerImageBytes(session:StoredSession,epoch:number,path:string,mime:OwnerPrivateImageMime,size:number):Promise<Blob> {
+    this.assertOwnerImageEpoch(session,epoch);
+    let response:Response;
+    try{
+      response=await this.fetcher(this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path,{
+        headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token},
+        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
+      });
+    }catch{throw new Error('Private image bytes could not be read. Retry or use the folder cover.');}
+    try{
+      this.assertOwnerImageEpoch(session,epoch);
+      const declared=response.headers.get('content-length');
+      if(!response.ok||response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
+        (declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==size))||!response.body)
+        throw new Error('Private image readback was not verified.');
+      const reader=response.body.getReader();
+      const chunks:BlobPart[]=[];
+      let total=0;
+      try{
+        while(true){
+          const part=await reader.read();
+          this.assertOwnerImageEpoch(session,epoch);
+          if(part.done)break;
+          total+=part.value.byteLength;
+          if(total>size||total>5242880)throw new Error('Private image exceeds its verified size.');
+          chunks.push(new Uint8Array(part.value));
+        }
+      }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+      if(total!==size)throw new Error('Private image size did not match its registered metadata.');
+      const blob=new Blob(chunks,{type:mime});
+      await this.validateOwnerRaster(blob);
+      this.assertOwnerImageEpoch(session,epoch);
+      return blob;
+    }finally{await response.body?.cancel().catch(()=>{});}
+  }
+
+  /** Private-only, write-once upload. With the optional stable operation UUID,
+   * a lost response is recovered only by exact-byte readback of the same object.
+   * Metadata registration is NOT a server-attested publication byte pin. */
+  async uploadOwnerProjectImage(projectId:string,file:File,altText:string,context?:OwnerPrivateImageUploadContext):
     Promise<AuthOutcome<{id:string;projectId:string;mime:string;size:number;altText:string;verifiedMetadata:true;publicDeliveryAllowed:false}>> {
     return this.outcome(async()=>{
-      const mime:Readonly<Record<string,{ext:string;magic:(bytes:Uint8Array)=>boolean}>>={
-        'image/png':{ext:'png',magic:bytes=>bytes.length>=8&&
-          [137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n)},
-        'image/jpeg':{ext:'jpg',magic:bytes=>bytes.length>=3&&
-          bytes[0]===255&&bytes[1]===216&&bytes[2]===255},
-        'image/webp':{ext:'webp',magic:bytes=>bytes.length>=12&&
-          String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&
-          String.fromCharCode(...bytes.slice(8,12))==='WEBP'}
-      };
+      const request=context?{...context}:null;
       if(!PROJECT_ID_PATTERN.test(projectId)||!(file instanceof File)||
-        file.size<12||file.size>5242880||!Object.hasOwn(mime,file.type)||
-        typeof altText!=='string'||altText.trim().length<1||altText.length>500)
+        typeof altText!=='string'||altText.trim().length<1||altText.length>500||
+        (request&&(!PROJECT_ID_PATTERN.test(request.operationId)||
+          this.reconcileOwnerSessionEpoch()!==request.expectedEpoch)))
         throw new Error('Choose a private project, a PNG/JPEG/WebP image under 5 MB, and descriptive alt text.');
-      const format=mime[file.type];
-      const bytes=new Uint8Array(await file.slice(0,16).arrayBuffer());
-      if(!format||!format.magic(bytes))throw new Error('File bytes do not match the selected image format.');
-      // Header/MIME checks do not detect truncated or decompression-bomb
-      // images. Browser-native decoding must succeed before write-once upload.
-      // Node contract tests independently test bytes and RPC protocol without
-      // a browser decoder; authenticated Chromium covers real image decoding.
-      if(typeof window!=='undefined'){
-        let width=0,height=0;
-        if(typeof createImageBitmap==='function'){
-          let bitmap:ImageBitmap;
-          try{bitmap=await createImageBitmap(file);}
-          catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
-          try{width=bitmap.width;height=bitmap.height;}
-          finally{bitmap.close();}
-        }else{
-          if(typeof Image==='undefined'||typeof URL.createObjectURL!=='function')
-            throw new Error('Private image validation is unavailable in this browser.');
-          const temporary=URL.createObjectURL(file);
-          try{
-            const image=new Image();
-            image.src=temporary;
-            await image.decode();
-            width=image.naturalWidth;height=image.naturalHeight;
-          }catch{throw new Error('The selected image cannot be decoded. No private bytes were uploaded.');}
-          finally{URL.revokeObjectURL(temporary);}
-        }
-        if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||
-          width<1||height<1||width>8192||height>8192||width*height>24_000_000)
-          throw new Error('Image dimensions exceed the private preview safety limit.');
-      }
-      const {session,userId}=await this.ownerSession();
+      const format=await this.validateOwnerRaster(file);
+      if(request&&this.reconcileOwnerSessionEpoch()!==request.expectedEpoch)
+        throw new Error('Owner session changed before private image upload.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(request&&epoch!==request.expectedEpoch)throw new Error('Owner session changed before private image upload.');
       const params=new URLSearchParams({select:'id,owner_user_id',
-        id:'eq.'+projectId,owner_user_id:'eq.'+userId,
-        trashed_at:'is.null',limit:'1'});
+        id:'eq.'+projectId,owner_user_id:'eq.'+userId,trashed_at:'is.null',limit:'1'});
       const project=await this.ownerRest('projects?'+params,session.access_token);
-      if(!this.isCurrentSession(session)||!Array.isArray(project)||project.length!==1||
-        project[0]?.id!==projectId||project[0]?.owner_user_id!==userId)
+      this.assertOwnerImageEpoch(session,epoch);
+      if(!Array.isArray(project)||project.length!==1||
+        project[0]?.id!==projectId.toLowerCase()||project[0]?.owner_user_id!==userId)
         throw new Error('The selected private project could not be verified.');
-      // Never use the owner's upload filename for a Storage path.
-      const objectPath=userId+'/'+projectId+'/'+crypto.randomUUID()+'.'+format.ext;
-      let upload:Response;
+      // Stable object identity is independent of MIME so a reused operation
+      // cannot create a second object simply by changing file format.
+      const objectPath=userId+'/'+projectId.toLowerCase()+'/'+
+        (request?request.operationId.toLowerCase()+'.img':crypto.randomUUID()+'.'+format.ext);
+      let upload:Response|null=null;
       try{
         upload=await this.fetcher(this.origin+'/storage/v1/object/kadmeion-private-assets/'+objectPath,{
-          method:'POST',
-          headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
-            'Content-Type':file.type,'x-upsert':'false','Cache-Control':'no-store'},
-          body:file,credentials:'omit',cache:'no-store',redirect:'error',
-          signal:AbortSignal.timeout(60_000)
+          method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+            'Content-Type':format.mime,'x-upsert':'false','Cache-Control':'no-store'},
+          body:file,credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
         });
-      }catch{throw new Error('The private Storage upload was not confirmed. Retry with a new upload.');}
-      if(!upload.ok||!this.isCurrentSession(session)){
-        await upload.body?.cancel().catch(()=>{});
-        throw new Error('Private image upload was not confirmed. No public image was created.');
+      }catch{ /* An uncertain result is recoverable only for a stable operation. */ }
+      const accepted=upload?.ok===true;
+      const ambiguous=!upload||upload.status===400||upload.status===409||upload.status>=500;
+      await upload?.body?.cancel().catch(()=>{});
+      this.assertOwnerImageEpoch(session,epoch);
+      if(!accepted){
+        if(!request||!ambiguous)
+          throw new Error('Private image upload was not confirmed. No public image was created.');
+        const existing=await this.readOwnerImageBytes(session,epoch,objectPath,format.mime,file.size);
+        const [stored,selected]=await Promise.all([existing.arrayBuffer(),file.arrayBuffer()]);
+        this.assertOwnerImageEpoch(session,epoch);
+        const a=new Uint8Array(stored),b=new Uint8Array(selected);
+        if(a.length!==b.length||a.some((byte,i)=>byte!==b[i]))
+          throw new Error('This upload operation already refers to different bytes. Choose a new operation.');
       }
-      await upload.body?.cancel().catch(()=>{});
-      const receipt=await this.ownerRest('rpc/register_private_project_image',
-        session.access_token,'POST',{
-          p_project_id:projectId,p_object_path:objectPath,p_mime_type:file.type,
-          p_byte_size:file.size,p_alt_text:altText.trim()
-        });
+      const receipt=await this.ownerRest('rpc/register_private_project_image',session.access_token,'POST',{
+        p_project_id:projectId,p_object_path:objectPath,p_mime_type:format.mime,
+        p_byte_size:file.size,p_alt_text:altText.trim()
+      });
+      this.assertOwnerImageEpoch(session,epoch);
       if(!receipt||typeof receipt!=='object'||Array.isArray(receipt)||
-        !('id' in receipt)||typeof receipt.id!=='string'||
-        !PROJECT_ID_PATTERN.test(receipt.id)||
+        !('id' in receipt)||typeof receipt.id!=='string'||!PROJECT_ID_PATTERN.test(receipt.id)||
         !('object_path' in receipt)||receipt.object_path!==objectPath||
-        !('storage_metadata_matched' in receipt)||receipt.storage_metadata_matched!==true||
-        !this.isCurrentSession(session))
+        !('storage_metadata_matched' in receipt)||receipt.storage_metadata_matched!==true)
         throw new Error('Private upload registration was not confirmed; orphaned private bytes may require cleanup.');
-      return {id:receipt.id,projectId,mime:file.type,size:file.size,
+      if(request){
+        const query=new URLSearchParams({select:'id,owner_user_id,project_id,object_path,mime_type,byte_size,alt_text',
+          id:'eq.'+receipt.id,owner_user_id:'eq.'+userId,project_id:'eq.'+projectId,limit:'1'});
+        const rows=await this.ownerRest('project_assets?'+query,session.access_token);
+        this.assertOwnerImageEpoch(session,epoch);
+        const row=Array.isArray(rows)&&rows.length===1?rows[0]:null;
+        if(!row||row.id!==receipt.id||row.owner_user_id!==userId||row.project_id!==projectId.toLowerCase()||
+          row.object_path!==objectPath||row.mime_type!==format.mime||row.byte_size!==file.size||row.alt_text!==altText.trim())
+          throw new Error('Private upload registration did not match the exact selected image.');
+      }
+      return {id:receipt.id,projectId:projectId.toLowerCase(),mime:format.mime,size:file.size,
         altText:altText.trim(),verifiedMetadata:true as const,publicDeliveryAllowed:false as const};
+    });
+  }
+
+  private parseProjectThumbnail(raw:unknown,projectId:string,ownerId:string):
+    {value:OwnerProjectThumbnail;path:string|null} {
+    const row=raw as Json|null;
+    if(!row||Array.isArray(row)||row.projectId!==projectId.toLowerCase()||
+      row.ownerUserId!==ownerId||row.publicDeliveryAllowed!==false||
+      typeof row.revision!=='number'||!Number.isSafeInteger(row.revision)||row.revision<0)
+      throw new Error('Private thumbnail response could not be verified.');
+    if(row.asset===null)return {value:{projectId:projectId.toLowerCase(),revision:row.revision,asset:null,publicDeliveryAllowed:false},path:null};
+    const asset=row.asset as Json|null;
+    if(!asset||Array.isArray(asset)||typeof asset.id!=='string'||!PROJECT_ID_PATTERN.test(asset.id)||
+      asset.projectId!==projectId.toLowerCase()||!['image/png','image/jpeg','image/webp'].includes(String(asset.mime))||
+      typeof asset.size!=='number'||!Number.isSafeInteger(asset.size)||asset.size<12||asset.size>5242880||
+      typeof asset.altText!=='string'||!asset.altText.trim()||asset.altText.length>500||
+      typeof asset.createdAt!=='string'||!Number.isFinite(Date.parse(asset.createdAt))||
+      typeof asset.objectPath!=='string')
+      throw new Error('Private thumbnail asset response could not be verified.');
+    const prefix=ownerId+'/'+projectId.toLowerCase()+'/';
+    const name=asset.objectPath.slice(prefix.length);
+    const extension=asset.mime==='image/png'?'png':asset.mime==='image/jpeg'?'jpg':'webp';
+    const suffix=name.endsWith('.img')?'img':extension;
+    if(!asset.objectPath.startsWith(prefix)||!name.endsWith('.'+suffix)||
+      !PROJECT_ID_PATTERN.test(name.slice(0,-suffix.length-1)))
+      throw new Error('Private thumbnail path was rejected.');
+    return {value:{projectId:projectId.toLowerCase(),revision:row.revision,publicDeliveryAllowed:false,
+      asset:{id:asset.id,projectId:projectId.toLowerCase(),mime:asset.mime as OwnerPrivateImageMime,
+        size:asset.size,altText:asset.altText,createdAt:asset.createdAt}},path:asset.objectPath};
+  }
+
+  private async ownerThumbnailSession(projectId:string,expectedEpoch:number){
+    if(!PROJECT_ID_PATTERN.test(projectId)||this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      throw new Error('Private thumbnail session or project is unavailable.');
+    const checked=await this.ownerSession();
+    this.assertOwnerImageEpoch(checked.session,expectedEpoch);
+    return checked;
+  }
+
+  private async readProjectThumbnail(session:StoredSession,userId:string,projectId:string,epoch:number){
+    this.assertOwnerImageEpoch(session,epoch);
+    const raw=await this.ownerRest('rpc/read_private_project_thumbnail',session.access_token,'POST',{p_project_id:projectId});
+    this.assertOwnerImageEpoch(session,epoch);
+    return this.parseProjectThumbnail(raw,projectId,userId);
+  }
+
+  /** Exact selected metadata, independent of bounded asset-library pagination. */
+  async readOwnerProjectThumbnail(projectId:string,expectedEpoch:number):Promise<AuthOutcome<OwnerProjectThumbnail>>{
+    return this.outcome(async()=>{
+      const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
+      return (await this.readProjectThumbnail(session,userId,projectId,expectedEpoch)).value;
+    });
+  }
+
+  /** Attach/detach via the project's existing revision CAS; no public mutation. */
+  async setOwnerProjectThumbnail(projectId:string,baseRevision:number,assetId:string|null,operationId:string,expectedEpoch:number):
+    Promise<AuthOutcome<OwnerProjectThumbnail>>{
+    return this.outcome(async()=>{
+      if(!Number.isSafeInteger(baseRevision)||baseRevision<0||baseRevision>=Number.MAX_SAFE_INTEGER||
+        !PROJECT_ID_PATTERN.test(operationId)||(assetId!==null&&!PROJECT_ID_PATTERN.test(assetId)))
+        throw new Error('Invalid private thumbnail change.');
+      const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
+      const raw=await this.ownerRest('rpc/set_private_project_thumbnail',session.access_token,'POST',{
+        p_project_id:projectId,p_base_revision:baseRevision,p_asset_id:assetId,p_operation_id:operationId
+      });
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      const {value}=this.parseProjectThumbnail(raw,projectId,userId);
+      if(value.revision!==baseRevision+1||(value.asset?.id??null)!==(assetId?.toLowerCase()??null))
+        throw new Error('Private thumbnail change was not confirmed. Reload the current project.');
+      // Confirm the current durable selection, not merely an operation acknowledgement.
+      const current=(await this.readProjectThumbnail(session,userId,projectId,expectedEpoch)).value;
+      if(current.revision!==value.revision||(current.asset?.id??null)!==(value.asset?.id??null))
+        throw new Error('The project changed after the thumbnail save. Reload the current revision.');
+      return current;
+    });
+  }
+
+  /** Authenticated image bytes, not a URL. The consumer owns temporary blob URL
+   * lifetime. Recheck the selected asset after download to reject replacements. */
+  async readOwnerProjectThumbnailImage(projectId:string,assetId:string,expectedEpoch:number):Promise<AuthOutcome<Blob>>{
+    return this.outcome(async()=>{
+      if(!PROJECT_ID_PATTERN.test(assetId))throw new Error('Private thumbnail is unavailable.');
+      const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
+      const current=await this.readProjectThumbnail(session,userId,projectId,expectedEpoch);
+      if(!current.path||current.value.asset?.id!==assetId.toLowerCase())
+        throw new Error('The selected thumbnail changed. Reload the project.');
+      const blob=await this.readOwnerImageBytes(session,expectedEpoch,current.path,current.value.asset.mime,current.value.asset.size);
+      const latest=await this.readProjectThumbnail(session,userId,projectId,expectedEpoch);
+      if(latest.value.revision!==current.value.revision||latest.path!==current.path||
+         latest.value.asset?.id!==current.value.asset.id||latest.value.asset.mime!==current.value.asset.mime||
+         latest.value.asset.size!==current.value.asset.size)
+        throw new Error('The private thumbnail changed during image readback.');
+      return blob;
     });
   }
 
@@ -1380,7 +1624,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         import('../../../packages/contracts/src/private-platform-links-service.ts')
       ]);
       return {
-        goals: new goalModule.SupabasePrivateGoalsService(this.origin,this.publishableKey,token,this.fetcher),
+        goals: new goalModule.SupabasePrivateGoalsService(this.origin,this.publishableKey,token,this.fetcher,userId),
         links: new linkModule.SupabasePrivatePlatformLinksService(this.origin,this.publishableKey,userId,token,this.fetcher)
       };
     });

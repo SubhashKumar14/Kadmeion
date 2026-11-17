@@ -1,12 +1,59 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
 import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
+
+ // Allowlisted diagnostics only: never serialize request URLs, query strings,
+ // browser console, headers, error text, response bodies or owner content.
+test.beforeEach(async ({page}, info) => {
+  const events: Array<{pathname:string;status:number|null;category:string}> = [];
+  const paths = new Set(['/auth/v1/user','/auth/v1/token','/rest/v1/projects',
+    '/rest/v1/profiles','/rest/v1/portfolios','/rest/v1/rpc/complete_private_account_exit_reauth',
+    '/rest/v1/private_account_erasure_requests']);
+  const pathOf=(raw:string)=>{
+    const u=new URL(raw);
+    return u.origin===origin ? (paths.has(u.pathname)?u.pathname:'/private-api/other') : null;
+  };
+  page.on('response',response=>{
+    const pathname=pathOf(response.url());
+    if(pathname&&response.status()>=400&&events.length<80){
+      const status=response.status();
+      events.push({pathname,status,category:status===401?'AUTH':status===403?'DENIED':
+        status===409?'CONFLICT':status===429?'RATE_LIMIT':status>=500?'UNAVAILABLE':'HTTP_OTHER'});
+    }
+  });
+  page.on('requestfailed',request=>{
+    const pathname=pathOf(request.url());
+    if(pathname&&events.length<80)events.push({pathname,status:null,category:'TRANSPORT'});
+  });
+  // A callback runs at fixture teardown before the page is closed.
+  // Only the predeclared route family is retained, never a dynamic ID.
+  info.annotations.push({type:'sanitized-diagnostics',description:'allowlisted fields only'});
+  // Attach on failure using afterEach below; store only already sanitized data.
+  safeDiagnostics.set(page,events);
+});
+const safeDiagnostics=new WeakMap<Page,Array<{pathname:string;status:number|null;category:string}>>();
+test.afterEach(async ({page},info)=>{
+  if(info.status===info.expectedStatus)return;
+  const p=new URL(page.url()).pathname;
+  const pathname=/^\/app\/(projects|portfolios)\/.+/.test(p)
+    ? (p.startsWith('/app/projects/')?'/app/projects/:id':'/app/portfolios/:id')
+    : /^\/(app(?:\/(?:growth(?:\/(?:activity|devscore|goals))?|settings(?:\/(?:privacy|security|account\/delete))?|projects|portfolios|analytics|integrations|notifications|trash|export))?|signin)$/.test(p)?p:'/other';
+  const gate=await page.locator('.ws-heading').first().isVisible().catch(()=>false)
+    ?'WORKSPACE_VISIBLE':await page.getByRole('button',{name:'Retry verification'}).isVisible().catch(()=>false)
+      ?'LOCKED':'UNKNOWN_OR_CHECKING';
+  const dir='/tmp/kadmeion-owner-captures';
+  await mkdir(dir,{recursive:true});
+  await writeFile(dir+'/'+randomUUID()+'.route-diagnostics.json',JSON.stringify({
+    pathname,gate,events:safeDiagnostics.get(page)??[]
+  }),{encoding:'utf8',mode:0o600});
+});
+
 
 async function localUser(label: string) {
   const serviceKey = process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
@@ -62,11 +109,11 @@ async function signIn(page: Page, user: {email: string; password: string}) {
   const requestResults: string[] = [];
   function onResponse(response: import('@playwright/test').Response) {
     const url = new URL(response.url());
-    if (url.origin === origin) requestResults.push(url.pathname + ' HTTP ' + response.status());
+    if (url.origin === origin) requestResults.push((url.pathname==='/auth/v1/token'?'/auth/v1/token':url.pathname==='/auth/v1/user'?'/auth/v1/user':'/private-api/other') + ' HTTP ' + response.status());
   }
   function onRequestFailed(request: import('@playwright/test').Request) {
     const url = new URL(request.url());
-    if (url.origin === origin) requestResults.push(url.pathname + ' failed: ' + request.failure()?.errorText);
+    if (url.origin === origin) requestResults.push((url.pathname==='/auth/v1/token'?'/auth/v1/token':url.pathname==='/auth/v1/user'?'/auth/v1/user':'/private-api/other') + ' TRANSPORT');
   }
   page.on('response', onResponse);
   page.on('requestfailed', onRequestFailed);

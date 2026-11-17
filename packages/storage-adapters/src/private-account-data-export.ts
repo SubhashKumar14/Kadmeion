@@ -51,7 +51,7 @@ function safeRestrictedAudit(value:unknown):boolean {
 }
 export class PrivateAccountExportError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'PROVIDER_UNAVAILABLE'|
-    'INTEGRITY'|'LIMIT_EXCEEDED'|'UNVERIFIED';
+    'INTEGRITY'|'LIMIT_EXCEEDED'|'RATE_LIMITED'|'UNVERIFIED';
   constructor(code:PrivateAccountExportError['code'],message:string){
     super(message);this.name='PrivateAccountExportError';this.code=code;
   }
@@ -186,10 +186,23 @@ export class SupabasePrivateAccountDataExporter {
       });
     }catch{throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export source unavailable.');}
     if(!response.ok){
+      let code:PrivateAccountExportError['code']='PROVIDER_UNAVAILABLE';
+      let message='Private export read was denied or unavailable.';
+      if(response.status===401||response.status===403)code='AUTH_EXPIRED';
+      else if(response.status===429){code='RATE_LIMITED';message='Too many export requests. Try again later.';}
+      else if(response.status===413){code='LIMIT_EXCEEDED';message='The export exceeds the bounded response limit.';}
+      else if(path.startsWith('/rest/v1/rpc/')){
+        // Never surface arbitrary PostgREST details, and bound error bodies.
+        try{
+          const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192)));
+          if(object(raw)&&raw.code==='54000'&&
+            ['ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED','ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED'].includes(String(raw.message))){
+            code='LIMIT_EXCEEDED';message='The account exceeds the supported export limits.';
+          }
+        }catch{ /* Unrecognized or invalid error remains unavailable. */ }
+      }
       await response.body?.cancel().catch(()=>{});
-      throw new PrivateAccountExportError(
-        response.status===401||response.status===403?'AUTH_EXPIRED':'PROVIDER_UNAVAILABLE',
-        'Private export read was denied or unavailable.');
+      throw new PrivateAccountExportError(code,message);
     }
     return {bytes:await boundedBytes(response,max),headers:response.headers};
   }
@@ -206,6 +219,8 @@ export class SupabasePrivateAccountDataExporter {
   private async reconcile(snapshotId:string):Promise<number> {
     const raw=await this.json('/rest/v1/rpc/reconcile_private_account_exit_storage',
       65536,{p_snapshot_id:snapshotId});
+    if(object(raw)&&raw.snapshotId===snapshotId&&raw.status==='LIMIT_EXCEEDED'&&raw.limitExceeded===true)
+      throw new PrivateAccountExportError('LIMIT_EXCEEDED','The private storage inventory exceeds the bounded reconciliation limit.');
     requireCondition(object(raw)&&raw.snapshotId===snapshotId&&
       raw.status==='METADATA_MATCH_ONLY'&&raw.limitExceeded===false&&
       raw.inventoryDrift===false&&raw.missingObjects===0&&raw.orphanObjects===0&&
