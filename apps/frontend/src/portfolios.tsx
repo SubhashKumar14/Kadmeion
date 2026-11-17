@@ -444,6 +444,19 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
     if (!allowed || !head || saving) return false;
+    // Changing an assignment or restoring another working snapshot must not
+    // strand inspector/source buffers against a different component version.
+    const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
+      intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
+      intent.kind === 'CUSTOMIZE_COMPONENT';
+    if (((intent.kind === 'UNDO' || intent.kind === 'REDO') && (pendingFields || sourceDirty)) ||
+        (replacesSlot && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
+          if (!key.startsWith(intent.slotKey + ':')) return false;
+          return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
+        })))) {
+      setError('Apply or discard unapplied content and source edits before changing this assignment or revision.');
+      return false;
+    }
     try {
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
       setHead(next);
@@ -544,6 +557,20 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       setError(failure instanceof Error?failure.message:'SEO metadata could not be applied.');
     }
   }
+  function changeFieldBuffer(key:string, value:string, stored:string) {
+    setFieldDrafts(previous=>{
+      const next={...previous};
+      if(value===stored)delete next[key];else next[key]=value;
+      return next;
+    });
+    setFieldIssues(previous=>{const next={...previous};delete next[key];return next;});
+  }
+  function changeSeoBuffer(field:'title'|'description',value:string){
+    setSeoDraft(previous=>{
+      const next={...(previous??savedSeo),[field]:value};
+      return next.title===savedSeo.title&&next.description===savedSeo.description?null:next;
+    });
+  }
   const pendingFields=Object.entries(fieldDrafts).some(([key,draft])=>{
     const pivot=key.lastIndexOf(':');
     if(pivot<0)return false;
@@ -587,10 +614,17 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
         onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
-    {error && <button type="button" className="ws-secondary" onClick={() => {
+    {error && <button type="button" className="ws-secondary" disabled={saving} onClick={() => {
       setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
     }}>{operation || pendingFields || sourceDirty ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
+    {pendingFields&&<div className="ws-editor-safety">
+      <span>Unapplied inspector edits are held in this editor.</span>
+      <button type="button" className="ws-secondary" data-inspector-buffer-action="true"
+        disabled={saving} onMouseDown={event=>event.preventDefault()}
+        onClick={()=>{setFieldDrafts({});setFieldIssues({});setSeoDraft(null);}}>
+        Discard all unapplied inspector edits</button>
+    </div>}
     {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
     {!record && !error && <p role="status">Loading portfolio…</p>}
@@ -676,9 +710,9 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           </li>;})}</ul></details>
         </li>)}</ol>
         <div className="ws-actions">
-          <button type="button" className="ws-secondary" disabled={!head.undo.length || saving}
+          <button type="button" className="ws-secondary" disabled={!head.undo.length || saving || pendingFields || sourceDirty}
             onClick={() => apply({kind: 'UNDO'})}>Undo</button>
-          <button type="button" className="ws-secondary" disabled={!head.redo.length || saving}
+          <button type="button" className="ws-secondary" disabled={!head.redo.length || saving || pendingFields || sourceDirty}
             onClick={() => apply({kind: 'REDO'})}>Redo</button>
         </div></>}
       </aside>
@@ -708,19 +742,19 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
           <p>This author-written information stays private until an independently verified release is explicitly published.</p>
           <label htmlFor="kd-seo-title">SEO page title</label>
           <input id="kd-seo-title" type="text" maxLength={120} value={seoValues.title}
-            aria-invalid={seoPending&&!seoTitleValid} onChange={event=>
-              setSeoDraft(previous=>({... (previous??savedSeo),title:event.target.value}))}/>
+            aria-invalid={seoPending&&!seoTitleValid} onChange={event=>changeSeoBuffer('title',event.target.value)}/>
           <p className="ws-field-hint">Required, 1–120 characters. No invented rankings or credentials.</p>
           <label htmlFor="kd-seo-description">SEO description</label>
           <textarea id="kd-seo-description" rows={5} maxLength={300} value={seoValues.description}
-            aria-invalid={seoPending&&!seoDescriptionValid} onChange={event=>
-              setSeoDraft(previous=>({... (previous??savedSeo),description:event.target.value}))}/>
+            aria-invalid={seoPending&&!seoDescriptionValid} onChange={event=>changeSeoBuffer('description',event.target.value)}/>
           <p className="ws-field-hint">Required, 1–300 characters. Not currently exposed to crawlers.</p>
           {seoPending&&(!seoTitleValid||!seoDescriptionValid)&&
             <p role="alert" className="ws-field-error">Enter a nonempty title and description within the limits.</p>}
           <button type="button" className="ws-secondary"
             disabled={saving||!seoPending||!seoTitleValid||!seoDescriptionValid}
             onClick={applySeoMetadata}>Apply SEO metadata to draft</button>
+          {seoPending&&<button type="button" className="ws-secondary" disabled={saving}
+            onClick={()=>setSeoDraft(null)}>Discard unapplied SEO metadata</button>}
           {seoPending&&<p role="status">Metadata edits are held in this private editor.
             Apply them and save the draft to create a new immutable revision.</p>}
           {!seoPending&&seoTitleValid&&seoDescriptionValid&&
@@ -738,7 +772,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
                 placeholder={active.componentId==='title-stacked@1'&&value===''?
                   'Example: Build things that make a difference. (not saved)':'Enter your own content'}
-                onChange={event => setFieldDrafts(drafts => ({...drafts, [primaryInputKey]: event.target.value}))}/></label>
+                onChange={event => changeFieldBuffer(primaryInputKey,event.target.value,savedPrimary)}/></label>
               <button type="button" className="ws-secondary" disabled={saving || value === savedPrimary}
                 onClick={() => {
                   if (apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})) {
@@ -758,34 +792,43 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                   const draft=Object.hasOwn(fieldDrafts,inputKey)?fieldDrafts[inputKey]!:stored;
                   const issue=fieldIssues[inputKey];
                   const id='kd-field-'+inputKey;
+                  const applySecondary=()=>{
+                    const warning=field==='url'?ownerLinkError(draft):null;
+                    if(warning){
+                      setFieldIssues(values=>({...values,[inputKey]:warning}));
+                      return;
+                    }
+                    if(draft===stored||apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
+                      changeFieldBuffer(inputKey,stored,stored);
+                    }
+                  };
                   return <div key={inputKey} className="ws-inspector-secondary-field">
                     <label htmlFor={id}>{field}</label><input id={id}
                     type={field==='url'?'url':'text'} maxLength={field==='url'?2048:12000}
                     value={draft} aria-invalid={!!issue}
                     aria-describedby={issue?id+'-error':undefined}
-                    onChange={event=>{
-                      const changed=event.target.value;
-                      setFieldDrafts(values=>({...values,[inputKey]:changed}));
-                      setFieldIssues(values=>{const updated={...values};delete updated[inputKey];return updated;});
-                    }}
-                    onBlur={()=>{
-                      const warning=field==='url'?ownerLinkError(draft):null;
-                      if(warning){
-                        setFieldIssues(values=>({...values,[inputKey]:warning}));
-                        return;
-                      }
-                      if(draft===stored){
-                        setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
-                      }else if(apply({kind:'UPDATE_CONTENT',slotKey:slot,content:{[field]:draft}})){
-                        setFieldDrafts(values=>{const updated={...values};delete updated[inputKey];return updated;});
-                      }
-                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</div>;
+                    onChange={event=>changeFieldBuffer(inputKey,event.target.value,stored)}
+                    onBlur={event=>{
+                      // Keep the existing blur-to-apply behavior, except when
+                      // focus is explicitly moving to an Apply/Discard control.
+                      if(event.relatedTarget instanceof HTMLElement&&
+                         event.relatedTarget.dataset.inspectorBufferAction==='true')return;
+                      applySecondary();
+                    }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}
+                    {draft!==stored&&<div className="ws-actions">
+                      <button type="button" className="ws-secondary" data-inspector-buffer-action="true"
+                        disabled={saving} onMouseDown={event=>event.preventDefault()}
+                        onClick={applySecondary}>Apply {field} edit</button>
+                      <button type="button" className="ws-secondary" data-inspector-buffer-action="true"
+                        disabled={saving} onMouseDown={event=>event.preventDefault()}
+                        onClick={()=>changeFieldBuffer(inputKey,stored,stored)}>Discard {field} edit</button>
+                    </div>}</div>;
                 })}
               {pendingFields&&<p className="ws-field-hint" role="status">
                 One or more content fields have unapplied edits. Apply or discard them before saving this draft.
               </p>}
-              <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts}
-                title={selectedSlotHasPendingDrafts ? 'Apply or discard edits in this slot before moving its component.' : undefined}
+              <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts || sourceDirty}
+                title={selectedSlotHasPendingDrafts || sourceDirty ? 'Apply or discard content/source edits before moving this component.' : undefined}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
             <button type="button" className="ws-secondary" disabled={saving}
@@ -800,10 +843,13 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {openedAssets&&<div hidden={tool!=='Assets'}>
       <AssetList port={port} back={()=>setTool('Content')}/>
     </div>}
-    {openedSource&&<div hidden={tool!=='Source'}>
+    </>)}
+    {/* Author preview may hide the source panel, but must not unmount its
+        private buffers. Only an explicit reload/accepted restore resets it. */}
+    {head&&openedSource&&<div hidden={preview||tool!=='Source'}>
       <SourceInspector key={id+':'+attempt+':'+sourceReset} head={head} slot={slot} apply={apply}
         onBufferDirtyChange={setSourceDirty} back={()=>setTool('Content')}/>
-    </div>}</>)}
+    </div>}
   </section></>;
 }
 
