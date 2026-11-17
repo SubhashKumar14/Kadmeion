@@ -1982,3 +1982,124 @@ test('B16 C09 actual private preflight link, bounded editor hints and unchanged 
   await expect(page.getByLabel('Text content')).toHaveCount(0);
   await expect(page.getByText(content,{exact:true})).toHaveCount(0);
 });
+
+test('B16 WF-045 actual notification inbox retry, acknowledgement before navigation and dismissal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(100_000);
+  const owner=await localUser('WF-045 notice owner'),foreign=await localUser('WF-045 other owner');
+  await signIn(page,owner);
+  // This only records the disposable account-exit request, never executes erasure.
+  await page.goto('/app/settings/account/delete');
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
+  await page.getByRole('textbox',{name:'Type DELETE MY ACCOUNT to record the request'}).fill('DELETE MY ACCOUNT');
+  await page.getByRole('button',{name:'Record deletion request'}).click();
+  await expect(page.getByText('Deletion request recorded. No data has been erased.',{exact:true})).toBeVisible();
+  await page.route('**/rest/v1/private_notifications?*',route=>route.fulfill({
+    status:503,json:{message:'Disposable inbox outage'}
+  }),{times:1});
+  await page.goto('/app/notifications');
+  const inbox=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Inbox',exact:true})});
+  await expect(inbox.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
+  await expect(inbox.getByText('You’re caught up.')).toHaveCount(0);
+  await inbox.getByRole('button',{name:'Retry notifications'}).click();
+  const notice=inbox.getByRole('listitem').filter({hasText:'account exit requested'});
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText('Unread');
+  await page.route('**/rest/v1/rpc/owner_acknowledge_notification',route=>route.fulfill({
+    status:503,json:{message:'Disposable acknowledgement outage'}
+  }),{times:1});
+  await notice.getByRole('button',{name:'Review related area'}).click();
+  await expect(inbox.getByRole('alert')).toBeVisible();
+  await expect(page).toHaveURL(/\/app\/notifications$/);
+  await expect(notice).toContainText('Unread');
+  await notice.getByRole('button',{name:'Review related area'}).click();
+  await expect(page).toHaveURL(/\/app\/settings\/account\/delete$/);
+  await page.goto('/app/notifications');
+  await expect(notice.getByRole('button',{name:'Mark as read'})).toHaveCount(0);
+  await expect(notice).toContainText(/· Read ·/);
+  await inbox.getByRole('button',{name:'Unread',exact:true}).click();
+  await expect(notice).toHaveCount(0);
+  await inbox.getByRole('button',{name:'All loaded',exact:true}).click();
+  await expect(notice).toBeVisible();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto('/app/notifications');
+  await expect(inbox.getByText('You’re caught up.')).toBeVisible();
+  await expect(notice).toHaveCount(0);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,owner);
+  await page.goto('/app/notifications');
+  await expect(notice).toBeVisible();
+  await notice.getByRole('button',{name:'Dismiss',exact:true}).click();
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  await expect(inbox.getByText('You’re caught up.')).toBeVisible();
+  await expect(notice).toHaveCount(0);
+});
+
+test('B16 C07 real goal concurrent CAS and precise 105-entry chronological history',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(125_000);
+  const owner=await localUser('C07 goal owner'),foreign=await localUser('C07 other owner');
+  const initial='C07 goal fixture',first='C07 retained stale edit',later='C07 concurrent saved edit';
+  await signIn(page,owner);
+  await page.goto('/app/growth/goals');
+  await page.getByLabel('Goal title',{exact:true}).fill(initial);
+  await page.getByRole('button',{name:'Create private goal'}).click();
+  await page.getByRole('button',{name:initial,exact:true}).click();
+  await page.getByRole('button',{name:'Edit selected goal'}).click();
+  await page.getByLabel('Edit goal title').fill(first);
+  const other=await page.context().newPage();
+  try{
+    await other.goto('/app/growth/goals');
+    await other.getByRole('button',{name:initial,exact:true}).click();
+    await other.getByRole('button',{name:'Edit selected goal'}).click();
+    await other.getByLabel('Edit goal title').fill(later);
+    await other.getByRole('button',{name:'Save goal details'}).click();
+    await expect(other.getByText('Goal details updated privately.',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Save goal details'}).click();
+    const conflict=page.getByRole('region',{name:'Goal edit conflict'});
+    await expect(conflict).toContainText(later);
+    await expect(page.getByLabel('Edit goal title')).toHaveValue(first);
+    await expect(page.getByRole('button',{name:'Save goal details'})).toBeDisabled();
+    await other.reload();
+    await expect(other.getByRole('button',{name:later,exact:true})).toBeVisible();
+    await expect(other.getByRole('button',{name:first,exact:true})).toHaveCount(0);
+    await conflict.getByRole('button',{name:'Use reviewed version as base and keep draft'}).click();
+    await page.getByRole('button',{name:'Save goal details'}).click();
+    await expect(page.getByText('Goal details updated privately.',{exact:true})).toBeVisible();
+  }finally{await other.close();}
+  await page.reload();
+  await expect(page.getByRole('button',{name:first,exact:true})).toBeVisible();
+  await page.goto('/app/growth/activity');
+  const goalSelect=page.getByLabel('Activity goal');
+  const id=await goalSelect.getByRole('option',{name:first,exact:true}).getAttribute('value');
+  if(!id)throw new Error('Disposable goal fixture was not selectable.');
+  // Local fixture only: two records share each exact microsecond, spanning both
+  // 50-record cursor boundaries. Stable UUID suffix orders equal timestamp ties.
+  runLocalFixtureSql("insert into public.private_goal_progress_events(id,goal_id,owner_user_id,operation_id,value,note,created_at) "+
+    "select (left(:'actor_id',24)||lpad(g::text,12,'0'))::uuid,:'item_id'::uuid,:'actor_id'::uuid,gen_random_uuid(),g,"+
+    "'C07 history '||lpad(g::text,3,'0'),'2026-01-01 00:00:00+00'::timestamptz+(g/2)*interval '1 microsecond' "+
+    "from generate_series(1,105) g;",owner.id,id);
+  await goalSelect.selectOption(id);
+  const history=page.getByRole('region',{name:'Private manual progress history'});
+  await expect(history.getByRole('listitem')).toHaveCount(50);
+  await history.getByRole('button',{name:'Load more history'}).click();
+  await expect(history.getByRole('listitem')).toHaveCount(100);
+  await history.getByRole('button',{name:'Load more history'}).click();
+  await expect(history.getByRole('listitem')).toHaveCount(105);
+  const notes=await history.locator('ol.ws-growth-events li p').allTextContents();
+  const expected=Array.from({length:105},(_,i)=>'C07 history '+String(105-i).padStart(3,'0'));
+  expect(notes).toEqual(expected);
+  await expect(history.getByRole('button',{name:'Load more history'})).toHaveCount(0);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,foreign);
+  await page.goto('/app/growth/activity');
+  await expect(goalSelect.getByRole('option',{name:first,exact:true})).toHaveCount(0);
+  await expect(history.getByText('C07 history 105',{exact:true})).toHaveCount(0);
+});
