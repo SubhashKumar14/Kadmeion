@@ -58,7 +58,8 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   const [retry, setRetry] = useState(0);
   // A new route, adapter or retry must never render the old account's settings
   // while the current owner request is still pending.
-  const scope = useMemo(() => ({port, path, retry}), [port, path, retry]);
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const scope = useMemo(() => ({port, path, retry, epoch}), [port, path, retry, epoch]);
   const [loaded, setLoaded] = useState<{
     scope: typeof scope; services: Services | null; error: string; viewKey: string
   } | null>(null);
@@ -69,21 +70,21 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
     if (path === '/app/settings') return;
     let active = true;
     void port.ownerSettings().then(result => {
-      if (!active) return;
+      if (!active || port.reconcileOwnerSessionEpoch()!==epoch) return;
       setLoaded({
         scope, services: result.data ?? null,
         error: result.data ? '' : result.error?.message ?? 'Account settings are unavailable.',
         viewKey: crypto.randomUUID()
       });
     }).catch(() => {
-      if (active) setLoaded({
+      if (active && port.reconcileOwnerSessionEpoch()===epoch) setLoaded({
         scope, services: null,
         error: 'Account settings could not be loaded. Retry when the connection is available.',
         viewKey: crypto.randomUUID()
       });
     });
     return () => {active = false;};
-  }, [scope, port, path]);
+  }, [scope, port, path, epoch]);
 
   const title = settingsLinks.find(([href]) => href === path)?.[1] ?? 'Settings';
   let content: ReactNode = null;
@@ -220,6 +221,14 @@ function notificationDestination(item: PrivateNotification): string {
   if (item.event_type === 'ACCOUNT_EXIT_REQUESTED') return '/app/settings/account/delete';
   if (item.category === 'SECURITY') return '/app/settings/security';
   if (item.category === 'MODERATION') return '/app/settings/cases';
+  // Trigger contract: reviewer/release/sync target_id is the portfolio UUID.
+  // Related areas stay private and perform their own live owner readback.
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.target_id))
+    return '/app/portfolios';
+  const base='/app/portfolios/'+item.target_id;
+  if(item.category==='REVIEWER')return base+'/staging';
+  if(item.category==='PUBLISH')return base+'/releases';
+  if(item.category==='SYNC')return base+'/preview';
   return '/app/portfolios';
 }
 
@@ -608,7 +617,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState<ExportKind|null>(null);
-  const operation=useRef<{kind:ExportKind;id:string}|null>(null);
+  const operation=useRef<string|null>(null);
   const running=useRef(false);
   const [failedKind,setFailedKind]=useState<ExportKind|null>(null);
   const [receipt,setReceipt]=useState<ExportReceipt|null>(null);
@@ -662,9 +671,10 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
 
   async function download(kind: ExportKind) {
     if (running.current || busy || !current() || (kind==='source'&&!selectedPortfolio)) return;
-    // Hold one operation across a lost inventory acknowledgment; after an
-    // acknowledged capture, a new user-triggered attempt gets fresh inventory.
-    running.current=true;setBusy(kind);setMessage(null);setReceipt(null);setFailedKind(null);setInventory(null);
+    // Capture has a durable owner quota. Reuse one acknowledged inventory
+    // across formats and retries; only an explicit refresh requests a new one.
+    // An unacknowledged capture replays its original operation UUID.
+    running.current=true;setBusy(kind);setMessage(null);setReceipt(null);setFailedKind(null);
     try {
       let file:ExportReceipt;
       let bytes:Uint8Array;
@@ -682,8 +692,8 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         file={kind,filename:'kadmeion-portfolio-revision-'+data.revision+'.zip',bytes:bytes.byteLength,
           sha256:await exportDigest(bytes),scope:'Editable saved portfolio source; uploaded media excluded.',revision:data.revision};
       } else {
-        if(operation.current?.kind!==kind)operation.current={kind,id:crypto.randomUUID()};
-        const captured = await services.account.captureInventory(operation.current.id);
+        if(!inventory)operation.current??=crypto.randomUUID();
+        const captured = inventory??await services.account.captureInventory(operation.current!);
         if(!current())return;
         operation.current=null;setInventory(captured);
         if (kind==='metadata') {
@@ -728,8 +738,10 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       if(!current())return;
       setFailedKind(kind);
       const code=typeof error==='object'&&error!==null&&'code' in error?error.code:undefined;
-      if(code==='LIMIT_EXCEEDED'||code==='QUOTA_EXCEEDED')
-        setMessage({error:true,text:'Export limit or inventory quota reached. No file was downloaded. Choose a narrower saved portfolio source or try the metadata / verified JSON option where eligible.'});
+      if(code==='QUOTA_EXCEEDED')
+        setMessage({error:true,text:'The server reports an account inventory request limit. No file was downloaded. Avoid repeated new inventory attempts; an eligible saved portfolio source export does not consume this quota.'});
+      else if(code==='LIMIT_EXCEEDED')
+        setMessage({error:true,text:'The export exceeds a supported size or record limit. No file was downloaded. Choose a narrower saved portfolio source or try metadata / verified JSON where eligible.'});
       else if(code==='AUTH_EXPIRED'||code==='FORBIDDEN')
         setMessage({error:true,text:'The current owner session could not authorize the export. Sign in again before retrying.'});
       else if(code==='INTEGRITY'||code==='UNVERIFIED'||code==='INVALID_ACK')
@@ -761,7 +773,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     </SettingsCard>}
     <div className="ws-settings-grid">
     <SettingsCard title="Editable portfolio ZIP">
-      <p>Download a selected saved revision for editing or recovery. Private source is included; uploaded media, external repositories and unsaved editor buffers are excluded.</p>
+      <p>Download a selected saved revision for editing or recovery. Private source is included; uploaded media, external repositories and unsaved editor buffers are excluded. Archive limit: 2 MiB, up to 101 entries and 256 KiB per entry.</p>
       {portfolioError && <><p role="alert">{portfolioError}</p><button type="button" className="ws-secondary"
         onClick={refreshPortfolios}>Retry portfolio list</button></>}
       {!portfolios && !portfolioError && <p role="status">Loading saved portfolios…</p>}
@@ -783,11 +795,11 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     <SettingsCard title="Private account data">
       <p>Choose an acknowledged application metadata JSON snapshot or bounded private recovery archive. Neither terminates access nor erases your account.</p>
       <h3>Application metadata JSON</h3>
-      <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category; larger accounts may be refused. No uploaded bytes.</p>
+      <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category and a 12 MiB response limit; larger accounts may be refused. No uploaded bytes.</p>
       <button className="ws-primary" type="button" disabled={busy!==null}
         onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
       <h3>Bounded recovery archive</h3>
-      <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes and 10 MiB ZIP capacity. No partial file on verification failure.</p>
+      <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes, 16 MiB recovery JSON and 10 MiB ZIP capacity. No partial file on verification failure.</p>
       <div className="ws-actions">
         <button className="ws-secondary" type="button" disabled={busy!==null}
           onClick={()=>void download('recovery')}>{busy==='recovery'?'Checking records and files…':'Download private recovery ZIP'}</button>
@@ -795,8 +807,12 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
           onClick={()=>void download('recovery-json')}>{busy==='recovery-json'?'Checking recovery JSON…':'Download verified recovery JSON'}</button>
       </div>
       <p>Verified recovery JSON is an alternative for archives that exceed ZIP capacity, not a bypass for asset or integrity limits.</p>
+      <p>The server allows at most 10 recorded account inventory snapshots per owner. Formats and retries reuse this session’s acknowledged inventory until you explicitly refresh it. Remaining quota is not reported by the service.</p>
       {inventory&&<><h3>Acknowledged inventory</h3>
-        <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only, not proof of downloaded files.</p>
+        <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only; an application metadata export reads current records separately. Recovery rechecks storage and prior inventory consistency.</p>
+        <button type="button" className="ws-secondary" disabled={busy!==null} onClick={()=>{
+          if(!current()||running.current)return;setInventory(null);operation.current=null;setFailedKind(null);setReceipt(null);setMessage(null);
+        }}>Use a new inventory for next export</button>
         <dl><dt>Projects</dt><dd>{inventory.inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.inventory.counts.portfolios}</dd>
           <dt>Portfolio revisions</dt><dd>{inventory.inventory.counts.portfolioRevisions}</dd><dt>Registered assets</dt><dd>{inventory.inventory.counts.projectAssetMetadata}</dd>
           <dt>Trash records</dt><dd>{inventory.inventory.counts.trashRecords}</dd></dl>
