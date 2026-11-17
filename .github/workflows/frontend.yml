@@ -1,7 +1,16 @@
 name: Frontend React 19 + Vite 8 verification
 on:
+  # Verify worker PRs against the integration branch without opening PRs to main.
   pull_request:
-    branches: [main]
+    branches: [main, 'feat/b0-backend-foundation']
+    paths:
+      - 'apps/frontend/**'
+      - 'apps/auth-web/**'
+      - 'packages/contracts/**'
+      - 'packages/editor-core/**'
+      - 'packages/storage-adapters/**'
+      - '.github/workflows/frontend.yml'
+      - 'vercel.json'
   push:
     branches: [main, 'feat/b0-backend-foundation']
     paths:
