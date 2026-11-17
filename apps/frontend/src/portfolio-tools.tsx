@@ -553,6 +553,325 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   </div>;
 }
 
+
+/** C10 UI boundary. S3 owns the authoritative planner, the parent write gate
+ * and atomic transaction engine. No fallback applies unvalidated mutations.
+ * These intent shapes match the agreed S03-004 contract; the parent supplies
+ * the actual typed planner and apply once its engine is committed. */
+export type LayoutMappingRequest={
+  sectionId:string;expectedLayout:string;targetLayout:string;
+  mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>;
+};
+export type LayoutToolsIntent=
+  | (LayoutMappingRequest & {kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;
+      confirmStash:boolean;confirmOwnedRelocation:boolean})
+  | {kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
+      expectedRevision:number;confirmOwnedRelocation:boolean};
+type LayoutPlanFlags={requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean};
+export type LayoutToolsProps={
+  head:EditorHead;sectionId:string;blocked:boolean;
+  planLayout:(head:EditorHead,request:LayoutMappingRequest)=>LayoutPlanFlags;
+  applyLayout:(intent:LayoutToolsIntent)=>boolean;
+};
+type MappingDraft={head:EditorHead;sectionId:string;expectedLayout:string;targetLayout:string;
+  choices:Record<string,string>};
+type MappingReview={draft:MappingDraft;request:LayoutMappingRequest;flags:LayoutPlanFlags};
+type RestoreDraft={head:EditorHead;fromSlotKey:string;stashIndex:number;toSlotKey:string};
+type Assignment=PortfolioSnapshot['slots'][string];
+const C10_LAYOUT_PINS=['arc-hero@1','collage-hero@1','project-showcase@1','editorial-bento@1',
+  'stepped-hero@1','skills@1','experience@1','contact@1'] as const;
+const C10_STASH='__stash__';
+const layoutSlotKey=(sectionId:string,name:string)=>sectionId+'-'+name.toLowerCase();
+const usableLayoutKey=(key:string)=>/^[a-z0-9_-]{1,64}$/.test(key)&&
+  !['__proto__','prototype','constructor'].includes(key);
+const layoutLabel=(pin:string)=>{const layout=portfolioLayout(pin);return layout?
+  layout.renderId+' · '+pin.split('@')[0]!.replaceAll('-',' '):'Unavailable layout';};
+const ownAssignment=(snapshot:PortfolioSnapshot,key:string):Assignment|undefined=>
+  Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
+const ownedAssignment=(value:Assignment|undefined)=>value?.state==='S1'||value?.state==='S2';
+function sameWorkingHead(captured:EditorHead,current:EditorHead):boolean{
+  return captured.revision===current.revision&&captured.snapshot===current.snapshot;
+}
+/** Build the exact proposed mapping from explicit choices only. The engine
+ * must still validate pin compatibility, quotas, provenance and collisions. */
+function explicitLayoutMappings(keys:readonly string[],targetKeys:readonly string[],
+  choices:Readonly<Record<string,string>>):LayoutMappingRequest['mappings']|null {
+  const used=new Set<string>();
+  const rows:LayoutMappingRequest['mappings']=[];
+  for(const key of keys){
+    if(!usableLayoutKey(key)||!Object.hasOwn(choices,key))return null;
+    const choice=choices[key];
+    if(choice===C10_STASH){rows.push({fromSlotKey:key,toSlotKey:null});continue;}
+    if(!choice||!targetKeys.includes(choice)||!usableLayoutKey(choice)||used.has(choice))return null;
+    used.add(choice);rows.push({fromSlotKey:key,toSlotKey:choice});
+  }
+  return rows;
+}
+function AssignmentImpact({assignment,snapshot}:{assignment:Assignment|undefined;snapshot:PortfolioSnapshot}){
+  if(!assignment||assignment.state==='EMPTY')return <span>Empty slot</span>;
+  const sourcePath=assignment.sourcePath;
+  const byteCount=sourcePath&&Object.hasOwn(snapshot.files,sourcePath)?
+    new TextEncoder().encode(snapshot.files[sourcePath]!).byteLength:null;
+  return <div>
+    <strong>{assignment.componentId??'Unknown pin'}</strong> · {assignment.state}
+    <p>Content fields: {Object.keys(assignment.content).sort().join(', ')||'None'}</p>
+    {sourcePath&&<p>Owned source: <code>{sourcePath}</code>{byteCount===null?' · bytes unavailable':' · '+byteCount+' bytes'}</p>}
+    {assignment.content.asset_id&&<p>Private media reference retained; no publication or byte verification granted.</p>}
+  </div>;
+}
+
+/** Private editor only. Structural comparison uses real pinned slot names;
+ * this is not a simulated visitor render or a public preview. */
+export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:LayoutToolsProps){
+  const [draft,setDraft]=useState<MappingDraft|null>(null);
+  const [review,setReview]=useState<MappingReview|null>(null);
+  const [confirmStash,setConfirmStash]=useState(false);
+  const [confirmRelocation,setConfirmRelocation]=useState(false);
+  const [restore,setRestore]=useState<RestoreDraft|null>(null);
+  const [restoreReviewed,setRestoreReviewed]=useState(false);
+  const [restoreRelocation,setRestoreRelocation]=useState(false);
+  const [message,setMessage]=useState('');
+  const targetSelect=useRef<HTMLSelectElement>(null);
+  const stashSelect=useRef<HTMLSelectElement>(null);
+  const planButton=useRef<HTMLButtonElement>(null);
+  const restoreButton=useRef<HTMLButtonElement>(null);
+  const reviewTitle=useRef<HTMLHeadingElement>(null);
+  const restoreTitle=useRef<HTMLHeadingElement>(null);
+  const submitting=useRef(false);
+  const sections=canvasSections(head.snapshot);
+  const matchingSections=sections.filter(section=>section.id===sectionId);
+  const section=matchingSections.length===1?matchingSections[0]:undefined;
+  const draftCurrent=!!draft&&!!section&&draft.sectionId===sectionId&&
+    draft.expectedLayout===section.layout&&sameWorkingHead(draft.head,head);
+  const sourceSection=draft?canvasSections(draft.head.snapshot).find(item=>item.id===draft.sectionId):undefined;
+  const sourceSlots=sourceSection?.slots.map(name=>({name,key:layoutSlotKey(sourceSection.id,name)}))??[];
+  const targetSlots=draft?(portfolioLayout(draft.targetLayout)?.slots??[]).
+    map(name=>({name,key:layoutSlotKey(draft.sectionId,name)})):[];
+  const assignedKeys=sourceSlots.filter(item=>{
+    const assignment=draft&&ownAssignment(draft.head.snapshot,item.key);
+    return !!assignment&&assignment.state!=='EMPTY';
+  }).map(item=>item.key);
+  const mappings=draft?explicitLayoutMappings(assignedKeys,targetSlots.map(item=>item.key),draft.choices):null;
+  const reviewCurrent=!!review&&draftCurrent&&review.draft===draft;
+  const emptyTargets=sections.flatMap(item=>item.slots.map(name=>({
+    key:layoutSlotKey(item.id,name),label:item.renderId+' · '+name+' ('+item.id+')'
+  }))).filter((item,index,all)=>usableLayoutKey(item.key)&&
+    all.filter(other=>other.key===item.key).length===1&&
+    ownAssignment(head.snapshot,item.key)?.state==='EMPTY');
+  // Include historical keys that no longer exist in the active layout.
+  const entries=Object.entries(head.snapshot.stashes).filter(([key])=>usableLayoutKey(key)).
+    flatMap(([key,items])=>items.flatMap((assignment,index)=>assignment.state==='EMPTY'?[]:
+      [{key,index,assignment,token:key+':'+index}]));
+  const restoreCurrent=!!restore&&sameWorkingHead(restore.head,head);
+  const restoration=restoreCurrent&&restore?entries.find(item=>item.key===restore.fromSlotKey&&
+    item.index===restore.stashIndex):undefined;
+  const restoreTarget=restoreCurrent&&restore?emptyTargets.find(item=>item.key===restore.toSlotKey):undefined;
+  const restoreMovesOwned=!!restoration&&!!restore&&restore.fromSlotKey!==restore.toSlotKey&&
+    ownedAssignment(restoration.assignment);
+  const restoreLegacy=restoreMovesOwned&&!restoration?.assignment.sourcePath?.endsWith('.tsx');
+
+  useLayoutEffect(()=>{if(review)reviewTitle.current?.focus();},[review]);
+  useLayoutEffect(()=>{if(restoreReviewed)restoreTitle.current?.focus();},[restoreReviewed]);
+
+  function resetReview(focus=false){
+    setReview(null);setConfirmStash(false);setConfirmRelocation(false);
+    if(focus)planButton.current?.focus();
+  }
+  function cancelMapping(){
+    resetReview();setDraft(null);setMessage('Layout change cancelled; no transaction was submitted.');
+    targetSelect.current?.focus();
+  }
+  function beginMapping(targetLayout:string){
+    if(blocked||!section||!portfolioLayout(targetLayout)||section.layout===targetLayout)return;
+    resetReview();setMessage('');
+    setDraft({head,sectionId:section.id,expectedLayout:section.layout,targetLayout,choices:{}});
+  }
+  function chooseDestination(from:string,to:string){
+    if(blocked||!draftCurrent||!draft)return;
+    resetReview();setMessage('');
+    setDraft({...draft,choices:{...draft.choices,[from]:to}});
+  }
+  function reviewMapping(){
+    if(blocked||!draftCurrent||!draft||!mappings||submitting.current)return;
+    resetReview();setMessage('');
+    const request={sectionId:draft.sectionId,expectedLayout:draft.expectedLayout,
+      targetLayout:draft.targetLayout,mappings};
+    try{
+      const flags=planLayout(draft.head,request);
+      if(typeof flags.requiresStashConfirmation!=='boolean'||typeof flags.requiresOwnedRelocationConfirmation!=='boolean'){
+        setMessage('The authoritative layout plan is unavailable. No change was applied.');return;
+      }
+      setReview({draft,request,flags});
+    }catch{
+      setMessage('This mapping was rejected by the layout planner. Check compatible targets, owned source relocation, and stash limits. No change was applied.');
+    }
+  }
+  function commitMapping(){
+    if(blocked||!reviewCurrent||!review||submitting.current||
+      (review.flags.requiresStashConfirmation&&!confirmStash)||
+      (review.flags.requiresOwnedRelocationConfirmation&&!confirmRelocation))return;
+    submitting.current=true;
+    try{
+      const ok=applyLayout({kind:'CHANGE_SECTION_LAYOUT',...review.request,
+        expectedRevision:review.draft.head.revision,confirmStash,confirmOwnedRelocation:confirmRelocation});
+      if(ok){setDraft(null);resetReview();setMessage('Layout transaction applied to the working draft. Save to persist, or use Undo.');targetSelect.current?.focus();}
+      else{resetReview();setMessage('Layout transaction was not applied. Review the current draft again.');planButton.current?.focus();}
+    }catch{resetReview();setMessage('Layout transaction could not be confirmed. Review the current draft before retrying.');}
+    finally{submitting.current=false;}
+  }
+  function cancelRestore(){
+    setRestore(null);setRestoreReviewed(false);setRestoreRelocation(false);
+    setMessage('Restore cancelled; no transaction was submitted.');stashSelect.current?.focus();
+  }
+  function selectStash(token:string){
+    if(blocked)return;
+    const item=entries.find(entry=>entry.token===token);
+    setRestoreReviewed(false);setRestoreRelocation(false);setMessage('');
+    setRestore(item?{head,fromSlotKey:item.key,stashIndex:item.index,toSlotKey:''}:null);
+  }
+  function reviewRestore(){
+    if(blocked||!restoreCurrent||!restoration||!restoreTarget||restoreLegacy)return;
+    setRestoreRelocation(false);setRestoreReviewed(true);setMessage('');
+  }
+  function commitRestore(){
+    if(blocked||submitting.current||!restoreCurrent||!restoreReviewed||!restore||
+      !restoration||!restoreTarget||restoreLegacy||(restoreMovesOwned&&!restoreRelocation))return;
+    submitting.current=true;
+    try{
+      const ok=applyLayout({kind:'RESTORE_LAYOUT_STASH',fromSlotKey:restore.fromSlotKey,
+        stashIndex:restore.stashIndex,toSlotKey:restore.toSlotKey,expectedRevision:restore.head.revision,
+        confirmOwnedRelocation:restoreRelocation});
+      if(ok){setRestore(null);setMessage('Stashed assignment restored to the working draft. Save to persist, or use Undo.');stashSelect.current?.focus();}
+      else setMessage('Restore was rejected. Check target compatibility or source restrictions; no successful restore is claimed.');
+    }catch{setMessage('Restore could not be confirmed. Review the current draft before retrying.');}
+    finally{setRestoreReviewed(false);setRestoreRelocation(false);submitting.current=false;}
+  }
+
+  return <div className="ws-editor-tool">
+    <h2>Layout mapping and Unplaced</h2>
+    {blocked&&<p role="status">Resolve pending edits, saves or recovery before changing the layout or restoring a stash.</p>}
+    {message&&<p role="status">{message}</p>}
+    <section aria-label="Change section layout">
+      <h3>Change section layout</h3>
+      {!section?<p>Choose an actual section in the layers tree to change its layout.</p>:<>
+        <p>Current: {layoutLabel(section.layout)}. Choose a different pinned layout, then map each filled slot.</p>
+        <label>Target layout<select ref={targetSelect} disabled={blocked}
+          value={draftCurrent&&draft?draft.targetLayout:''} onChange={event=>{
+            if(event.target.value)beginMapping(event.target.value);else cancelMapping();
+          }}>
+          <option value="">Choose a layout</option>
+          {C10_LAYOUT_PINS.filter(pin=>pin!==section.layout&&!!portfolioLayout(pin)).map(pin=>
+            <option key={pin} value={pin}>{layoutLabel(pin)}</option>)}
+        </select></label>
+      </>}
+      {draft&&!draftCurrent&&<><p role="alert">The section or working revision changed. This mapping is stale; cancel and start a new review.</p>
+        <button type="button" className="ws-secondary" onClick={cancelMapping}>Cancel layout mapping</button></>}
+      {draft&&draftCurrent&&<div onKeyDown={event=>{
+        if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(review)resetReview(true);else cancelMapping();}
+      }}>
+        <div className="ws-layout-comparison" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%, 220px),1fr))',gap:'1rem'}}>
+          <section aria-label="Current layout"><h4>Current · {layoutLabel(draft.expectedLayout)}</h4>
+            <ol>{sourceSlots.map(item=><li key={item.key}>
+              <strong>{item.name}</strong>
+              <AssignmentImpact assignment={ownAssignment(draft.head.snapshot,item.key)} snapshot={draft.head.snapshot}/>
+            </li>)}</ol>
+          </section>
+          <section aria-label="Proposed layout"><h4>Proposed · {layoutLabel(draft.targetLayout)}</h4>
+            <ol>{targetSlots.map(item=>{
+              const candidates=assignedKeys.filter(key=>draft.choices[key]===item.key);
+              return <li key={item.key}><strong>{item.name}</strong>
+                {candidates.length===1?<AssignmentImpact assignment={ownAssignment(draft.head.snapshot,candidates[0]!)} snapshot={draft.head.snapshot}/>:
+                  <p>{candidates.length?'Mapping conflict':'No assignment mapped; will be empty'}</p>}
+              </li>;
+            })}</ol>
+          </section>
+        </div>
+        <p>Slot structure comparison only. Responsive appearance and static export must be checked after the layout transaction; no source is executed here.</p>
+        <fieldset disabled={blocked}>
+          <legend>Map outgoing assignments</legend>
+          {assignedKeys.length===0&&<p>No filled slots to map. The new layout starts empty.</p>}
+          {assignedKeys.map(key=>{
+            const assignment=ownAssignment(draft.head.snapshot,key);
+            const choice=draft.choices[key]??'';
+            return <div key={key}>
+              <label>Destination for {key}<select value={choice} onChange={event=>chooseDestination(key,event.target.value)}>
+                <option value="">Choose a destination</option>
+                <option value={C10_STASH}>Unplaced — stash complete assignment</option>
+                {targetSlots.map(item=><option key={item.key} value={item.key}
+                  disabled={assignedKeys.some(other=>other!==key&&draft.choices[other]===item.key)}>{item.name} ({item.key})</option>)}
+              </select></label>
+              {choice&&choice!==C10_STASH&&choice!==key&&ownedAssignment(assignment)&&
+                <p>Cross-slot owned source: requires explicit relocation. Legacy CSS and unsupported source cannot be moved.</p>}
+            </div>;
+          })}
+        </fieldset>
+        <button ref={planButton} type="button" className="ws-secondary" disabled={blocked||!mappings}
+          onClick={reviewMapping}>Review layout impact</button>
+        <button type="button" className="ws-secondary" onClick={cancelMapping}>Cancel layout mapping</button>
+        {review&&reviewCurrent&&<section aria-label="Layout change confirmation">
+          <h4 ref={reviewTitle} tabIndex={-1}>Confirm layout transformation</h4>
+          <p>Validated working revision {review.draft.head.revision}. {review.request.mappings.filter(row=>row.toSlotKey===null).length} assignments marked Unplaced.</p>
+          {review.request.mappings.filter(row=>row.toSlotKey===null).map(row=><p key={row.fromSlotKey}>
+            Stash full assignment: {row.fromSlotKey}</p>)}
+          {review.flags.requiresStashConfirmation&&<label><input type="checkbox" checked={confirmStash}
+            disabled={blocked} onChange={event=>setConfirmStash(event.target.checked)}/> Confirm preservation of outgoing assignments in Unplaced</label>}
+          {review.flags.requiresOwnedRelocationConfirmation&&<>
+            <p>The engine copies compatible owned TSX to a new operation-specific slot path and retains the original source and provenance. Relative imports may no longer resolve; no imports are rewritten.</p>
+            <label><input type="checkbox" checked={confirmRelocation} disabled={blocked}
+              onChange={event=>setConfirmRelocation(event.target.checked)}/> Confirm explicit owned-source relocation</label>
+          </>}
+          <button type="button" className="ws-primary" disabled={blocked||
+            (review.flags.requiresStashConfirmation&&!confirmStash)||
+            (review.flags.requiresOwnedRelocationConfirmation&&!confirmRelocation)} onClick={commitMapping}>Confirm layout change</button>
+          <button type="button" className="ws-secondary" onClick={()=>resetReview(true)}>Back to mapping</button>
+        </section>}
+      </div>}
+    </section>
+    <section aria-label="Global Unplaced assignments" onKeyDown={event=>{
+      if(event.key==='Escape'&&restore){event.preventDefault();event.stopPropagation();cancelRestore();}
+    }}>
+      <h3>Unplaced assignments</h3>
+      <p role="status">{entries.length} stashed assignments across current and previous layouts.</p>
+      {!entries.length?<p>No stashed assignments.</p>:<>
+        <label>Stashed assignment<select ref={stashSelect} disabled={blocked} value={restoreCurrent&&restore?
+          restore.fromSlotKey+':'+restore.stashIndex:''} onChange={event=>selectStash(event.target.value)}>
+          <option value="">Choose a stashed assignment</option>
+          {entries.map(item=><option key={item.token} value={item.token}>
+            {item.key} · #{item.index+1} · {item.assignment.componentId??'Unknown pin'} · {item.assignment.state}
+          </option>)}
+        </select></label>
+      </>}
+      {restore&&!restoreCurrent&&<><p role="alert">The stash changed with the working revision. Cancel and select the saved assignment again.</p>
+        <button type="button" className="ws-secondary" onClick={cancelRestore}>Cancel restore</button></>}
+      {restore&&restoration&&restoreCurrent&&<>
+        <AssignmentImpact assignment={restoration.assignment} snapshot={head.snapshot}/>
+        <label>Restore to empty slot<select disabled={blocked} value={restore.toSlotKey} onChange={event=>{
+          setRestore({...restore,toSlotKey:event.target.value});setRestoreReviewed(false);setRestoreRelocation(false);setMessage('');
+        }}>
+          <option value="">Choose an empty slot</option>
+          {emptyTargets.map(item=><option key={item.key} value={item.key}>{item.label}</option>)}
+        </select></label>
+        {!emptyTargets.length&&<p>No empty declared slots. Clear or add a compatible slot first.</p>}
+        <p>Only declared empty slots are offered. The transaction engine checks actual component compatibility and source restrictions before restoring.</p>
+        {restoreLegacy&&<p role="alert">Cross-slot relocation of this legacy or unsupported source is not available. Restore to its original compatible slot instead.</p>}
+        <button ref={restoreButton} type="button" className="ws-secondary" disabled={blocked||!restoreTarget||restoreLegacy} onClick={reviewRestore}>Review restore impact</button>
+        <button type="button" className="ws-secondary" onClick={cancelRestore}>Cancel restore</button>
+        {restoreReviewed&&restoreTarget&&<section aria-label="Stash restore confirmation">
+          <h4 ref={restoreTitle} tabIndex={-1}>Confirm stash restore</h4>
+          <p>Restore {restore.fromSlotKey} assignment #{restore.stashIndex+1} to {restoreTarget.label}. Other stash entries remain intact; no source runs.</p>
+          {restoreMovesOwned&&<><p>Owned TSX relocation retains original bytes and provenance; relative imports may stop resolving.</p>
+            <label><input type="checkbox" disabled={blocked} checked={restoreRelocation}
+              onChange={event=>setRestoreRelocation(event.target.checked)}/> Confirm explicit owned-source relocation</label></>}
+          <button type="button" className="ws-primary" disabled={blocked||(restoreMovesOwned&&!restoreRelocation)}
+            onClick={commitRestore}>Confirm restore</button>
+          <button type="button" className="ws-secondary" onClick={()=>{setRestoreReviewed(false);setRestoreRelocation(false);restoreButton.current?.focus();}}>Back to restore selection</button>
+        </section>}
+      </>}
+    </section>
+  </div>;
+}
+
+
 export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisabled,onPlace}:{
   port:SupabaseBrowserAuthPort;back:()=>void;snapshot:PortfolioSnapshot;
   targets:readonly {key:string;label:string;state:string}[];selectedSlot:string;placementDisabled:boolean;
