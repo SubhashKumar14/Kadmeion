@@ -36,7 +36,7 @@ type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
 
 /** Auth-state invalidation broadcasts never carry access tokens or identity claims. */
-type OwnerSessionWriteNotice = (storage: StorageLike, source: SupabaseBrowserAuthPort) => void;
+type OwnerSessionWriteNotice = (storage: StorageLike, source: SupabaseBrowserAuthPort, notice:object) => void;
 const ownerSessionWriteNotices = new Set<OwnerSessionWriteNotice>();
 function sameSession(a:StoredSession|null,b:StoredSession|null):boolean {
   return a===b || Boolean(a && b && a.user.id===b.user.id &&
@@ -114,6 +114,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private ownerSessionEpoch = 0;
   private accountExitContinuation:PendingAccountExitContinuation|null = null;
   private readonly ownerSessionEpochListeners = new Set<(epoch:number)=>void>();
+  private readonly observedOwnerSessionWrites=new WeakSet<object>();
   // Last-started explicit Auth action wins; old network responses cannot
   // replace a newer login or reinstate a session after explicit logout.
   private authAttempt = 0;
@@ -178,6 +179,23 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     return this.ownerSessionEpoch;
   }
 
+  /** A real change notice must invalidate even when the latest persisted
+   * tuple has already returned to A (e.g. queued cross-tab A→B→A events).
+   * Reset object identity too, so pending operations on old A cannot pass
+   * isCurrentSession merely because the same credentials were restored. */
+  private observeOwnerSessionWrite(notice:object):void {
+    if(this.observedOwnerSessionWrites.has(notice))return;
+    this.observedOwnerSessionWrites.add(notice);
+    const epoch=this.ownerSessionEpoch;
+    this.reconcileOwnerSessionEpoch();
+    if(this.ownerSessionEpoch===epoch){
+      this.session=this.readSession();
+      ++this.authAttempt;
+      this.refreshPromise=null;
+      this.invalidateOwnerSessionEpoch();
+    }
+  }
+
   /**
    * Subscribe BEFORE the shell's initial getUser call. Every emission makes
    * the existing private subtree untrusted until fresh /auth/v1/user succeeds.
@@ -185,11 +203,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    */
   subscribeOwnerSessionEpoch(listener:(epoch:number)=>void):()=>void {
     this.ownerSessionEpochListeners.add(listener);
-    const sameTab:OwnerSessionWriteNotice=(storage,source)=>{
-      if(source!==this && storage===this.storage)this.reconcileOwnerSessionEpoch();
+    const sameTab:OwnerSessionWriteNotice=(storage,source,notice)=>{
+      if(source!==this && storage===this.storage)this.observeOwnerSessionWrite(notice);
     };
     const storageChanged=(event:StorageEvent)=>{
-      if(event.key===STORAGE_KEY||event.key===null)this.reconcileOwnerSessionEpoch();
+      if(event.storageArea && event.storageArea!==this.storage)return;
+      if(event.key===STORAGE_KEY||event.key===null)this.observeOwnerSessionWrite(event);
     };
     const resumed=()=>{this.reconcileOwnerSessionEpoch();};
     const visible=()=>{
@@ -240,8 +259,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }
     if (!sameSession(previous,value)) {
       this.invalidateOwnerSessionEpoch(continuation);
+      const notice={};
       for (const notify of ownerSessionWriteNotices) {
-        try { notify(this.storage,this); } catch { /* isolated subscriber */ }
+        try { notify(this.storage,this,notice); } catch { /* isolated subscriber */ }
       }
     }
   }
@@ -504,8 +524,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         // initial session, creation time and expiry; repeated completion is
         // idempotent only for the very same verified session.
         const verification=await service.completeReauth(pending.challengeId);
-        if(!stillCurrent() || Date.parse(verification.expiresAt)<=Date.now())
+        if(!stillCurrent())
           throw new Error('Identity verification expired or the owner session changed.');
+        if(Date.parse(verification.expiresAt)<=Date.now()){
+          this.discardOwnerAccountExitReauth(expectedEpoch);
+          throw new Error('Identity verification expired or the owner session changed.');
+        }
         return {requestId:pending.requestId,verification};
       }catch(error){
         // A lost/failed RPC response can be retried with exactly this pointer.
@@ -1263,17 +1287,27 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** A delegated service is scoped to its creating verified owner epoch.
+   * On refresh or any observed transition the shell creates a new service.
+   * A stale service must never acquire a bearer merely because A returned. */
+  private ownerEpochToken(userId:string,epoch:number):()=>Promise<string|null> {
+    return async()=>{
+      try{
+        if(this.reconcileOwnerSessionEpoch()!==epoch)return null;
+        const current=await this.ownerSession();
+        return this.reconcileOwnerSessionEpoch()===epoch && current.userId===userId &&
+          this.isCurrentSession(current.session) ? current.session.access_token : null;
+      }catch{return null;}
+    };
+  }
+
   /** Owner reads rely on RLS. Operator RPCs independently check the role. */
   async privateModeration() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
+      const epoch=this.ownerSessionEpoch;
       const {SupabasePrivateModerationService} = await import('../../../packages/contracts/src/private-moderation-service.ts');
-      const token = async () => {
-        try {
-          const current = await this.ownerSession();
-          return current.userId === userId ? current.session.access_token : null;
-        } catch { return null; }
-      };
+      const token=this.ownerEpochToken(userId,epoch);
       return new SupabasePrivateModerationService(this.origin, this.publishableKey, token, this.fetcher);
     });
   }
@@ -1282,12 +1316,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   async ownerGrowth() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
-      const token = async () => {
-        try {
-          const current = await this.ownerSession();
-          return current.userId === userId ? current.session.access_token : null;
-        } catch { return null; }
-      };
+      const token=this.ownerEpochToken(userId,this.ownerSessionEpoch);
       const [goalModule,linkModule] = await Promise.all([
         import('../../../packages/contracts/src/private-goals-service.ts'),
         import('../../../packages/contracts/src/private-platform-links-service.ts')
@@ -1302,12 +1331,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   async ownerSettings() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
-      const token = async () => {
-        try {
-          const current = await this.ownerSession();
-          return current.userId === userId ? current.session.access_token : null;
-        } catch { return null; }
-      };
+      const token=this.ownerEpochToken(userId,this.ownerSessionEpoch);
       const [identity, notifications, trash, account, data] = await Promise.all([
         import('../../../packages/contracts/src/private-identity-service.ts'),
         import('../../../packages/contracts/src/private-notifications-service.ts'),
