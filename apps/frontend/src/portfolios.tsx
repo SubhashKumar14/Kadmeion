@@ -429,6 +429,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [checkpointState,setCheckpointState]=useState<'idle'|'pending'|'saved'|'failed'>('idle');
   const [checkpointRetry,setCheckpointRetry]=useState(0);
   const checkpointWriter=useRef<{id:string;sequence:number;signature:string}|null>(null);
+  const frozenCheckpoint=useRef<{id:string;signature:string}|null>(null);
   const checkpointFlight=useRef(false);
   const checkpointEnabled=useRef(false);
   const saveFlight=useRef(false);
@@ -684,7 +685,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!view||!scopeCurrent(view))return;
     const payload=recoveryPayload(view);
     const signature=JSON.stringify(payload);
-    if(checkpointWriter.current?.signature===signature){setCheckpointState('saved');return;}
+    if(checkpointWriter.current?.signature===signature||frozenCheckpoint.current?.signature===signature){setCheckpointState('saved');return;}
     setCheckpointState('pending');
     let cancelled=false;
     const timer=window.setTimeout(()=>{
@@ -732,12 +733,20 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     try{
       const payload=recoveryPayload(view);
       const signature=JSON.stringify(payload);
-      let attempt=recoveryAttempt.current;
-      if(!attempt||attempt.signature!==signature){
-        attempt={signature,copyId:crypto.randomUUID()};recoveryAttempt.current=attempt;
-      }
       const store=new IndexedDbEditorDraftStore();
-      await store.saveRecoveryCopy(view.owner!.id,view.id,attempt.copyId,payload);
+      const writer=checkpointWriter.current;
+      let attempt=recoveryAttempt.current;
+      if(writer&&writer.sequence>0&&writer.signature===signature&&!checkpointFlight.current){
+        // Reuse an exact local checkpoint instead of consuming another quota slot.
+        await store.freezeRecoveryCheckpoint(view.owner!.id,view.id,writer.id,writer.sequence,payload);
+        attempt={signature,copyId:writer.id};recoveryAttempt.current=attempt;
+        frozenCheckpoint.current={signature,id:writer.id};checkpointWriter.current=null;
+      }else{
+        if(!attempt||attempt.signature!==signature){
+          attempt={signature,copyId:crypto.randomUUID()};recoveryAttempt.current=attempt;
+        }
+        await store.saveRecoveryCopy(view.owner!.id,view.id,attempt.copyId,payload);
+      }
       acknowledged=true;
       if(!scopeCurrent(view))return;
       setRecoveryNotice('Recovery copy saved on this browser only. Cloud draft unchanged.');
@@ -851,6 +860,20 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       return false;
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
+  function exportWorkingRecovery(){
+    // This exports only bytes currently visible to an already verified,
+    // mounted owner. It never loads local copies or bypasses the gate.
+    const view=captureRecovery();
+    if(!view||!view.dirty||recoveryLock.current)return;
+    try{
+      const url=URL.createObjectURL(new Blob([JSON.stringify(recoveryPayload(view),null,2)],{type:'application/json'}));
+      const link=document.createElement('a');
+      link.href=url;link.download='kadmeion-working-recovery-'+view.id+'.json';
+      try{if(!scopeCurrent(view))return;document.body.append(link);link.click();}
+      finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+      setRecoveryNotice('Working recovery export requested. No browser or cloud save is implied. Keep this private file safe.');
+    }catch{if(scopeCurrent(view))setRecoveryNotice('Working recovery export could not be prepared. Your current edits remain.');}
+  }
   async function reloadSavedDraft(){
     // Never erase buffers or the current head until the read has succeeded.
     const view=latestRecovery.current;
@@ -891,6 +914,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       await store.removeRecoveryCopy(view.owner!.id,view.id,copyId,selected.checkpointSequence);
       if(!scopeCurrent(view))return;
       recoveryAttempt.current=null;setRecoveryComparison(null);
+      if(frozenCheckpoint.current?.id===copyId){frozenCheckpoint.current=null;setCheckpointRetry(n=>n+1);}
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
       await refreshRecovery(view,store);
     }catch{if(scopeCurrent(view))setRecoveryNotice('Removal or catalogue refresh not confirmed. Reopen the editor to check.');}
@@ -958,6 +982,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
           onClick={()=>void preserveRecovery(true)}>Keep Both and load latest cloud draft</button>
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={exportWorkingRecovery}>Export current working recovery</button>
       </div>
       {recoveryBusy&&<p>Working with browser recovery storage…</p>}
       {recoveryNotice&&<p role="status">{recoveryNotice}</p>}

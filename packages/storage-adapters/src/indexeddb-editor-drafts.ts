@@ -307,6 +307,31 @@ export class IndexedDbEditorDraftStore {
     });
   }
 
+  /** Promote an exact acknowledged working checkpoint into an immutable
+   * recovery copy without consuming another slot in the bounded catalogue. */
+  async freezeRecoveryCheckpoint(ownerId:string,portfolioId:string,copyId:string,
+    expectedSequence:number,payload:EditorRecoveryPayload):Promise<EditorRecoverySummary>{
+    assertRecoveryId(ownerId);assertRecoveryId(portfolioId);assertRecoveryId(copyId);
+    if(!Number.isSafeInteger(expectedSequence)||expectedSequence<1)throw recoveryFailure('Invalid checkpoint sequence.');
+    validateRecoveryPayload(payload);
+    const expected=canonicalRecoveryPayload(payload);
+    return this.recoveryTransaction<EditorRecoverySummary>('readwrite',(store,done,fail)=>{
+      const read=store.get([ownerId,portfolioId,copyId]);
+      read.onsuccess=()=>{
+        try{
+          if(read.result===undefined)throw new ContractError('REVISION_CONFLICT','Browser checkpoint no longer exists.');
+          const previous=validateStoredRecovery(read.result,ownerId,portfolioId,copyId);
+          if(canonicalRecoveryPayload(previous.payload)!==expected||
+            (previous.checkpointSequence!==undefined&&previous.checkpointSequence!==expectedSequence))
+            throw new ContractError('REVISION_CONFLICT','Browser checkpoint changed. Preserve the current working bytes separately.');
+          if(previous.checkpointSequence===undefined){done(recoverySummary(previous));return;}
+          const {checkpointSequence:_sequence,...immutable}=previous;
+          const write=store.put(immutable);write.onsuccess=()=>done(recoverySummary(immutable));
+        }catch(error){fail(error);}
+      };
+    });
+  }
+
   async listRecoveryCopies(ownerId:string,portfolioId:string):Promise<EditorRecoverySummary[]> {
     assertRecoveryId(ownerId);assertRecoveryId(portfolioId);
     return this.recoveryTransaction<EditorRecoverySummary[]>('readonly',(store,done,fail)=>{
