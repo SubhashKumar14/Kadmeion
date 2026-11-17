@@ -44,6 +44,29 @@ function sameSession(a:StoredSession|null,b:StoredSession|null):boolean {
 }
 export type ProfileDraft = { displayName: string; headline: string; bio: string; skills: string[] };
 export type OwnerProfile = ProfileDraft & { handle: string | null };
+export type OwnerProfileLink = Readonly<{label:string;url:string}>;
+export type OwnerPrivateProfileLinks = Readonly<{links:OwnerProfileLink[];publicDeliveryAllowed:false}>;
+export function normalizeOwnerProfileLinks(raw:unknown):OwnerProfileLink[] {
+  if(!Array.isArray(raw)||raw.length>12)throw new Error('Choose at most 12 private profile links.');
+  const seen=new Set<string>();
+  const result:OwnerProfileLink[]=[];
+  for(const item of raw){
+    if(!item||typeof item!=='object'||Array.isArray(item)||
+      Object.keys(item).sort().join(',')!=='label,url'||
+      typeof item.label!=='string'||typeof item.url!=='string'||
+      !item.label.trim()||item.label.trim().length>80||/[\u0000-\u001f\u007f]/.test(item.label)||
+      item.url.length>2048||/\s/.test(item.url)||/[\u0000-\u001f\u007f]/.test(item.url))
+      throw new Error('Use a descriptive label and a valid HTTPS profile link.');
+    let url:URL;
+    try{url=new URL(item.url);}catch{throw new Error('Profile links must use valid HTTPS URLs.');}
+    if(url.protocol!=='https:'||url.username||url.password||url.port||
+      !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(url.hostname)||
+      url.href.length>2048||seen.has(url.href))
+      throw new Error('Use unique HTTPS links without credentials or custom ports.');
+    seen.add(url.href);result.push({label:item.label.trim(),url:url.href});
+  }
+  return result;
+}
 
 export type OwnerPortfolio = {id: string; title: string; slug: string; templateId: string; revision: number};
 
@@ -790,11 +813,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         cache: 'no-store', credentials: 'omit', redirect: 'error'
       });
     } catch { throw new Error('Private workspace service is unavailable.'); }
-    if (!response.ok && ['rpc/update_private_project', 'rpc/owner_save_profile_draft', 'rpc/update_private_project_case_study', 'rpc/set_private_project_thumbnail'].includes(path)) {
+    if (!response.ok && ['rpc/update_private_project', 'rpc/owner_save_profile_draft', 'rpc/owner_save_private_profile_links', 'rpc/update_private_project_case_study', 'rpc/set_private_project_thumbnail'].includes(path)) {
       const payload: unknown = await response.json().catch(() => null);
       if (payload && typeof payload === 'object') {
         if ('code' in payload && payload.code === '40001')
-          throw new Error(path === 'rpc/owner_save_profile_draft'
+          throw new Error((path === 'rpc/owner_save_profile_draft' || path === 'rpc/owner_save_private_profile_links')
             ? 'Your profile changed in another session. Load the latest draft before saving.'
             : 'This project changed while you were editing. Load the latest revision before saving again.');
         if ('message' in payload && payload.message === 'PROFILE_WITHDRAWAL_CONFIRMATION_REQUIRED')
@@ -850,6 +873,53 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       });
       if (!this.isCurrentSession(session)) throw new Error('Owner session changed during profile save.');
       return this.parseOwnerProfile(result, userId);
+    });
+  }
+
+  private parsePrivateProfileLinks(raw:unknown,userId:string):OwnerPrivateProfileLinks{
+    const row=raw as Json|null;
+    if(!row||Array.isArray(row)||row.user_id!==userId)
+      throw new Error('Private profile links could not be verified.');
+    const links=normalizeOwnerProfileLinks(row.private_links);
+    if(!Array.isArray(row.private_links)||row.private_links.some((link,index)=>
+      link?.label!==links[index]?.label||link?.url!==links[index]?.url))
+      throw new Error('Private profile links were not in canonical form.');
+    return {links,publicDeliveryAllowed:false};
+  }
+
+  private async profileLinksSession(expectedEpoch:number){
+    if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      throw new Error('Owner session changed before profile link access.');
+    const checked=await this.ownerSession();
+    this.assertOwnerImageEpoch(checked.session,expectedEpoch);
+    return checked;
+  }
+
+  /** Owner-private authored HTTPS links; distinct from provider integrations. */
+  async readOwnerProfileLinks(expectedEpoch:number):Promise<AuthOutcome<OwnerPrivateProfileLinks>>{
+    return this.outcome(async()=>{
+      const {session,userId}=await this.profileLinksSession(expectedEpoch);
+      const query=new URLSearchParams({select:'user_id,private_links',user_id:'eq.'+userId,limit:'1'});
+      const rows=await this.ownerRest('profiles?'+query,session.access_token);
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      if(!Array.isArray(rows)||rows.length!==1)throw new Error('Private profile links are unavailable.');
+      return this.parsePrivateProfileLinks(rows[0],userId);
+    });
+  }
+
+  async saveOwnerProfileLinks(expected:readonly OwnerProfileLink[],draft:readonly OwnerProfileLink[],expectedEpoch:number):
+    Promise<AuthOutcome<OwnerPrivateProfileLinks>>{
+    return this.outcome(async()=>{
+      const input=normalizeOwnerProfileLinks(draft),base=normalizeOwnerProfileLinks(expected);
+      const {session,userId}=await this.profileLinksSession(expectedEpoch);
+      const receipt=await this.ownerRest('rpc/owner_save_private_profile_links',session.access_token,'POST',{
+        p_expected:base,p_links:input
+      });
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      const result=this.parsePrivateProfileLinks(receipt,userId);
+      if(JSON.stringify(result.links)!==JSON.stringify(input))
+        throw new Error('The requested private profile links were not confirmed.');
+      return result;
     });
   }
 
