@@ -796,3 +796,45 @@ test('WF-025 private export rejects tampered, foreign and duplicated My Componen
       {code:'INTEGRITY'});
   }
 });
+
+test('C08 typed metadata export failures retain exact snapshot and never recapture inventory',async()=>{
+  for(const [status,payload,code] of [
+    [429,{message:'private provider diagnostic'},'RATE_LIMITED'],
+    [413,{message:'private provider diagnostic'},'LIMIT_EXCEEDED'],
+    [500,{code:'54000',message:'ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED'},'LIMIT_EXCEEDED'],
+    [500,{code:'54000',message:'other database limit'},'PROVIDER_UNAVAILABLE'],
+    [500,{code:'XX000',message:'private provider diagnostic'},'PROVIDER_UNAVAILABLE']
+  ] as const){
+    const paths:string[]=[];
+    const service=new SupabasePrivateAccountDataExporter(origin,'publishable',async()=> 'owner-jwt',async(url,init)=>{
+      const path=new URL(String(url)).pathname;paths.push(path);
+      if(path==='/auth/v1/user')return json({id:owner,email:null});
+      assert.equal(path,'/rest/v1/rpc/owner_export_account_metadata');
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_snapshot_id:snapshot});
+      return json(payload,status);
+    });
+    await assert.rejects(service.exportApplicationMetadata(snapshot),(error:unknown)=>{
+      assert.equal((error as {code?:string}).code,code);
+      assert.doesNotMatch(String(error),/private provider diagnostic|other database limit|ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED/);
+      return true;
+    });
+    assert.deepEqual(paths,['/auth/v1/user','/rest/v1/rpc/owner_export_account_metadata']);
+  }
+});
+test('C08 audit quota and reconciled inventory limit stop byte export on the same snapshot',async()=>{
+  const paths:string[]=[];
+  const service=new SupabasePrivateAccountDataExporter(origin,'publishable',async()=> 'owner-jwt',async(url,init)=>{
+    const path=new URL(String(url)).pathname;paths.push(path);
+    if(path==='/auth/v1/user')return json({id:owner,email:null});
+    assert.deepEqual(JSON.parse(String(init?.body)),{p_snapshot_id:snapshot});
+    if(path.endsWith('/reconcile_private_account_exit_storage'))return json(reconciliation);
+    assert.ok(path.endsWith('/read_private_account_audit_export'));
+    return json({code:'54000',message:'ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED'},500);
+  });
+  await assert.rejects(service.export(snapshot),{code:'LIMIT_EXCEEDED'});
+  assert.deepEqual(paths,['/auth/v1/user','/rest/v1/rpc/reconcile_private_account_exit_storage',
+    '/rest/v1/rpc/read_private_account_audit_export']);
+  const blocked=fixture({reconcile:{...reconciliation,status:'LIMIT_EXCEEDED',limitExceeded:true}});
+  await assert.rejects(blocked.service.export(snapshot),{code:'LIMIT_EXCEEDED'});
+  assert.ok(!blocked.paths.some(p=>p.includes('/storage/v1/')||p.includes('create_private_account_exit_inventory')));
+});

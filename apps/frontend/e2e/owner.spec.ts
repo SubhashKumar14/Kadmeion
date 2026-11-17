@@ -2035,14 +2035,21 @@ test('B16 WF-045 actual notification inbox retry, acknowledgement before navigat
   await page.getByRole('textbox',{name:'Type DELETE MY ACCOUNT to record the request'}).fill('DELETE MY ACCOUNT');
   await page.getByRole('button',{name:'Record deletion request'}).click();
   await expect(page.getByText('Deletion request recorded. No data has been erased.',{exact:true})).toBeVisible();
-  await page.route('**/rest/v1/private_notifications?*',route=>route.fulfill({
-    status:503,json:{message:'Disposable inbox outage'}
-  }),{times:1});
+  // StrictMode can issue an abandoned first read and a second live read.
+  // Fail every actual inbox GET until the explicit retry; never fail prefs.
+  let inboxOutage=true,failedInboxReads=0;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/private_notifications',async route=>{
+    if(inboxOutage&&route.request().method()==='GET'){
+      failedInboxReads++;await route.fulfill({status:503,json:{message:'Disposable inbox outage'}});
+    }else await route.continue();
+  });
   await page.goto('/app/notifications');
   const inbox=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Inbox',exact:true})});
   await expect(inbox.getByRole('alert')).toBeVisible();
   await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
   await expect(inbox.getByText('You’re caught up.')).toHaveCount(0);
+  expect(failedInboxReads>0).toBe(true);
+  inboxOutage=false;
   await inbox.getByRole('button',{name:'Retry notifications'}).click();
   const notice=inbox.getByRole('listitem').filter({hasText:'account exit requested'});
   await expect(notice).toHaveCount(1);

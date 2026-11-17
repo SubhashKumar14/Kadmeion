@@ -158,6 +158,11 @@ function WorkspaceLoading() {
       <p className="system-status-kicker">PERSONAL WORKSPACE</p>
       <h1 id="workspace-load-title">Loading workspace…</h1>
       <p role="status" className="system-status-description">Loading the application before owner verification.</p>
+      <div className="glyph-skeleton" aria-hidden="true">
+        <span className="glyph-skeleton-line is-title"/>
+        <span className="glyph-skeleton-line"/>
+        <span className="glyph-skeleton-line is-medium"/>
+      </div>
     </section>
   </main>;
 }

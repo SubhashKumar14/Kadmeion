@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -12,8 +13,8 @@ function validProjection(row, handle, slug) {
     ? ['handle','slug','title','summary','description','repositoryUrl','liveUrl','sections']
     : ['handle','displayName','headline','bio'];
   if (Object.keys(row).some(key => !keys.includes(key))) return false;
-  if (!slug) return textWithin(row.displayName,160) &&
-    textWithin(row.headline,320) && textWithin(row.bio,12000);
+  if (!slug) return ['displayName','headline','bio'].some(key => Object.hasOwn(row,key)) &&
+    textWithin(row.displayName,160) && textWithin(row.headline,320) && textWithin(row.bio,12000);
   if (row.slug !== slug || typeof row.title !== 'string' ||
       !row.title.trim() || !textWithin(row.title,200) ||
       !textWithin(row.summary,1000) || !textWithin(row.description,12000) ||
@@ -68,7 +69,7 @@ function render(projection, slug) {
     (summary ? '<meta property="og:description" content="' + summary + '">' : '');
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title +
-    '</title>' + description + shareMetadata + '</head><body><main><h1>' + title + '</h1>' +
+    '</title><meta name="robots" content="noindex,nofollow,noarchive">' + description + shareMetadata + '</head><body><main><h1>' + title + '</h1>' +
     content + '</main></body></html>';
 }
 
@@ -80,7 +81,9 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     res.setHeader('CDN-Cache-Control', 'no-store');
     res.setHeader('Surrogate-Control', 'no-store');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-Robots-Tag', status === 200 ? 'index, follow' : 'noindex');
+    // The current projection RPC only returns explicitly selected DB snapshot
+    // fields. It does not attest independently verified canonical delivery.
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
@@ -94,12 +97,20 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   if (env.KADMEION_PUBLIC_IDENTITY_ENABLED !== 'true') return reply(404, 'Not found');
   let target;
   let supabase;
+  // Keep this B-based patch standalone. Align the S9 shared
+  // parseDeliveryTarget helper when the two owned deltas are composed.
+  const raw = req.url;
+  if (typeof raw !== 'string' || raw.length > 2048 || !raw.startsWith('/') ||
+      raw.startsWith('//') || /[\x00-\x20\x7f\\#]/.test(raw)) return reply(404, 'Not found');
   try {
-    target = new URL(req.url, 'https://kadmeion.invalid');
-    supabase = new URL(env.KADMEION_SUPABASE_URL);
+    target = new URL(raw, 'https://kadmeion.invalid');
+    if (target.origin !== 'https://kadmeion.invalid' || target.pathname !== raw.split('?')[0])
+      return reply(404, 'Not found');
   } catch {
     return reply(404, 'Not found');
   }
+  try { supabase = new URL(env.KADMEION_SUPABASE_URL); }
+  catch { return reply(503, 'Temporarily unavailable'); }
   const path = target.pathname.match(/^\/u\/([^/]+)(?:\/projects\/([^/]+))?$/);
   const handle = path?.[1] ?? target.searchParams.get('handle');
   const slug = path?.[2] ?? (path ? null : target.searchParams.get('slug'));
@@ -141,7 +152,11 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     const row = await readBoundedRpcJson(upstream);
     if (row === null) return reply(404, 'Not found');
     if (!validProjection(row, handle, slug)) return reply(503, 'Temporarily unavailable');
-    return reply(200, render(row, slug));
+    const html = render(row, slug);
+    // Evidence input only: this digest is of exact served bytes, not a
+    // verification receipt or a promise of hosted availability.
+    res.setHeader('X-Kadmeion-Served-SHA256', createHash('sha256').update(html,'utf8').digest('hex'));
+    return reply(200, html);
   } catch {
     return reply(503, 'Temporarily unavailable');
   }

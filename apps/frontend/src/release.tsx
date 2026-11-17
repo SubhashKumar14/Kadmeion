@@ -1,7 +1,7 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision, OwnerFrozenRequest} from '../../auth-web/src/supabase-auth-port.ts';
 import type {PrivateFrozenRequest, FrozenVisibilityIntent} from '../../../packages/contracts/src/private-release-service.ts';
-import type {PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
+import type {PrivatePointerReceipt, PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
 import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type {PortfolioSnapshot} from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
@@ -22,6 +22,13 @@ function matchesFrozenPin(pin:LoadedPrivateFrozenRevision|null|undefined,request
 const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
 type SafeGrant = {grantId:string;requestId:string;expiresAt:string;status:'REGISTERED_UNSERVABLE'|'REVOKED'};
+type BlockAttempt={operationId:string;target:PrivatePointerSnapshot;receipt:PrivatePointerReceipt|null};
+/** This is a best-effort precheck, not an atomic server CAS. */
+function samePreparedPointer(a:PrivatePointerSnapshot,b:PrivatePointerSnapshot):boolean {
+  return a.portfolioId===b.portfolioId&&a.status==='PREPARED_PRIVATE'&&b.status==='PREPARED_PRIVATE'&&
+    a.generation===b.generation&&a.revocationGeneration===b.revocationGeneration&&
+    a.candidateRequestId===b.candidateRequestId&&a.candidateManifestSha256===b.candidateManifestSha256;
+}
 type SnapshotDelta={key:string;kind:'Added'|'Removed'|'Changed';beforeBytes:number|null;afterBytes:number|null;fields?:string[]};
 type FrozenComparison={
   requestId:string; frozenRevision:number; draftRevision:number;
@@ -122,14 +129,15 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [validMinutes,setValidMinutes]=useState(60);
   const [grantNow,setGrantNow]=useState(()=>Date.now());
   const [confirmRevoke,setConfirmRevoke]=useState(false);
-  const [confirmBlock,setConfirmBlock]=useState(false);
+  const [confirmBlock,setConfirmBlock]=useState<PrivatePointerSnapshot|null>(null);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const [busy,setBusy]=useState(false);
   const [retry,setRetry]=useState(0);
   const operation=useRef<string|null>(null);
   const grantOperation=useRef<string|null>(null);
-  const blockOperation=useRef<string|null>(null);
+  const blockOperation=useRef<BlockAttempt|null>(null);
+  const blockFlight=useRef<object|null>(null);
   const historySelectionEpoch=useRef(0);
   const routeEpoch=useRef(0);
   useLayoutEffect(()=>{
@@ -151,8 +159,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setGrants(null);setGrantListError('');
-    setConfirmRevoke(false);setConfirmBlock(false);setNotice('');setError('');setBusy(false);
-    operation.current=null;grantOperation.current=null;blockOperation.current=null;
+    setConfirmRevoke(false);setConfirmBlock(null);setNotice('');setError('');setBusy(false);
+    operation.current=null;grantOperation.current=null;blockOperation.current=null;blockFlight.current=null;
   },[port,id,mode]);
 
   useEffect(()=>{
@@ -405,23 +413,77 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   }
 
   async function blockCandidate(){
-    if (!pointer || pointer.status!=='PREPARED_PRIVATE' || busy || !confirmBlock) return;
+    const target=confirmBlock;
+    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||busy||blockFlight.current) return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
+    const flight={};
+    blockFlight.current=flight;
     setBusy(true);setError('');setNotice('');
     try {
-      blockOperation.current ??= crypto.randomUUID();
-      const receipt=await port.blockOwnerReleaseCandidate(id,blockOperation.current);
-      if (!current()) return;
-      if (!receipt.data) {setError(receipt.error?.message ?? 'Private candidate block was not acknowledged.');return;}
+      let attempt=blockOperation.current;
+      if(attempt&&!samePreparedPointer(attempt.target,target)){
+        setError('A previous block request is unresolved. Review its saved operation before submitting another.');
+        return;
+      }
+      // Once acknowledged, a retry is a readback only. Never send a second
+      // block just because the subsequent read was interrupted.
+      if(!attempt?.receipt){
+        const before=await port.readOwnerRelease(id);
+        if(!current())return;
+        if(!before.data){
+          setError('Could not recheck the current private pointer. No new block was submitted.');
+          return;
+        }
+        setPointer(before.data);
+        if(!samePreparedPointer(before.data,target)){
+          blockOperation.current=null;setConfirmBlock(null);
+          setError(attempt
+            ?'The pointer changed while the previous block was unresolved. Its original outcome is not confirmed; no retry was submitted. Review the refreshed state.'
+            :'The private pointer changed since your confirmation. No block was submitted. Review its current state before deciding again.');
+          return;
+        }
+        attempt??={operationId:crypto.randomUUID(),target,receipt:null};
+        blockOperation.current=attempt;
+        const response=await port.blockOwnerReleaseCandidate(id,attempt.operationId);
+        if(!current())return;
+        if(!response.data){
+          setError('The block was not acknowledged. Review and retry the same operation only if the pointer still matches.');
+          return;
+        }
+        const receipt=response.data;
+        if(receipt.portfolioId!==id||!Number.isSafeInteger(receipt.generation)||
+           receipt.generation<1||typeof receipt.alreadyRecorded!=='boolean'||
+           typeof receipt.stillBlocked!=='boolean'||
+           (receipt.status==='BLOCKED')!==receipt.stillBlocked||
+           receipt.publicServingEnabled!==false||receipt.publicUrl!==null||receipt.hostRevocationVerified!==false){
+          setError('The block receipt could not be verified. The original operation is retained for review.');
+          return;
+        }
+        attempt.receipt=receipt;
+      }
+      const receipt=attempt.receipt;
       const reread=await port.readOwnerRelease(id);
-      if (!current()) return;
-      if (!reread.data) {setError('Block acknowledged, but current private pointer could not be rechecked.');return;}
+      if(!current())return;
+      if(!reread.data||reread.data.portfolioId!==id||reread.data.generation<receipt.generation){
+        setError('Block recorded, but the current private pointer could not be verified. Recheck the pointer without resubmitting the block.');
+        return;
+      }
       setPointer(reread.data);
-      blockOperation.current=null;setConfirmBlock(false);
-      setNotice('Private candidate pointer refreshed. This is not proof of public CDN revocation.');
-    } catch {if (current()) setError('Private candidate could not be blocked. Refresh its state before retrying.');}
-    finally {if (current()) setBusy(false);}
+      blockOperation.current=null;setConfirmBlock(null);
+      const exact=reread.data.status==='BLOCKED'&&receipt.stillBlocked===true&&
+        reread.data.generation===receipt.generation&&reread.data.revocationGeneration===receipt.generation;
+      const expected=receipt.generation===target.generation+1;
+      const state=reread.data.status==='BLOCKED'?'blocked':'prepared privately';
+      setNotice((exact&&expected
+        ?'Database block recorded and current pointer rechecked at generation '+receipt.generation+'.'
+        :'Block recorded at generation '+receipt.generation+'; current pointer is '+state+' at generation '+reread.data.generation+'. The originally reviewed generation may have changed.')+
+        ' External delivery revocation has not been verified.');
+    } catch {
+      if (current()) setError('The private block or its readback could not be confirmed. Review the retained operation before retrying.');
+    } finally {
+      if(blockFlight.current===flight){blockFlight.current=null;if(current())setBusy(false);}
+    }
   }
 
   /** A latest-50 catalogue omission is not an authorization failure.
@@ -601,15 +663,19 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Public delivery</dt><dd>Not enabled</dd>
               <dt>Host revocation</dt><dd>Awaiting verification</dd>
             </dl>
-            {pointer.status==='PREPARED_PRIVATE' && <div className="ws-release-action">
+            {(pointer.status==='PREPARED_PRIVATE'||confirmBlock||blockOperation.current) && <div className="ws-release-action">
               <h3>Withdraw private candidate</h3>
-              <p>Only the private candidate pointer is affected. The saved draft remains intact. This does not unpublish or invalidate a public CDN artifact.</p>
-              {!confirmBlock ? <button type="button" className="ws-secondary" onClick={()=>setConfirmBlock(true)}>
-                Review private block</button> : <div className="ws-release-confirm">
-                <p>Block this private candidate?</p>
-                <button type="button" className="ws-primary" disabled={busy} onClick={()=>void blockCandidate()}>
-                  {busy?'Checking…':'Confirm private block'}</button>
-                <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setConfirmBlock(false)}>Cancel</button>
+              <p>Blocking the pointer withdraws its database delivery route and pending delivery state while preserving the saved draft. External HTTP and CDN revocation still require independent verification.</p>
+              {!confirmBlock ? <button type="button" className="ws-secondary" disabled={busy||historySelectionPending}
+                onClick={()=>setConfirmBlock(blockOperation.current?.target??pointer)}>
+                {blockOperation.current?'Review pending private block':'Review private block'}</button> : <div className="ws-release-confirm">
+                <p>Block this private candidate reviewed at generation {confirmBlock.generation}?</p>
+                <p className="ws-field-hint">The current pointer is rechecked before submission. The service blocks the current pointer without an atomic expected-generation condition; a concurrent update can still change the target. A recorded block is not proof of public revocation.</p>
+                {blockOperation.current?.receipt&&<p role="status">A database receipt was recorded. Retry checks current state without submitting another block.</p>}
+                <button type="button" className="ws-primary" disabled={busy||historySelectionPending} onClick={()=>void blockCandidate()}>
+                  {busy?'Checking…':blockOperation.current?.receipt?'Recheck private pointer':'Confirm private block'}</button>
+                <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setConfirmBlock(null)}>
+                  {blockOperation.current?'Close review (keep operation)':'Cancel'}</button>
               </div>}
             </div>}
           </> : !error && <p role="status">Checking the release pointer…</p>}

@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { IndexedDbEditorDraftStore, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
+import { JournaledEditorFolderStore, FolderCommitError, type FolderDirectory } from '../../../packages/storage-adapters/src/journaled-editor-folder.ts';
+import { exportPortableSnapshot, importPortableSnapshot } from '../../../packages/storage-adapters/src/portable-editor-snapshot.ts';
 import { unappliedSourceBufferCount } from './behavior.ts';
 import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
@@ -458,6 +460,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
   const [recoveryNotice,setRecoveryNotice]=useState('');
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
+  const [folderNotice,setFolderNotice]=useState('');
+  const [portableNotice,setPortableNotice]=useState('');
+  const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;
+    changedFiles:string[];changedSlots:string[]}|null>(null);
+  const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
+    cloudRevision:number;changedFiles:string[];changedSlots:string[]}|null>(null);
+  const folderPicker=(window as Window&{showDirectoryPicker?:(options:{mode:'readwrite'})=>Promise<FolderDirectory>}).showDirectoryPicker;
+  const folderSupported=window.isSecureContext&&typeof folderPicker==='function'&&typeof navigator.locks?.request==='function';
   const [autoRecovery,setAutoRecovery]=useState(false);
   const [checkpointState,setCheckpointState]=useState<'idle'|'pending'|'saved'|'failed'>('idle');
   const [checkpointRetry,setCheckpointRetry]=useState(0);
@@ -910,6 +920,137 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       return false;
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
+  // The explicit folder backup is a separate persistence destination and
+  // starts its own revision at zero. Never equate it with a cloud Save.
+  // Reopening receives data only after a fresh authenticated owner read.
+  function portableDifference(before:PortfolioSnapshot,after:PortfolioSnapshot){
+    const paths=new Set([...Object.keys(before.files),...Object.keys(after.files)]);
+    const keys=new Set([...Object.keys(before.slots),...Object.keys(after.slots),
+      ...Object.keys(before.stashes),...Object.keys(after.stashes)]);
+    const stable=(value:unknown)=>JSON.stringify(value,(_key,v:unknown)=>
+      v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
+    return {changedFiles:[...paths].filter(path=>before.files[path]!==after.files[path]).sort(),
+      changedSlots:[...keys].filter(key=>stable(before.slots[key])!==stable(after.slots[key])||
+        stable(before.stashes[key])!==stable(after.stashes[key])).sort()};
+  }
+  async function folderOperation(action:'backup'|'compare'|'restore'){
+    const view=captureRecovery(),previewed=folderComparison;
+    if(!view||!view.head||!view.record||recoveryLock.current||!folderSupported||
+       pendingFields||sourceDirty||((action==='compare'||action==='restore')&&view.dirty))return;
+    if(action==='restore'&&!previewed)return;
+    if(!draftCurrent(view))return;
+    recoveryLock.current=true;setRecoveryBusy(true);setFolderNotice('');
+    if(action!=='restore')setFolderComparison(null);
+    try{
+      // Invoke the picker directly in the user action, before any await of
+      // network/other APIs; browsers require transient user activation.
+      const directory=action==='restore'?previewed!.directory:await folderPicker!.call(window,{mode:'readwrite'});
+      if(!draftCurrent(view))return;
+      if(action==='backup'&&!window.confirm('Create a new private folder backup of the applied working snapshot? No cloud save, raw buffers, image bytes or editor undo history will be included.')){
+        setFolderNotice('Folder backup cancelled. Draft unchanged.');return;
+      }
+      if(action==='compare'&&!window.confirm('Inspect this folder for an existing backup? A verified interrupted journal may be repaired; no cloud revision will be changed.')){
+        setFolderNotice('Folder comparison cancelled. Draft unchanged.');return;
+      }
+      if(!draftCurrent(view))return;
+      const store=new JournaledEditorFolderStore(directory,view.owner!.id,view.id,undefined,()=>draftCurrent(view));
+      if(action==='backup'){
+        const receipt=await store.save(createEditorHead(view.head.snapshot),null,true);
+        if(!scopeCurrent(view))return;
+        setFolderNotice(receipt.status==='FOLDER_SAVED'?
+          'New folder backup saved. Cloud draft unchanged; image files are not included.':
+          'Folder head acknowledged, but journal cleanup is pending. Verify the folder again before relying on it; cloud draft unchanged.');
+        return;
+      }
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!draftCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
+         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+        setFolderComparison(null);setFolderNotice('Current cloud revision could not be verified or has changed. Reload the saved draft before comparing a folder.');return;
+      }
+      const recovered=await store.load();
+      if(!draftCurrent(view))return;
+      if(!recovered){setFolderComparison(null);setFolderNotice('No verified backup head found in this folder. Nothing was imported.');return;}
+      if(action==='compare'){
+        setFolderComparison({directory,folderHead:recovered,cloudRevision:fresh.data.revision,
+          ...portableDifference(fresh.data.snapshot,recovered.snapshot)});
+        setFolderNotice('Compared the verified folder snapshot with the current cloud draft. Both remain separate.');return;
+      }
+      if(!previewed||previewed.cloudRevision!==fresh.data.revision||
+        JSON.stringify(previewed.folderHead)!==JSON.stringify(recovered)){
+        setFolderComparison(null);setFolderNotice('Folder or cloud version changed after comparison. Compare again; no draft was replaced.');return;
+      }
+      if(!window.confirm('Restore the compared folder snapshot as an unsaved working draft? The folder and currently saved cloud revision remain separate. Review private asset references before a separate Save.'))return;
+      if(!draftCurrent(view))return;
+      const next=restoreHistoricalSnapshot(view.head,recovered.snapshot,crypto.randomUUID());
+      setHead(next);setRecord(fresh.data);setOperation(crypto.randomUUID());
+      setSlot(resolveInitialEditorSlot(next.snapshot,null).key);
+      setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
+      setSourceReset(value=>value+1);setFolderComparison(null);
+      setFolderNotice('Folder snapshot opened as an unsaved working draft. Undo is available. No cloud save or media-byte verification occurred.');
+    }catch(cause){
+      if(scopeCurrent(view)){
+        setFolderComparison(null);
+        const cancelled=(cause as {name?:string}|null)?.name==='AbortError';
+        setFolderNotice(cancelled?'Folder selection cancelled. Draft unchanged.':
+          cause instanceof FolderCommitError&&cause.code==='CONFLICT'?
+            'Folder conflict or existing backup detected. No draft was replaced. Choose a new folder or explicitly compare the existing backup.':
+            'Folder operation not confirmed. Permission, storage or journal recovery may be required. Your working draft remains intact.');
+      }
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
+  async function portableOperation(action:'export'|'compare'|'restore',file?:File){
+    const view=captureRecovery(),previewed=portableComparison;
+    if(!view||!view.head||!view.record||recoveryLock.current||pendingFields||sourceDirty||
+      (action!=='export'&&view.dirty))return;
+    if(action==='compare'&&!file||action==='restore'&&!previewed)return;
+    recoveryLock.current=true;setRecoveryBusy(true);setPortableNotice('');
+    if(action==='compare')setPortableComparison(null);
+    try{
+      if(action==='export'){
+        const data=exportPortableSnapshot(view.head.snapshot);
+        if(!draftCurrent(view))return;
+        const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+        const link=document.createElement('a');
+        link.href=url;link.download='kadmeion-private-project-'+view.id+'.json';
+        try{document.body.append(link);link.click();}
+        finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+        setPortableNotice('Private snapshot download requested. No cloud save or media-file export occurred.');return;
+      }
+      if(action==='compare'&&(!file||file.size<1||file.size>1024*1024)){
+        setPortableNotice('Choose a Kadmeion private project JSON file within 1 MiB. Nothing was imported.');return;
+      }
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!draftCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
+         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+        setPortableComparison(null);setPortableNotice('Current cloud revision changed or could not be verified. Reload the saved draft and compare again.');return;
+      }
+      if(action==='compare'){
+        const bytes=await file!.arrayBuffer();
+        if(!draftCurrent(view))return;
+        if(bytes.byteLength<1||bytes.byteLength>1024*1024)throw new Error('Invalid snapshot byte length.');
+        const source=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+        const snapshot=importPortableSnapshot(source);
+        setPortableComparison({snapshot,cloudRevision:fresh.data.revision,
+          ...portableDifference(fresh.data.snapshot,snapshot)});
+        setPortableNotice('Private project JSON parsed and compared. This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
+      }
+      if(!previewed||previewed.cloudRevision!==fresh.data.revision){
+        setPortableComparison(null);setPortableNotice('Cloud version changed after comparison. Compare again; no draft was replaced.');return;
+      }
+      if(!window.confirm('Restore the compared private snapshot as an unsaved draft in this portfolio? The original file and saved cloud revision remain unchanged until a separate Save. Review imported source and asset references.'))return;
+      if(!draftCurrent(view))return;
+      const next=restoreHistoricalSnapshot(view.head,previewed.snapshot,crypto.randomUUID());
+      setHead(next);setRecord(fresh.data);setOperation(crypto.randomUUID());
+      setSlot(resolveInitialEditorSlot(next.snapshot,null).key);
+      setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
+      setSourceReset(value=>value+1);setPortableComparison(null);
+      setPortableNotice('Imported as an unsaved draft. Undo is available. No cloud save, media-byte verification or source execution occurred.');
+    }catch{
+      if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON; your draft remains intact.');}
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
   function exportWorkingRecovery(){
     // This exports only bytes currently visible to an already verified,
     // mounted owner. It never loads local copies or bypasses the gate.
@@ -1067,6 +1208,58 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                 onClick={()=>void removeRecovery(copy.copyId)}>Remove recovery copy</button>
             </div>
           </li>)}</ul>}
+    </details>}
+    {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
+      <summary>Private folder backup &amp; recovery</summary>
+      <p>Folder backups contain the applied managed and owned source snapshot, slot data and stashes, not unapplied inspector buffers, media files, account-session data or cloud history. Authored code and text may themselves contain sensitive information; keep backups private. Folder writes use a recovery journal, not filesystem-wide atomicity.</p>
+      {!folderSupported?<p role="status">Folder access requires a supported secure desktop browser and Web Locks. Use browser recovery and the private working recovery export instead.</p>:<>
+        <p>Choose a new dedicated folder for each backup. An existing backup is never silently overwritten. To restore, compare it against the currently verified cloud draft first.</p>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+            data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+            onClick={()=>void folderOperation('backup')}>Create private folder backup</button>
+          <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+            onClick={()=>void folderOperation('compare')}>Compare private folder backup</button>
+        </div>
+        {(pendingFields||sourceDirty)&&<p>Apply or preserve unfinished buffers using browser recovery before folder operations.</p>}
+      </>}
+      {folderNotice&&<p role="status">{folderNotice}</p>}
+      {folderComparison&&<div aria-label="Folder backup comparison">
+        <p>Folder snapshot versus saved cloud revision {folderComparison.cloudRevision}: {folderComparison.changedFiles.length} different files, {folderComparison.changedSlots.length} different slot/stash keys.</p>
+        <details><summary>Different file paths</summary><ul>{folderComparison.changedFiles.map(path=><li key={path}><code>{path}</code></li>)}</ul></details>
+        <details><summary>Different slots or stashes</summary><ul>{folderComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty||!folderSupported}
+            onClick={()=>void folderOperation('restore')}>Restore compared folder as unsaved draft</button>
+          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setFolderComparison(null)}>Close folder comparison</button>
+        </div>
+      </div>}
+    </details>}
+    {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
+      <summary>Private project JSON import &amp; export</summary>
+      <p>Portable applied snapshot only (1 MiB maximum). This is not an editable ZIP, a media backup, a published page or a browser recovery file with raw buffers. Authored source and text may contain sensitive information.</p>
+      <div className="ws-actions">
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>void portableOperation('export')}>Export private project JSON</button>
+        <label>Compare private project JSON
+          <input type="file" accept=".json,application/json" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
+              if(file)void portableOperation('compare',file);}}/>
+        </label>
+      </div>
+      {portableNotice&&<p role="status">{portableNotice}</p>}
+      {portableComparison&&<div aria-label="Portable snapshot comparison">
+        <p>Compared to saved cloud revision {portableComparison.cloudRevision}: {portableComparison.changedFiles.length} different files and {portableComparison.changedSlots.length} different slot/stash keys.</p>
+        <details><summary>Different file paths</summary><ul>{portableComparison.changedFiles.map(path=><li key={path}><code>{path}</code></li>)}</ul></details>
+        <details><summary>Different slots or stashes</summary><ul>{portableComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            onClick={()=>void portableOperation('restore')}>Restore compared JSON as unsaved draft</button>
+          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setPortableComparison(null)}>Close JSON comparison</button>
+        </div>
+      </div>}
     </details>}
     {pendingFields&&<div className="ws-editor-safety">
       <span>Unapplied inspector edits are held in this editor.</span>
