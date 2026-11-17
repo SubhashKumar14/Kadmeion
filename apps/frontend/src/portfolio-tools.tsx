@@ -12,6 +12,16 @@ const THEME_PATH = 'theme/tokens.json';
 const colors = ['surface', 'text', 'accent'] as const;
 type PortfolioTheme = {mode: 'light' | 'dark'; surface: string; text: string; accent: string};
 const defaultTheme: PortfolioTheme = {mode: 'light', surface: '#f9fafb', text: '#152738', accent: '#b9734d'};
+const defaultDarkTheme:PortfolioTheme={mode:'dark',surface:'#162433',text:'#f7f5ef',accent:'#eab087'};
+function themeContrast(foreground:string,background:string):number {
+  const luminance=(hex:string)=>{
+    const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255)
+      .map(v=>v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4));
+    return 0.2126*rgb[0]!+0.7152*rgb[1]!+0.0722*rgb[2]!;
+  };
+  const a=luminance(foreground),b=luminance(background);
+  return (Math.max(a,b)+0.05)/(Math.min(a,b)+0.05);
+}
 
 function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioTheme {
   try {
@@ -179,6 +189,7 @@ export function ThemeInspector({head, apply, width, resize}: {
   head: EditorHead; apply: Apply; width: number; resize: (width: number) => void;
 }) {
   const theme = readTheme(head.snapshot);
+  const ratio=themeContrast(theme.text,theme.surface);
   function setTheme(next: PortfolioTheme) {
     const previous = head.snapshot.files[THEME_PATH];
     const tokens = previous ? JSON.parse(previous) as Record<string, unknown> : {};
@@ -187,15 +198,23 @@ export function ThemeInspector({head, apply, width, resize}: {
   return <div className="ws-editor-tool">
     <h2>Theme &amp; responsive</h2>
     <label>Preview width<select value={width} onChange={event => resize(Number(event.target.value))}>
-      <option value={0}>Fit canvas</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
+      <option value={0}>Fit canvas</option><option value={1440}>Desktop · up to 1440 px</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
     </select></label>
     <label>Portfolio theme<select value={theme.mode} onChange={event => {
       const mode = event.target.value;
-      if (mode === 'dark') setTheme({mode, surface: '#162433', text: '#f7f5ef', accent: '#eab087'});
+      if (mode === 'dark') setTheme({...defaultDarkTheme});
       else setTheme({...defaultTheme});
     }}><option value="light">Light</option><option value="dark">Dark</option></select></label>
     {colors.map(key => <label key={key}>{key}<input type="color" value={theme[key]} onChange={event =>
       setTheme({...theme, [key]: event.target.value})}/></label>)}
+    <p>Global portfolio tokens · independent of the workspace theme. Preview widths do not authorize phone editing.</p>
+    <p role={ratio<4.5?'alert':undefined}>Text on surface: {ratio.toFixed(2)}:1 contrast.
+      {ratio<4.5?' Below 4.5:1 for ordinary text; adjust the colors before release.':' Meets the 4.5:1 reference for these two colors only.'}
+      {' '}This is not a complete accessibility or publication check.</p>
+    <button type="button" className="ws-secondary"
+      disabled={colors.every(key=>theme[key]===(theme.mode==='dark'?defaultDarkTheme:defaultTheme)[key])}
+      onClick={()=>setTheme({... (theme.mode==='dark'?defaultDarkTheme:defaultTheme)})}>Reset global palette</button>
+    <p>Palette changes use the private transaction and Undo. Unsupported scoped tokens are left untouched; their static export parity is not yet verified.</p>
   </div>;
 }
 

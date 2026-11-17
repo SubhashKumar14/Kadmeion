@@ -40,7 +40,7 @@ export type EditorIntent =
   | { kind:'CUSTOMIZE_COMPONENT'; slotKey:string; copiedSource:string }
   | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'EDIT_OWNED_SOURCE'; slotKey:string; source:string }
-  | { kind:'RESTORE_STASH'; slotKey:string }
+  | { kind:'RESTORE_STASH'; slotKey:string; stashIndex?:number }
   | { kind:'UNDO' }
   | { kind:'REDO' };
 
@@ -207,7 +207,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
     REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement','preserveMatchingContent'],
     EDIT_OWNED_SOURCE:['kind','slotKey','source'],
-    RESTORE_STASH:['kind','slotKey'],
+    RESTORE_STASH:['kind','slotKey','stashIndex'],
     UNDO:['kind'],
     REDO:['kind']
   };
@@ -437,13 +437,16 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         next.files[slot.sourcePath]=intent.source;
         next.slots[intent.slotKey]={...slot,state:intent.source===slot.originalSource?'S1':'S2'};
         break;
-      case 'RESTORE_STASH':
-        const saved=stash.at(-1);
-        if (slot.state!=='EMPTY' || !saved)
-          throw new ContractError('VALIDATION', 'Restore requires an empty slot and an available stash.');
-        next.slots[intent.slotKey]=saved;
-        next.stashes[intent.slotKey]=stash.slice(0,-1);
+      case 'RESTORE_STASH': {
+        const index=intent.stashIndex===undefined?stash.length-1:intent.stashIndex;
+        if(!Number.isSafeInteger(index)||index<0||index>=stash.length||slot.state!=='EMPTY')
+          throw new ContractError('VALIDATION','Restore requires an empty slot and an available stash.');
+        const saved=stash[index];
+        if(!saved||saved.state==='EMPTY')throw new ContractError('VALIDATION','Stashed assignment unavailable.');
+        next.slots[intent.slotKey]=structuredClone(saved);
+        next.stashes[intent.slotKey]=stash.filter((_item,i)=>i!==index);
         break;
+      }
       default:
         throw new ContractError('VALIDATION','Unsupported editor command.');
     }

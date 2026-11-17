@@ -1113,9 +1113,21 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
               <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts || sourceDirty}
                 title={selectedSlotHasPendingDrafts || sourceDirty ? 'Apply or discard content/source edits before moving this component.' : undefined}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
-          {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
-            <button type="button" className="ws-secondary" disabled={saving}
-              onClick={() => apply({kind: 'RESTORE_STASH', slotKey: slot})}>Restore last assignment</button>}
+          {(head.snapshot.stashes[slot]?.length??0)>0&&<section aria-label="Unplaced assignments">
+            <h3>Unplaced assignments</h3>
+            <p>Archived content and source remain in this private draft. Restore requires an empty target.</p>
+            {active.state==='EMPTY'&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+              onClick={()=>apply({kind:'RESTORE_STASH',slotKey:slot})}>Restore last assignment</button>}
+            <ul className="ws-editor-slots">{(head.snapshot.stashes[slot]??[]).map((entry,index)=><li key={index}>
+              <strong>Archived assignment {index+1} · {entry.componentId??'Unknown'}</strong>
+              <span>{entry.state} · {Object.keys(entry.content).length} content fields</span>
+              {entry.sourcePath&&<code>{entry.sourcePath}</code>}
+              {entry.componentId==='image@1'&&entry.content.alt_text&&<span>{entry.content.alt_text}</span>}
+              {active.state==='EMPTY'&&index!==(head.snapshot.stashes[slot]?.length??0)-1&&
+                <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+                  onClick={()=>apply({kind:'RESTORE_STASH',slotKey:slot,stashIndex:index})}>Restore archived assignment {index+1}</button>}
+            </li>)}</ul>
+          </section>}
         </>}</>}
       </aside>
     </div>{openedHistory&&record&&<div hidden={tool!=='History'}>
