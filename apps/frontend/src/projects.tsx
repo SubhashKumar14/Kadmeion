@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, MouseEvent } from 'react';
 import type { NewPrivateProject, OwnerProject } from '../../auth-web/src/supabase-auth-port.ts';
 import type { AuthOutcome } from '../../../packages/contracts/src/auth-service.ts';
@@ -416,6 +416,12 @@ type DetailState =
   | {status: 'unavailable'}
   | {status: 'ready'; saved: OwnerProject; draft: PrivateProjectDraft};
 
+// Only confirmed contiguous overview-only receipts can advance the sibling
+// case-study baseline without replacing the user's independent section buffer.
+type RevisionRange = Readonly<{from: number; to: number}>;
+const projectConflict=(message:string)=>message.includes('changed while you were editing') ||
+  message === 'Private workspace conflict. Reload the latest data before trying again.';
+
 export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAuthPort; projectId: string}) {
   const [detail, setDetail] = useState<DetailState>({status: 'loading'});
   const [reload, setReload] = useState(0);
@@ -425,55 +431,98 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [checking, setChecking] = useState(false);
   const [panel, setPanel] = useState<'details' | 'sections'>('details');
   const [openedSections, setOpenedSections] = useState(false);
+  const [knownRevision, setKnownRevision] = useState(0);
+  const [overviewAdvance, setOverviewAdvance] = useState<RevisionRange|null>(null);
+  const [overviewConflict, setOverviewConflict] = useState(false);
+  const [casePending, setCasePending] = useState(false);
+  const [caseDirty, setCaseDirty] = useState(false);
+  const overviewPending = useRef(false);
+  const casePendingRef = useRef(false);
+  const observeRevision = useCallback((revision:number) => {
+    setKnownRevision(previous=>Math.max(previous,revision));
+  },[]);
+  const markCasePending = useCallback((pending:boolean) => {
+    casePendingRef.current=pending;
+    setCasePending(pending);
+  },[]);
+  const caseSaved = useCallback((from:number,to:number) => {
+    observeRevision(to);
+    // The case-study RPC modifies only sections at the exact CAS base.
+    // A gap might include another owner's session's overview edit.
+    setDetail(current=>current.status==='ready' && current.saved.revision===from && to===from+1
+      ? {...current,saved:{...current.saved,revision:to}} : current);
+  },[observeRevision]);
 
   useEffect(() => {
     let active = true;
     void port.readOwnerProject(projectId).then(result => {
       if (!active) return;
-      setDetail(result.data
-        ? {status: 'ready', saved: result.data, draft: result.data}
-        : {status: 'unavailable'});
+      if (result.data && !result.error) {
+        observeRevision(result.data.revision);
+        setDetail({status:'ready',saved:result.data,draft:result.data});
+      } else setDetail({status:'unavailable'});
     }).catch(() => {if (active) setDetail({status:'unavailable'});});
     return () => { active = false; };
-  }, [port, projectId, reload]);
+  }, [port, projectId, reload, observeRevision]);
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
+    if (overviewPending.current || casePendingRef.current) return;
     setDetail(current => current.status === 'ready'
       ? {...current, draft: {...current.draft, [field]: value}}
       : current);
   }
 
   async function compareLatest(baseRevision: number) {
+    if (overviewPending.current || casePendingRef.current) return;
+    overviewPending.current=true;
     setChecking(true);
     setFeedback(null);
+    setLatest(null);
     try {
-      const {data} = await port.readOwnerProject(projectId);
-      setLatest(data && data.revision !== baseRevision ? data : null);
-      if (!data) setFeedback({error: true, text: 'Could not check the latest revision. Your edits are still here.'});
-      else if (data.revision === baseRevision) setFeedback({error: false, text: 'You have the latest saved revision.'});
+      const {data,error} = await port.readOwnerProject(projectId);
+      if (!data || error || data.revision < Math.max(baseRevision,knownRevision)) {
+        setFeedback({error:true,text:'Could not verify the latest revision. Your edits are still here.'});
+        return;
+      }
+      observeRevision(data.revision);
+      setLatest(data.revision !== baseRevision ? data : null);
+      if (data.revision === baseRevision) {
+        setOverviewConflict(false);
+        setFeedback({error:false,text:'You have the latest saved revision.'});
+      } else setOverviewConflict(true);
     } catch {
       setFeedback({error:true,text:'Latest revision check failed. Your private draft is preserved.'});
     } finally {
+      overviewPending.current=false;
       setChecking(false);
     }
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (detail.status !== 'ready' || saving || checking || latest) return;
+    if (detail.status !== 'ready' || overviewPending.current || casePendingRef.current ||
+        overviewConflict || knownRevision>detail.saved.revision || latest) return;
+    overviewPending.current=true;
     setSaving(true);
     setFeedback(null);
+    const from=detail.saved.revision;
     try {
-      const result = await port.saveOwnerProject(projectId, detail.saved.revision, detail.draft);
-      if (!result.data) {
-        setFeedback({error: true, text: result.error?.message ?? 'Save could not be confirmed.'});
+      const result = await port.saveOwnerProject(projectId, from, detail.draft);
+      if (!result.data || result.error || result.data.revision!==from+1) {
+        const message=result.error?.message ?? 'Save could not be confirmed.';
+        if (projectConflict(message)) setOverviewConflict(true);
+        setFeedback({error:true,text:message});
         return;
       }
-      setDetail({status: 'ready', saved: result.data, draft: result.data});
-      setFeedback({error: false, text: 'Private draft saved.'});
+      const to=result.data.revision;
+      observeRevision(to);
+      setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
+      setDetail({status:'ready',saved:result.data,draft:result.data});
+      setFeedback({error:false,text:'Private draft saved.'});
     } catch {
       setFeedback({error:true,text:'Project save could not be verified. Your edits remain available.'});
     } finally {
+      overviewPending.current=false;
       setSaving(false);
     }
   }
@@ -485,6 +534,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     (detail.saved.repositoryUrl ?? '') !== (detail.draft.repositoryUrl ?? '') ||
     (detail.saved.liveUrl ?? '') !== (detail.draft.liveUrl ?? '')
   );
+  const blocked=saving || checking || casePending;
+  const stale=detail.status==='ready' && (overviewConflict || knownRevision>detail.saved.revision);
   const repository = detail.status === 'ready' ? safeProjectLink(detail.saved.repositoryUrl) : undefined;
   const liveSite = detail.status === 'ready' ? safeProjectLink(detail.saved.liveUrl) : undefined;
 
@@ -495,8 +546,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       <p>Update your private project details.</p>
     </div>
     {detail.status === 'ready' && <div className="ws-profile-tabs" role="group" aria-label="Project sections">
-      <button type="button" aria-pressed={panel === 'details'} onClick={() => setPanel('details')}>Overview</button>
-      <button type="button" aria-pressed={panel === 'sections'} onClick={() => {setOpenedSections(true); setPanel('sections');}}>Case study</button>
+      <button type="button" disabled={blocked} aria-pressed={panel === 'details'} onClick={() => {
+        if (!overviewPending.current && !casePendingRef.current) setPanel('details');
+      }}>Overview</button>
+      <button type="button" disabled={blocked} aria-pressed={panel === 'sections'} onClick={() => {
+        if (overviewPending.current || casePendingRef.current) return;
+        if (!openedSections) markCasePending(true);
+        setOpenedSections(true); setPanel('sections');
+      }}>Case study</button>
     </div>}
     {detail.status === 'loading' && <p role="status">Loading project…</p>}
     {detail.status === 'unavailable' && <div className="ws-project-state" role="alert">
@@ -507,11 +564,11 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       }}>Retry loading project</button>
     </div>}
     {detail.status === 'ready' && openedSections && <div hidden={panel !== 'sections'}><CaseStudyEditor port={port} projectId={projectId}
-      onSaved={revision => setDetail(current => current.status === 'ready' && revision === current.saved.revision + 1
-        ? {...current, saved: {...current.saved, revision}} : current)}/></div>}
+      overviewAdvance={overviewAdvance} knownRevision={knownRevision} onObserved={observeRevision}
+      onSaved={caseSaved} onPending={markCasePending} onDirty={setCaseDirty}/></div>}
     {detail.status === 'ready' && panel === 'details' && <div className="ws-project-detail ws-owner-columns">
       <form className="ws-project-fields" onSubmit={event => void save(event)}>
-        <fieldset disabled={saving || checking}>
+        <fieldset disabled={blocked}>
           <legend>Project details</legend>
           <label>Project title
             <input maxLength={120} required value={detail.draft.title} onChange={e => edit('title', e.target.value)}/>
@@ -532,14 +589,16 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           </div>
         </fieldset>
         {feedback && <p role={feedback.error ? 'alert' : 'status'} className="ws-inline-alert">{feedback.text}</p>}
+        {stale && <p>Check the latest saved revision before saving overview changes. Your edits are retained.</p>}
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={saving || checking || !!latest || !dirty}>{saving ? 'Saving…' : 'Save changes'}</button>
-          <button type="button" className="ws-secondary" disabled={saving || checking}
+          <button type="submit" className="ws-primary" disabled={blocked || stale || !!latest || !dirty}>{saving ? 'Saving…' : 'Save changes'}</button>
+          <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => void compareLatest(detail.saved.revision)}>{checking ? 'Checking…' : 'Check latest revision'}</button>
-          {dirty && <button type="button" className="ws-secondary" disabled={saving || checking}
+          {dirty && <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => {
+              if (overviewPending.current || casePendingRef.current) return;
               setDetail({status:'ready',saved:detail.saved,draft:detail.saved});
-              setLatest(null);
+              if (!stale) setLatest(null);
               setFeedback({error:false,text:'Unsaved changes discarded; your saved revision is unchanged.'});
             }}>Discard changes</button>}
         </div>
@@ -557,7 +616,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live website</a>}
         </div>}
         <MoveToTrash port={port} kind="project" id={projectId} title={detail.saved.title}
-          disabled={dirty || saving || checking} onMoved={()=>window.location.assign('/app/trash')}/>
+          disabled={dirty || caseDirty || blocked || stale} onMoved={()=>window.location.assign('/app/trash')}/>
+        {caseDirty && <p>Save or discard unsaved case-study sections before moving this project to Trash.</p>}
         {latest && <div className="ws-project-conflict">
           <h3>Saved revision {latest.revision} is newer</h3>
           <dl>
@@ -567,8 +627,10 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
             <dt>Repository URL</dt><dd>{latest.repositoryUrl || '—'}</dd>
             <dt>Live website URL</dt><dd>{latest.liveUrl || '—'}</dd>
           </dl>
-          <button type="button" className="ws-secondary" onClick={() => {
-            setDetail({status: 'ready', saved: latest, draft: latest});
+          <button type="button" className="ws-secondary" disabled={blocked || latest.revision < knownRevision} onClick={() => {
+            if (overviewPending.current || casePendingRef.current || latest.revision<knownRevision) return;
+            setDetail({status:'ready',saved:latest,draft:latest});
+            setOverviewConflict(false);
             setLatest(null);
             setFeedback({error: false, text: 'Loaded the latest saved draft.'});
           }}>Discard my edits and load saved draft</button>
@@ -580,10 +642,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
 
 const CASE_SECTION_KINDS: CaseStudySection['kind'][] = ['challenge', 'approach', 'implementation', 'results', 'media', 'custom'];
 
-function CaseStudyEditor({port, projectId, onSaved}: {
-  port: SupabaseBrowserAuthPort; projectId: string; onSaved: (revision: number) => void;
+function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObserved, onSaved, onPending, onDirty}: {
+  port: SupabaseBrowserAuthPort; projectId: string;
+  overviewAdvance: RevisionRange|null; knownRevision:number;
+  onObserved:(revision:number)=>void; onSaved:(from:number,to:number)=>void;
+  onPending:(pending:boolean)=>void; onDirty:(dirty:boolean)=>void;
 }) {
   const [draft, setDraft] = useState<{sections: CaseStudySection[]; revision: number} | null>(null);
+  const [savedSections,setSavedSections]=useState<CaseStudySection[]|null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -592,10 +658,19 @@ function CaseStudyEditor({port, projectId, onSaved}: {
   const [needsReload, setNeedsReload] = useState(false);
   const pending = useRef(true);
   const locked = busy || loading;
+  // A known overview-only range can advance a matching case baseline, never
+  // an unknown gap or a baseline with an unresolved server conflict.
+  const baseRevision=draft && !needsReload && overviewAdvance &&
+    draft.revision>=overviewAdvance.from && draft.revision<=overviewAdvance.to
+      ? overviewAdvance.to : draft?.revision;
+  const stale=needsReload || (baseRevision!==undefined && knownRevision>baseRevision);
+  const dirty=!!(draft && savedSections && JSON.stringify(draft.sections)!==JSON.stringify(savedSections));
+  useEffect(()=>{onDirty(dirty);},[dirty,onDirty]);
 
   useEffect(() => {
     let active = true;
     pending.current = true;
+    onPending(true);
     setLoading(true);
     const failRead = (message: string) => {
       if (!active) return;
@@ -606,6 +681,8 @@ function CaseStudyEditor({port, projectId, onSaved}: {
       if (!active) return;
       if (result.data && !result.error) {
         setDraft(result.data);
+        setSavedSections(result.data.sections);
+        onObserved(result.data.revision);
         setError('');
         setNeedsReload(false);
       } else failRead(result.error?.message ?? 'Case study could not be loaded.');
@@ -615,14 +692,16 @@ function CaseStudyEditor({port, projectId, onSaved}: {
       if (active) {
         pending.current = false;
         setLoading(false);
+        onPending(false);
       }
     });
-    return () => { active = false; };
-  }, [port, projectId, version]);
+    return () => { active = false; onPending(false); };
+  }, [port, projectId, version, onObserved, onPending]);
 
   function reloadSections() {
     if (pending.current) return;
     pending.current = true;
+    onPending(true);
     setLoading(true);
     setError('');
     setNotice('');
@@ -653,28 +732,30 @@ function CaseStudyEditor({port, projectId, onSaved}: {
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft || pending.current || needsReload) return;
+    if (!draft || baseRevision===undefined || pending.current || stale) return;
     pending.current = true;
+    onPending(true);
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const result = await port.saveOwnerCaseStudy(projectId, draft.revision, {sections: draft.sections});
-      if (!result.data || result.error) {
+      const result = await port.saveOwnerCaseStudy(projectId, baseRevision, {sections: draft.sections});
+      if (!result.data || result.error || result.data.revision!==baseRevision+1) {
         const message = result.error?.message ?? 'Case study save could not be confirmed.';
         setError(message);
-        if (message.includes('changed while you were editing') ||
-            message === 'Private workspace conflict. Reload the latest data before trying again.') setNeedsReload(true);
+        if (projectConflict(message)) setNeedsReload(true);
         return;
       }
       setDraft(result.data);
-      onSaved(result.data.revision);
+      setSavedSections(result.data.sections);
+      onSaved(baseRevision,result.data.revision);
       setNotice('Private case study saved.');
     } catch {
       setError('The case study save could not be verified. Your unsaved sections are retained.');
     } finally {
       pending.current = false;
       setBusy(false);
+      onPending(false);
     }
   }
 
@@ -686,9 +767,9 @@ function CaseStudyEditor({port, projectId, onSaved}: {
     {loading && <p role="status">{draft
       ? 'Loading latest saved sections… Your edits are retained until the read succeeds.'
       : 'Loading case study…'}</p>}
-    {(error || needsReload) && !loading && <button type="button" className="ws-secondary"
+    {(error || stale || dirty) && !loading && <button type="button" className="ws-secondary"
       disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
-    {draft && needsReload && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
+    {draft && stale && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
     {draft && <>
       {!draft.sections.length && <p>Your case study has no sections yet.</p>}
       {draft.sections.map((section, index) => <fieldset key={section.id} disabled={locked}>
@@ -718,7 +799,7 @@ function CaseStudyEditor({port, projectId, onSaved}: {
           setDraft({...draft, sections: [...draft.sections, {id: crypto.randomUUID(), kind: 'custom', title: '', body: '', visible: false}]});
           setNotice('');
         }}>Add section</button>
-        <button type="submit" className="ws-primary" disabled={locked || needsReload}>{busy ? 'Saving…' : 'Save sections'}</button>
+        <button type="submit" className="ws-primary" disabled={locked || stale}>{busy ? 'Saving…' : 'Save sections'}</button>
       </div>
     </>}
   </form>;
