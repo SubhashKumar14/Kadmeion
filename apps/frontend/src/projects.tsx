@@ -58,6 +58,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [view,setView]=useState<'gallery'|'list'>('gallery');
   const [sort,setSort]=useState<'recent'|'oldest'|'name'|'name-desc'>('recent');
   const [linkFilter,setLinkFilter]=useState<'all'|'repository'|'live'|'both'|'none'>('all');
+  const [detailFilter,setDetailFilter]=useState<'all'|'described'|'missing'>('all');
   const [draft,setDraft]=useState<NewPrivateProject>(freshDraft);
   const [customSlug,setCustomSlug]=useState(false);
   const [saving,setSaving]=useState(false);
@@ -78,6 +79,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setPageError('');
     setSearch('');
     setLinkFilter('all');
+    setDetailFilter('all');
     setSort('recent');
     setDraft(freshDraft());
     setCustomSlug(false);
@@ -232,17 +234,20 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       const typeMatches=linkFilter==='all' || (linkFilter==='repository' && repository) ||
         (linkFilter==='live' && live) || (linkFilter==='both' && repository && live) ||
         (linkFilter==='none' && !repository && !live);
-      return typeMatches && (!term || [item.title,item.slug,item.summary,item.description,
-        item.repositoryUrl??'',item.liveUrl??''].some(value=>value.toLocaleLowerCase('en').includes(term)));
+      const hasDescription=!!item.description.trim();
+      const detailMatches=detailFilter==='all'||(detailFilter==='described'?hasDescription:!hasDescription);
+      const text=[item.title,item.slug,item.summary,item.description,item.repositoryUrl??'',item.liveUrl??'']
+        .join(' ').normalize('NFKC').toLocaleLowerCase('en');
+      return typeMatches && detailMatches && (!term || term.normalize('NFKC').split(/\s+/).every(word=>text.includes(word)));
     });
     // Keep server order for recent: microsecond keyset precision is not representable by Date.
     if(sort==='oldest')return [...matches].reverse();
     if(sort==='name'||sort==='name-desc')return matches.sort((a,b)=>
       (sort==='name'?1:-1)*a.title.localeCompare(b.title,'en') || a.id.localeCompare(b.id));
     return matches;
-  },[state,search,sort,linkFilter]);
-  const hasFilters=!!search.trim() || linkFilter!=='all';
-  function clearFilters(){setSearch('');setLinkFilter('all');setSort('recent');}
+  },[state,search,sort,linkFilter,detailFilter]);
+  const hasFilters=!!search.trim() || linkFilter!=='all'||detailFilter!=='all';
+  function clearFilters(){setSearch('');setLinkFilter('all');setDetailFilter('all');setSort('recent');}
   function open(event: MouseEvent<HTMLButtonElement>) {
     if (!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
@@ -313,7 +318,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     </div>
     <div className="ws-project-controls">
       <label className="ws-project-search">Search private projects
-        <input type="search" placeholder="Search titles, slugs and summaries" value={search}
+        <input type="search" placeholder="Search project text and links" value={search}
           disabled={state.status!=='ready'} onChange={event=>setSearch(event.target.value)}/></label>
       <label>Project links
         <select value={linkFilter} disabled={state.status!=='ready'} onChange={event=>{
@@ -323,6 +328,13 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <option value="all">All projects</option><option value="repository">Has repository</option>
           <option value="live">Has live website</option><option value="both">Has both links</option>
           <option value="none">No external links</option>
+        </select></label>
+      <label>Project description
+        <select value={detailFilter} disabled={state.status!=='ready'} onChange={event=>{
+          const value=event.target.value;if(value==='all'||value==='described'||value==='missing')setDetailFilter(value);
+        }}>
+          <option value="all">Any description</option><option value="described">Has detailed description</option>
+          <option value="missing">Needs detailed description</option>
         </select></label>
       <label>Sort
         <select value={sort} disabled={state.status!=='ready'}
@@ -363,7 +375,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <h2>{hasFilters?'No matching loaded projects':'Your first project belongs here.'}</h2>
           <p>{hasFilters?'Change filters or load additional private pages to search older projects.':
             'Add a project title and a short description. You can add links later.'}</p>
-          {hasFilters?<button type="button" className="ws-secondary" onClick={clearFilters}>{search&&linkFilter==='all'?'Clear search':'Reset project filters'}</button>:
+          {hasFilters?<button type="button" className="ws-secondary" onClick={clearFilters}>{search&&linkFilter==='all'&&detailFilter==='all'?'Clear search':'Reset project filters'}</button>:
             <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
         </div>
         {!hasFilters && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
@@ -380,7 +392,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           const repository = safeProjectLink(item.repositoryUrl);
           const liveSite = safeProjectLink(item.liveUrl);
           return <li key={item.id}><article className="ws-project-card">
-          <div className="ws-project-mark" aria-hidden="true"><Icon name="folder" size={21}/></div>
+          <LibraryCover port={port} projectId={item.id} revision={item.revision}/>
           <div className="ws-project-card-body"><h2><a href={'/app/projects/' + item.id}>{item.title}</a></h2>
             <p>{item.summary||'No project summary yet.'}</p>
             <span>Private · Updated {new Date(item.updatedAt).toLocaleDateString()} · Revision {item.revision}</span>
@@ -467,6 +479,10 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [casePending, setCasePending] = useState(false);
   const [caseDirty, setCaseDirty] = useState(false);
   const [imagePending,setImagePending]=useState(false);
+  const imagePendingRef=useRef(false);
+  const markImagePending=useCallback((pending:boolean)=>{
+    imagePendingRef.current=pending;setImagePending(pending);
+  },[]);
   const overviewPending = useRef(false);
   const casePendingRef = useRef(false);
   const observeRevision = useCallback((revision:number) => {
@@ -483,6 +499,16 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setDetail(current=>current.status==='ready' && current.saved.revision===from && to===from+1
       ? {...current,saved:{...current.saved,revision:to}} : current);
   },[observeRevision]);
+  const thumbnailSaved=useCallback((from:number,to:number)=>{
+    if(to!==from+1)return;
+    observeRevision(to);
+    // An attached cover changes neither overview text nor case-study sections.
+    // Advance only across this exact acknowledged contiguous mutation.
+    setDetail(current=>current.status==='ready'&&current.saved.revision===from
+      ? {...current,saved:{...current.saved,revision:to}}:current);
+    setOverviewAdvance(old=>old&&old.to===from?{from:old.from,to}:{from,to});
+  },[observeRevision]);
+  const canStartImage=useCallback(()=>!overviewPending.current&&!casePendingRef.current&&!imagePendingRef.current,[]);
 
   useEffect(() => {
     let active = true;
@@ -497,14 +523,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   }, [port, projectId, reload, observeRevision]);
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
-    if (overviewPending.current || casePendingRef.current) return;
+    if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     setDetail(current => current.status === 'ready'
       ? {...current, draft: {...current.draft, [field]: value}}
       : current);
   }
 
   async function compareLatest(baseRevision: number) {
-    if (overviewPending.current || casePendingRef.current) return;
+    if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     overviewPending.current=true;
     setChecking(true);
     setFeedback(null);
@@ -531,7 +557,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (detail.status !== 'ready' || overviewPending.current || casePendingRef.current ||
+    if (detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
         overviewConflict || knownRevision>detail.saved.revision || latest) return;
     overviewPending.current=true;
     setSaving(true);
@@ -565,7 +591,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     (detail.saved.repositoryUrl ?? '') !== (detail.draft.repositoryUrl ?? '') ||
     (detail.saved.liveUrl ?? '') !== (detail.draft.liveUrl ?? '')
   );
-  const blocked=saving || checking || casePending;
+  const blocked=saving || checking || casePending || imagePending;
   const stale=detail.status==='ready' && (overviewConflict || knownRevision>detail.saved.revision);
   const repository = detail.status === 'ready' ? safeProjectLink(detail.saved.repositoryUrl) : undefined;
   const liveSite = detail.status === 'ready' ? safeProjectLink(detail.saved.liveUrl) : undefined;
@@ -578,10 +604,10 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     </div>
     {detail.status === 'ready' && <div className="ws-profile-tabs" role="group" aria-label="Project sections">
       <button type="button" disabled={blocked} aria-pressed={panel === 'details'} onClick={() => {
-        if (!overviewPending.current && !casePendingRef.current) setPanel('details');
+        if (!overviewPending.current && !casePendingRef.current && !imagePendingRef.current) setPanel('details');
       }}>Overview</button>
       <button type="button" disabled={blocked} aria-pressed={panel === 'sections'} onClick={() => {
-        if (overviewPending.current || casePendingRef.current) return;
+        if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
         if (!openedSections) markCasePending(true);
         setOpenedSections(true); setPanel('sections');
       }}>Case study</button>
@@ -627,7 +653,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
             onClick={() => void compareLatest(detail.saved.revision)}>{checking ? 'Checking…' : 'Check latest revision'}</button>
           {dirty && <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => {
-              if (overviewPending.current || casePendingRef.current) return;
+              if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
               setDetail({status:'ready',saved:detail.saved,draft:detail.saved});
               if (!stale) setLatest(null);
               setFeedback({error:false,text:'Unsaved changes discarded; your saved revision is unchanged.'});
@@ -660,7 +686,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
             <dt>Live website URL</dt><dd>{latest.liveUrl || '—'}</dd>
           </dl>
           <button type="button" className="ws-secondary" disabled={blocked || latest.revision < knownRevision} onClick={() => {
-            if (overviewPending.current || casePendingRef.current || latest.revision<knownRevision) return;
+            if (overviewPending.current || casePendingRef.current || imagePendingRef.current || latest.revision<knownRevision) return;
             setDetail({status:'ready',saved:latest,draft:latest});
             setOverviewConflict(false);
             setLatest(null);
@@ -670,13 +696,253 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       </aside>
     </div>}
     {detail.status==='ready' && <div hidden={panel!=='details'}>
-      <PrivateProjectImages port={port} projectId={projectId} onPending={setImagePending}/>
+      {thumbnailApi(port)?<AttachedProjectThumbnail port={port} projectId={projectId}
+        knownRevision={knownRevision} otherPending={saving||checking||casePending}
+        canStart={canStartImage} onPending={markImagePending} onObserved={observeRevision} onSaved={thumbnailSaved}/>
+        :<PrivateProjectImages port={port} projectId={projectId} onPending={markImagePending}/>}
+
     </div>}
   </section>;
 }
 
 type RegisteredProjectImage={id:string;projectId:string;mime:string;size:number;altText:string};
 const imageTypes=['image/png','image/jpeg','image/webp'];
+// Exact structural subset of S1 PR #28 at a2e0382. Only usable when that
+// implementation is installed. Do not import foreign code or invent a route.
+type ThumbnailAsset=Readonly<{id:string;projectId:string;mime:'image/png'|'image/jpeg'|'image/webp';size:number;altText:string;createdAt:string}>;
+type ThumbnailSelection=Readonly<{projectId:string;revision:number;asset:ThumbnailAsset|null;publicDeliveryAllowed:false}>;
+type ThumbnailApi={
+  readOwnerProjectThumbnail(projectId:string,expectedEpoch:number):Promise<AuthOutcome<ThumbnailSelection>>;
+  setOwnerProjectThumbnail(projectId:string,baseRevision:number,assetId:string|null,operationId:string,expectedEpoch:number):Promise<AuthOutcome<ThumbnailSelection>>;
+  readOwnerProjectThumbnailImage(projectId:string,assetId:string,expectedEpoch:number):Promise<AuthOutcome<Blob>>;
+  uploadOwnerProjectImage(projectId:string,file:File,altText:string,context:{operationId:string;expectedEpoch:number}):
+    ReturnType<SupabaseBrowserAuthPort['uploadOwnerProjectImage']>;
+};
+function thumbnailApi(port:SupabaseBrowserAuthPort):ThumbnailApi|null{
+  const candidate=port as unknown as Partial<ThumbnailApi>;
+  return typeof candidate.readOwnerProjectThumbnail==='function'&&typeof candidate.setOwnerProjectThumbnail==='function'&&
+    typeof candidate.readOwnerProjectThumbnailImage==='function'&&typeof candidate.uploadOwnerProjectImage==='function'
+    ?candidate as ThumbnailApi:null;
+}
+function verifiedSelection(value:ThumbnailSelection|null|undefined,projectId:string):value is ThumbnailSelection{
+  return !!value&&value.projectId===projectId&&value.publicDeliveryAllowed===false&&
+    Number.isSafeInteger(value.revision)&&value.revision>=0&&
+    (value.asset===null||(value.asset.projectId===projectId&&imageTypes.includes(value.asset.mime)&&
+      Number.isSafeInteger(value.asset.size)&&value.asset.size>0&&value.asset.size<=5242880&&
+      typeof value.asset.id==='string'&&typeof value.asset.altText==='string'&&!!value.asset.altText.trim()));
+}
+type PreviewBytes={url:string;assetId:string;alt:string};
+function verifiedBlob(blob:Blob|null|undefined,asset:ThumbnailAsset):blob is Blob{
+  return blob instanceof Blob&&blob.type===asset.mime&&blob.size===asset.size;
+}
+// Shared bounded scheduling for visible owner library cards. No persistent
+// image cache or URL survives a card leaving the viewport.
+const libraryCoverJobs:Array<()=>Promise<void>>=[];
+let libraryCoverActive=0;
+function enqueueLibraryCover(job:()=>Promise<void>){
+  libraryCoverJobs.push(job);
+  pumpLibraryCovers();
+}
+function pumpLibraryCovers(){
+  while(libraryCoverActive<2&&libraryCoverJobs.length){
+    const job=libraryCoverJobs.shift()!;
+    libraryCoverActive++;
+    void job().catch(()=>{}).finally(()=>{libraryCoverActive--;pumpLibraryCovers();});
+  }
+}
+function LibraryCover({port,projectId,revision}:{port:SupabaseBrowserAuthPort;projectId:string;revision:number}){
+  const element=useRef<HTMLDivElement>(null);
+  const [visible,setVisible]=useState(false);
+  const [preview,setPreview]=useState<PreviewBytes|null>(null);
+  const [failed,setFailed]=useState(false);
+  const epoch=port.getOwnerSessionEpoch();
+  useEffect(()=>{
+    if(!thumbnailApi(port)||!element.current)return;
+    if(typeof IntersectionObserver==='undefined'){setVisible(true);return;}
+    const observer=new IntersectionObserver(entries=>setVisible(entries.some(entry=>entry.isIntersecting)));
+    observer.observe(element.current);
+    return ()=>observer.disconnect();
+  },[port,projectId]);
+  useEffect(()=>{
+    setPreview(null);setFailed(false);
+    const api=thumbnailApi(port);
+    if(!visible||!api)return;
+    let active=true,url:string|undefined;
+    const current=()=>active&&port.getOwnerSessionEpoch()===epoch;
+    enqueueLibraryCover(async()=>{
+      if(!current())return;
+      try{
+        const selection=await api.readOwnerProjectThumbnail(projectId,epoch);
+        if(!current())return;
+        if(selection.error||!verifiedSelection(selection.data,projectId)||selection.data.revision<revision){setFailed(true);return;}
+        const asset=selection.data.asset;if(!asset)return;
+        const result=await api.readOwnerProjectThumbnailImage(projectId,asset.id,epoch);
+        if(!current())return;
+        if(result.error||!verifiedBlob(result.data,asset)){setFailed(true);return;}
+        url=URL.createObjectURL(result.data);
+        setPreview({url,assetId:asset.id,alt:asset.altText});
+      }catch{if(current())setFailed(true);}
+    });
+    return ()=>{active=false;if(url)URL.revokeObjectURL(url);};
+  },[port,projectId,revision,visible,epoch]);
+  return <div className="ws-project-mark" ref={element}>
+    {preview&&!failed&&visible?<img src={preview.url} alt={preview.alt}
+      style={{width:'100%',height:'100%',objectFit:'cover',borderRadius:'inherit'}} onError={()=>setFailed(true)}/>
+      :<span aria-hidden="true"><Icon name="folder" size={21}/></span>}
+  </div>;
+}
+
+type CoverOperation={base:number;uploadId:string;attachId:string;file:File|null;alt:string;assetId?:string|null};
+function AttachedProjectThumbnail({port,projectId,knownRevision,otherPending,canStart,onPending,onObserved,onSaved}:{
+  port:SupabaseBrowserAuthPort;projectId:string;knownRevision:number;otherPending:boolean;
+  canStart:()=>boolean;onPending:(value:boolean)=>void;onObserved:(revision:number)=>void;onSaved:(from:number,to:number)=>void;
+}){
+  const [selection,setSelection]=useState<ThumbnailSelection|null>(null);
+  const [preview,setPreview]=useState<PreviewBytes|null>(null);
+  const [file,setFile]=useState<File|null>(null);
+  const [alt,setAlt]=useState('');
+  const [pendingOp,setPendingOp]=useState<CoverOperation|null>(null);
+  const [busy,setBusy]=useState(true);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const [confirmDetach,setConfirmDetach]=useState(false);
+  const attempt=useRef(0),flight=useRef(false),epoch=useRef(port.getOwnerSessionEpoch());
+  const currentUrl=useRef<string|null>(null),input=useRef<HTMLInputElement>(null);
+  const current=(id:number)=>id===attempt.current&&port.getOwnerSessionEpoch()===epoch.current;
+  function clearPreview(){
+    if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);
+    currentUrl.current=null;setPreview(null);
+  }
+  function clearInputs(){
+    setFile(null);setAlt('');setPendingOp(null);setConfirmDetach(false);
+    if(input.current)input.current.value='';
+  }
+  function clearPrivate(){clearPreview();setSelection(null);clearInputs();setNotice('');}
+  async function renderSelection(api:ThumbnailApi,value:ThumbnailSelection,id:number){
+    if(!current(id))return;
+    if(!value.asset){clearPreview();return;}
+    const asset=value.asset;
+    const bytes=await api.readOwnerProjectThumbnailImage(projectId,asset.id,epoch.current);
+    if(!current(id))return;
+    if(bytes.error||!verifiedBlob(bytes.data,asset)){
+      setError('The saved cover was read, but its private image bytes could not be verified. Retry the preview.');return;
+    }
+    const url=URL.createObjectURL(bytes.data);
+    // Decode before replacing the previous verified preview.
+    try{
+      const image=new Image();image.src=url;await image.decode();
+      if(!current(id)){URL.revokeObjectURL(url);return;}
+      if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);
+      currentUrl.current=url;setPreview({url,assetId:asset.id,alt:asset.altText});
+    }catch{
+      URL.revokeObjectURL(url);
+      if(current(id))setError('The saved private image could not be decoded. Retry the preview.');
+    }
+  }
+  async function refresh(initial=false){
+    if(flight.current||(!initial&&!canStart()))return;
+    const api=thumbnailApi(port);if(!api)return;
+    flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    const id=++attempt.current;
+    try{
+      if(!current(id))return;
+      const result=await api.readOwnerProjectThumbnail(projectId,epoch.current);
+      if(!current(id))return;
+      if(result.error||!verifiedSelection(result.data,projectId)||result.data.revision<knownRevision){
+        setError('Current cover could not be verified. The previous preview and input were retained.');return;
+      }
+      setSelection(result.data);onObserved(result.data.revision);
+      await renderSelection(api,result.data,id);
+    }catch{if(current(id))setError('Private cover read failed. Retry without uploading again.');}
+    finally{if(id===attempt.current){flight.current=false;setBusy(false);onPending(false);
+      if(!current(id)){clearPrivate();setError('Your owner session changed. Reopen this project.');}}}
+  }
+  useEffect(()=>{
+    epoch.current=port.getOwnerSessionEpoch();
+    void refresh(true);
+    return ()=>{attempt.current++;flight.current=false;onPending(false);
+      if(currentUrl.current)URL.revokeObjectURL(currentUrl.current);currentUrl.current=null;};
+  },[port,projectId]);
+  async function change(detach=false){
+    if(flight.current||!canStart())return;
+    const api=thumbnailApi(port);if(!api||!selection)return;
+    if(epoch.current!==port.getOwnerSessionEpoch()){clearPrivate();setError('Your owner session changed. Reopen this project.');return;}
+    if(!pendingOp&&selection.revision<knownRevision){setError('Refresh the current cover before changing it.');return;}
+    if(!pendingOp&&!detach&&(!file||!imageTypes.includes(file.type)||file.size<12||file.size>5242880||!alt.trim()||alt.length>500)){
+      setError('Choose a PNG, JPEG or WebP image up to 5 MB and enter descriptive alt text.');return;
+    }
+    if(!pendingOp&&detach&&(!selection.asset||!confirmDetach))return;
+    const op:CoverOperation=pendingOp??{base:selection.revision,uploadId:crypto.randomUUID(),attachId:crypto.randomUUID(),
+      file:detach?null:file,alt:alt.trim(),...(detach?{assetId:null}: {})};
+    setPendingOp(op);flight.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    const id=++attempt.current;
+    try{
+      if(!current(id))return;
+      let assetId=op.assetId;
+      if(assetId===undefined&&op.file){
+        const registered=await api.uploadOwnerProjectImage(projectId,op.file,op.alt,{operationId:op.uploadId,expectedEpoch:epoch.current});
+        if(!current(id))return;
+        const value=registered.data;
+        if(registered.error||!value||value.projectId!==projectId||value.mime!==op.file.type||
+           value.size!==op.file.size||value.altText!==op.alt||value.publicDeliveryAllowed!==false||value.verifiedMetadata!==true){
+          setError('Private image registration could not be confirmed. Retry the same upload operation.');return;
+        }
+        assetId=value.id;setPendingOp({...op,assetId});
+      }
+      if(assetId===undefined)return;
+      // Same base, asset and UUID on ambiguous result; never invent a newer CAS.
+      const result=await api.setOwnerProjectThumbnail(projectId,op.base,assetId,op.attachId,epoch.current);
+      if(!current(id))return;
+      if(result.error||!verifiedSelection(result.data,projectId)||result.data.revision!==op.base+1||
+         (result.data.asset?.id??null)!==assetId){
+        setError('Cover change was not confirmed. The last verified preview remains. Retry the same change, or refresh and discard the pending operation.');return;
+      }
+      setSelection(result.data);onSaved(op.base,result.data.revision);clearInputs();
+      setNotice(assetId?'Private cover selection saved. Checking its image bytes.':'Private cover removed. Folder cover restored.');
+      await renderSelection(api,result.data,id);
+      if(current(id)&&assetId)setNotice('Private cover selection saved. No public image was created.');
+    }catch{if(current(id))setError('Private cover change could not be verified. Retry the same operation; the previous preview remains.');}
+    finally{if(id===attempt.current){flight.current=false;setBusy(false);onPending(false);
+      if(!current(id)){clearPrivate();setError('Your owner session changed. Reopen this project.');}}}
+  }
+  const currentPreview=!!preview&&preview.assetId===selection?.asset?.id;
+  return <section className="ws-project-fields" aria-labelledby="attached-cover-title">
+    <h2 id="attached-cover-title">Project thumbnail</h2>
+    <div className="ws-profile-card">
+      {preview?<><img src={preview.url} alt={preview.alt} style={{display:'block',width:'100%',maxHeight:320,objectFit:'contain'}}
+        onError={()=>{clearPreview();setError('The private image could not be displayed. Retry the preview.');}}/>
+        <p>{currentPreview?'Last verified private cover':'Previous verified cover – current bytes are unavailable'}</p></>
+        :<><span className="ws-preview-identity" aria-hidden="true"><Icon name="folder" size={22}/></span><strong>Folder cover</strong></>}
+      {selection?.asset&&<p>Saved image description: {selection.asset.altText}</p>}
+      <p>Manual private image only. Website capture and public delivery are unavailable.</p>
+    </div>
+    <div aria-live="polite">{busy&&<p>Checking or saving the private cover…</p>}{notice&&<p>{notice}</p>}</div>
+    {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
+    <fieldset disabled={busy||otherPending||!!pendingOp}>
+      <legend>Choose a new private cover</legend>
+      <label>Image file (PNG, JPEG, WebP; up to 5 MB)<input ref={input} type="file" accept="image/png,image/jpeg,image/webp"
+        onChange={event=>{if(!flight.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');}}}/></label>
+      <label>Image alt text<textarea value={alt} rows={2} maxLength={500}
+        onChange={event=>{if(!flight.current)setAlt(event.target.value);}}/></label>
+      <button type="button" className="ws-primary" disabled={!selection||selection.revision<knownRevision||!file||!alt.trim()}
+        onClick={()=>void change()}>{selection?.asset?'Replace thumbnail':'Upload and attach thumbnail'}</button>
+      {selection?.asset&&<><label className="ws-profile-check"><input type="checkbox" checked={confirmDetach}
+        onChange={event=>setConfirmDetach(event.target.checked)}/> Confirm remove saved cover</label>
+        <button type="button" className="ws-secondary" disabled={!confirmDetach||selection.revision<knownRevision}
+          onClick={()=>void change(true)}>Remove thumbnail</button></>}
+    </fieldset>
+    {selection&&selection.revision<knownRevision&&<p>Another revision is known. Refresh the current cover before a new change.</p>}
+    {pendingOp&&<div className="ws-actions">
+      <button type="button" className="ws-secondary" disabled={busy||otherPending} onClick={()=>void change()}>Retry same cover operation</button>
+      <button type="button" className="ws-secondary" disabled={busy||otherPending} onClick={()=>{
+        if(!canStart()||flight.current)return;
+        // Discard only the local operation; no server deletion or rollback.
+        clearInputs();setSelection(null);void refresh();
+      }}>Discard pending operation and refresh cover</button>
+    </div>}
+    <button type="button" className="ws-secondary" disabled={busy||otherPending} onClick={()=>void refresh()}>Refresh private cover</button>
+  </section>;
+}
 /** WF-013: real private registered assets, not an inferred cover attachment.
  * A distinct project-cover pointer/read contract is required to display saved bytes.
  */
