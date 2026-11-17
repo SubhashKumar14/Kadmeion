@@ -6,7 +6,7 @@ import { unappliedSourceBufferCount } from './behavior.ts';
 import { createPortal } from 'react-dom';
 import type { FormEvent } from 'react';
 import {
-  applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, type EditorHead, type EditorIntent, type PortfolioSnapshot
+  applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, planSectionLayoutChange, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
@@ -14,7 +14,7 @@ import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
 import { MoveToTrash } from './settings.tsx';
-import { AssetList, ComponentLibrary, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, type ComponentSaveRetryState } from './portfolio-tools.tsx';
+import { AssetList, ComponentLibrary, LayoutTools, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, type ComponentSaveRetryState } from './portfolio-tools.tsx';
 
 const presets = [
   {id: 'arc', title: 'Arc', tone: 'curved', detail: 'Curved hero and a project showcase.'},
@@ -428,6 +428,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const allowed = useAuthoringViewport();
   const [record, setRecord] = useState<PortfolioRecord | null>(null);
   const [head, setHead] = useState<EditorHead | null>(null);
+  const layoutAppliedHead=useRef<EditorHead|null>(null);
   const [slot, setSlot] = useState('');
   // Secondary controls preserve malformed user input without silently
   // committing it to the private snapshot or losing it on panel changes.
@@ -528,12 +529,24 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
     if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
+    const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
+    const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
+    if(layoutMutation){
+      const view=latestRecovery.current;
+      if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
+         layoutAppliedHead.current===head||preview||tool!=='Components'){
+        setError('Layout changes require the current verified editor and a fresh review.');return false;
+      }
+      if(intent.expectedRevision!==head.revision){
+        setError('Working revision changed. Review the layout or stash again.');return false;
+      }
+    }
     // Changing an assignment or restoring another working snapshot must not
     // strand inspector/source buffers against a different component version.
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((intent.kind === 'UNDO' || intent.kind === 'REDO') && (pendingFields || sourceDirty)) ||
+    if (((layoutMutation||historyMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -543,8 +556,27 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     }
     try {
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
+      if(layoutMutation||historyMutation){
+        // Raw buffers have already been proven clean; do not reattach a clean
+        // inspector cache to a different assignment after an explicit revision.
+        let preferred=slot;
+        if(intent.kind==='CHANGE_SECTION_LAYOUT'){
+          const mapping=intent.mappings.find(row=>row.fromSlotKey===slot);
+          if(mapping)preferred=mapping.toSlotKey??'';
+          const candidates=orderedLayerGroups(next.snapshot).filter(group=>group.id===intent.sectionId);
+          if(candidates.length===1&&!candidates[0]!.slots.some(item=>item.key===preferred)){
+            preferred=candidates[0]!.slots.find(item=>item.name==='title')?.key??
+              candidates[0]!.slots[0]?.key??'';
+          }
+        }else if(intent.kind==='RESTORE_LAYOUT_STASH')preferred=intent.toSlotKey;
+        setSlot(resolveInitialEditorSlot(next.snapshot,preferred||null).key);
+        setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
+        setSourceReset(value=>value+1);
+      }
+      if(layoutMutation)layoutAppliedHead.current=head;
       setHead(next);
-      setOperation(crypto.randomUUID()); setError(''); setNotice('Unsaved changes');
+      setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation?
+        'Layout transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
       return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not apply the change.');
@@ -630,6 +662,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     return draft !== (active?.content[key.slice(slot.length + 1)] ?? '');
   });
   const layerGroups=orderedLayerGroups(head?.snapshot);
+  const selectedLayoutSections=layerGroups.filter(group=>group.slots.some(item=>item.key===slot));
+  const selectedLayoutSectionId=selectedLayoutSections.length===1?selectedLayoutSections[0]!.id:'';
   const compatible=compatibleComponentsForSlot(slot);
   const chosenComponent=compatible.find(item=>item.id===pickedComponent)??compatible[0];
   const categoryFor=(id:string):'Text'|'Links'|'Work'=>
@@ -1312,6 +1346,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         })}</ul>
         {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before adding or replacing components.</p>}
         <button type="button" className="ws-secondary" onClick={()=>setTool('Content')}>Return to layers</button>
+        <LayoutTools head={head} sectionId={selectedLayoutSectionId}
+          blocked={!verifiedOwner||!allowed||saving||recoveryBusy||pendingFields||sourceDirty}
+          planLayout={planSectionLayoutChange} applyLayout={apply}/>
       </div>:<><h2>Structure &amp; layers</h2>
         {!assigned.length && <p>This blank draft has no slots.</p>}
         <button type="button" className="ws-secondary" aria-expanded={sectionPicker}
