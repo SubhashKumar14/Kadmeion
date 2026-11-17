@@ -81,17 +81,19 @@ function ActualPresetPreview({preset}:{preset:Preset}){
     );
     return ()=>{active=false;};
   },[]);
-  const page=JSON.parse(snapshot.files['pages/home.page.json']!) as {sections:{id:string;layout:string}[]};
+  const page=JSON.parse(snapshot.files['pages/home.page.json']!) as {header:{layout:string}|null;sections:{id:string;layout:string}[]};
   return <section aria-label={'Demo of '+preset.title+' preset'}>
     <p>Demo content only. The shared editor canvas uses the real preset section order. Its author-preview labels do not indicate a saved or published portfolio. Media and example actions are inactive.</p>
     <p>Included sections: {page.sections.map(section=>demoSectionTitles[section.id]??section.layout).join(' · ')}</p>
+    <p>Preset header: {page.header?.layout.split('@')[0]?.replace(/^header-/,'').replace(/-/g,' ')??'None'}. The shared canvas currently uses a common header preview.</p>
     <fieldset>
       <legend>Preview width</legend>
+      <p>Width comparison only; responsive breakpoints follow your actual browser viewport.</p>
       <button type="button" className="outline-small" aria-pressed={width===undefined} onClick={()=>setWidth(undefined)}>Fit</button>{' '}
-      <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>Phone</button>
+      <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>390 px (phone width)</button>
     </fieldset>
     {failed?<p role="alert">The preset renderer could not load. Close the preview and reload this page to try again.</p>:
-      Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width}/></div>:
+      Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll/></div>:
       <p role="status">Loading preset layout…</p>}
   </section>;
 }
