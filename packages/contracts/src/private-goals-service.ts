@@ -23,11 +23,13 @@ export interface GoalMilestone {
   title:string;due_on:string|null;completed_at:string|null;created_at:string;
 }
 export interface PrivateGoalPage<T> {items:T[];nextCursor:string|null;}
+export type GoalProgressChronologicalCursor=Readonly<{version:1;goalId:string;ownerUserId:string;createdAt:string;id:string}>;
+export interface GoalProgressChronologicalPage {items:GoalProgress[];nextCursor:GoalProgressChronologicalCursor|null;}
 
 export type GoalUpdate=Partial<Pick<PrivateGoal,'title'|'description'|'target_value'|'unit'|'due_on'|'status'>>;
 export class PrivateGoalsError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|'CONFLICT'|'PROVIDER_UNAVAILABLE'|
-    'INVALID_ACK'|'LIMIT_EXCEEDED';
+    'INVALID_ACK'|'LIMIT_EXCEEDED'|'RATE_LIMITED';
   constructor(code:PrivateGoalsError['code']){
     super('Private goals operation could not be completed: '+code);
     this.name='PrivateGoalsError';this.code=code;
@@ -49,6 +51,16 @@ function date(value:unknown):value is string {
 }
 function timestamp(value:unknown):value is string {
   return typeof value==='string'&&value.length<=64&&!Number.isNaN(Date.parse(value));
+}
+// Preserve PostgreSQL microsecond precision, including offsets. Never
+// round the cursor through Date.toISOString() or compare timestamps as text.
+function instantMicros(value:unknown):bigint|null{
+  if(typeof value!=='string')return null;
+  const match=/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,6}))?(Z|[+-]\d\d:\d\d)$/.exec(value);
+  if(!match||!date(match[1].slice(0,10)))return null;
+  const milliseconds=Date.parse(match[1]+match[3]);
+  if(!Number.isFinite(milliseconds))return null;
+  return BigInt(milliseconds)*1000n+BigInt((match[2]??'').padEnd(6,'0')||'0');
 }
 function numeric(value:unknown):value is number {
   return typeof value==='number'&&Number.isFinite(value)&&value>=0&&
@@ -116,7 +128,7 @@ export class SupabasePrivateGoalsService {
   private readonly token:()=>Promise<string|null>;
   private readonly http:typeof fetch;
   constructor(endpoint:string,publishableKey:string,token:()=>Promise<string|null>,
-    http:typeof fetch=fetch){
+    http:typeof fetch=fetch,private readonly ownerId?:string){
     let url:URL;
     try{url=new URL(endpoint);}catch{throw new PrivateGoalsError('VALIDATION');}
     if((url.protocol!=='https:'&&!(url.protocol==='http:'&&
@@ -126,6 +138,7 @@ export class SupabasePrivateGoalsService {
       throw new PrivateGoalsError('VALIDATION');
     if(!isSafeSupabaseClientKey(publishableKey))
       throw new PrivateGoalsError('VALIDATION');
+    if(ownerId!==undefined&&!validId(ownerId))throw new PrivateGoalsError('VALIDATION');
     this.origin=url.origin;this.key=publishableKey;this.token=token;this.http=http;
   }
   private async send(path:string,method:'GET'|'POST'|'PATCH'|'DELETE',
@@ -148,17 +161,21 @@ export class SupabasePrivateGoalsService {
       if(response.status===401)throw new PrivateGoalsError('AUTH_EXPIRED');
       if(response.status===403)throw new PrivateGoalsError('FORBIDDEN');
       if(response.status===409)throw new PrivateGoalsError('CONFLICT');
+      if(response.status===429)throw new PrivateGoalsError('RATE_LIMITED');
       throw new PrivateGoalsError('PROVIDER_UNAVAILABLE');
     }
     return responseJson(response);
   }
+  private ownerMatches(raw:unknown):boolean{
+    return this.ownerId===undefined||(object(raw)&&raw.owner_user_id===this.ownerId);
+  }
   private one<T>(raw:unknown,valid:(row:unknown)=>row is T):T {
-    if(!Array.isArray(raw)||raw.length!==1||!valid(raw[0]))
+    if(!Array.isArray(raw)||raw.length!==1||!valid(raw[0])||!this.ownerMatches(raw[0]))
       throw new PrivateGoalsError('INVALID_ACK');
     return raw[0];
   }
   private many<T>(raw:unknown,valid:(row:unknown)=>row is T):T[] {
-    if(!Array.isArray(raw)||raw.length>100||raw.some(row=>!valid(row)))
+    if(!Array.isArray(raw)||raw.length>100||raw.some(row=>!valid(row)||!this.ownerMatches(row)))
       throw new PrivateGoalsError('INVALID_ACK');
     return raw;
   }
@@ -204,7 +221,7 @@ export class SupabasePrivateGoalsService {
     params.set('order','id.asc');
     params.set('limit',String(limit+1));
     const raw=await this.send(table+'?'+params.toString(),'GET');
-    if(!Array.isArray(raw)||raw.length>limit+1||raw.some(row=>!valid(row))||
+    if(!Array.isArray(raw)||raw.length>limit+1||raw.some(row=>!valid(row)||!this.ownerMatches(row))||
        (goal!==null&&raw.some(row=>row.goal_id!==goal))||
        (after!==null&&raw.some(row=>row.id<=after))||
        raw.some((row,i)=>i>0&&raw[i-1].id>=row.id))
@@ -219,6 +236,39 @@ export class SupabasePrivateGoalsService {
   listProgressPage(goalId:string,limit=50,afterId:string|null=null):
     Promise<PrivateGoalPage<GoalProgress>> {
     return this.readPage('private_goal_progress_events',validProgress,limit,afterId,goalId);
+  }
+  /** Newest first across pages, exact (created_at,id) tuple. Cursor is a
+   * navigation hint, never authority. Existing UUID cursor stays compatible. */
+  async listProgressChronologicalPage(goalId:string,limit=50,after:GoalProgressChronologicalCursor|null=null):
+    Promise<GoalProgressChronologicalPage>{
+    const cursor=after?{...after}:null;
+    if(!validId(goalId)||!Number.isSafeInteger(limit)||limit<1||limit>100||
+      (cursor&&(cursor.version!==1||cursor.goalId!==goalId.toLowerCase()||
+        !validId(cursor.ownerUserId)||!validId(cursor.id)||instantMicros(cursor.createdAt)===null||
+        (this.ownerId!==undefined&&cursor.ownerUserId!==this.ownerId))))
+      throw new PrivateGoalsError('VALIDATION');
+    goalId=goalId.toLowerCase();
+    const params=new URLSearchParams({select:'*',goal_id:'eq.'+goalId,
+      order:'created_at.desc,id.desc',limit:String(limit+1)});
+    if(cursor)params.set('or','(created_at.lt.'+cursor.createdAt+',and(created_at.eq.'+
+      cursor.createdAt+',id.lt.'+cursor.id.toLowerCase()+'))');
+    const raw=await this.send('private_goal_progress_events?'+params,'GET');
+    if(!Array.isArray(raw)||raw.length>limit+1||raw.some(row=>!validProgress(row)||
+      !this.ownerMatches(row)||row.goal_id!==goalId))
+      throw new PrivateGoalsError('INVALID_ACK');
+    const rows=raw as GoalProgress[];
+    let previous=cursor?{time:instantMicros(cursor.createdAt)!,id:cursor.id.toLowerCase()}:null;
+    const owner=cursor?.ownerUserId??this.ownerId??rows[0]?.owner_user_id;
+    for(const row of rows){
+      const time=instantMicros(row.created_at);
+      if(time===null||row.owner_user_id!==owner||
+        (previous&&(time>previous.time||(time===previous.time&&row.id>=previous.id))))
+        throw new PrivateGoalsError('INVALID_ACK');
+      previous={time,id:row.id};
+    }
+    const items=rows.slice(0,limit),last=items[items.length-1];
+    return {items,nextCursor:rows.length>limit&&last?{version:1,goalId,ownerUserId:last.owner_user_id,
+      createdAt:last.created_at,id:last.id}:null};
   }
   listMilestonesPage(goalId:string,limit=50,afterId:string|null=null):
     Promise<PrivateGoalPage<GoalMilestone>> {
@@ -245,7 +295,12 @@ export class SupabasePrivateGoalsService {
   async listGoals():Promise<PrivateGoal[]> {
     return this.many(await this.send('private_goals?select=*&order=created_at.desc&limit=100','GET'),validGoal);
   }
-  async updateGoal(id:string,fields:GoalUpdate):Promise<PrivateGoal> {
+  /** Additive conditional update. Legacy callers retain their existing API. */
+  async updateGoalIfUnchanged(id:string,expectedUpdatedAt:string,fields:GoalUpdate):Promise<PrivateGoal>{
+    if(instantMicros(expectedUpdatedAt)===null)throw new PrivateGoalsError('VALIDATION');
+    return this.updateGoal(id,fields,expectedUpdatedAt);
+  }
+  async updateGoal(id:string,fields:GoalUpdate,expectedUpdatedAt?:string):Promise<PrivateGoal> {
     if(!validId(id)||!object(fields)||!Object.keys(fields).length||
        Object.keys(fields).some(key=>!['title','description','target_value','unit','due_on','status'].includes(key))||
        (fields.title!==undefined&&!validText(fields.title,1,160))||
@@ -257,9 +312,15 @@ export class SupabasePrivateGoalsService {
        (fields.status!==undefined&&!goalStatuses.has(fields.status)))
       throw new PrivateGoalsError('VALIDATION');
     id=id.toLowerCase();
-    const raw=await this.send('private_goals?id=eq.'+id+'&select=*','PATCH',fields);
+    const expected=expectedUpdatedAt===undefined?null:instantMicros(expectedUpdatedAt);
+    if(expectedUpdatedAt!==undefined&&expected===null)throw new PrivateGoalsError('VALIDATION');
+    const filter=expectedUpdatedAt===undefined?'':'&updated_at=eq.'+encodeURIComponent(expectedUpdatedAt);
+    const raw=await this.send('private_goals?id=eq.'+id+'&select=*'+filter,'PATCH',fields);
+    // A conditional zero-row update reveals neither absence nor foreign ownership.
+    if(expected!==null&&Array.isArray(raw)&&raw.length===0)throw new PrivateGoalsError('CONFLICT');
     const result=this.one(raw,validGoal);
-    if(result.id!==id||Object.entries(fields).some(([k,v])=>
+    const updated=instantMicros(result.updated_at);
+    if(result.id!==id||(expected!==null&&(updated===null||updated<=expected))||Object.entries(fields).some(([k,v])=>
       result[k as keyof PrivateGoal]!==v))throw new PrivateGoalsError('INVALID_ACK');
     return result;
   }

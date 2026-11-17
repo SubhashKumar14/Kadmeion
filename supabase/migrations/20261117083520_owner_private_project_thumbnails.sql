@@ -171,3 +171,16 @@ revoke all on function public.owner_save_private_profile_links(jsonb,jsonb)
 grant execute on function public.owner_save_private_profile_links(jsonb,jsonb) to authenticated;
 comment on column public.profiles.private_links is
   'Owner-private authored links, excluded from explicit public projection and never fetched.';
+
+-- WF-041: guarantee strictly advancing per-row timestamp on conditional
+-- PostgREST goal edits, including concurrent transactions or server clock skew.
+-- Existing owner RLS and column grants remain unchanged; no additional RPC.
+create or replace function kadmeion_private.touch_owner_goal_timestamp()
+returns trigger language plpgsql set search_path='' as $goal$
+begin
+  new.updated_at=greatest(clock_timestamp(),old.updated_at+interval '1 microsecond');
+  return new;
+end;
+$goal$;
+revoke all on function kadmeion_private.touch_owner_goal_timestamp()
+  from public,anon,authenticated,service_role;

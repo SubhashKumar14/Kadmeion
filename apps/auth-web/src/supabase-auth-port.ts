@@ -1624,7 +1624,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         import('../../../packages/contracts/src/private-platform-links-service.ts')
       ]);
       return {
-        goals: new goalModule.SupabasePrivateGoalsService(this.origin,this.publishableKey,token,this.fetcher),
+        goals: new goalModule.SupabasePrivateGoalsService(this.origin,this.publishableKey,token,this.fetcher,userId),
         links: new linkModule.SupabasePrivatePlatformLinksService(this.origin,this.publishableKey,userId,token,this.fetcher)
       };
     });
