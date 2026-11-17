@@ -1640,6 +1640,16 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
   await drawer.getByLabel('Project title').fill(title);
   await drawer.getByRole('button',{name:'Save project'}).click();
   await expect(drawer).toBeHidden();
+  let coverRead:{status:number;code:string|null;revision:number|null}|null=null;
+  page.on('response',async response=>{
+    const u=new URL(response.url());
+    if(u.origin!==origin||u.pathname!=='/rest/v1/rpc/read_private_project_thumbnail')return;
+    const status=response.status();
+    const value:unknown=await response.json().catch(()=>null);
+    const row=value&&typeof value==='object'?value as Record<string,unknown>:null;
+    coverRead={status,code:typeof row?.code==='string'&&/^[A-Z0-9]{5}$/.test(row.code)?row.code:null,
+      revision:typeof row?.revision==='number'&&Number.isSafeInteger(row.revision)?row.revision:null};
+  });
   await page.getByRole('link',{name:title}).click();
   await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
   const projectPath=new URL(page.url()).pathname;
@@ -1672,9 +1682,31 @@ test('B16 C01 owner thumbnail actual bytes, lost acknowledgement, stale CAS, rep
     await expect(altInput).toHaveValue(alt);
   };
   await expect(cover.getByText('Folder cover',{exact:true})).toBeVisible();
-  await choose('first.png',firstBytes,firstAlt);
   const attach=cover.getByRole('button',{name:'Upload and attach thumbnail'});
-  await expect(attach).toBeEnabled(); // Required capability: no absent-API skip.
+  try{
+    await choose('first.png',firstBytes,firstAlt);
+    await expect(attach).toBeEnabled(); // Required capability: no absent-API skip.
+  }catch(error){
+    // Failure-only, bounded diagnostic: never save raw response, URL, IDs,
+    // credentials, user fields, file names or unclassified alert strings.
+    const read=coverRead as {status:number;code:string|null;revision:number|null}|null;
+    const saved=await readRevision().catch(()=>NaN);
+    const text=(await cover.getByRole('alert').allTextContents().catch(()=>[])).join(' ');
+    const category=/owner session changed/i.test(text)?'EPOCH_CHANGED':/access was denied/i.test(text)?'DENIED':
+      /could not be verified/i.test(text)?'UNVERIFIED':/private cover read failed/i.test(text)?'READ_FAILED':text?'OTHER':'NONE';
+    const fileInput=cover.getByLabel(/Image file/),altInput=cover.getByLabel('Image alt text');
+    const dir='/tmp/kadmeion-owner-captures';await mkdir(dir,{recursive:true});
+    await writeFile(dir+'/'+randomUUID()+'.route-diagnostics.json',JSON.stringify({
+      pathname:'/app/projects/:id',gate:'C01_INITIAL_COVER',readStatus:read?.status??null,sqlstate:read?.code??null,
+      revisionRelation:read?.revision==null||!Number.isFinite(saved)?'UNKNOWN':read.revision===saved?'MATCH':read.revision<saved?'OLDER':'NEWER',
+      busy:await cover.getByText('Checking or saving the private cover…',{exact:true}).isVisible().catch(()=>false),
+      fileInputEnabled:await fileInput.isEnabled().catch(()=>false),
+      filePresent:await fileInput.evaluate(node=>!!(node as HTMLInputElement).files?.length).catch(()=>false),
+      altMatches:await altInput.inputValue().then(value=>value===firstAlt).catch(()=>false),
+      attachEnabled:await attach.isEnabled().catch(()=>false),category
+    }),{encoding:'utf8',mode:0o600});
+    throw error;
+  }
   const base=await readRevision();
   expect(Number.isSafeInteger(base)).toBe(true);
   let uploads=0,registrations=0;
@@ -2193,7 +2225,7 @@ test('B16 My Components verified private versions, protected replacement and exa
   const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(archivePath)));
   const active=snapshot.slots['arc-hero-title'],stash=snapshot.stashes['arc-hero-title']??[];
   expect(active?.state==='S2'&&!!active.sourcePath&&snapshot.files[active.sourcePath]===v2).toBe(true);
-  expect(stash.some(slot=>!!slot.sourcePath&&slot.sourcePath!==active.sourcePath&&snapshot.files[slot.sourcePath]===v1)).toBe(true);
+  expect(stash.some(slot=>!!slot.sourcePath&&slot.sourcePath!==active?.sourcePath&&snapshot.files[slot.sourcePath]===v1)).toBe(true);
   // No source evaluation and no public release are asserted from this private archive.
   await page.getByRole('button',{name:'Sign out',exact:true}).click();
   await expect(page).toHaveURL(/\/signin$/);
