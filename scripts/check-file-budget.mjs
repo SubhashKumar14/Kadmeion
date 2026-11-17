@@ -6,6 +6,15 @@ const app = paths.filter((path) => path !== 'README.md' && !path.startsWith('pro
   !path.startsWith('node_modules/') && !path.startsWith('dist/') &&
   !path.startsWith('coverage/'));
 const planned = 200;
+const hardCeiling = 280; // DECISION-B16-001, conditional on named reservations.
+// Fail closed if the pinned historical baseline is unavailable.
+const baselineRef = '7d03713fbbef4f02215d38b28932ad3952adefad';
+const baselinePaths = new Set(execFileSync('git', ['ls-tree', '-r', '--name-only', baselineRef], { encoding: 'utf8' }).trim().split('\n').filter(Boolean));
+const reservedAdditions = new Set([
+  // RESERVE-B16-S01-001; WF-009/013/041; S1; exact authorized migration path.
+  'supabase/migrations/20261117083520_owner_private_project_thumbnails.sql',
+]);
+// RESERVE-B16-S01-002 is conditional, not allowlisted until its gates are recorded.
 // Independently reviewed security migrations, owner-notification files and
 // a dependency-free server-only PNG sanitization source/test pair remain
 // separate so privacy safeguards are not hidden inside unrelated modules.
@@ -115,14 +124,24 @@ const justifiedExtra = [
   'apps/frontend/src/growth.tsx',
   'supabase/migrations/20261115154500_owner_profile_draft_save.sql'
 ];
-const extras = justifiedExtra.filter(path => app.includes(path));
+const extras = [...justifiedExtra, ...reservedAdditions].filter(path => app.includes(path));
 const nonexceptionCount = app.length - extras.length;
 console.log(`Kadmeion authored application/config/test files: ${app.length} / originally planned ${planned}`);
 if (app.length > planned) {
-  console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified security/privacy/frontend files require owner review.`);
+  console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified historical/reserved files; B16 hard ceiling ${hardCeiling}.`);
 }
 if (nonexceptionCount > planned) {
   console.error('Nonexception source/config/test files exceed the original planned count; review modularity.');
   process.exitCode = 1;
 }
 
+
+const unreserved = app.filter(path => !baselinePaths.has(path) && !reservedAdditions.has(path));
+if (unreserved.length) {
+  console.error('Unreserved counted additions: ' + unreserved.join(', '));
+  process.exitCode = 1;
+}
+if (app.length > hardCeiling) {
+  console.error(`B16 hard ceiling exceeded: ${app.length} > ${hardCeiling}`);
+  process.exitCode = 1;
+}
