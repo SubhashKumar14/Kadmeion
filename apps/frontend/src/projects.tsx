@@ -60,12 +60,17 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [draft,setDraft]=useState<NewPrivateProject>(freshDraft);
   const [customSlug,setCustomSlug]=useState(false);
   const [saving,setSaving]=useState(false);
+  const creationInFlight=useRef(false);
+  const creationAttempt=useRef(0);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const modal=useRef<HTMLDialogElement>(null);
   const opener=useRef<HTMLButtonElement>(null);
   const topOpener=useRef<HTMLButtonElement>(null);
   function invalidateOwner() {
+    creationAttempt.current++;
+    creationInFlight.current=false;
+    setSaving(false);
     requestEpoch.current++;
     pageInFlight.current=false;
     setLoadingMore(false);
@@ -118,6 +123,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     });
     return ()=>{active=false;requestEpoch.current++;};
   },[port,reload]);
+
+  useEffect(()=>()=>{
+    creationAttempt.current++;
+    creationInFlight.current=false;
+  },[port]);
 
   // Same-instance account switches do not necessarily remount the workspace.
   // Verify again on focus and cross-tab session changes; fail closed on mismatch.
@@ -226,19 +236,29 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(saving)return;
+    if(creationInFlight.current)return;
+    creationInFlight.current=true;
+    const attempt=++creationAttempt.current;
+    const sessionEpoch=port.getOwnerSessionEpoch();
+    const submitted={...draft};
+    const stillCurrent=()=>attempt===creationAttempt.current;
     setSaving(true);setError('');setNotice('');
     try {
       const identity=await port.getUser();
+      if(!stillCurrent())return;
+      if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
       const expectedOwner=identity.data?.user?.id;
       if(identity.error || !expectedOwner ||
          (state.status==='ready' && state.ownerId!==expectedOwner)) {
         invalidateOwner();
         return;
       }
-      const saved=await port.createPrivateProject(draft);
+      const saved=await port.createPrivateProject(submitted);
+      if(!stillCurrent())return;
+      if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
       const current=await port.getUser();
-      if(current.error || current.data?.user?.id!==expectedOwner) {
+      if(!stillCurrent())return;
+      if(port.getOwnerSessionEpoch()!==sessionEpoch || current.error || current.data?.user?.id!==expectedOwner) {
         invalidateOwner();
         return;
       }
@@ -257,8 +277,16 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       setDraft(freshDraft());setCustomSlug(false);
       setNotice('Saved privately in your account. This did not publish or connect a repository.');
     } catch {
-      setError('Project creation could not be verified. Your form values are retained.');
-    } finally {setSaving(false);}
+      if(stillCurrent()) {
+        if(port.getOwnerSessionEpoch()!==sessionEpoch) invalidateOwner();
+        else setError('Project creation could not be verified. Your form values are retained.');
+      }
+    } finally {
+      if(stillCurrent()) {
+        creationInFlight.current=false;
+        setSaving(false);
+      }
+    }
   }
   return <section className="ws-projects ws-owner-page" aria-labelledby="ws-title">
     <div className="ws-project-head">
@@ -344,7 +372,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       </div>}
     </>}
     <dialog ref={modal} className="ws-project-dialog" aria-labelledby="ws-project-modal-heading"
-      onCancel={event => { if (saving) event.preventDefault(); }}
+      onCancel={event => { if (creationInFlight.current) event.preventDefault(); }}
       onClose={() => (opener.current?.isConnected ? opener.current : topOpener.current)?.focus()}>
       <form onSubmit={event=>void save(event)}>
         <div className="ws-project-modal-heading"><div><p className="ws-kicker">QUICK ADD / PRIVATE</p>
@@ -352,11 +380,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
             disabled={saving} onClick={()=>modal.current?.close()}>×</button></div>
         <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
-        <label>Project title<input required autoComplete="off" maxLength={120} value={draft.title}
+        <label>Project title<input disabled={saving} required autoComplete="off" maxLength={120} value={draft.title}
           onChange={event=>setDraft(old=>({...old,title:event.target.value,
             slug:customSlug?old.slug:suggestSlug(event.target.value)}))}/></label>
         <details className="ws-project-slug"><summary>Edit private URL slug</summary>
-        <label>Private URL slug<input required spellCheck={false} minLength={3} maxLength={64}
+        <label>Private URL slug<input disabled={saving} required spellCheck={false} minLength={3} maxLength={64}
           pattern="[a-z0-9]+(-[a-z0-9]+)*" value={draft.slug}
           onInvalid={event => {
             const disclosure = event.currentTarget.closest('details');
@@ -364,14 +392,15 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           }}
           onChange={event=>{setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
           <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
-        <label>Summary (optional)<textarea rows={3} maxLength={360} value={draft.summary}
+        <label>Summary (optional)<textarea disabled={saving} rows={3} maxLength={360} value={draft.summary}
           onChange={event=>setDraft(old=>({...old,summary:event.target.value}))}/></label>
-        <label>Repository URL (optional)<input type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+        <label>Repository URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/repository" value={draft.repositoryUrl||''}
           onChange={event=>setDraft(old=>({...old,repositoryUrl:event.target.value||null}))}/></label>
-        <label>Live website URL (optional)<input type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+        <label>Live website URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
           onChange={event=>setDraft(old=>({...old,liveUrl:event.target.value||null}))}/></label>
+        {saving&&<p role="status">Saving your private project…</p>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>modal.current?.close()}>Cancel</button>
