@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import type { OwnerProfile, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 
 import { Icon } from './landing.tsx';
+import type { PrivatePlatformLink, PlatformProvider } from '../../../packages/contracts/src/private-platform-links-service.ts';
 
 type PreviewField = 'displayName' | 'headline' | 'bio';
 const previewFields: {key: PreviewField; label: string}[] = [
@@ -13,6 +14,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [saved, setSaved] = useState<OwnerProfile | null>(null);
   const [draft, setDraft] = useState<OwnerProfile | null>(null);
   const [panel, setPanel] = useState('Profile');
+  const [openedLinks,setOpenedLinks]=useState(false);
+  const [previewSaved,setPreviewSaved]=useState(false);
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
   const [visible, setVisible] = useState<PreviewField[]>(['displayName', 'headline']);
@@ -131,6 +134,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     saved.bio !== draft.bio || saved.skills.join('\u0000') !== draft.skills.join('\u0000')
   ));
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
+  const preview=previewSaved?saved:draft;
 
   return <section aria-labelledby="profile-title" className="ws-profile ws-owner-page">
     <form onSubmit={event => void save(event)}>
@@ -144,7 +148,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       </div>
       <div className="ws-profile-tabs" role="group" aria-label="Profile sections">
         {['Profile', 'Skills & links', 'Visibility', 'Public preview'].map(item =>
-          <button key={item} type="button" aria-pressed={panel === item} onClick={() => setPanel(item)}>{item}</button>)}
+          <button key={item} type="button" aria-pressed={panel === item} onClick={() => {if(item==='Skills & links')setOpenedLinks(true);setPanel(item);}}>{item}</button>)}
       </div>
       {error && <div role="alert" className="ws-inline-alert">{error}</div>}
       {notice && <div role="status" className="ws-inline-alert">{notice}</div>}
@@ -176,6 +180,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           {panel === 'Profile' && <>
             <div className="ws-profile-avatar"><span aria-hidden="true">{initials || '•'}</span><div>
               <strong>Profile identity</strong><p>{draft.handle ? '@' + draft.handle : 'A public handle has not been claimed.'}</p>
+              <p>Initials are the current avatar fallback. Private avatar storage and attachment are not available yet.</p>
             </div></div>
             <label>Display name<input value={draft.displayName} maxLength={80} onChange={event => edit('displayName', event.target.value)} /></label>
             <label>Headline<input value={draft.headline} maxLength={160} onChange={event => edit('headline', event.target.value)} /></label>
@@ -196,13 +201,13 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             {skillError && <p id="profile-skill-error" role="alert" className="ws-inline-alert">{skillError}</p>}
             <p>{draft.skills.length} of 20 skills added to this private draft.</p>
             <button type="button" className="ws-secondary" disabled={!skill.trim() || draft.skills.length >= 20} onClick={addSkill}>Add skill</button>
-            {panel === 'Skills & links' && <p>Project links are managed in the <a href="/app/projects">project library</a>.</p>}
+            <p>Manage self-supplied private platform links below. Project URLs are managed in the <a href="/app/projects">project library</a>.</p>
           </>}
           {panel === 'Visibility' && <>
-            <p>Use the preview card to choose which fields to show. These selections apply to this preview only.</p>
+            <p>Choose which eligible fields to include in the private preview. These selections do not save sharing consent or publish anything. Skills, platform links, email and account details stay out of this projection.</p>
             <a className="ws-secondary" href="/app/settings/privacy">Open privacy settings</a>
           </>}
-          {panel === 'Public preview' && <p>The card shows the selected draft fields. The preview is private.</p>}
+          {panel === 'Public preview' && <p>Compare the selected draft or last saved fields. This is an owner-only approximation, not a live visitor route.</p>}
         </fieldset>
         <div className="ws-profile-preview">
           <aside className="ws-project-aside" aria-label="Public profile preview">
@@ -210,22 +215,158 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             <div className="ws-profile-card">
               <span className="ws-preview-identity"><Icon name="user" size={22}/></span>
               <p className="ws-kicker">PREVIEW ONLY</p>
-              <h3>{visible.includes('displayName') && draft.displayName.trim() ? draft.displayName : 'Developer profile'}</h3>
-              {visible.includes('headline') && <p>{draft.headline}</p>}
-              {visible.includes('bio') && <p>{draft.bio}</p>}
+              <h3>{visible.includes('displayName') && preview?.displayName.trim() ? preview.displayName : 'Developer profile'}</h3>
+              {visible.includes('headline') && preview?.headline.trim() && <p>{preview.headline}</p>}
+              {visible.includes('bio') && preview?.bio.trim() && <p>{preview.bio}</p>}
+              {!visible.length && <p>No fields selected for preview.</p>}
             </div>
             <fieldset className="ws-preview-fields" disabled={locked}>
               <legend>Fields to preview</legend>
+              <label className="ws-profile-check"><input type="checkbox" checked={previewSaved}
+                onChange={event=>setPreviewSaved(event.target.checked)}/> Use last saved profile instead of current draft</label>
               {previewFields.map(({key, label}) => <label key={key} className="ws-profile-check">
                 <input type="checkbox" aria-label={'Include ' + label + ' in preview'} checked={visible.includes(key)} onChange={event => {
                   const checked = event.target.checked;
                   setVisible(current => checked ? [...current, key] : current.filter(field => field !== key));
                 }}/>{label}</label>)}
+              <button type="button" className="ws-secondary" disabled={!visible.length} onClick={()=>setVisible([])}>Clear preview selection</button>
             </fieldset>
-            <p>This preview stays in your workspace. Saving updates your private draft.</p>
+            <p>{previewSaved?'Preview of last confirmed private profile.':'Preview of current unsaved or saved draft.'} This stays in your workspace; it does not publish.</p>
           </aside>
         </div>
       </div>}
     </form>
+    {draft&&openedLinks&&<div hidden={panel!=='Skills & links'}><PrivateProfileLinks port={port}/></div>}
+  </section>;
+}
+
+const profileProviders:ReadonlyArray<{id:PlatformProvider;label:string}>=[
+  {id:'GITHUB',label:'GitHub'},{id:'LEETCODE',label:'LeetCode'},
+  {id:'CODEFORCES',label:'Codeforces'},{id:'HACKERRANK',label:'HackerRank'},
+  {id:'KAGGLE',label:'Kaggle'},{id:'HUGGING_FACE',label:'Hugging Face'}
+];
+
+/** Separate private LINK_ONLY records: profile draft save does not alter them,
+ * nor does selecting a link imply provider ownership or public consent.
+ */
+function PrivateProfileLinks({port}:{port:SupabaseBrowserAuthPort}){
+  const [records,setRecords]=useState<PrivatePlatformLink[]|null>(null);
+  const [provider,setProvider]=useState<PlatformProvider>('GITHUB');
+  const [handle,setHandle]=useState('');
+  const [confirmRemove,setConfirmRemove]=useState(false);
+  const [busy,setBusy]=useState(true);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const pending=useRef(true);
+  const generation=useRef(0);
+  const epoch=useRef(port.getOwnerSessionEpoch());
+  const current=(attempt:number)=>attempt===generation.current&&epoch.current===port.getOwnerSessionEpoch();
+  function clearOwner(){
+    setRecords(null);setHandle('');setConfirmRemove(false);setNotice('');
+    setError('Your owner session changed. Reopen your profile.');
+  }
+  async function freshService(attempt:number){
+    const verified=await port.getUser();
+    if(!current(attempt)||verified.error||!verified.data?.user)throw new Error('Session unavailable');
+    const services=await port.ownerGrowth();
+    if(!current(attempt)||services.error||!services.data)throw new Error('Private link service unavailable');
+    return services.data.links;
+  }
+  useEffect(()=>{
+    const attempt=++generation.current;epoch.current=port.getOwnerSessionEpoch();
+    pending.current=true;setBusy(true);
+    void (async()=>{
+      try{
+        const service=await freshService(attempt);
+        const rows=await service.list();
+        if(current(attempt)){setRecords(rows);setHandle(rows.find(row=>row.provider==='GITHUB')?.handle??'');setError('');}
+      }catch{if(current(attempt))setError('Private links could not be loaded. Retry securely.');}
+      finally{if(attempt===generation.current){pending.current=false;setBusy(false);if(!current(attempt))clearOwner();}}
+    })();
+    return ()=>{generation.current++;pending.current=false;};
+  },[port]);
+  async function operate(action:'read'|'save'|'remove'){
+    if(pending.current)return;
+    if(epoch.current!==port.getOwnerSessionEpoch()){clearOwner();return;}
+    if(action!=='read'&&!records)return;
+    const existing=records?.find(row=>row.provider===provider);
+    const selected=provider, submitted=handle.trim();
+    if(action==='save'&&(!submitted||submitted.length>64)){setError('Enter a valid platform handle.');return;}
+    if(action==='remove'&&(!existing||!confirmRemove))return;
+    pending.current=true;setBusy(true);setError('');setNotice('');
+    const attempt=++generation.current;
+    try{
+      const service=await freshService(attempt);
+      const before=await service.list();
+      if(!current(attempt))return;
+      const row=before.find(item=>item.provider===selected);
+      setRecords(before);
+      if(action==='read'){
+        if(records===null)setHandle(row?.handle??'');
+        setNotice('Private links checked.');
+        return;
+      }
+      // A previous ambiguous response may already have committed; never blindly create twice.
+      if(action==='save'&&row?.handle===submitted){setNotice('Private link confirmed saved.');setConfirmRemove(false);return;}
+      if(action==='remove'&&!row){setHandle('');setConfirmRemove(false);setNotice('Private link is absent from the saved records.');return;}
+      if((row?.id??null)!==(existing?.id??null)||(row?.updated_at??null)!==(existing?.updated_at??null)||
+          (row?.handle??null)!==(existing?.handle??null)){
+        setError('The saved link changed. Review the current record before retrying. Your typed handle is retained.');
+        setConfirmRemove(false);
+        return;
+      }
+      if(!current(attempt))return;
+      if(action==='save')await service.save(selected,submitted,row);
+      else if(row)await service.remove(row);
+      if(!current(attempt))return;
+      const after=await service.list();
+      if(!current(attempt))return;
+      setRecords(after);
+      const confirmed=after.find(item=>item.provider===selected);
+      if(action==='save'?confirmed?.handle!==submitted:!!confirmed){
+        setError('The requested link state could not be confirmed. Refresh before retrying.');
+        return;
+      }
+      if(action==='remove')setHandle('');
+      setConfirmRemove(false);
+      setNotice(action==='save'?'Private link confirmed saved.':'Private link confirmed removed.');
+    }catch{
+      if(current(attempt))setError('The private link request could not be confirmed. Your input is retained; retry checks saved records first.');
+    }finally{
+      if(attempt===generation.current){pending.current=false;setBusy(false);if(!current(attempt))clearOwner();}
+    }
+  }
+  const selected=records?.find(row=>row.provider===provider);
+  return <section className="ws-project-fields" aria-labelledby="profile-private-links-title">
+    <h2 id="profile-private-links-title">Private platform links</h2>
+    <p>Personal handles only. No OAuth connection, provider verification, metrics sync or public exposure.</p>
+    {busy&&<p role="status">Checking private links…</p>}
+    {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
+    {notice&&<p role="status">{notice}</p>}
+    {records!==null&&<>
+      {records.length?<ul>{records.map(row=><li key={row.id}>
+        <strong>{profileProviders.find(item=>item.id===row.provider)?.label}</strong>{' '}
+        <a href={row.profile_url} target="_blank" rel="noopener noreferrer">{row.handle}</a> · Self-supplied, not verified
+      </li>)}</ul>:<p>No private platform links saved.</p>}
+      <fieldset disabled={busy}>
+        <legend>Add or update a private link</legend>
+        <label>Platform<select value={provider} onChange={event=>{
+          if(pending.current)return;
+          const item=profileProviders.find(row=>row.id===event.target.value);
+          if(item){setProvider(item.id);setHandle(records.find(row=>row.provider===item.id)?.handle??'');setError('');setNotice('');setConfirmRemove(false);}
+        }}>{profileProviders.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <label>Platform handle<input maxLength={64} autoComplete="off" spellCheck={false} value={handle}
+          onChange={event=>{if(!pending.current){setHandle(event.target.value);setConfirmRemove(false);setNotice('');}}}/></label>
+        <button type="button" className="ws-primary" disabled={!handle.trim()||handle.trim()===selected?.handle}
+          onClick={()=>void operate('save')}>Save private link</button>
+        {selected&&<>
+          <label className="ws-profile-check"><input type="checkbox" checked={confirmRemove}
+            onChange={event=>setConfirmRemove(event.target.checked)}/> Confirm removal of this saved platform link</label>
+          <button type="button" className="ws-secondary" disabled={!confirmRemove} onClick={()=>void operate('remove')}>Remove private link</button>
+        </>}
+      </fieldset>
+    </>}
+    <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void operate('read')}>
+      {error?'Retry or refresh private links':'Refresh private links'}</button>
   </section>;
 }
