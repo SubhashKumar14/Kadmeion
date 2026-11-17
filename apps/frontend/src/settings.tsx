@@ -673,10 +673,11 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
-  const [reauth, setReauth] = useState<AccountExitReauthVerification|null>(null);
+  const [recoveredProof, setRecoveredProof] = useState<{requestId:string;verification:AccountExitReauthVerification}|null>(null);
   const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
   const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
+  const reauth = recoveredProof && activeRequest?.id === recoveredProof.requestId ? recoveredProof.verification : null;
 
   const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
   useEffect(() => {
@@ -692,7 +693,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     const stillCurrent = () => active && port.reconcileOwnerSessionEpoch() === epoch;
     setRecovery('checking');
     setMessage(null);
-    setReauth(null);
+    setRecoveredProof(null);
     setWithdrawConfirmation('');
     withdrawalOperation.current = null;
     void (async () => {
@@ -705,7 +706,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
           const {requestId, verification} = recovered.data;
           const [result, history] = await Promise.all([service.preflight(),service.list()]);
           if (!stillCurrent()) return;
-          if (!history.some(item => item.id === requestId && item.status === 'REQUESTED_BLOCKED') ||
+          if (history.find(item => item.status === 'REQUESTED_BLOCKED')?.id !== requestId ||
               !Number.isFinite(Date.parse(verification.expiresAt)) ||
               Date.parse(verification.expiresAt) <= Date.now()) {
             port.discardOwnerAccountExitReauth(epoch);
@@ -713,14 +714,14 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
           }
           setInventory(result);
           setRequests(history);
-          setReauth(verification);
+          setRecoveredProof({requestId,verification});
         }
         setRecovery('ready');
       } catch (error) {
         if (!stillCurrent()) return;
         setInventory(null);
         setRequests(null);
-        setReauth(null);
+        setRecoveredProof(null);
         setMessage(failure(error));
         setRecovery('failed');
       }
@@ -732,7 +733,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
 
   function discardProof() {
     port.discardOwnerAccountExitReauth(epoch);
-    setReauth(null);
+    setRecoveredProof(null);
     setWithdrawConfirmation('');
     withdrawalOperation.current = null;
   }
@@ -748,7 +749,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       if (!Number.isFinite(remaining) || remaining <= 0) {
         if (port.reconcileOwnerSessionEpoch() !== epoch) return;
         port.discardOwnerAccountExitReauth(epoch);
-        setReauth(null);
+        setRecoveredProof(null);
         setWithdrawConfirmation('');
         withdrawalOperation.current = null;
         setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
@@ -776,9 +777,6 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     setInventory(null);
     setRequests(null);
     setConfirmation('');
-    setReauth(null);
-    setWithdrawConfirmation('');
-    withdrawalOperation.current=null;
     try {
       const [result, history] = await Promise.all([service.preflight(),service.list()]);
       if (!current()) return;
@@ -808,11 +806,6 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       // Hide old actions until a fresh read confirms the current request state.
       setRequests(null);
       setConfirmation('');
-      setReauth(null);
-      setWithdrawConfirmation('');
-      withdrawalOperation.current=null;
-      challenge.current=null;
-      challengeOperation.current=null;
       operation.current=null;
       const history=await service.list();
       if (!current()) return;
@@ -834,9 +827,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     form.reset();
     setBusy(true);
     setMessage(null);
-    setReauth(null);
-    setWithdrawConfirmation('');
-    withdrawalOperation.current=null;
+    discardProof();
     try {
       if (challenge.current && Date.parse(challenge.current.expiresAt)<=Date.now()) {
         challenge.current=null;
