@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, savedComponentInputFromOwnedSlot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
+import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, savedComponentInputFromOwnedSlot, planSectionLayoutChange, type LayoutMappingRequest, type ChangeSectionLayoutIntent, type RestoreLayoutStashIntent, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
 
 const make = (): EditorHead => createEditorHead({
   formatVersion:1,
@@ -373,25 +373,11 @@ test('owner section reorder preserves slot ownership, is undoable, and rejects i
     kind:'MOVE_SECTION',sectionId:first,direction:'sideways' as never})),{code:'VALIDATION'});
 });
 
-/** C10 contract tests: must be composed with S3's real engine, never skipped.
- * Local type bridge intentionally describes the approved pending public engine
- * interface without requiring this test-only branch to own its declaration. */
-type C10Request={sectionId:string;expectedLayout:string;targetLayout:string;
-  mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>};
-type C10Intent=({kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;confirmStash:boolean;
-  confirmOwnedRelocation:boolean}&C10Request)|{kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;
-  stashIndex:number;toSlotKey:string;expectedRevision:number;confirmOwnedRelocation:boolean};
-async function c10Planner(){
-  const engine=await import('../../packages/editor-core/src/portfolio-revision-transactions.ts');
-  const planner=(engine as unknown as {planSectionLayoutChange?:(
-    head:EditorHead,request:C10Request)=>{requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean}})
-    .planSectionLayoutChange;
-  assert.equal(typeof planner,'function','Approved C10 engine planner must be present');
-  return planner!;
-}
+/** C10 mandatory independent tests against actual S3 engine types. */
+type C10Request=LayoutMappingRequest;
+type C10Intent=ChangeSectionLayoutIntent|RestoreLayoutStashIntent;
 const c10Apply=(head:EditorHead,intent:C10Intent,operationId='75000000-0000-4000-8000-000000000001')=>
-  applyEditorTransaction(head,{operationId,baseRevision:head.revision,
-    intent:intent as Parameters<typeof applyEditorTransaction>[1]['intent']});
+  applyEditorTransaction(head,{operationId,baseRevision:head.revision,intent});
 const c10Fixture=()=>{
   const draft=createPortfolioPresetDraft('arc');
   const page=JSON.parse(draft.files['pages/home.page.json']);
@@ -416,16 +402,20 @@ const c10Fixture=()=>{
       {fromSlotKey:p+'cta2',toSlotKey:null},
       {fromSlotKey:p+'note',toSlotKey:null}
     ]};
-  const intent:C10Intent={kind:'CHANGE_SECTION_LAYOUT',...request,expectedRevision:0,
+  const intent:ChangeSectionLayoutIntent={kind:'CHANGE_SECTION_LAYOUT',...request,expectedRevision:0,
     confirmStash:true,confirmOwnedRelocation:true};
   return {head,request,intent,p,source,original,sourcePath};
 };
 test('C10 atomic layout preview and apply preserve opaque source, stashes and unrelated sections; Undo exact',async()=>{
   const {head,request,intent,p,source,original,sourcePath}=c10Fixture();
-  const before=structuredClone(head),plan=await c10Planner();
-  const receipt=plan(head,request);
+  const before=structuredClone(head);
+  const receipt=planSectionLayoutChange(head,request);
   assert.equal(receipt.requiresStashConfirmation,true);
   assert.equal(receipt.requiresOwnedRelocationConfirmation,true);
+  assert.equal(receipt.expectedRevision,head.revision);
+  assert.deepEqual(receipt.targetKeys,[p+'title',p+'cta']);
+  assert.equal(receipt.addedFiles,1);
+  assert.equal(receipt.addedStashAssignments,4);
   assert.deepEqual(head,before,'Pure preview must not modify the working head');
   const changed=c10Apply(head,intent);
   assert.equal(changed.revision,1);assert.equal(changed.undo.length,1);
@@ -449,20 +439,19 @@ test('C10 atomic layout preview and apply preserve opaque source, stashes and un
   assert.equal(changed.snapshot.files[relocated.sourcePath!],source);
   assert.deepEqual(head,before);
   assert.deepEqual(applyEditorTransaction(changed,{operationId:'75000000-0000-4000-8000-000000000001',
-    baseRevision:0,intent:intent as Parameters<typeof applyEditorTransaction>[1]['intent']}),changed,
+    baseRevision:0,intent}),changed,
     'Identical operation replay does not advance revision');
   const undone=applyEditorTransaction(changed,op(changed,{kind:'UNDO'}));
   assert.deepEqual(undone.snapshot,before.snapshot);
 });
 test('C10 stale preview, missing confirmation, duplicate target, incompatible mapping and source collision are atomic denials',async()=>{
   const {head,intent,request,p}=c10Fixture(),before=structuredClone(head);
-  const planner=await c10Planner();
   for(const malformed of [
     {...request,mappings:request.mappings.slice(1)},
     {...request,mappings:request.mappings.map((row,i)=>i===2?{...row,toSlotKey:p+'title'}:row)},
-    {...request,mappings:request.mappings.map((row,i)=>i===1?{...row,toSlotKey:p+'cta'}:row)},
+    {...request,mappings:request.mappings.map((row,i)=>i===1?{...row,toSlotKey:p+'cta'}:i===2?{...row,toSlotKey:null}:row)},
     {...request,mappings:request.mappings.map((row,i)=>i===2?{...row,toSlotKey:'contact-cta1'}:row)}
-  ])assert.throws(()=>planner(head,malformed));
+  ])assert.throws(()=>planSectionLayoutChange(head,malformed));
   for(const denial of [{...intent,expectedRevision:1},{...intent,confirmStash:false},
     {...intent,confirmOwnedRelocation:false}]){
     assert.throws(()=>c10Apply(head,denial));assert.deepEqual(head,before);
@@ -475,11 +464,10 @@ test('C10 stale preview, missing confirmation, duplicate target, incompatible ma
 });
 test('C10 Unplaced restore targets a declared EMPTY compatible slot and never rewrites original source',async()=>{
   const {head,intent,p,source,sourcePath}=c10Fixture();
-  await c10Planner();
   const changed=c10Apply(head,intent);
   const cleared=applyEditorTransaction(changed,op(changed,{kind:'CLEAR_SLOT',slotKey:p+'cta'}));
   const before=structuredClone(cleared);
-  const restore:C10Intent={kind:'RESTORE_LAYOUT_STASH',fromSlotKey:p+'cta1',
+  const restore:RestoreLayoutStashIntent={kind:'RESTORE_LAYOUT_STASH',fromSlotKey:p+'cta1',
     stashIndex:changed.snapshot.stashes[p+'cta1'].length-1,toSlotKey:p+'cta',
     expectedRevision:cleared.revision,confirmOwnedRelocation:true};
   assert.throws(()=>c10Apply(cleared,{...restore,confirmOwnedRelocation:false},
@@ -495,4 +483,28 @@ test('C10 Unplaced restore targets a declared EMPTY compatible slot and never re
   assert.deepEqual(cleared,before);
   assert.throws(()=>c10Apply(changed,{...restore,expectedRevision:changed.revision},
     '75000000-0000-4000-8000-000000000003'),'Occupied target must not replace current assignment');
+});
+
+test('C10 legacy owned CSS or unknown pin may stash without relocation; overflow is atomic',()=>{
+  const {head,request,intent,p}=c10Fixture();
+  const legacy=structuredClone(head);
+  const key=p+'cta1',old=legacy.snapshot.slots[key].sourcePath!;
+  const css='slots/'+key+'/index.css';
+  legacy.snapshot.files[css]='/* opaque CSS */\r\n';
+  legacy.snapshot.slots[key]={...legacy.snapshot.slots[key],sourcePath:css};
+  delete legacy.snapshot.files[old];
+  const before=structuredClone(legacy);
+  assert.throws(()=>planSectionLayoutChange(legacy,request),{code:'VALIDATION'});
+  const stash={...intent,mappings:intent.mappings.map(row=>row.fromSlotKey===key?{...row,toSlotKey:null}:row)};
+  const result=c10Apply(legacy,stash);
+  assert.equal(result.snapshot.slots[p+'cta'].state,'EMPTY');
+  assert.deepEqual(result.snapshot.stashes[key].at(-1),before.snapshot.slots[key]);
+  assert.equal(result.snapshot.files[css],before.snapshot.files[css]);
+  const tooMany=structuredClone(head);
+  for(let i=Object.keys(tooMany.snapshot.files).length;i<100;i++)
+    tooMany.snapshot.files['content/file-'+i+'.content.json']='{}';
+  const held=structuredClone(tooMany);
+  assert.throws(()=>planSectionLayoutChange(tooMany,request),{code:'VALIDATION'});
+  assert.throws(()=>c10Apply(tooMany,intent),{code:'VALIDATION'});
+  assert.deepEqual(tooMany,held);
 });
