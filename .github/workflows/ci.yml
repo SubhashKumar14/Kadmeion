@@ -23,6 +23,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Enforce B16 counted-file ceiling and exact reservations
+        run: npm run check:file-budget
+      - name: Mandatory C03 method-aware delivery and bounded cancellation regressions
+        run: node --experimental-strip-types --test --test-timeout=30000 tests/editor/unlisted-release-verification.test.ts
       - name: Audit installed production dependency tree for high-severity advisories
         run: npm audit --omit=dev --audit-level=high
       - name: Reject syntax errors in public delivery adapters
@@ -44,7 +48,6 @@ jobs:
         run: npm run verify:approved-light
       - name: Validate F0 source to owner-action and brand contract
         run: npm run verify:f0
-      - run: npm run check:file-budget
       # B07 release smoke uses no JWTs, accounts, secrets or mutating RPCs.
       # PR-only: main's isolated code CI remains independent of paused free hosting.
       - name: Hosted B07 Edge deny-by-default HTTP smoke
