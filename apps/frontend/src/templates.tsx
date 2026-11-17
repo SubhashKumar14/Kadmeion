@@ -134,7 +134,7 @@ export function TemplateExplorer(){
             </div>
             <div className="template-card-actions">
               <button type="button" className="outline-small" onClick={event=>{previewOpener.current=event.currentTarget;setPreview(item);}}>Preview</button>
-              <a className="header-signin" href={getAuthHref()} aria-label={'Sign in to begin portfolio authoring; ' + item.title + ' is a concept preview'}>Sign in to build <Icon name="arrow" size={16}/></a>
+              <a className="header-signin" href={getAuthHref()} aria-label={'Sign in to build — ' + item.title + ' concept preview'}>Sign in to build <Icon name="arrow" size={16}/></a>
             </div>
           </article>)}</div>}
         <section className="template-signin-note" aria-labelledby="template-note-title">
