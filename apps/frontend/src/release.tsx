@@ -22,7 +22,7 @@ function matchesFrozenPin(pin:LoadedPrivateFrozenRevision|null|undefined,request
 const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
 type SafeGrant = {grantId:string;requestId:string;expiresAt:string;status:'REGISTERED_UNSERVABLE'|'REVOKED'};
-type SnapshotDelta={key:string;kind:'Added'|'Removed'|'Changed'};
+type SnapshotDelta={key:string;kind:'Added'|'Removed'|'Changed';beforeBytes:number|null;afterBytes:number|null;fields?:string[]};
 type FrozenComparison={
   requestId:string; frozenRevision:number; draftRevision:number;
   files:SnapshotDelta[];slots:SnapshotDelta[];stashes:SnapshotDelta[];
@@ -37,9 +37,22 @@ function canonicalValue(value:unknown):string|undefined {
 }
 function snapshotDelta<T>(before:Record<string,T>,after:Record<string,T>):SnapshotDelta[]{
   return [...new Set([...Object.keys(before),...Object.keys(after)])].sort().flatMap<SnapshotDelta>(key=>{
-    if(!Object.hasOwn(before,key))return [{key,kind:'Added'}];
-    if(!Object.hasOwn(after,key))return [{key,kind:'Removed'}];
-    return canonicalValue(before[key])===canonicalValue(after[key])?[]:[{key,kind:'Changed'}];
+    const hasBefore=Object.hasOwn(before,key),hasAfter=Object.hasOwn(after,key);
+    const oldValue=before[key],newValue=after[key];
+    const oldCanonical=hasBefore?canonicalValue(oldValue):undefined;
+    const newCanonical=hasAfter?canonicalValue(newValue):undefined;
+    if(hasBefore&&hasAfter&&oldCanonical===newCanonical)return [];
+    const count=(value:T,encoded:string|undefined)=>encoded===undefined?null:
+      new TextEncoder().encode(typeof value==='string'?value:encoded).byteLength;
+    let fields:string[]|undefined;
+    if(oldValue&&newValue&&typeof oldValue==='object'&&typeof newValue==='object'&&
+       !Array.isArray(oldValue)&&!Array.isArray(newValue)){
+      const left=oldValue as Record<string,unknown>,right=newValue as Record<string,unknown>;
+      fields=[...new Set([...Object.keys(left),...Object.keys(right)])].sort()
+        .filter(field=>canonicalValue(left[field])!==canonicalValue(right[field]));
+    }
+    return [{key,kind:!hasBefore?'Added':!hasAfter?'Removed':'Changed',
+      beforeBytes:count(oldValue,oldCanonical),afterBytes:count(newValue,newCanonical),fields}];
   });
 }
 const dataComponents:Readonly<Record<string,SafeSlotKind>> = {
@@ -102,6 +115,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [comparison,setComparison]=useState<FrozenComparison|null>(null);
   const [editableConsent,setEditableConsent]=useState<string|null>(null);
   const [sourceArchiveSha,setSourceArchiveSha]=useState<{requestId:string;sha256:string}|null>(null);
+  const [staticArchiveSha,setStaticArchiveSha]=useState<{requestId:string;sha256:string;htmlSha256:string}|null>(null);
   const [grant,setGrant]=useState<SafeGrant|null>(null);
   const [grants,setGrants]=useState<OwnerReviewerGrantSummary[]|null>(null);
   const [grantListError,setGrantListError]=useState('');
@@ -135,7 +149,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setSelectedRevision(null);setRevisionError('');setPointer(null);
     setVisibility('UNLISTED');setFrozen(null);setPinnedPreview(null);
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);
+    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setGrants(null);setGrantListError('');
     setConfirmRevoke(false);setConfirmBlock(false);setNotice('');setError('');setBusy(false);
     operation.current=null;grantOperation.current=null;blockOperation.current=null;
@@ -150,6 +164,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!active) return;
         if (!reply.data) {setError(reply.error?.message ?? 'Portfolio unavailable.');return;}
         setRecord(reply.data);
+        setComparison(previous=>previous&&previous.draftRevision!==reply.data!.revision?null:previous);
         if (mode==='staging'||mode==='publish'||mode==='releases') {
           const saved=await port.listOwnerPortfolioRevisions(id);
           if (!active) return;
@@ -210,7 +225,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     if (busy || !frozen || result?.status!=='PREVIEW_ONLY') return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
-    setBusy(true);setError('');setNotice('');
+    setBusy(true);setError('');setNotice('');setStaticArchiveSha(null);
     try {
       const {exportStandaloneStaticPreview}=await import('../../../packages/storage-adapters/src/static-preview-export.ts');
       if (!current()) return;
@@ -220,7 +235,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       const archive=await exportStandaloneStaticPreview({...data,plan:buildPlan(data.snapshot)});
       if (!current()) return;
       downloadPrivateFile('kadmeion-static-preview-revision-'+data.loadedRevision+'.zip',archive.zip,'application/zip');
-      setNotice('Offline static preview download prepared.');
+      setStaticArchiveSha({requestId:frozen.requestId,sha256:archive.archiveSha256,htmlSha256:archive.htmlSha256});
+      setNotice('Offline static preview download prepared. ZIP structure and HTML digest checked.');
     } catch {
       if (current()) {setResult(null);setError('The frozen revision could not be exported. Run preflight again to check eligibility.');}
     } finally {if (current()) setBusy(false);}
@@ -242,6 +258,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       if(!draft.data?.snapshot||draft.data.id!==id||!Number.isSafeInteger(draft.data.revision)||
          draft.data.revision<frozen.revision)throw new Error('Saved draft not verified.');
       const before=pin.data.snapshot,after=draft.data.snapshot;
+      if(draft.data.revision===frozen.revision&&canonicalValue(before)!==canonicalValue(after))
+        throw new Error('Same-revision snapshots disagree.');
       setComparison({requestId:frozen.requestId,frozenRevision:frozen.revision,
         draftRevision:draft.data.revision,files:snapshotDelta(before.files,after.files),
         slots:snapshotDelta(before.slots,after.slots),stashes:snapshotDelta(before.stashes,after.stashes),
@@ -283,7 +301,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     if (!record?.revision || selectedRevision===null || busy || historySelection!==null) return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
-    setBusy(true);setError('');setNotice('');setResult(null);
+    setBusy(true);setError('');setNotice('');setResult(null);setStaticArchiveSha(null);
     try {
       let request=frozen;
       if (!request) {
@@ -410,7 +428,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
    * Reuse an older request only after checking the exact owner-RPC frozen pin. */
   async function selectFrozenRequest(request:OwnerFrozenRequest){
     if (busy||historySelectionPending) return;
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);
+    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     const visible=revisions?.find(item=>item.revision===request.revision);
     if (request.portfolioId!==id||request.status!=='FROZEN'||
         (visible!==undefined&&visible.snapshotSha256!==request.snapshotSha256)) {
@@ -457,7 +475,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   function cancelHistoricalSelection(){
     historySelectionEpoch.current+=1;
     setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);
+    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     // Returning to the saved draft requires an explicit, listed selection;
     // do not leave an older absent-in-list revision silently selected.
     setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
@@ -540,7 +558,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         <h2 id="preflight-checks-title">Preflight checks</h2>
         <p>Only checks executed against a verified frozen revision are reported as passed.
           Public delivery is a separate host proof.</p>
-        {result ? <PreflightResults result={result} portfolioId={id}/> : <div role="group" aria-label="Unrun release checks">
+        {result && frozen ? <PreflightResults result={result} portfolioId={id} revision={frozen.revision} mode="publish"/> : <div role="group" aria-label="Unrun release checks">
           <p role="status">Not evaluated. Select a saved revision and run private preflight.</p>
           <ul className="ws-release-unrun-checks">
             {['Revision and snapshot integrity','Content and required slots','Metadata and links',
@@ -664,7 +682,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   historySelectionEpoch.current+=1;
                   setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
                   setFrozen(null);setResult(null);setGrant(null);setConfirmRevoke(false);
-                  setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);
+                  setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
                   setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
                     ? record!.revision : null);
                   operation.current=null;grantOperation.current=null;
@@ -777,9 +795,18 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             </dl>}
             <h4>Static preview ZIP</h4>
             <p>A separate scriptless rendered HTML preview with a SHA-256 file manifest. It excludes editable source and unsupported media; no hosted URL is created.</p>
-            {mode==='releases'?<p><a href={base+'/publish'}>Open private preflight and choose this frozen revision</a></p>:
-              result?.status==='PREVIEW_ONLY'?<p>Use the eligible offline static preview download above.</p>:
+            {mode==='releases'?<>
+              <button className="ws-secondary" type="button" disabled={busy} onClick={()=>void inspect()}>
+                Run private preflight for selected frozen revision</button>
+              {result&&<PreflightResults result={result} portfolioId={id} revision={frozen.revision} mode="releases"/>}
+              {result?.status==='PREVIEW_ONLY'&&<button className="ws-primary" type="button" disabled={busy}
+                onClick={()=>void downloadStaticPreview()}>Download offline static preview ZIP</button>}
+            </>:result?.status==='PREVIEW_ONLY'?<p>Use the eligible offline static preview download above.</p>:
                 <p>Run successful private static preflight to enable the separate preview download.</p>}
+            {staticArchiveSha?.requestId===frozen.requestId&&<dl className="ws-release-facts">
+              <dt>Static archive SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staticArchiveSha.sha256}</code></dd>
+              <dt>Rendered HTML SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staticArchiveSha.htmlSha256}</code></dd>
+            </dl>}
           </section>}
       </div>
       {mode!=='staging' && mode!=='publish' && <aside className="ws-project-aside">
@@ -837,9 +864,13 @@ function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
     <p role="status">Private frozen revision {comparison.frozenRevision} compared with saved draft revision {comparison.draftRevision}.</p>
     {groups.map(([name,items])=><details key={name}>
       <summary>{name}: {items.length} {items.length===1?'difference':'differences'}</summary>
-      {items.length?<ul>{items.map(item=><li key={item.key}><strong>{item.kind}</strong> · <code style={{overflowWrap:'anywhere'}}>{item.key}</code></li>)}</ul>:
+      {items.length?<ul>{items.map(item=><li key={item.key}><strong>{item.kind}</strong> · <code style={{overflowWrap:'anywhere'}}>{item.key}</code>
+        <p>{item.beforeBytes===null?'Absent':item.beforeBytes+' bytes'} → {item.afterBytes===null?'Absent':item.afterBytes+' bytes'}</p>
+        {!!item.fields?.length&&<p>Changed properties: {item.fields.join(', ')}</p>}
+      </li>)}</ul>:
         <p>No differences in this group.</p>}
     </details>)}
+    <p className="ws-field-hint">File sizes use UTF-8 source bytes; slot and stash sizes use canonical JSON bytes. Neither comparison nor export changes the saved draft or pointer.</p>
     <details>
       <summary>Open owner-private visual comparison</summary>
       <p>Read-only simulations of saved snapshots using the current portfolio title. Custom source is never executed here.</p>
@@ -853,25 +884,55 @@ function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
 
 /** A diagnostic is displayed only when emitted by the real frozen-snapshot
  * preflight engine. Never label an unexecuted check as passed. */
-function PreflightResults({result,portfolioId}:{result:SafePreviewResult;portfolioId:string}) {
+type PreflightIssue=SafePreviewResult['blockers'][number];
+/** Only navigate to existing routes or local targets. The editor currently
+ * accepts Metadata as its sole panel query; other panels need explicit manual selection. */
+function issueDestination(item:PreflightIssue,portfolioId:string,mode:'publish'|'releases'){
+  const editor='/app/portfolios/'+portfolioId+'/edit';
+  if(item.target==='hosting')return {
+    href:mode==='publish'?'#publication-controls-title':'#private-portable-title',
+    label:'Review delivery restrictions',hint:'Editing content cannot clear the independent host gate.'};
+  if(item.target==='revision')return {href:'#frozen-history-title',label:'Review frozen request history',
+    hint:'Reverify the selected immutable owner pin before continuing.'};
+  if(item.target==='kadmeion.json')return {href:editor+'?panel=Metadata',label:'Edit SEO metadata in private editor',
+    hint:'Save changes as a new revision and run preflight on that revision.'};
+  if(item.target==='theme/tokens.json')return {href:editor,label:'Open editor for theme',hint:'Choose Theme in the editor.'};
+  if(item.target==='source'||item.code==='CUSTOM_SOURCE_UNTRUSTED')return {href:editor,
+    label:'Open editor for source',hint:'Choose Source or Content. Do not execute untrusted code in the release.'};
+  if(item.code==='IMAGE_BYTES_UNVERIFIED'||item.code==='INVALID_IMAGE_REFERENCE')return {href:editor,
+    label:'Open editor for image',hint:'Choose Content and Assets; use an authorized image with valid alt/decorative metadata. Unverified bytes remain blocked.'};
+  if(item.target==='pages/home.page.json'||item.target==='content'||item.target==='plan'||item.target==='snapshot'||item.target==='preview')
+    return {href:editor,label:'Open editor to review structure',hint:'Inspect Structure & layers and Content; save a valid new revision.'};
+  return {href:editor,label:'Open editor for this slot',hint:'Choose Content and locate the indicated slot in Structure & layers.'};
+}
+function PreflightResults({result,portfolioId,revision,mode}:{result:SafePreviewResult;portfolioId:string;revision:number;mode:'publish'|'releases'}) {
   return <section className="ws-release-action" role="group" aria-labelledby="preflight-results">
     <h3 id="preflight-results">Preflight results</h3>
-    <p role="status">Private renderability check. No published release or host readiness proof.</p>
+    <p role="status">Private renderability check for frozen revision {revision}. No published release or host readiness proof.</p>
+    <p>Issues describe the immutable pin; edits affect a new saved revision only.</p>
+    {(result.blockers.length>0||result.warnings.length>0)&&<nav aria-label="Preflight issue navigation">
+      <h4>Jump to issue</h4>
+      <ul>{([['blocker',result.blockers],['warning',result.warnings]] as const).flatMap(([kind,items])=>
+        items.map((item,index)=><li key={kind+'-'+index}><a href={'#preflight-'+kind+'-'+index}>{item.code} · {item.target}</a></li>))}</ul>
+    </nav>}
     <div className="ws-release-summary" role="group" aria-label="Private preflight summary">
       <div><span>Blocking errors</span><strong>{result.blockers.length}</strong></div>
       <div><span>Warnings</span><strong>{result.warnings.length}</strong></div>
       <div><span>Passed checks</span><strong>{result.passed.length}</strong></div>
     </div>
     {([
-      ['Blocking errors',result.blockers],['Warnings',result.warnings],
-      ['Checks performed and passed',result.passed]
-    ] as const).map(([heading,items])=><div key={heading} className="ws-release-diagnostics">
+      ['Blocking errors','blocker',result.blockers],['Warnings','warning',result.warnings],
+      ['Checks performed and passed','passed',result.passed]
+    ] as const).map(([heading,kind,items])=><div key={heading} className="ws-release-diagnostics">
       <h4>{heading} ({items.length})</h4>
-      {items.length?<ul>{items.map((item,index)=><li key={item.code+':'+index}>
-        <strong>{item.code}</strong>: {item.message}
-        {item.code==='SEO_METADATA_REQUIRED'&&<span> · <a href={'/app/portfolios/'+portfolioId+'/edit?panel=Metadata'}>
-          Edit SEO metadata in private editor</a></span>}
-        </li>)}</ul>:<p>None in this category.</p>}
+      {items.length?<ul>{items.map((item,index)=>{
+        const destination=kind==='passed'?null:issueDestination(item,portfolioId,mode);
+        return <li key={item.code+':'+index} id={'preflight-'+kind+'-'+index} tabIndex={-1}>
+          <strong>{item.code}</strong>: {item.message}
+          <p>Target: <code style={{overflowWrap:'anywhere'}}>{item.target}</code></p>
+          {destination&&<p><a href={destination.href}>{destination.label}</a> · {destination.hint}</p>}
+        </li>;
+      })}</ul>:<p>None in this category.</p>}
     </div>)}
     {result.previewHtml && <iframe title="Private scriptless preview" className="ws-private-static-preview"
       sandbox="" referrerPolicy="no-referrer" srcDoc={result.previewHtml}/>}
