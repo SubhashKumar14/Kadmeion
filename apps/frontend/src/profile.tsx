@@ -110,7 +110,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       if (!result.data || result.error) {
         const message = result.error?.message ?? 'Profile save could not be confirmed.';
         setError(message);
-        if (message.includes('another session')) setNeedsReload(true);
+        if (message.includes('another session') ||
+            message === 'Private workspace conflict. Reload the latest data before trying again.') setNeedsReload(true);
         return;
       }
       setSaved(result.data);

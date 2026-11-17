@@ -378,11 +378,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         <div className="ws-project-modal-heading"><div><p className="ws-kicker">QUICK ADD / PRIVATE</p>
           <h2 id="ws-project-modal-heading">Add a project</h2></div>
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
-            disabled={saving} onClick={()=>modal.current?.close()}>×</button></div>
+            disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>×</button></div>
         <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
         <label>Project title<input disabled={saving} required autoComplete="off" maxLength={120} value={draft.title}
-          onChange={event=>setDraft(old=>({...old,title:event.target.value,
-            slug:customSlug?old.slug:suggestSlug(event.target.value)}))}/></label>
+          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,title:event.target.value,
+            slug:customSlug?old.slug:suggestSlug(event.target.value)}));}}/></label>
         <details className="ws-project-slug"><summary>Edit private URL slug</summary>
         <label>Private URL slug<input disabled={saving} required spellCheck={false} minLength={3} maxLength={64}
           pattern="[a-z0-9]+(-[a-z0-9]+)*" value={draft.slug}
@@ -390,20 +390,20 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
             const disclosure = event.currentTarget.closest('details');
             if (disclosure) disclosure.open = true;
           }}
-          onChange={event=>{setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
+          onChange={event=>{if(creationInFlight.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
           <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
         <label>Summary (optional)<textarea disabled={saving} rows={3} maxLength={360} value={draft.summary}
-          onChange={event=>setDraft(old=>({...old,summary:event.target.value}))}/></label>
+          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
         <label>Repository URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/repository" value={draft.repositoryUrl||''}
-          onChange={event=>setDraft(old=>({...old,repositoryUrl:event.target.value||null}))}/></label>
+          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
         <label>Live website URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
-          onChange={event=>setDraft(old=>({...old,liveUrl:event.target.value||null}))}/></label>
+          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
         {saving&&<p role="status">Saving your private project…</p>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
-          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>modal.current?.close()}>Cancel</button>
+          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>Cancel</button>
           <button type="submit" className="ws-primary" disabled={saving}>{saving?'Saving…':'Save project'}</button>
         </div>
       </form>
@@ -588,26 +588,57 @@ function CaseStudyEditor({port, projectId, onSaved}: {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [needsReload, setNeedsReload] = useState(false);
+  const pending = useRef(true);
+  const locked = busy || loading;
 
   useEffect(() => {
     let active = true;
+    pending.current = true;
+    setLoading(true);
+    const failRead = (message: string) => {
+      if (!active) return;
+      setError(message);
+      setNeedsReload(true);
+    };
     void port.readOwnerCaseStudy(projectId).then(result => {
       if (!active) return;
-      if (result.data) { setDraft(result.data); setError(''); }
-      else setError(result.error?.message ?? 'Case study could not be loaded.');
+      if (result.data && !result.error) {
+        setDraft(result.data);
+        setError('');
+        setNeedsReload(false);
+      } else failRead(result.error?.message ?? 'Case study could not be loaded.');
     }).catch(() => {
-      if (active) setError('Could not reach your private case study. Your unsaved edits remain available.');
+      failRead('Could not reach your private case study. Your unsaved edits remain available.');
+    }).finally(() => {
+      if (active) {
+        pending.current = false;
+        setLoading(false);
+      }
     });
     return () => { active = false; };
   }, [port, projectId, version]);
 
+  function reloadSections() {
+    if (pending.current) return;
+    pending.current = true;
+    setLoading(true);
+    setError('');
+    setNotice('');
+    // Do not discard the old section buffer until an authoritative read succeeds.
+    setVersion(value => value + 1);
+  }
+
   function update(index: number, changes: Partial<CaseStudySection>) {
+    if (pending.current) return;
     setDraft(current => current && {...current, sections: current.sections.map((section, position) =>
       index === position ? {...section, ...changes} : section)});
     setNotice('');
   }
 
   function move(index: number, offset: number) {
+    if (pending.current) return;
     setDraft(current => {
       if (!current) return current;
       const sections = [...current.sections];
@@ -622,19 +653,27 @@ function CaseStudyEditor({port, projectId, onSaved}: {
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft || busy) return;
+    if (!draft || pending.current || needsReload) return;
+    pending.current = true;
     setBusy(true);
     setError('');
     setNotice('');
     try {
       const result = await port.saveOwnerCaseStudy(projectId, draft.revision, {sections: draft.sections});
-      if (!result.data) { setError(result.error?.message ?? 'Case study save could not be confirmed.'); return; }
+      if (!result.data || result.error) {
+        const message = result.error?.message ?? 'Case study save could not be confirmed.';
+        setError(message);
+        if (message.includes('changed while you were editing') ||
+            message === 'Private workspace conflict. Reload the latest data before trying again.') setNeedsReload(true);
+        return;
+      }
       setDraft(result.data);
       onSaved(result.data.revision);
       setNotice('Private case study saved.');
     } catch {
       setError('The case study save could not be verified. Your unsaved sections are retained.');
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }
@@ -644,13 +683,15 @@ function CaseStudyEditor({port, projectId, onSaved}: {
     <p>Add and order sections for your draft. Visibility applies to a future release.</p>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
-    {!draft && !error && <p role="status">Loading case study…</p>}
-    {error && <button type="button" className="ws-secondary" onClick={() => {
-      setDraft(null); setError(''); setVersion(value => value + 1);
-    }}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
+    {loading && <p role="status">{draft
+      ? 'Loading latest saved sections… Your edits are retained until the read succeeds.'
+      : 'Loading case study…'}</p>}
+    {(error || needsReload) && !loading && <button type="button" className="ws-secondary"
+      disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
+    {draft && needsReload && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
     {draft && <>
       {!draft.sections.length && <p>Your case study has no sections yet.</p>}
-      {draft.sections.map((section, index) => <fieldset key={section.id} disabled={busy}>
+      {draft.sections.map((section, index) => <fieldset key={section.id} disabled={locked}>
         <legend>{section.title || 'Section ' + (index + 1)}</legend>
         <label>Section type<select value={section.kind} onChange={event => {
           const kind = CASE_SECTION_KINDS.find(value => value === event.target.value);
@@ -666,16 +707,18 @@ function CaseStudyEditor({port, projectId, onSaved}: {
           <button type="button" className="ws-secondary" disabled={index === 0} onClick={() => move(index, -1)}>Move up</button>
           <button type="button" className="ws-secondary" disabled={index === draft.sections.length - 1} onClick={() => move(index, 1)}>Move down</button>
           <button type="button" className="ws-secondary" onClick={() => {
+            if (pending.current) return;
             setDraft({...draft, sections: draft.sections.filter(item => item.id !== section.id)}); setNotice('');
           }}>Remove from draft</button>
         </div>
       </fieldset>)}
       <div className="ws-actions">
-        <button type="button" className="ws-secondary" disabled={busy || draft.sections.length >= 24} onClick={() => {
+        <button type="button" className="ws-secondary" disabled={locked || draft.sections.length >= 24} onClick={() => {
+          if (pending.current) return;
           setDraft({...draft, sections: [...draft.sections, {id: crypto.randomUUID(), kind: 'custom', title: '', body: '', visible: false}]});
           setNotice('');
         }}>Add section</button>
-        <button type="submit" className="ws-primary" disabled={busy}>{busy ? 'Saving…' : 'Save sections'}</button>
+        <button type="submit" className="ws-primary" disabled={locked || needsReload}>{busy ? 'Saving…' : 'Save sections'}</button>
       </div>
     </>}
   </form>;
