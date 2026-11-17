@@ -425,8 +425,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
   const [recoveryNotice,setRecoveryNotice]=useState('');
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
+  const [autoRecovery,setAutoRecovery]=useState(false);
+  const [checkpointState,setCheckpointState]=useState<'idle'|'pending'|'saved'|'failed'>('idle');
+  const [checkpointRetry,setCheckpointRetry]=useState(0);
+  const checkpointWriter=useRef<{id:string;sequence:number;signature:string}|null>(null);
+  const checkpointFlight=useRef(false);
+  const checkpointEnabled=useRef(false);
+  const saveFlight=useRef(false);
   const [recoveryComparison,setRecoveryComparison]=useState<{copyId:string;cloudRevision:number;
-    changedFiles:string[];changedSlots:string[];pendingCount:number}|null>(null);
+    changedFiles:string[];changedSlots:string[];pendingCount:number;checkpointSequence?:number}|null>(null);
   const catalogueRequest=useRef(0);
   const [recoveryBusy,setRecoveryBusy]=useState(false);
   const recoveryLock=useRef(false);
@@ -509,10 +516,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   async function save() {
-    if (!allowed || !record || !head || !operation || saving || recoveryLock.current || sourceDirty || pendingFields) return;
+    if(!allowed||!record||!head||!operation||saving||saveFlight.current||recoveryLock.current||sourceDirty||pendingFields)return;
+    const view=latestRecovery.current;
+    if(!view||view.record!==record||view.head!==head||(view.owner&&!scopeCurrent(view)))return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    saveFlight.current=true;
     setSaving(true); setError(''); setNotice('');
     try {
       const result = await port.saveOwnerPortfolio(id, operation, record.revision, head.snapshot);
+      const current=latestRecovery.current;
+      if(!current||current.port!==port||current.id!==id||port.reconcileOwnerSessionEpoch()!==epoch||
+        (view.owner&&!scopeCurrent(view))||current.record!==record||current.head!==head||current.operation!==operation)return;
       if (!result.data) {
         setError(result.error?.message ?? 'Draft save could not be confirmed.');
         if(verifiedOwner)setRecoveryExpanded(true);
@@ -521,10 +535,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       setRecord({...record, revision: result.data, snapshot: head.snapshot});
       setOperation(''); setNotice('Private portfolio draft saved.');
     } catch {
-      setError('Draft save could not be verified. Your edits remain in this editor.');
-      if(verifiedOwner)setRecoveryExpanded(true);
+      const current=latestRecovery.current;
+      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch){
+        setError('Draft save could not be verified. Your edits remain in this editor.');
+        if(verifiedOwner)setRecoveryExpanded(true);
+      }
     }
-    finally {setSaving(false);}
+    finally {saveFlight.current=false;const current=latestRecovery.current;
+      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch)setSaving(false);}
   }
 
   async function initialize() {
@@ -648,6 +666,56 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const copies=await store.listRecoveryCopies(view.owner!.id,view.id);
     if(request===catalogueRequest.current&&scopeCurrent(view))setRecoveryCopies(copies);
   }
+  function recoveryPayload(view:RecoveryView):EditorRecoveryPayload {
+    if(!view.record||!view.head)throw new Error('Working draft unavailable.');
+    return {formatVersion:1,cloudBaseRevision:view.record.revision,localRevision:view.head.revision,
+      cloudOperationId:view.operation||null,snapshot:view.head.snapshot,fieldDrafts:view.fieldDrafts,
+      sourceDrafts:view.sourceDrafts,seoDraft:view.seoDraft};
+  }
+  // A checkpoint is optional and bound to this verified mounted editor only.
+  // It never authenticates a new session, replaces another tab, or writes cloud.
+  useLayoutEffect(()=>{
+    checkpointEnabled.current=autoRecovery;
+    return ()=>{checkpointEnabled.current=false;};
+  },[autoRecovery]);
+  useEffect(()=>{
+    if(!autoRecovery||!verifiedOwner||!head||!record||!(operation||pendingFields||sourceDirty)||saving||recoveryBusy)return;
+    const view=latestRecovery.current;
+    if(!view||!scopeCurrent(view))return;
+    const payload=recoveryPayload(view);
+    const signature=JSON.stringify(payload);
+    if(checkpointWriter.current?.signature===signature){setCheckpointState('saved');return;}
+    setCheckpointState('pending');
+    let cancelled=false;
+    const timer=window.setTimeout(()=>{
+      if(cancelled||!checkpointEnabled.current||!draftCurrent(view)||checkpointFlight.current)return;
+      let writer=checkpointWriter.current;
+      if(!writer){writer={id:crypto.randomUUID(),sequence:0,signature:''};checkpointWriter.current=writer;}
+      const activeWriter=writer;
+      checkpointFlight.current=true;
+      void (async()=>{
+        try{
+          const store=new IndexedDbEditorDraftStore();
+          const receipt=await store.writeRecoveryCheckpoint(view.owner!.id,view.id,activeWriter.id,activeWriter.sequence,payload);
+          if(!Number.isSafeInteger(receipt.checkpointSequence)||receipt.checkpointSequence!==activeWriter.sequence+1)
+            throw new Error('Invalid checkpoint acknowledgement.');
+          activeWriter.sequence=receipt.checkpointSequence!;
+          activeWriter.signature=signature;
+          if(!scopeCurrent(view))return;
+          // A newer buffer may have arrived during IndexedDB I/O.
+          if(draftCurrent(view))setCheckpointState('saved');else setCheckpointState('pending');
+          await refreshRecovery(view,store);
+        }catch{
+          if(scopeCurrent(view)){setCheckpointState('failed');setRecoveryExpanded(true);}
+        }finally{
+          checkpointFlight.current=false;
+          // Re-evaluate a newer pending draft after the single writer releases.
+          if(scopeCurrent(view)&&checkpointEnabled.current&&!draftCurrent(view))setCheckpointRetry(n=>n+1);
+        }
+      })();
+    },650);
+    return ()=>{cancelled=true;window.clearTimeout(timer);};
+  },[autoRecovery,verifiedOwner?.id,verifiedOwner?.epoch,port,id,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,recoveryBusy,checkpointRetry]);
   function installCloudDraft(fresh:PortfolioRecord){
     if(!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
     const next=createEditorHead(fresh.snapshot);
@@ -662,9 +730,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
     let acknowledged=false;
     try{
-      const payload:EditorRecoveryPayload={formatVersion:1,cloudBaseRevision:view.record.revision,
-        localRevision:view.head.revision,cloudOperationId:view.operation||null,
-        snapshot:view.head.snapshot,fieldDrafts:view.fieldDrafts,sourceDrafts:view.sourceDrafts,seoDraft:view.seoDraft};
+      const payload=recoveryPayload(view);
       const signature=JSON.stringify(payload);
       let attempt=recoveryAttempt.current;
       if(!attempt||attempt.signature!==signature){
@@ -718,7 +784,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setRecoveryNotice('Recovery export requested. This private file may contain sensitive authored text.');return;
       }
       const stale=recovered.cloudBaseRevision!==fresh.data.revision;
-      if(action==='restore'&&(!stale||priorComparison?.cloudRevision!==fresh.data.revision)){
+      if(action==='restore'&&(!stale||priorComparison?.cloudRevision!==fresh.data.revision||
+        priorComparison.checkpointSequence!==copy.checkpointSequence)){
         setRecoveryNotice('The compared cloud revision is no longer current. Compare the recovery copy again; no draft was replaced.');
         return;
       }
@@ -731,6 +798,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         const changedSlots=[...keys].filter(key=>stable(saved.slots[key])!==stable(recovered.snapshot.slots[key])||
           stable(saved.stashes[key])!==stable(recovered.snapshot.stashes[key])).sort();
         setRecoveryComparison({copyId:copy.copyId,cloudRevision:fresh.data.revision,changedFiles,changedSlots,
+          checkpointSequence:copy.checkpointSequence,
           pendingCount:Object.keys(recovered.fieldDrafts).length+Object.keys(recovered.sourceDrafts).length+(recovered.seoDraft?1:0)});
         setRecoveryNotice('Recovery base '+recovered.cloudBaseRevision+' · cloud revision '+fresh.data.revision+
           ' · '+changedFiles.length+' differing files · '+changedSlots.length+' differing slots/stashes. '+
@@ -783,6 +851,30 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       return false;
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
+  async function reloadSavedDraft(){
+    // Never erase buffers or the current head until the read has succeeded.
+    const view=latestRecovery.current;
+    if(!view||saving||saveFlight.current||recoveryLock.current)return;
+    if(!view.record||!view.head){setError('');setAttempt(n=>n+1);return;}
+    if(view.dirty&&(!window.confirm('Discard current unsaved edits and load the latest private cloud draft? Existing browser recovery copies are not removed.')||(view.owner&&!scopeCurrent(view))))return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    recoveryLock.current=true;setRecoveryBusy(true);
+    try{
+      const result=await port.readOwnerPortfolio(id);
+      const current=latestRecovery.current;
+      if(!current||current.port!==port||current.id!==id||port.reconcileOwnerSessionEpoch()!==epoch||
+        (view.owner&&!scopeCurrent(view))||current.head!==view.head||current.record!==view.record||
+        current.fieldDrafts!==view.fieldDrafts||current.sourceDrafts!==view.sourceDrafts||current.seoDraft!==view.seoDraft)return;
+      if(!result.data?.snapshot||result.data.id!==id){
+        setError('Latest cloud draft could not be verified. Current edits remain intact.');return;
+      }
+      installCloudDraft(result.data);
+      setNotice('Latest saved cloud draft loaded. Existing browser recovery copies were retained.');
+    }catch{if(latestRecovery.current?.id===id&&port.reconcileOwnerSessionEpoch()===epoch)
+      setError('Cloud reload failed. Current edits remain intact.');}
+    finally{recoveryLock.current=false;
+      if(latestRecovery.current?.id===id&&port.reconcileOwnerSessionEpoch()===epoch)setRecoveryBusy(false);}
+  }
   async function removeRecovery(copyId:string){
     const view=captureRecovery();
     if(!view||recoveryLock.current||!window.confirm('Remove this browser recovery copy? This cannot be undone. Cloud draft is unaffected.'))return;
@@ -790,7 +882,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
     try{
       const store=new IndexedDbEditorDraftStore();
-      await store.removeRecoveryCopy(view.owner!.id,view.id,copyId);
+      const selected=recoveryCopies?.find(copy=>copy.copyId===copyId);
+      if(!selected)return;
+      if(checkpointWriter.current?.id===copyId){
+        if(checkpointFlight.current)return;
+        setAutoRecovery(false);checkpointEnabled.current=false;checkpointWriter.current=null;setCheckpointState('idle');
+      }
+      await store.removeRecoveryCopy(view.owner!.id,view.id,copyId,selected.checkpointSequence);
       if(!scopeCurrent(view))return;
       recoveryAttempt.current=null;setRecoveryComparison(null);
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
@@ -835,14 +933,24 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         onClick={() => void save()}>{saving ? 'Saving…' : 'Save draft'}</button>
     </div>}</div>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
-    {error && <button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={() => {
-      setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
-    }}>{operation || pendingFields || sourceDirty ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
+    {error && <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+      onClick={()=>void reloadSavedDraft()}>{operation||pendingFields||sourceDirty?'Discard changes and load saved draft':'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
     {verifiedOwner&&record&&head&&<details className="ws-editor-safety" open={recoveryExpanded}
       onToggle={event=>setRecoveryExpanded(event.currentTarget.open)}>
       <summary>Browser recovery &amp; Keep Both</summary>
       <p>Copies stay on this device, separate from the saved cloud draft. Browser storage can be cleared; export important work. Opening requires a verified owner and fresh cloud read.</p>
+      <label><input type="checkbox" checked={autoRecovery} onChange={event=>{
+        checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
+        if(!event.target.checked)setCheckpointState('idle');
+      }}/> Automatically checkpoint unsaved edits on this browser during this editor session</label>
+      {autoRecovery&&<p role="status">{checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
+        checkpointState==='saved'?'Latest captured working edits acknowledged by browser storage only.':
+        checkpointState==='failed'?'Browser checkpoint failed or storage is full; your current edits remain.':
+        'Automatic browser checkpoints enabled; waiting for unsaved edits.'}
+        {checkpointState==='failed'&&<button type="button" className="ws-secondary" onClick={()=>setCheckpointRetry(n=>n+1)}>Retry checkpoint</button>}
+      </p>}
+      <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit, never prune another copy, and are retained until explicitly removed.</p>
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
@@ -863,7 +971,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       </div>}
       {recoveryCopies===null?<p>Local recovery catalogue not confirmed.</p>:recoveryCopies.length===0?
         <p>No browser recovery copies.</p>:<ul className="ws-editor-slots">{recoveryCopies.map(copy=>
-          <li key={copy.copyId}><strong>{new Date(copy.savedAt).toLocaleString()} · base revision {copy.cloudBaseRevision}</strong>
+          <li key={copy.copyId}><strong>{copy.checkpointSequence===undefined?'Recovery copy':'Working checkpoint'} · {new Date(copy.savedAt).toLocaleString()} · base revision {copy.cloudBaseRevision}</strong>
             <div className="ws-actions">
               <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
                 onClick={()=>void inspectRecovery(copy.copyId,'compare')}>Compare copy</button>
@@ -874,7 +982,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                   onClick={()=>void inspectRecovery(copy.copyId,'restore')}>Restore older copy as unsaved draft</button>}
               <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
                 onClick={()=>void inspectRecovery(copy.copyId,'export')}>Export recovery copy</button>
-              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||(checkpointWriter.current?.id===copy.copyId&&checkpointFlight.current)}
                 onClick={()=>void removeRecovery(copy.copyId)}>Remove recovery copy</button>
             </div>
           </li>)}</ul>}
