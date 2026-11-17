@@ -105,20 +105,27 @@ class OwnerMediaError extends Error {
 function mediaError(code:OwnerMediaErrorCode,message:string,status?:number):OwnerMediaError {
   return new OwnerMediaError(code,message,status);
 }
-function mediaHttpError(status:number,payload:unknown,attestation=false):OwnerMediaError {
+function mediaHttpError(status:number,payload:unknown,attestation=false,storage=false):OwnerMediaError {
   const row=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload as Json:null;
   const code=row?.code;
-  // PostgREST serialization errors need not use HTTP 409. Never expose raw provider text.
-  if(status===401||status===403||code==='42501'||(!attestation&&status===404))
+  // Older Storage gateways may wrap an actual denial/conflict/limit in HTTP 400.
+  // Interpret only allowlisted codes on the Storage endpoint, never raw provider text.
+  const legacy=storage&&status===400?String(row?.statusCode??''):'';
+  const storageCode=storage&&status===400?String(code??''):'';
+  // PostgREST serialization errors need not use HTTP 409.
+  if(status===401||status===403||code==='42501'||(!attestation&&status===404)||
+    ['401','403','404'].includes(legacy)||['AccessDenied','InvalidJWT','NoSuchKey','NoSuchBucket'].includes(storageCode))
     return mediaError('DENIED','Private media access was denied.',status);
-  if(status===429)return mediaError('RATE_LIMITED','Too many private media requests. Try again later.',status);
-  if(status===413||code==='54000')return mediaError('LIMIT_EXCEEDED','The private media limit was exceeded.',status);
-  if(status===409||code==='40001'||code==='23505')
+  if(status===429||legacy==='429')return mediaError('RATE_LIMITED','Too many private media requests. Try again later.',status);
+  if(status===413||code==='54000'||legacy==='413'||storageCode==='EntityTooLarge')
+    return mediaError('LIMIT_EXCEEDED','The private media limit was exceeded.',status);
+  if(status===409||code==='40001'||code==='23505'||legacy==='409'||
+    ['ResourceAlreadyExists','KeyAlreadyExists'].includes(storageCode))
     return mediaError(attestation?'INTEGRITY':'CONFLICT',attestation?'Private asset attestation did not verify.':
       'This project changed while you were editing. Load the latest revision before saving again.',status);
   if(code==='22023'&&row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE')
     return mediaError('INTEGRITY','Private thumbnail could not be verified.',status);
-  if(code==='22023'||(attestation&&status===400))
+  if(code==='22023'||(attestation&&status===400)||['InvalidMimeType','InvalidKey','InvalidRequest'].includes(storageCode))
     return mediaError('VALIDATION','Invalid private media request.',status);
   return mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE',
     attestation?'Private asset attestation is unavailable.':'Private media service is unavailable.',status);
@@ -363,7 +370,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if (!response.ok) {
       const data = (payload && typeof payload === 'object' ? payload : {}) as Json;
       const code = typeof data.error_code === 'string' ? data.error_code : '';
-      if (response.status === 429) throw new Error('Too many requests. Try again later.');
+      if (response.status === 429) throw new AuthHttpError(429,'Too many requests. Try again later.');
       if (response.status === 401 || response.status === 403) throw new AuthHttpError(response.status, 'The authentication session or credentials were rejected.');
       if (code === 'otp_expired') throw new Error('This email link has expired. Request a new one.');
       throw new Error('Authentication request failed (' + response.status + ').');
@@ -1389,6 +1396,37 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }
   }
 
+  /** Parse one bounded JSON stream; distinguish invalid data from interrupted transport. */
+  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+    const reader=response.body?.getReader();
+    if(!reader)throw mediaError('INTEGRITY','Private media response could not be verified.');
+    const parts:Uint8Array[]=[];let size=0;
+    try{
+      for(;;){
+        let part:ReadableStreamReadResult<Uint8Array>;
+        try{part=await reader.read();}
+        catch{throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');}
+        this.assertOwnerImageEpoch(session,epoch);
+        if(part.done)break;
+        size+=part.value.byteLength;
+        if(size>max)throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
+        parts.push(part.value);
+      }
+      const bytes=new Uint8Array(size);let offset=0;
+      for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
+      try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+      catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
+    }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+  }
+
+  private async mediaResponseError(response:Response,session:StoredSession,epoch:number,attestation=false,storage=false):Promise<OwnerMediaError>{
+    let raw:unknown=null;
+    try{raw=await this.readMediaJsonBody(response,session,epoch,8192);}
+    catch(error){if(error instanceof OwnerMediaError&&error.code==='AUTH_CHANGED')throw error;}
+    this.assertOwnerImageEpoch(session,epoch);
+    return mediaHttpError(response.status,raw,attestation,storage);
+  }
+
   /** Owner-only metadata receipt. Bounded error and success bodies; no raw provider diagnostics. */
   private async mediaJson(path:string,session:StoredSession,epoch:number,body?:Json,attestation=false):Promise<unknown>{
     this.assertOwnerImageEpoch(session,epoch);
@@ -1404,31 +1442,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }catch{throw mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE','Private media service is unavailable.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
-      const reader=response.body?.getReader();
-      let raw:unknown=null;
-      if(reader){
-        const parts:Uint8Array[]=[];let size=0;
-        const max=response.ok?65536:8192;
-        try{
-          for(;;){
-            const part=await reader.read();
-            this.assertOwnerImageEpoch(session,epoch);
-            if(part.done)break;
-            size+=part.value.byteLength;
-            if(size>max)throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
-            parts.push(part.value);
-          }
-          const bytes=new Uint8Array(size);let offset=0;
-          for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
-          raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
-        }catch(error){
-          if(error instanceof OwnerMediaError&&error.code==='AUTH_CHANGED')throw error;
-          if(response.ok)throw error instanceof OwnerMediaError?error:
-            mediaError('INTEGRITY','Private media response could not be verified.');
-        }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
-      }
+      if(!response.ok)throw await this.mediaResponseError(response,session,epoch,attestation,path.startsWith('/storage/v1/'));
+      const raw=await this.readMediaJsonBody(response,session,epoch,65536);
       this.assertOwnerImageEpoch(session,epoch);
-      if(!response.ok)throw mediaHttpError(response.status,raw,attestation);
       if(raw===null)throw mediaError('INTEGRITY','Private media response could not be verified.');
       return raw;
     }finally{void response.body?.cancel().catch(()=>{});}
@@ -1500,7 +1516,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     try{
       this.assertOwnerImageEpoch(session,epoch);
       const declared=response.headers.get('content-length');
-      if(!response.ok)throw mediaHttpError(response.status,null);
+      if(!response.ok)throw await this.mediaResponseError(response,session,epoch,false,true);
       if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
         (declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==size))||!response.body)
         throw mediaError('INTEGRITY','Private image readback was not verified.');
@@ -1561,13 +1577,26 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         });
       }catch{ /* An uncertain result is recoverable only for a stable operation. */ }
       const accepted=upload?.ok===true;
-      const ambiguous=!upload||upload.status===400||upload.status===409||upload.status>=500;
-      void upload?.body?.cancel().catch(()=>{});
+      let rejected:OwnerMediaError|null=null;
+      try{
+        this.assertOwnerImageEpoch(session,epoch);
+        if(upload&&!accepted)rejected=await this.mediaResponseError(upload,session,epoch,false,true);
+      }finally{void upload?.body?.cancel().catch(()=>{});}
       this.assertOwnerImageEpoch(session,epoch);
       if(!accepted){
+        const ambiguous=!upload||rejected?.code==='CONFLICT'||
+          (rejected?.code==='PROVIDER_UNAVAILABLE'&&(upload.status===400||upload.status>=500));
         if(!request||!ambiguous)
-          throw upload?mediaHttpError(upload.status,null):mediaError('PROVIDER_UNAVAILABLE','Private image upload was not confirmed. No public image was created.');
-        const existing=await this.readOwnerImageBytes(session,epoch,objectPath,format.mime,file.size);
+          throw rejected??mediaError('PROVIDER_UNAVAILABLE','Private image upload was not confirmed. No public image was created.');
+        let existing:Blob;
+        try{existing=await this.readOwnerImageBytes(session,epoch,objectPath,format.mime,file.size);}
+        catch(error){
+          // A missing object after an uncertain upload is not proof the owner lost access.
+          // Preserve stable retry context; never recapture/write here.
+          if(error instanceof OwnerMediaError&&error.code==='DENIED'&&rejected?.code!=='CONFLICT')
+            throw mediaError('PROVIDER_UNAVAILABLE','Private image upload was not confirmed. Retry the same operation.');
+          throw error;
+        }
         const [stored,selected]=await Promise.all([existing.arrayBuffer(),file.arrayBuffer()]);
         this.assertOwnerImageEpoch(session,epoch);
         const a=new Uint8Array(stored),b=new Uint8Array(selected);
