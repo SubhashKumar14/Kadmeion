@@ -564,96 +564,225 @@ export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: s
   window.setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
+type ExportKind = 'metadata'|'recovery'|'recovery-json'|'source';
+type ExportReceipt = {kind:ExportKind;filename:string;bytes:number;sha256:string;scope:string;capturedAt?:string;revision?:number;assets?:number;assetFiles?:number;categories?:number;records?:number};
+const formatExportBytes=(bytes:number)=>bytes>=1024*1024?(bytes/(1024*1024)).toFixed(2)+' MiB':(bytes/1024).toFixed(1)+' KiB';
+async function exportDigest(bytes:Uint8Array):Promise<string>{
+  const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
+  return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+}
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
+  const [epoch] = useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false);
+  useEffect(()=>{alive.current=true;return ()=>{alive.current=false;};},[]);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const [message, setMessage] = useState<Message>(emptyMessage);
-  const [busy, setBusy] = useState<'metadata'|'recovery'|'source'|null>(null);
+  const [busy, setBusy] = useState<ExportKind|null>(null);
+  const operation=useRef<{kind:ExportKind;id:string}|null>(null);
+  const running=useRef(false);
+  const [failedKind,setFailedKind]=useState<ExportKind|null>(null);
+  const [receipt,setReceipt]=useState<ExportReceipt|null>(null);
+  const [inventory,setInventory]=useState<Awaited<ReturnType<Services['account']['captureInventory']>>|null>(null);
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState('');
-  // A failed retry or owner change must not leave an old saved-portfolio list
-  // or a stale download/preflight target on an otherwise current settings page.
-  const listRequest = useMemo(()=>({port,retry}),[port,retry]);
+  type Page=NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerPortfoliosPage']>>['data']>;
+  const listRequest = useMemo(()=>({port,epoch,retry}),[port,epoch,retry]);
   const [listResult,setListResult] = useState<{
-    request:typeof listRequest;items:{id:string;title:string}[]|null;error:string
+    request:typeof listRequest;page:Page|null;error:string
   }|null>(null);
+  const [loadingMore,setLoadingMore]=useState(false);
+  const [moreError,setMoreError]=useState('');
   const currentList = listResult?.request===listRequest ? listResult : null;
-  const portfolios = currentList?.items??null;
+  const page=currentList?.page??null;
+  const portfolios = page?.items.filter(item=>item.revision>0)??null;
   const portfolioError = currentList?.error??'';
-  const selectedPortfolio = portfolios?.some(item=>item.id===selected) ? selected : '';
+  const selectedPortfolio = portfolios?.find(item=>item.id===selected);
   useEffect(()=>{
     let active = true;
-    void port.listOwnerPortfolios().then(({data})=>{
-      if (!active) return;
-      if (!data) throw new Error('Saved portfolios could not be loaded.');
-      setListResult({
-        request:listRequest,items:data.filter(item=>item.revision>0),error:''
-      });
+    void port.listOwnerPortfoliosPage(50).then(({data,error})=>{
+      if (!active || port.reconcileOwnerSessionEpoch()!==epoch) return;
+      if (!data) throw new Error(error?.message??'Saved portfolios could not be loaded.');
+      setListResult({request:listRequest,page:data,error:''});
     }).catch(()=>{
-      if(active)setListResult({
-        request:listRequest,items:null,error:'Saved portfolios could not be loaded.'
+      if(active&&port.reconcileOwnerSessionEpoch()===epoch)setListResult({
+        request:listRequest,page:null,error:'Saved portfolios could not be loaded.'
       });
     });
     return ()=>{active=false;};
-  },[port,listRequest]);
+  },[port,epoch,listRequest]);
 
-  async function download(kind: NonNullable<typeof busy>) {
-    if (busy) return;
-    setBusy(kind); setMessage(null);
-    try {
-      if (kind==='source') {
-        if (!selectedPortfolio) return;
-        const {exportPortfolioSourceZip} = await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
-        const {data} = await port.readOwnerPortfolio(selectedPortfolio);
-        if (!data?.snapshot || data.id!==selectedPortfolio) throw new Error('Could not verify the saved portfolio revision.');
-        downloadPrivateFile('kadmeion-portfolio-revision-'+data.revision+'.zip', exportPortfolioSourceZip(data.snapshot), 'application/zip');
-        setMessage({error:false,text:'Portfolio source download prepared.'});
-      } else {
-        const inventory = await services.account.captureInventory(crypto.randomUUID());
-        if (kind==='metadata') {
-          const result = await services.data.exportApplicationMetadata(inventory.snapshotId);
-          downloadPrivateFile(result.filename,result.bytes,result.mime);
-          setMessage({error:false,text:'Application metadata download prepared.'});
-        } else {
-          const result = await services.data.export(inventory.snapshotId);
-          const {createBoundedPrivateAccountRecoveryBundle} = await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
-          const bundle = await createBoundedPrivateAccountRecoveryBundle(result.bytes);
-          downloadPrivateFile(bundle.filename,bundle.zip,'application/zip');
-          setMessage({error:false,text:'Private recovery download prepared.'});
-        }
-      }
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(null);}
+  async function more(){
+    if(!page?.nextCursor||loadingMore||busy||!current())return;
+    const cursor=page.nextCursor;
+    setLoadingMore(true);setMoreError('');
+    try{
+      const result=await port.listOwnerPortfoliosPage(50,cursor);
+      if(!current())return;
+      if(!result.data)throw new Error('Could not load older saved portfolios.');
+      const next=result.data;
+      setListResult(previous=>{
+        if(previous?.request!==listRequest||previous.page?.nextCursor!==cursor)return previous;
+        const seen=new Set(previous.page.items.map(item=>item.id));
+        return {...previous,page:{...next,items:[...previous.page.items,...next.items.filter(item=>!seen.has(item.id))]}};
+      });
+    }catch(error){
+      if(current())setMoreError(error instanceof Error?error.message:'Could not load older portfolios.');
+    }finally{if(current())setLoadingMore(false);}
   }
 
-  return <><Status message={message}/><div className="ws-settings-grid">
+  async function download(kind: ExportKind) {
+    if (running.current || busy || !current() || (kind==='source'&&!selectedPortfolio)) return;
+    // Hold one operation across a lost inventory acknowledgment; after an
+    // acknowledged capture, a new user-triggered attempt gets fresh inventory.
+    running.current=true;setBusy(kind);setMessage(null);setReceipt(null);setFailedKind(null);setInventory(null);
+    try {
+      let file:ExportReceipt;
+      let bytes:Uint8Array;
+      let mime='application/zip';
+      if (kind==='source') {
+        const selection=selectedPortfolio!;
+        const {exportPortfolioSourceZip,importPortfolioSourceZip} = await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+        if(!current())return;
+        const {data} = await port.readOwnerPortfolio(selection.id);
+        if(!current())return;
+        if (!data?.snapshot || data.id!==selection.id || data.revision!==selection.revision)
+          throw new Error('The saved revision changed or could not be verified. Refresh the portfolio list before exporting.');
+        bytes=exportPortfolioSourceZip(data.snapshot);
+        importPortfolioSourceZip(bytes);
+        file={kind,filename:'kadmeion-portfolio-revision-'+data.revision+'.zip',bytes:bytes.byteLength,
+          sha256:await exportDigest(bytes),scope:'Editable saved portfolio source; uploaded media excluded.',revision:data.revision};
+      } else {
+        if(operation.current?.kind!==kind)operation.current={kind,id:crypto.randomUUID()};
+        const captured = await services.account.captureInventory(operation.current.id);
+        if(!current())return;
+        operation.current=null;setInventory(captured);
+        if (kind==='metadata') {
+          const result = await services.data.exportApplicationMetadata(captured.snapshotId);
+          if(!current())return;
+          bytes=result.bytes;mime=result.mime;
+          // The exporter has already checked owner, envelope, schema, and bounds.
+          const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as {
+            capturedAt:string;records:Record<string,unknown[]>;restrictedAudit:Record<string,unknown[]>;verifiedReleaseHistory:unknown[]
+          };
+          const categories=[...Object.values(decoded.records),...Object.values(decoded.restrictedAudit),decoded.verifiedReleaseHistory];
+          file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:await exportDigest(bytes),
+            capturedAt:decoded.capturedAt,scope:'Acknowledged application metadata snapshot; no Storage bytes or provider data.',
+            categories:categories.length,records:categories.reduce((count,rows)=>count+rows.length,0)};
+        } else {
+          const result = await services.data.export(captured.snapshotId);
+          if(!current())return;
+          const {createBoundedPrivateAccountRecoveryBundle,verifyBoundedPrivateAccountExport} =
+            await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+          if(!current())return;
+          if(kind==='recovery-json'){
+            const verified=await verifyBoundedPrivateAccountExport(result.bytes);
+            bytes=result.bytes;mime=result.mime;
+            file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:verified.sha256,
+              capturedAt:captured.capturedAt,scope:'Verified bounded partial recovery JSON; private data, not a full account export.'};
+          }else{
+            const bundle = await createBoundedPrivateAccountRecoveryBundle(result.bytes);
+            bytes=bundle.zip;
+            file={kind,filename:bundle.filename,bytes:bytes.byteLength,sha256:bundle.sha256,
+              capturedAt:captured.capturedAt,scope:'Verified bounded partial recovery ZIP; private data, not a full account export.',
+              assets:bundle.assetsReferenced,assetFiles:bundle.assetFiles};
+          }
+        }
+      }
+      // Critical final check: no stale owner download even if hashing/importing
+      // or archive creation finished after logout or a same-port owner switch.
+      if(!current())return;
+      downloadPrivateFile(file.filename,bytes,mime);
+      setReceipt(file);
+      setMessage({error:false,text:'Download prepared and requested in this browser. Save it privately; local file persistence is not verified.'});
+    } catch (error) {
+      if(!current())return;
+      setFailedKind(kind);
+      const code=typeof error==='object'&&error!==null&&'code' in error?error.code:undefined;
+      if(code==='LIMIT_EXCEEDED'||code==='QUOTA_EXCEEDED')
+        setMessage({error:true,text:'Export limit or inventory quota reached. No file was downloaded. Choose a narrower saved portfolio source or try the metadata / verified JSON option where eligible.'});
+      else if(code==='AUTH_EXPIRED'||code==='FORBIDDEN')
+        setMessage({error:true,text:'The current owner session could not authorize the export. Sign in again before retrying.'});
+      else if(code==='INTEGRITY'||code==='UNVERIFIED'||code==='INVALID_ACK')
+        setMessage({error:true,text:'The export could not verify inventory, file hashes or server acknowledgment. No file was downloaded. Review metadata or retry when the source is consistent.'});
+      else setMessage(failure(error));
+    } finally {
+      running.current=false;
+      if(current())setBusy(null);
+    }
+  }
+
+  function refreshPortfolios(){
+    setSelected('');setMoreError('');setRetry(value=>value+1);
+  }
+  return <><Status message={message}/>
+    {failedKind&&<div className="ws-actions">
+      <button type="button" className="ws-secondary" disabled={busy!==null||(failedKind==='source'&&!selectedPortfolio)}
+        onClick={()=>void download(failedKind)}>Retry failed export</button>
+    </div>}
+    {receipt&&<SettingsCard title="Latest download receipt">
+      <p>{receipt.scope}</p>
+      <dl><dt>Filename</dt><dd>{receipt.filename}</dd><dt>Size</dt><dd>{formatExportBytes(receipt.bytes)}</dd>
+        {receipt.revision!==undefined&&<><dt>Saved revision</dt><dd>{receipt.revision}</dd></>}
+        {receipt.capturedAt&&<><dt>Captured</dt><dd>{new Date(receipt.capturedAt).toLocaleString()}</dd></>}
+        {receipt.categories!==undefined&&<><dt>Record categories</dt><dd>{receipt.categories}</dd><dt>Records in artifact (not unique entities)</dt><dd>{receipt.records}</dd></>}
+        {receipt.assets!==undefined&&<><dt>Asset references</dt><dd>{receipt.assets}</dd><dt>Distinct archive files for assets</dt><dd>{receipt.assetFiles}</dd></>}
+        <dt>SHA-256 (local artifact checksum)</dt><dd style={{overflowWrap:'anywhere'}}><code>{receipt.sha256}</code></dd></dl>
+      <p>This checksum identifies the prepared bytes, not a provider signature, proof of saved file, or erasure receipt.</p>
+    </SettingsCard>}
+    <div className="ws-settings-grid">
     <SettingsCard title="Editable portfolio ZIP">
-      <p>Download the saved revision for editing or recovery. This archive contains private source and excludes uploaded media.</p>
+      <p>Download a selected saved revision for editing or recovery. Private source is included; uploaded media, external repositories and unsaved editor buffers are excluded.</p>
       {portfolioError && <><p role="alert">{portfolioError}</p><button type="button" className="ws-secondary"
-        onClick={()=>{setSelected('');setRetry(value=>value+1);}}>Retry portfolio list</button></>}
+        onClick={refreshPortfolios}>Retry portfolio list</button></>}
       {!portfolios && !portfolioError && <p role="status">Loading saved portfolios…</p>}
-      {portfolios?.length===0 && <p>No saved portfolio revisions to export.</p>}
-      {portfolios?.length===100 && <p>Showing up to 100 saved portfolios. Older saved revisions may require a later page; this is not a complete account-wide total.</p>}
+      {portfolios?.length===0 && <p>{page?.nextCursor?'No saved revisions in the loaded records. Load older portfolios to continue.':'No saved portfolio revisions to export.'}</p>}
+      {portfolios&&<p>{portfolios.length} saved portfolios in loaded records.{page?.nextCursor?' More records are available; this is not an account-wide total.':''}</p>}
       {!!portfolios?.length && <><label className="ws-export-select">Portfolio to export
-        <select value={selectedPortfolio} disabled={busy!==null} onChange={event=>setSelected(event.target.value)}>
+        <select value={selectedPortfolio?.id??''} disabled={busy!==null} onChange={event=>{setSelected(event.target.value);setFailedKind(null);setMessage(null);}}>
           <option value="">Select a portfolio</option>
-          {portfolios.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
+          {portfolios.map(item=><option key={item.id} value={item.id}>{item.title} · revision {item.revision}</option>)}
         </select></label>
         <button className="ws-primary" type="button" disabled={!selectedPortfolio || busy!==null}
           onClick={()=>void download('source')}>{busy==='source'?'Preparing portfolio ZIP…':'Download portfolio source ZIP'}</button></>}
+      {moreError&&<p role="alert">{moreError}</p>}
+      {page?.nextCursor&&<button type="button" className="ws-secondary" disabled={loadingMore||busy!==null}
+        onClick={()=>void more()}>{loadingMore?'Loading older portfolios…':moreError?'Retry older portfolios':'Load more portfolios'}</button>}
+      {portfolios&&<button type="button" className="ws-secondary" disabled={loadingMore||busy!==null}
+        onClick={refreshPortfolios}>Refresh saved portfolios</button>}
     </SettingsCard>
     <SettingsCard title="Private account data">
-      <p>Download application records as JSON, or build a bounded recovery ZIP with owner records and verified uploaded files. Provider data and backups are excluded.</p>
+      <p>Choose an acknowledged application metadata JSON snapshot or bounded private recovery archive. Neither terminates access nor erases your account.</p>
+      <h3>Application metadata JSON</h3>
+      <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category; larger accounts may be refused. No uploaded bytes.</p>
+      <button className="ws-primary" type="button" disabled={busy!==null}
+        onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
+      <h3>Bounded recovery archive</h3>
+      <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes and 10 MiB ZIP capacity. No partial file on verification failure.</p>
       <div className="ws-actions">
-        <button className="ws-primary" type="button" disabled={busy!==null}
-          onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
         <button className="ws-secondary" type="button" disabled={busy!==null}
           onClick={()=>void download('recovery')}>{busy==='recovery'?'Checking records and files…':'Download private recovery ZIP'}</button>
+        <button className="ws-secondary" type="button" disabled={busy!==null}
+          onClick={()=>void download('recovery-json')}>{busy==='recovery-json'?'Checking recovery JSON…':'Download verified recovery JSON'}</button>
       </div>
+      <p>Verified recovery JSON is an alternative for archives that exceed ZIP capacity, not a bypass for asset or integrity limits.</p>
+      {inventory&&<><h3>Acknowledged inventory</h3>
+        <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only, not proof of downloaded files.</p>
+        <dl><dt>Projects</dt><dd>{inventory.inventory.counts.projects}</dd><dt>Portfolios</dt><dd>{inventory.inventory.counts.portfolios}</dd>
+          <dt>Portfolio revisions</dt><dd>{inventory.inventory.counts.portfolioRevisions}</dd><dt>Registered assets</dt><dd>{inventory.inventory.counts.projectAssetMetadata}</dd>
+          <dt>Trash records</dt><dd>{inventory.inventory.counts.trashRecords}</dd></dl>
+        {inventory.inventory.countsCapped&&<p>Some inventory counts are capped at {inventory.inventory.maxCountPerCategory} records.</p>}
+      </>}
     </SettingsCard>
     <SettingsCard title="Offline static preview">
       <p>Run preflight on a saved revision to download an eligible scriptless HTML preview. The ZIP has no public URL and excludes custom code and private media.</p>
       {selectedPortfolio
-        ? <a href={'/app/portfolios/'+selectedPortfolio+'/publish'}>Open preflight for selected portfolio</a>
+        ? <a href={'/app/portfolios/'+selectedPortfolio.id+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
+    </SettingsCard>
+    <SettingsCard title="Coverage and exclusions">
+      <p>Keep downloads private. They may contain personal information and editable source. Provider credentials, session tokens, restricted admin data, external platform records, backups, caches and third-party copies are not exported.</p>
+      <p>Inventory quotas and provider availability may prevent preparation. Downloading an archive does not revoke public links, validate independent hosting, restore account access, or authorize deletion. External release/retention proof remains separate.</p>
+      <a href="/app/settings/account/delete">Review account exit prerequisites</a>
     </SettingsCard>
   </div></>;
 }
