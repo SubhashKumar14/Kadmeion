@@ -206,7 +206,8 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
     const result=deps.publish
       ?await deps.publish(data.intentId,config.host,rpc)
       :await publishConsentedUnlistedRelease(data.intentId,{origin:config.host,
-        rpc:rpc as Parameters<typeof publishConsentedUnlistedRelease>[1]['rpc'],http});
+        rpc:rpc as Parameters<typeof publishConsentedUnlistedRelease>[1]['rpc'],http,
+        requirePublicAliasProof:true});
     if(!record(result)||result.status!=='DELIVERY_ACKNOWLEDGED'||
        typeof result.htmlSha256!=='string'||!/^[0-9a-f]{64}$/.test(result.htmlSha256))
       return error(409,'Publication was not verified',origin,permitted);
