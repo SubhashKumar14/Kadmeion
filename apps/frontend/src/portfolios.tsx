@@ -175,22 +175,80 @@ function DeviceLimit({id}: {id?: string}) {
   </section>;
 }
 
+/** Mirrors S1's additive v1 cursor without assuming this isolated S3 branch
+ * already contains S1's auth-port commit. Once S0 integrates both branches the
+ * exact S1 method is used; older adapter instances remain explicitly bounded. */
+type OwnerPortfolioCursor = Readonly<{
+  version: 1; collection: 'projects' | 'portfolios'; ownerUserId: string;
+  updatedAt: string; id: string;
+}>;
+type PortfolioPage = {items: OwnerPortfolio[]; nextCursor: OwnerPortfolioCursor | null};
+type PagedPortfolioPort = SupabaseBrowserAuthPort & {
+  listOwnerPortfoliosPage?: (
+    pageSize?: number, after?: OwnerPortfolioCursor | null
+  ) => Promise<{data: PortfolioPage | null; error: {message: string} | null}>;
+};
+
 export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
   const [items, setItems] = useState<OwnerPortfolio[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<OwnerPortfolioCursor | null>(null);
+  const [isPaged, setIsPaged] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [attempt, setAttempt] = useState(0);
+  const [request, setRequest] = useState<{
+    after: OwnerPortfolioCursor | null; reset: boolean; sequence: number;
+  }>({after: null, reset: true, sequence: 0});
   const [query, setQuery] = useState('');
+
+  // A reset re-reads the first page, including when the owner context
+  // changes via an S0-controlled remount. Load-more requests preserve rows on
+  // failure; stale promises from prior cursor requests never update the view.
   useEffect(() => {
     let active = true;
-    void port.listOwnerPortfolios().then(result => {
+    setError('');
+    setLoading(true);
+    if (request.reset) {setItems(null); setNextCursor(null);}
+    const paged = port as PagedPortfolioPort;
+    const available = typeof paged.listOwnerPortfoliosPage === 'function';
+    setIsPaged(available);
+    const fetchPage = available
+      ? paged.listOwnerPortfoliosPage!(50, request.after)
+      : port.listOwnerPortfolios().then(result => ({
+          data: result.data ? {items: result.data, nextCursor: null} : null,
+          error: result.error
+        }));
+    void fetchPage.then(result => {
       if (!active) return;
-      if (result.data) {setItems(result.data); setError('');}
-      else setError(result.error?.message ?? 'Your portfolios could not be loaded.');
+      if (!result.data) {
+        setError(result.error?.message ?? 'Your portfolios could not be loaded.');
+        return;
+      }
+      const page = result.data;
+      if (!Array.isArray(page.items) || page.nextCursor?.collection !== undefined &&
+          page.nextCursor.collection !== 'portfolios') {
+        setError('The portfolio page could not be verified. Refresh before continuing.');
+        return;
+      }
+      setItems(previous => {
+        if (request.reset || !previous) return page.items;
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.items.filter(item => !seen.has(item.id))];
+      });
+      setNextCursor(page.nextCursor);
+      setError('');
     }).catch(() => {
-      if (active) setError('The private portfolio service is unavailable. Try again.');
-    });
+      if (active) setError('The private portfolio service is unavailable. Retry without losing the loaded rows.');
+    }).finally(() => {if (active) setLoading(false);});
     return () => {active = false;};
-  }, [port, attempt]);
+  }, [port, request]);
+
+  function refresh() {
+    setRequest(previous => ({after: null, reset: true, sequence: previous.sequence + 1}));
+  }
+  function loadMore() {
+    if (loading || !isPaged || !nextCursor) return;
+    setRequest(previous => ({after: nextCursor, reset: false, sequence: previous.sequence + 1}));
+  }
   const displayed = items?.filter(item => item.title.toLowerCase().includes(query.trim().toLowerCase()));
   return <section aria-labelledby="studio-title" className="ws-owner-page">
     <div className="ws-project-head"><div className="ws-heading">
@@ -198,8 +256,13 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
       <h1 id="studio-title">Your portfolios.</h1>
       <p>Create and manage your independent portfolio drafts.</p>
     </div><a className="ws-primary" href={STUDIO + '/new'}>Create portfolio <Icon name="arrow" size={15}/></a></div>
-    {error && <><p role="alert" className="ws-inline-alert">{error}</p><button type="button" className="ws-secondary"
-      onClick={() => {setError(''); setAttempt(value => value + 1);}}>Retry portfolio library</button></>}
+    {error && <><p role="alert" className="ws-inline-alert">{error}</p><div className="ws-actions">
+      <button type="button" className="ws-secondary" disabled={loading}
+        onClick={() => setRequest(previous => ({...previous, sequence: previous.sequence + 1}))}>
+        Retry {request.reset ? 'portfolio library' : 'next page'}</button>
+      {!request.reset && <button type="button" className="ws-secondary" disabled={loading}
+        onClick={refresh}>Refresh from first page</button>}
+    </div></>}
     {!items && !error && <p role="status">Loading your portfolios…</p>}
     {items && <div className="ws-project-detail ws-owner-columns">
       <div className="ws-studio-list">
@@ -210,7 +273,8 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
           <h2>No portfolios yet.</h2><p>Choose a preset or start with a blank draft.</p>
           <a className="ws-primary" href={STUDIO + '/new'}>Create your first portfolio</a>
         </div>}
-        {displayed?.length === 0 && items.length > 0 && <p>No portfolios match your search.</p>}
+        {displayed?.length === 0 && items.length > 0 &&
+          <p>No loaded portfolios match your search. Load more to search older records.</p>}
         {!!displayed?.length && <ul className="ws-studio-records">{displayed.map(item => {
           const preset = presets.find(candidate => candidate.id === item.templateId);
           return <li key={item.id}>
@@ -224,7 +288,20 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
             </div>
           </li>;
         })}</ul>}
-        {items.length === 100 && <p>Showing the latest 100 portfolios.</p>}
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={loading} onClick={refresh}>
+            Refresh portfolios</button>
+          {isPaged && nextCursor && <button type="button" className="ws-secondary"
+            disabled={loading || !!error} onClick={loadMore}>
+            {loading ? 'Loading…' : 'Load more portfolios'}</button>}
+        </div>
+        {loading && items && <p role="status">Loading private portfolio records…</p>}
+        {isPaged ? <p className="ws-footnote">{items.length} portfolio records loaded.
+          {nextCursor ? ' More records may be available.' : ' No further page is indicated.'}
+          {' '}Search filters loaded records only; refresh after changes in another tab.</p>
+          : <p className="ws-footnote">This editor instance uses the legacy bounded portfolio list.
+            {items.length === 100 ? ' Only the latest 100 records are shown.' : ''}
+            {' '}Pagination becomes available after the updated private adapter is loaded.</p>}
       </div>
       <aside className="ws-project-aside"><h2 className="ws-owner-aside-title">From draft to live.</h2>
         <ol className="ws-project-guide">
@@ -315,7 +392,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [record, setRecord] = useState<PortfolioRecord | null>(null);
   const [head, setHead] = useState<EditorHead | null>(null);
   const [slot, setSlot] = useState('');
-  const [value, setValue] = useState('');
   // Secondary controls preserve malformed user input without silently
   // committing it to the private snapshot or losing it on panel changes.
   const [fieldDrafts,setFieldDrafts]=useState<Record<string,string>>({});
@@ -339,6 +415,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
   const [sourceDirty,setSourceDirty]=useState(false);
+  const [sourceReset,setSourceReset]=useState(0);
   const editorPanels=['Content','Components','My Components','Theme','Metadata','Assets','Source','History'] as const;
 
   useEffect(() => {
@@ -356,9 +433,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       // JSONB map key happened to deserialize first; never insert sample bytes.
       const chosen=orderedLayerGroups(snapshot).flatMap(group=>group.slots)
         .find(item=>item.name==='title')?.key??'';
-      const initial=chosen?snapshot?.slots[chosen]:undefined;
       setSlot(chosen);
-      setValue(initial?.content[primaryField(initial.componentId)]??'');
       setOperation('');
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       setSourceDirty(false);
@@ -372,8 +447,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     try {
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
       setHead(next);
-      const selected = next.snapshot.slots[slot];
-      setValue(selected?.content[primaryField(selected.componentId)] ?? '');
       setOperation(crypto.randomUUID()); setError(''); setNotice('Unsaved changes');
       return true;
     } catch (failure) {
@@ -382,18 +455,27 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     }
   }
 
-  function restore(snapshot: PortfolioSnapshot) {
-    if (!head || !allowed || saving) return;
+  function restore(snapshot: PortfolioSnapshot): boolean {
+    if (!head || !allowed || saving) return false;
+    if (pendingFields || sourceDirty) {
+      setError('Apply or discard unapplied content and source buffers before restoring a saved checkpoint.');
+      return false;
+    }
     try {
       const next = restoreHistoricalSnapshot(head, snapshot, crypto.randomUUID());
       setHead(next);
       setSlot('');
-      setValue('');
       setOperation(crypto.randomUUID());
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
+      // A formerly clean source explorer must not carry an old snapshot's
+      // buffer into the newly restored revision.
+      setSourceReset(value => value + 1);
+      setSourceDirty(false);
       setNotice('Revision restored into the working draft. Save to keep it.');
+      return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not restore the revision.');
+      return false;
     }
   }
 
@@ -422,6 +504,16 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
+  // Every inspector field, including the primary textarea, uses a per-slot
+  // buffer. Selecting another slot cannot silently discard typed content.
+  const primaryInputKey = slot && active ? slot + ':' + primaryField(active.componentId) : '';
+  const savedPrimary = active?.content[primaryField(active.componentId)] ?? '';
+  const value = primaryInputKey && Object.hasOwn(fieldDrafts, primaryInputKey)
+    ? fieldDrafts[primaryInputKey]! : savedPrimary;
+  const selectedSlotHasPendingDrafts = !!slot && Object.entries(fieldDrafts).some(([key, draft]) => {
+    if (!key.startsWith(slot + ':')) return false;
+    return draft !== (active?.content[key.slice(slot.length + 1)] ?? '');
+  });
   const layerGroups=orderedLayerGroups(head?.snapshot);
   const compatible=compatibleComponentsForSlot(slot);
   const chosenComponent=compatible.find(item=>item.id===pickedComponent)??compatible[0];
@@ -472,8 +564,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
   const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{
-      const entry=head?.snapshot.slots[key];
-      setSlot(key);setValue(entry?.content[primaryField(entry.componentId)]??'');setTool('Content');
+      setSlot(key);setTool('Content');
     }}/>;
   if (!allowed && !record) return <DeviceLimit id={id}/>;
   return <>{!allowed && <DeviceLimit id={id}/>}
@@ -498,7 +589,7 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {error && <button type="button" className="ws-secondary" onClick={() => {
       setRecord(null); setHead(null); setError(''); setAttempt(current => current + 1);
-    }}>{operation ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
+    }}>{operation || pendingFields || sourceDirty ? 'Discard changes and load saved draft' : 'Reload saved draft'}</button>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
     {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
@@ -577,8 +668,6 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
               aria-label={section+label+' '+state}
               onClick={()=>{
                 setSlot(item.key);
-                const assignment=head?.snapshot.slots[item.key];
-                setValue(assignment?.content[primaryField(assignment.componentId)]??'');
                 setTool('Content');
               }}>
               <span className="ws-editor-layer-name">{label}</span>{' '}
@@ -649,9 +738,19 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
             : <><label>Text content<textarea rows={5} maxLength={12000} value={value}
                 placeholder={active.componentId==='title-stacked@1'&&value===''?
                   'Example: Build things that make a difference. (not saved)':'Enter your own content'}
-                onChange={event => setValue(event.target.value)}/></label>
-              <button type="button" className="ws-secondary" disabled={saving || value === (active.content[primaryField(active.componentId)] ?? '')}
-                onClick={() => apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})}>Apply text</button>
+                onChange={event => setFieldDrafts(drafts => ({...drafts, [primaryInputKey]: event.target.value}))}/></label>
+              <button type="button" className="ws-secondary" disabled={saving || value === savedPrimary}
+                onClick={() => {
+                  if (apply({kind: 'UPDATE_CONTENT', slotKey: slot, content: {[primaryField(active.componentId)]: value}})) {
+                    setFieldDrafts(drafts => {
+                      const next = {...drafts}; delete next[primaryInputKey]; return next;
+                    });
+                  }
+                }}>Apply text</button>
+              {value !== savedPrimary && <button type="button" className="ws-secondary"
+                disabled={saving} onClick={() => setFieldDrafts(drafts => {
+                  const next = {...drafts}; delete next[primaryInputKey]; return next;
+                })}>Discard unapplied text</button>}
               {active.componentId && Object.hasOwn(contentFields, active.componentId) &&
                 contentFields[active.componentId as keyof typeof contentFields].slice(1).map(field => {
                   const inputKey=slot+':'+field;
@@ -683,9 +782,10 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
                     }}/>{issue&&<span id={id+'-error'} role="alert" className="ws-field-error">{issue}</span>}</div>;
                 })}
               {pendingFields&&<p className="ws-field-hint" role="status">
-                One or more secondary fields have uncommitted edits. Correct or apply them before saving this draft.
+                One or more content fields have unapplied edits. Apply or discard them before saving this draft.
               </p>}
-              <button type="button" className="ws-secondary" disabled={saving}
+              <button type="button" className="ws-secondary" disabled={saving || selectedSlotHasPendingDrafts}
+                title={selectedSlotHasPendingDrafts ? 'Apply or discard edits in this slot before moving its component.' : undefined}
                 onClick={() => apply({kind: 'CLEAR_SLOT', slotKey: slot})}>Move to unplaced</button></>}
           {active.state === 'EMPTY' && (head.snapshot.stashes[slot]?.length ?? 0) > 0 &&
             <button type="button" className="ws-secondary" disabled={saving}
@@ -694,14 +794,14 @@ export function PortfolioEditor({port, id}: {port: SupabaseBrowserAuthPort; id: 
       </aside>
     </div>{openedHistory&&record&&<div hidden={tool!=='History'}>
       <RevisionWorkspace port={port} id={id} revision={record.revision}
-        working={head.snapshot} title={record.title} dirty={!!operation}
-        onRestore={restore} back={()=>setTool('Content')}/>
+        working={head.snapshot} title={record.title} dirty={!!operation||pendingFields||sourceDirty}
+        buffered={pendingFields||sourceDirty} onRestore={restore} back={()=>setTool('Content')}/>
     </div>}
     {openedAssets&&<div hidden={tool!=='Assets'}>
       <AssetList port={port} back={()=>setTool('Content')}/>
     </div>}
     {openedSource&&<div hidden={tool!=='Source'}>
-      <SourceInspector key={id+':'+attempt} head={head} slot={slot} apply={apply}
+      <SourceInspector key={id+':'+attempt+':'+sourceReset} head={head} slot={slot} apply={apply}
         onBufferDirtyChange={setSourceDirty} back={()=>setTool('Content')}/>
     </div>}</>)}
   </section></>;

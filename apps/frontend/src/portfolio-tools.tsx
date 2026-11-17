@@ -493,9 +493,9 @@ export function AssetList({port,back}:{port:SupabaseBrowserAuthPort;back:()=>voi
   </div>;
 }
 
-export function RevisionHistory({port,id,revision,onRestore,working}: {
+export function RevisionHistory({port,id,revision,onRestore,working,buffered}: {
   port:SupabaseBrowserAuthPort;id:string;revision:number;
-  onRestore:(snapshot:PortfolioSnapshot)=>void;working:PortfolioSnapshot;
+  onRestore:(snapshot:PortfolioSnapshot)=>boolean;working:PortfolioSnapshot;buffered:boolean;
 }) {
   const [items,setItems]=useState<{revision:number;createdAt:string}[]|null>(null);
   const [selected,setSelected]=useState<number|null>(null);
@@ -548,11 +548,11 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
     }
   }
   async function restore(){
-    if(!selected||busy)return;
+    if(!selected||busy||buffered)return;
     setBusy(true);setError('');
     try{
       const snapshot=await readSelectedUnsafe(selected);
-      if(snapshot){onRestore(snapshot);setSelected(null);setComparison(null);}
+      if(snapshot&&onRestore(snapshot)){setSelected(null);setComparison(null);}
     }finally{setBusy(false);}
   }
   return <div className="ws-editor-tool ws-revision-list">
@@ -573,7 +573,7 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
         <div className="ws-revision-buttons">
           <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void compare()}>
             Compare to working copy</button>
-          <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void restore()}>
+          <button type="button" className="ws-secondary" disabled={busy||buffered} onClick={()=>void restore()}>
             Restore selected checkpoint to draft</button>
         </div>
       </>}
@@ -582,6 +582,7 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
         <div><dt>Different project files</dt><dd>{comparison.changedFiles}</dd></div>
         <div><dt>Different component slots</dt><dd>{comparison.changedSlots}</dd></div>
       </dl></div>}
+      {buffered&&<p role="status">Apply or discard unapplied inspector and source text before restoring a checkpoint. Your existing buffers remain untouched.</p>}
       <p>Restore is a reversible editor transaction, not a public rollback; save the private draft to persist it.</p>
     </section>
   </div>;
@@ -589,10 +590,10 @@ export function RevisionHistory({port,id,revision,onRestore,working}: {
 
 /** EDIT-08: the approved history layout is a three-pane private workbench,
  * not a small history list inside the Content inspector. */
-export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestore,back}:{
+export function RevisionWorkspace({port,id,revision,working,title,dirty,buffered,onRestore,back}:{
   port:SupabaseBrowserAuthPort;id:string;revision:number;
-  working:PortfolioSnapshot;title:string;dirty:boolean;
-  onRestore:(snapshot:PortfolioSnapshot)=>void;back:()=>void;
+  working:PortfolioSnapshot;title:string;dirty:boolean;buffered:boolean;
+  onRestore:(snapshot:PortfolioSnapshot)=>boolean;back:()=>void;
 }){
   const [tab,setTab]=useState<'History'|'Problems'|'Conflicts'>('History');
   const views=['History','Problems','Conflicts'] as const;
@@ -640,7 +641,7 @@ export function RevisionWorkspace({port,id,revision,working,title,dirty,onRestor
         <div id="kd-revision-panel" role="tabpanel" tabIndex={0}
           aria-labelledby={'kd-revision-tab-'+tab.toLowerCase()}>
           {tab==='History'?<RevisionHistory port={port} id={id} revision={revision}
-            working={working} onRestore={onRestore}/>:
+            working={working} onRestore={onRestore} buffered={buffered}/>:
           tab==='Problems'?<div className="ws-revision-honest-state">
             <h3>Validation has not been run here.</h3>
             <p>Saved revision integrity is checked on read. This history page does not run source lint, custom-code analysis, media attestation or public host checks.</p>

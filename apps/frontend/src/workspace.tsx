@@ -14,7 +14,7 @@ import { GrowthApp, isGrowthRoute } from './growth.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
-type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'verified'; owner: Owner };
+type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'verified'; owner: Owner; epoch: number; portGeneration: number };
 type SnapshotState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; value: OwnerWorkspaceSnapshot };
 type StartChoice = PrivateStep;
 const NAV = [
@@ -35,6 +35,27 @@ function projectIdFromRoute(path: string): string | undefined {
 
 export function isWorkspaceRoute(path: string): boolean {
   return path === '/app' || path === '/app/onboarding' || path === '/app/projects' || path === '/app/profile' || path === '/app/portfolios' || path === '/app/portfolios/new' || isSettingsRoute(path) || isOperatorRoute(path) || isGrowthRoute(path) || !!releaseRoute(path) || !!portfolioIdFromRoute(path) || !!projectIdFromRoute(path);
+}
+
+/** Contextual browser titles are part of accessible navigation: a generic
+ * "Workspace" label hides the task after opening another owner-only screen. */
+function workspacePageTitle(path: string): string {
+  if (path === '/app') return 'Workspace overview';
+  if (path === '/app/onboarding') return 'Welcome';
+  if (path === '/app/profile') return 'Developer profile';
+  if (path === '/app/projects') return 'Private project library';
+  if (projectIdFromRoute(path)) return 'Private project details';
+  if (path === '/app/portfolios') return 'Private portfolio library';
+  if (path === '/app/portfolios/new') return 'Choose a portfolio template';
+  const portfolio = portfolioIdFromRoute(path);
+  if (portfolio && path.endsWith('/preview/fullscreen')) return 'Fullscreen portfolio preview';
+  if (portfolio && path.endsWith('/preview')) return 'Portfolio preview';
+  if (releaseRoute(path)) return 'Portfolio release';
+  if (portfolio) return 'Portfolio editor';
+  if (isSettingsRoute(path)) return 'Account settings';
+  if (isOperatorRoute(path)) return 'Restricted operations';
+  if (isGrowthRoute(path)) return 'Personal growth';
+  return 'Workspace';
 }
 
 function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
@@ -61,7 +82,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
         onClick={() => setMenuOpen(open => !open)}>Menu <Icon name="chevron" size={16}/></button>
       <nav id="ws-nav" className={menuOpen ? 'ws-nav-open' : undefined} aria-label="Workspace navigation">
         {NAV.map(item => <a key={item.href} href={item.href} aria-label={item.title}
-          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) ? 'page' : undefined}>
+          aria-current={route === item.href || (item.href === '/app/projects' && projectIdFromRoute(route)) || (item.href === '/app/portfolios' && route.startsWith('/app/portfolios/')) || (item.href === '/app/settings' && isSettingsRoute(route)) || (item.href === '/app/growth' && isGrowthRoute(route)) ? 'page' : undefined}>
           <Icon name={item.icon} size={18}/><span>{item.title}</span>
         </a>)}
       </nav>
@@ -140,6 +161,8 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
         void onSkip(choice).then(saved => {
           setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
             'The server did not confirm this skipped step. Nothing was marked saved.');
+        }).catch(() => {
+          setNote('The private onboarding update could not be completed. Nothing was marked skipped; retry when the connection is available.');
         }).finally(()=>setSaving(false));
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
       <a href="/app" className="ws-secondary">Open workspace without saving</a>
@@ -214,15 +237,23 @@ export function WorkspaceApp() {
   const [message, setMessage] = useState('');
   const [signOutPending, setSignOutPending] = useState(false);
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
+  const portGenerationRef = useRef(0);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
   const release = releaseRoute(route);
   useEffect(() => {
-    document.title = 'Kadmeion — ' + (route === '/app/onboarding' ? 'Welcome' : 'Workspace');
+    document.title = workspacePageTitle(route) + ' · Kadmeion';
     let cancelled = false;
+    let attempt = 0;
+    let unsubscribe = () => {};
     const url = import.meta.env.VITE_SUPABASE_URL?.trim();
     const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
+    // Never retain a verified private subtree between route/port instances.
+    setGate({status:'checking'});
+    setSnapshot({status:'loading'});
+    setMessage('');
+    setSignOutPending(false);
     if (!url || !key || !isSafeSupabaseClientKey(key)) {
       setGate({ status: 'locked', message: 'Owner authentication is not configured in this preview. No private workspace data was requested.' });
       return;
@@ -233,37 +264,63 @@ export function WorkspaceApp() {
         appOrigin: window.location.origin,
         storage: window.localStorage, oauthStorage: window.sessionStorage
       });
+      const generation = ++portGenerationRef.current;
       authRef.current = port;
-      void port.getUser().then(result => {
-        if (cancelled) return;
-        if (result.error || !result.data?.user?.id) {
-          setGate({ status: 'locked', message: 'Sign in to verify your owner session before opening this workspace.' });
-          return;
-        }
-        setGate({ status: 'verified', owner: { id: result.data.user.id, email: result.data.user.email } });
-        if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') || isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
-        void port.readOwnerWorkspace().then(read=>{
-          if (cancelled) return;
-          if (read.error || !read.data) {
-            setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
-          } else setSnapshot({status:'ready',value:read.data});
-        }).catch(()=>{
-          if (!cancelled) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
+      const stillCurrent = (seq:number, epoch:number) =>
+        !cancelled && authRef.current === port && portGenerationRef.current === generation &&
+        attempt === seq && port.getOwnerSessionEpoch() === epoch;
+      const verify = () => {
+        const seq = ++attempt;
+        const epoch = port.getOwnerSessionEpoch();
+        setGate({status:'checking'});
+        setSnapshot({status:'loading'});
+        void port.getUser().then(result => {
+          if (!stillCurrent(seq,epoch)) return;
+          if (result.error || !result.data?.user?.id) {
+            setGate({ status: 'locked', message: 'Sign in to verify your owner session before opening this workspace.' });
+            return;
+          }
+          const owner = { id: result.data.user.id, email: result.data.user.email };
+          setGate({status:'verified',owner,epoch,portGeneration:generation});
+          if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') ||
+              isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
+          void port.readOwnerWorkspace().then(read => {
+            if (!stillCurrent(seq,epoch)) return;
+            if (read.error || !read.data) {
+              setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
+            } else setSnapshot({status:'ready',value:read.data});
+          }).catch(() => {
+            if (stillCurrent(seq,epoch)) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
+          });
+        }).catch(() => {
+          if (stillCurrent(seq,epoch)) setGate({status:'locked',message:'Owner session verification could not be completed. Please sign in again.'});
         });
-      }).catch(() => {
-        if (!cancelled) setGate({ status: 'locked', message: 'Owner session verification could not be completed. Please sign in again.' });
+      };
+      // Register before the first owner read. An epoch is an invalidation
+      // signal only: the live provider /user response supplies owner authority.
+      unsubscribe = port.subscribeOwnerSessionEpoch(() => {
+        if (cancelled || authRef.current !== port) return;
+        ++attempt;
+        setGate({status:'checking'});
+        setSnapshot({status:'loading'});
+        setMessage('');
+        setSignOutPending(false);
+        verify();
       });
+      verify();
     } catch {
       setGate({ status: 'locked', message: 'Secure browser storage or the authentication configuration is unavailable.' });
     }
-    return () => { cancelled = true; authRef.current = null; };
+    return () => { cancelled = true; ++attempt; unsubscribe(); authRef.current = null; };
   }, [route]);
   async function skipChoice(choice: PrivateStep): Promise<boolean> {
     const port=authRef.current;
     if (!port) return false;
+    const ownerEpoch = port.getOwnerSessionEpoch();
     const result=await port.setPrivateOnboardingStep(choice,'skipped');
     if (result.error || !result.data || result.data.step !== choice || result.data.status !== 'skipped')
       return false;
+    if (authRef.current !== port || port.getOwnerSessionEpoch() !== ownerEpoch) return false;
     setSnapshot(state=>state.status !== 'ready' ? state : {
       status:'ready',value:{...state.value,onboarding:[
         ...state.value.onboarding.filter(item=>item.step!==choice),
@@ -296,9 +353,10 @@ export function WorkspaceApp() {
       <button type="button" className="ws-secondary" onClick={() => window.location.reload()}>Retry verification</button></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
+  const ownerKey = gate.owner.id + ':' + gate.portGeneration + ':' + gate.epoch;
   if (route.endsWith('/preview/fullscreen') && portfolioId && authRef.current)
-    return <FullscreenPortfolioPreview port={authRef.current} id={portfolioId}/>;
-  return <WorkspaceFrame owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
+    return <FullscreenPortfolioPreview key={ownerKey} port={authRef.current} id={portfolioId}/>;
+  return <WorkspaceFrame key={ownerKey} owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
     {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       route === '/app/profile' && authRef.current ? <DeveloperProfile port={authRef.current}/> :

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
 import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
@@ -256,7 +257,7 @@ test('real owner onboarding and project revision are private across browser sess
   await drawer.getByText('Edit private URL slug', {exact: true}).click();
   await capture('14_PROJECT_DRAWER_BROWSER');
   await drawer.getByRole('button', {name: 'Save project'}).click();
-  await expect(page.getByRole('status')).toContainText('Saved privately');
+  await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
   await page.getByRole('link', {name: 'Private browser project', exact: true}).click();
   await expect(page.getByLabel('Project title')).toHaveValue('Private browser project');
   const projectPath = new URL(page.url()).pathname;
@@ -536,7 +537,7 @@ test('real owner onboarding and project revision are private across browser sess
   await savedRevision.selectOption('2');
   await page.getByRole('button', {name: 'Freeze private revision'}).click();
   await expect(page.getByRole('status').filter({hasText:'Private revision 2 frozen.'})).toBeVisible();
-  await expect(page.getByText('Frozen revision 2 · Pinned private request')).toBeVisible();
+  await expect(page.getByText('Frozen revision 2 · Verified owner-private pin')).toBeVisible();
   await expect(page.locator('.ws-release-visual .pv-site')).toBeVisible();
   await expect(page.getByRole('heading',{name:'Frozen private requests'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Frozen request selected'})).toHaveAttribute('aria-pressed','true');
@@ -549,7 +550,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('heading', {name:'Frozen private requests'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Use frozen revision 2'})).toBeVisible();
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
-  await expect(page.getByRole('status').filter({hasText:'Loaded an existing owner-private frozen request.'})).toBeVisible();
+  await expect(page.getByRole('status').filter({hasText:'Exact owner-private frozen revision verified.'})).toBeVisible();
   await expect(page.getByRole('heading', {name:'Registered reviewer grants'})).toBeVisible();
   await expect(page.getByText('Registered (not servable)', {exact:true})).toBeVisible();
   await page.getByRole('button', {name:'Review revocation'}).click();
@@ -565,6 +566,7 @@ test('real owner onboarding and project revision are private across browser sess
   await expect(page.getByRole('button',{name:'Publish unavailable — host proof required'})).toBeDisabled();
   await expect(page.getByRole('button',{name:'Use frozen revision 2'})).toBeVisible();
   await page.getByRole('button',{name:'Use frozen revision 2'}).click();
+  await expect(page.getByRole('status').filter({hasText:'Exact owner-private frozen revision verified.'})).toBeVisible();
   await page.getByRole('button', {name: 'Run private preflight'}).click();
   await expect(page.getByRole('heading', {name: 'Preflight results'})).toBeVisible();
   const preflightSummary=page.getByRole('group',{name:'Private preflight summary'});
@@ -1196,4 +1198,381 @@ test('eligible private static ZIP and expired Trash remain owner scoped',async({
   await expect(page.getByText('Recovery window ended. Restore is unavailable.')).toBeVisible();
   await expect(restore).toBeDisabled();
   await expect(page.getByRole('button',{name:/permanent/i})).toHaveCount(0);
+});
+
+
+test('F6 failed onboarding skip remains private and is retryable after RPC recovery', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1',
+    'Requires isolated local Supabase and disposable GoTrue owner.');
+  test.setTimeout(75_000);
+  const owner = await localUser('F6 onboarding retry fixture');
+  await signIn(page, owner);
+  await page.goto('/app/onboarding');
+
+  const skip = page.getByRole('button', {name: 'Skip selected step'});
+  const portfolio = page.getByRole('radio', {name: /Create a portfolio/});
+  await expect(portfolio).toBeChecked();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(0);
+
+  // Fail the actual owner RPC rather than substituting a successful mock.
+  // The UI must not commit a skipped state until the server confirms it.
+  const rpc = '**/rest/v1/rpc/set_private_onboarding_step*';
+  await page.route(rpc, route => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({code: 'PGRST503', message: 'Disposable test outage'})
+  }));
+  await skip.click();
+  await expect(page.getByRole('status')).toContainText(
+    'The server did not confirm this skipped step. Nothing was marked saved.');
+  await expect(skip).toBeEnabled();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(0);
+  await page.unroute(rpc);
+
+  // An unsaved optimistic state must not survive a fresh authenticated read.
+  await page.reload();
+  await expect(portfolio).toBeChecked();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(0);
+  await skip.click();
+  await expect(page.getByRole('status')).toContainText('saved as skipped');
+  await page.reload();
+  await expect(page.getByText('Skipped in your private account')).toHaveCount(1);
+});
+
+
+test('S6 S2 project list 503 retries, create conflict preserves fields and private navigation works', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Disposable local Supabase only.');
+  test.setTimeout(90_000);
+  const owner=await localUser('S6 S2 retry');
+  await signIn(page,owner);
+  // Establish a real successful owner list first. The forced failure must
+  // be tied to one explicit reload, not incidental startup requests.
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  let readFailed=false, failRead=true, createFailed=false;
+  const requests:{method:string;status:number}[]=[];
+  await page.route('**/rest/v1/projects?*',async route=>{
+    const method=route.request().method();
+    if(method==='GET'&&failRead) {
+      if(!readFailed) requests.push({method,status:503});
+      readFailed=true;
+      await route.fulfill({status:503,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable list outage'})});
+    } else if(method==='POST'&&!createFailed) {
+      createFailed=true;requests.push({method,status:409});
+      await route.fulfill({status:409,contentType:'application/json',
+        body:JSON.stringify({code:'23505',message:'Disposable conflict'})});
+    } else await route.continue();
+  });
+  await page.reload();
+  await expect.poll(()=>readFailed).toBe(true);
+  await expect(page.getByRole('alert')).toContainText('Private workspace request failed.');
+  await expect(page.getByText('Your first project belongs here.')).toHaveCount(0);
+  failRead=false;
+  await page.getByRole('button',{name:'Retry securely'}).click();
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  const opener=page.getByRole('button',{name:'Add first project'});
+  await opener.click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('S6 navigation retry fixture');
+  await drawer.getByLabel('Summary (optional)').fill('Preserve this private form on conflict');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer.getByRole('alert')).toContainText('Choose a different slug');
+  await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
+  await expect(drawer.getByLabel('Summary (optional)')).toHaveValue('Preserve this private form on conflict');
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
+  await expect(page.getByRole('link',{name:'S6 navigation retry fixture'})).toBeVisible();
+  await page.getByRole('link',{name:'S6 navigation retry fixture'}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  await expect(page.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
+  await page.getByRole('link',{name:'Back to project library'}).click();
+  await expect(page.getByRole('heading',{name:'Project library.'})).toBeVisible();
+  expect(requests).toEqual([{method:'GET',status:503},{method:'POST',status:409}]);
+});
+
+test('S6 S4 freeze retry preserves idempotency key and guards the exact frozen pin', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await localUser('S6 S4 freeze retry');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 frozen request fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 frozen request fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.goto(editorPath.replace('/edit','/staging'));
+  await expect(page.getByLabel('Saved revision')).toBeEnabled();
+  const freeze=page.getByRole('button',{name:'Freeze private revision'});
+  const operations:string[]=[];
+  let firstFreeze=true,failedPin=true;
+  await page.route('**/rest/v1/rpc/freeze_private_release_request',async route=>{
+    const args=route.request().postDataJSON() as {p_operation_id?:string};
+    expect(args.p_operation_id).toMatch(/^[0-9a-f-]{36}$/i);
+    operations.push(args.p_operation_id!);
+    if(firstFreeze){
+      firstFreeze=false;
+      await route.fulfill({status:503,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable freeze acknowledgement loss'})});
+    }else await route.continue();
+  });
+  await page.route('**/rest/v1/rpc/load_private_frozen_revision',async route=>{
+    if(failedPin){
+      failedPin=false;
+      await route.fulfill({status:503,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable pinned read outage'})});
+    }else await route.continue();
+  });
+  await freeze.click();
+  await expect(page.getByRole('alert')).toContainText('Freeze could not be confirmed');
+  await expect(freeze).toBeEnabled();
+  await freeze.click();
+  await expect(page.getByText(/Private revision \d+ frozen\./)).toBeVisible();
+  expect(operations).toHaveLength(2);
+  expect(operations[0]).toBe(operations[1]);
+  await expect(page.getByRole('alert')).toContainText('The exact frozen revision could not be verified.');
+  await expect(page.getByText(/Current saved draft · Not yet frozen/)).toHaveCount(0);
+  await expect(page.locator('.ws-release-visual-canvas')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:/Register.*reviewer/i})).toBeDisabled();
+  // Only the S4 pin-retry candidate exposes this control. A first failed
+  // attested pin may be retried without changing frozen request/operation ID.
+  {
+    const retryPin=page.getByRole('button',{name:'Retry exact frozen revision'});
+    await expect(retryPin).toBeEnabled();
+    await retryPin.click();
+    await expect(page.locator('.ws-release-visual-canvas')).toBeVisible();
+    await expect(page.getByRole('button',{name:'Register private reviewer grant'})).toBeEnabled();
+    await expect(page.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+    expect(operations).toHaveLength(2);
+  }
+  await page.unroute('**/rest/v1/rpc/load_private_frozen_revision');
+  await page.unroute('**/rest/v1/rpc/freeze_private_release_request');
+});
+
+
+test('S6 S3 pending inspector and SEO buffers block Restore until resolved', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1',
+    'Requires S3 integrated editor and disposable local Supabase.');
+  test.setTimeout(110_000);
+  const owner=await localUser('S6 S3 checkpoint buffers');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 checkpoint buffer fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 checkpoint buffer fixture',level:1})).toBeVisible();
+
+  const textField=page.getByLabel('Text content');
+  await expect(textField).toBeVisible();
+  await textField.fill('Unsaved S3 primary text must survive History');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:/Revision 1/}).click();
+  const restore=page.getByRole('button',{name:'Restore selected checkpoint to draft'});
+  await expect(restore).toBeDisabled();
+  await expect(page.getByRole('status')).toContainText('Apply or discard unapplied inspector and source text');
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await expect(textField).toHaveValue('Unsaved S3 primary text must survive History');
+  await page.getByRole('button',{name:'Discard unapplied text'}).click();
+  await page.getByRole('button',{name:'Metadata',exact:true}).click();
+  const storedSeoTitle=await page.getByLabel('SEO page title').inputValue();
+  await page.getByLabel('SEO page title').fill('Unapplied S3 SEO title');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await expect(restore).toBeDisabled();
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await page.getByRole('button',{name:'Metadata',exact:true}).click();
+  await expect(page.getByLabel('SEO page title')).toHaveValue('Unapplied S3 SEO title');
+
+  // Return the buffered SEO field to its exact last-saved value. The global
+  // reload/discard action is error-only, not a general pending-input control.
+  await page.getByLabel('SEO page title').fill(storedSeoTitle);
+  await expect(page.getByLabel('SEO page title')).not.toHaveValue('Unapplied S3 SEO title');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:/Revision 1/}).click();
+  await expect(restore).toBeEnabled();
+  await restore.click();
+  await expect(page.getByText('Revision restored into the working draft. Save to keep it.')).toBeVisible();
+  await page.getByRole('button',{name:'Back to editor canvas'}).click();
+  await page.getByRole('button',{name:'Save draft'}).click();
+  await expect(page.getByText('Private portfolio draft saved.')).toBeVisible();
+});
+
+test('S6 S5 principal A to B switch clears restricted views in the same browser', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Requires disposable local Supabase.');
+  test.setTimeout(95_000);
+  const [operator,owner]=await Promise.all([
+    localUser('S6 restricted operator A'),localUser('S6 private owner B')
+  ]);
+  grantLocalOperatorRole(operator.id);
+  await signIn(page,operator);
+  await page.goto('/app/operations/users');
+  await expect(page.getByRole('heading',{name:'Admin users'})).toBeVisible();
+  await expect(page.getByRole('navigation',{name:'Restricted operation areas'})).toBeVisible();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await signIn(page,owner);
+  await page.goto('/app/operations/users');
+  await expect(page.getByRole('heading',{name:'Restricted operations.'})).toBeVisible();
+  await expect(page.getByRole('navigation',{name:'Restricted operation areas'})).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText('did not authorize this session');
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Settings',exact:true})).toBeVisible();
+  await expect(page.getByText(operator.email,{exact:true})).toHaveCount(0);
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Account security'})).toBeVisible();
+  await expect(page.getByText(operator.email,{exact:true})).toHaveCount(0);
+});
+
+
+test('S6 real 135 owner projects preserve microsecond-tie keyset ordering and owner scope',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable loopback GoTrue/PostgREST only.');
+  test.setTimeout(105_000);
+  const owner=await localUser('S6 real 135 owner projects');
+  const other=await localUser('S6 paged outsider');
+  const inserted=runLocalFixtureSql(
+    "with batch as (insert into public.projects(owner_user_id,slug,title,summary,description,updated_at) " +
+    "select :'actor_id'::uuid,'s6-paged-'||lpad(n::text,3,'0')," +
+    "'S6 project '||lpad(n::text,3,'0'),'',''," +
+    "case when n<=70 then '2026-11-16T00:00:00.123457+00:00'::timestamptz " +
+    "else '2026-11-16T00:00:00.123456+00:00'::timestamptz end " +
+    "from generate_series(1,135) n returning id) select count(*) from batch;",owner.id);
+  expect(inserted).toBe('135');
+  const ids=runLocalFixtureSql(
+    "select string_agg(id::text,',' order by updated_at desc,id asc) " +
+    "from public.projects where owner_user_id=:'actor_id'::uuid;",owner.id).split(',');
+  expect(ids).toHaveLength(135);
+  function makePort(){
+    const items=new Map<string,string>();
+    const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    if(!key)throw new Error('Local Supabase publishable key missing.');
+    return new SupabaseBrowserAuthPort({supabaseUrl:origin,
+      publishableKey:key,appOrigin:'http://127.0.0.1:4173',
+      storage:{
+        getItem:k=>items.get(k)??null,
+        setItem:(k,v)=>{items.set(k,v);},
+        removeItem:k=>{items.delete(k);}
+      }});
+  }
+  const port=makePort();
+  const signInResult=await port.signInWithPassword({email:owner.email,password:owner.password});
+  expect(signInResult.error).toBeNull();
+  expect(signInResult.data?.session?.user.id).toBe(owner.id);
+  const accumulated:string[]=[];
+  let cursor:OwnerPrivateCursorV1|null=null;
+  for(const expectedLength of [50,50,35]){
+    const result=await port.listOwnerProjectsPage(50,cursor);
+    expect(result.error).toBeNull();
+    expect(result.data).not.toBeNull();
+    expect(result.data!.items).toHaveLength(expectedLength);
+    accumulated.push(...result.data!.items.map(item=>item.id));
+    const next=result.data!.nextCursor;
+    if(expectedLength===35)expect(next).toBeNull();
+    else{
+      expect(next).toMatchObject({version:1,collection:'projects',ownerUserId:owner.id,
+        id:result.data!.items.at(-1)!.id});
+      expect(next!.updatedAt).toMatch(/\.12345[67]/);
+    }
+    cursor=next;
+  }
+  expect(accumulated).toEqual(ids);
+  expect(new Set(accumulated).size).toBe(135);
+  expect((await port.listOwnerProjectsPage(51)).data).toBeNull();
+  const otherPort=makePort();
+  expect((await otherPort.signInWithPassword({email:other.email,password:other.password})).error).toBeNull();
+  const foreignCursor:OwnerPrivateCursorV1={version:1,collection:'projects',
+    ownerUserId:owner.id,updatedAt:'2026-11-16T00:00:00.123457+00:00',id:ids[49]!};
+  const denied=await otherPort.listOwnerProjectsPage(50,foreignCursor);
+  expect(denied.data).toBeNull();
+  expect(denied.error?.message).toMatch(/cursor.*current owner/i);
+  const empty=await otherPort.listOwnerProjectsPage(50,null);
+  expect(empty.error).toBeNull();
+  expect(empty.data?.items).toEqual([]);
+});
+
+test('S6 S2 integrated paginates 135 projects and retries a 429 without losing pages',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
+    'Requires integrated S1+S2 and isolated owner service.');
+  test.setTimeout(115_000);
+  const owner=await localUser('S6 S2 paged browser');
+  expect(runLocalFixtureSql(
+    "with batch as (insert into public.projects(owner_user_id,slug,title,summary,description,updated_at) " +
+    "select :'actor_id'::uuid,'s6-paged-'||lpad(n::text,3,'0')," +
+    "'S6 project '||lpad(n::text,3,'0'),'',''," +
+    "case when n<=70 then '2026-11-16T00:00:00.123457+00:00'::timestamptz " +
+    "else '2026-11-16T00:00:00.123456+00:00'::timestamptz end " +
+    "from generate_series(1,135) n returning id) select count(*) from batch;",owner.id)
+  ).toBe('135');
+  const deepTitle=runLocalFixtureSql(
+    "select title from public.projects where owner_user_id=:'actor_id'::uuid " +
+    "order by updated_at desc,id asc limit 1 offset 120;",owner.id);
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  const count=page.locator('.ws-project-count');
+  await expect(count).toContainText('50 loaded private projects');
+  const search=page.getByLabel('Search private projects');
+  await search.fill(deepTitle);
+  await expect(page.getByRole('link',{name:deepTitle,exact:true})).toHaveCount(0);
+  await expect(count).toContainText('Search and sorting apply only to loaded records');
+  await search.fill('');
+  const more=page.getByRole('button',{name:'Load more projects'});
+  let injected429=false;
+  await page.route('**/rest/v1/projects?*',async route=>{
+    const url=new URL(route.request().url());
+    if(!injected429&&route.request().method()==='GET'&&url.searchParams.has('or')){
+      injected429=true;
+      await route.fulfill({status:429,contentType:'application/json',
+        body:JSON.stringify({message:'Disposable next-page rate limit'})});
+    }else await route.continue();
+  });
+  await more.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('Too many private workspace requests');
+  await expect(count).toContainText('50 loaded private projects');
+  const retryPage=page.getByRole('button',{name:'Retry loading more projects'});
+  await retryPage.focus();
+  await page.keyboard.press('Enter');
+  await expect(count).toContainText('100 loaded private projects');
+  expect(injected429).toBe(true);
+  await more.click();
+  await expect(count).toContainText('135 loaded private projects');
+  await expect(more).toHaveCount(0);
+  await search.fill(deepTitle);
+  await expect(page.getByRole('link',{name:deepTitle,exact:true})).toBeVisible();
+  await search.fill('');
+  expect(await page.locator('.ws-project-card').count()).toBe(135);
+});
+
+test('S6 S3 candidate paginates 111 owner portfolios with truthful partial search',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
+    'Requires S1+S3 integrated cursor consumer and disposable local Supabase.');
+  test.setTimeout(115_000);
+  const owner=await localUser('S6 S3 portfolio paging');
+  expect(runLocalFixtureSql(
+    "with batch as (insert into public.portfolios(owner_user_id,slug,title,template_id,updated_at) " +
+    "select :'actor_id'::uuid,'s6-folio-'||lpad(n::text,3,'0')," +
+    "'S6 portfolio '||lpad(n::text,3,'0'),'arc'," +
+    "case when n<=70 then '2026-11-16T00:00:00.123457+00:00'::timestamptz " +
+    "else '2026-11-16T00:00:00.123456+00:00'::timestamptz end " +
+    "from generate_series(1,111) n returning id) select count(*) from batch;",owner.id)
+  ).toBe('111');
+  const deepTitle=runLocalFixtureSql(
+    "select title from public.portfolios where owner_user_id=:'actor_id'::uuid " +
+    "order by updated_at desc,id asc limit 1 offset 105;",owner.id);
+  await signIn(page,owner);
+  await page.goto('/app/portfolios');
+  const more=page.getByRole('button',{name:'Load more portfolios'});
+  await expect(page.getByText('50 portfolio records loaded.',{exact:false})).toBeVisible();
+  await page.getByLabel('Find a portfolio').fill(deepTitle);
+  await expect(page.getByRole('link',{name:deepTitle,exact:true})).toHaveCount(0);
+  await page.getByLabel('Find a portfolio').fill('');
+  await more.click();
+  await expect(page.getByText('100 portfolio records loaded.',{exact:false})).toBeVisible();
+  await more.click();
+  await expect(page.getByText('111 portfolio records loaded.',{exact:false})).toBeVisible();
+  await expect(more).toHaveCount(0);
+  await page.getByLabel('Find a portfolio').fill(deepTitle);
+  await expect(page.getByRole('link',{name:deepTitle,exact:true})).toBeVisible();
 });

@@ -16,13 +16,43 @@ import type { LoadedPrivateFrozenRevision } from '../../../packages/storage-adap
 import {isEmailAuthType} from './auth-redirect.ts';
 import type { AuthFailure, AuthOutcome, AuthPort, AuthSession, AuthUser } from '../../../packages/contracts/src/auth-service.ts';
 
+import type { AccountExitReauthVerification } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+
+export type OwnerAccountExitReauthContext = Readonly<{
+  expectedEpoch:number; requestId:string; challengeId:string;
+}>;
+export type RecoveredOwnerAccountExitReauth = Readonly<{
+  requestId:string; verification:AccountExitReauthVerification;
+}>;
+// A pointer to an existing server challenge, NOT an authentication receipt.
+// Kept in this port's memory only; never copied to browser storage.
+type AccountExitContinuation = Readonly<{
+  ownerUserId:string; requestId:string; challengeId:string; deadline:number;
+}>;
+type PendingAccountExitContinuation = AccountExitContinuation & {epoch:number};
+
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+
+/** Auth-state invalidation broadcasts never carry access tokens or identity claims. */
+type OwnerSessionWriteNotice = (storage: StorageLike, source: SupabaseBrowserAuthPort, notice:object) => void;
+const ownerSessionWriteNotices = new Set<OwnerSessionWriteNotice>();
+function sameSession(a:StoredSession|null,b:StoredSession|null):boolean {
+  return a===b || Boolean(a && b && a.user.id===b.user.id &&
+    a.access_token===b.access_token && a.refresh_token===b.refresh_token);
+}
 export type ProfileDraft = { displayName: string; headline: string; bio: string; skills: string[] };
 export type OwnerProfile = ProfileDraft & { handle: string | null };
 
 export type OwnerPortfolio = {id: string; title: string; slug: string; templateId: string; revision: number};
+
+/** Versioned owner-bound keyset cursor; never an authorization credential. */
+export type OwnerPrivateCursorV1 = Readonly<{
+  version: 1; collection: 'projects' | 'portfolios'; ownerUserId: string;
+  updatedAt: string; id: string;
+}>;
+export type OwnerPrivatePageV1<T> = { items: T[]; nextCursor: OwnerPrivateCursorV1 | null };
 
 export type OwnerProject = {
   id: string; title: string; slug: string; summary: string; description: string;
@@ -42,6 +72,8 @@ export type OwnerWorkspaceSnapshot = {
 
 const OWNER_PROJECT_FIELDS = 'id,owner_user_id,title,slug,summary,description,repository_url,live_url,revision,updated_at';
 const PROJECT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// PostgreSQL timestamps can have microseconds; never round a cursor through JS Date.
+const OWNER_CURSOR_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 const STORAGE_KEY = 'kadmeion.auth.session.v1';
 const OAUTH_PKCE_KEY = 'kadmeion.oauth.google.pkce.v1';
 const OAUTH_TTL_MS = 5*60*1000;
@@ -79,10 +111,17 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private readonly fetcher: typeof fetch;
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
+  private ownerSessionEpoch = 0;
+  private accountExitContinuation:PendingAccountExitContinuation|null = null;
+  private readonly ownerSessionEpochListeners = new Set<(epoch:number)=>void>();
+  private readonly observedOwnerSessionWrites=new WeakSet<object>();
   // Last-started explicit Auth action wins; old network responses cannot
   // replace a newer login or reinstate a session after explicit logout.
   private authAttempt = 0;
   private assertCurrentAuthAttempt(attempt:number):void {
+    // An unfocused tab may have missed another port's write. Never let an
+    // older successful Auth response overwrite a different persisted principal.
+    this.reconcileOwnerSessionEpoch();
     if (attempt !== this.authAttempt)
       throw new Error('This authentication attempt was superseded.');
   }
@@ -106,6 +145,93 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.session = this.readSession();
   }
 
+  /**
+   * S0 shell contract: epoch is local to this port, strictly an invalidation
+   * sequence, NEVER proof of an owner. Live /auth/v1/user must verify identity.
+   * Each sign-in/logout/session replacement increments it, including A→B→A.
+   */
+  getOwnerSessionEpoch():number { return this.ownerSessionEpoch; }
+
+  private invalidateOwnerSessionEpoch(continuation:AccountExitContinuation|null=null):void {
+    ++this.ownerSessionEpoch;
+    // Only an explicitly verified account-exit password rotation can carry a
+    // challenge pointer into its own new epoch. Every other transition clears it.
+    this.accountExitContinuation=continuation
+      ? {...continuation,epoch:this.ownerSessionEpoch} : null;
+    for (const listener of this.ownerSessionEpochListeners) {
+      // UI listener errors must not roll back an already-persisted auth change.
+      try { listener(this.ownerSessionEpoch); } catch { /* isolated subscriber */ }
+    }
+  }
+
+  /**
+   * Reconcile mutations made by another tab or a different port instance.
+   * A persisted owner ID is unverified input, not a grant of private access.
+   */
+  reconcileOwnerSessionEpoch():number {
+    const persisted=this.readSession();
+    if (!sameSession(this.session,persisted)) {
+      this.session=persisted;
+      ++this.authAttempt; // Prevent an earlier sign-in response replacing it.
+      this.refreshPromise=null;
+      this.invalidateOwnerSessionEpoch();
+    }
+    return this.ownerSessionEpoch;
+  }
+
+  /** A real change notice must invalidate even when the latest persisted
+   * tuple has already returned to A (e.g. queued cross-tab A→B→A events).
+   * Reset object identity too, so pending operations on old A cannot pass
+   * isCurrentSession merely because the same credentials were restored. */
+  private observeOwnerSessionWrite(notice:object):void {
+    if(this.observedOwnerSessionWrites.has(notice))return;
+    this.observedOwnerSessionWrites.add(notice);
+    const epoch=this.ownerSessionEpoch;
+    this.reconcileOwnerSessionEpoch();
+    if(this.ownerSessionEpoch===epoch){
+      this.session=this.readSession();
+      ++this.authAttempt;
+      this.refreshPromise=null;
+      this.invalidateOwnerSessionEpoch();
+    }
+  }
+
+  /**
+   * Subscribe BEFORE the shell's initial getUser call. Every emission makes
+   * the existing private subtree untrusted until fresh /auth/v1/user succeeds.
+   * Includes same-tab distinct auth ports, cross-tab storage and window return.
+   */
+  subscribeOwnerSessionEpoch(listener:(epoch:number)=>void):()=>void {
+    this.ownerSessionEpochListeners.add(listener);
+    const sameTab:OwnerSessionWriteNotice=(storage,source,notice)=>{
+      if(source!==this && storage===this.storage)this.observeOwnerSessionWrite(notice);
+    };
+    const storageChanged=(event:StorageEvent)=>{
+      if(event.storageArea && event.storageArea!==this.storage)return;
+      if(event.key===STORAGE_KEY||event.key===null)this.observeOwnerSessionWrite(event);
+    };
+    const resumed=()=>{this.reconcileOwnerSessionEpoch();};
+    const visible=()=>{
+      if(typeof document!=='undefined'&&document.visibilityState==='visible')resumed();
+    };
+    ownerSessionWriteNotices.add(sameTab);
+    if(typeof window!=='undefined'){
+      window.addEventListener('storage',storageChanged);
+      window.addEventListener('focus',resumed);
+      if(typeof document!=='undefined')document.addEventListener('visibilitychange',visible);
+    }
+    this.reconcileOwnerSessionEpoch();
+    return ()=>{
+      this.ownerSessionEpochListeners.delete(listener);
+      ownerSessionWriteNotices.delete(sameTab);
+      if(typeof window!=='undefined'){
+        window.removeEventListener('storage',storageChanged);
+        window.removeEventListener('focus',resumed);
+        if(typeof document!=='undefined')document.removeEventListener('visibilitychange',visible);
+      }
+    };
+  }
+
   private readSession(): StoredSession | null {
     try {
       const raw = this.storage.getItem(STORAGE_KEY);
@@ -118,15 +244,25 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     } catch { return null; }
   }
 
-  private store(value: StoredSession | null): void {
+  private store(value: StoredSession | null, continuation:AccountExitContinuation|null=null): void {
+    const previous=this.session;
     this.session = value;
     try {
       if (value) this.storage.setItem(STORAGE_KEY, JSON.stringify(value));
       else this.storage.removeItem(STORAGE_KEY);
     } catch {
       // Failure to persist must never be mistaken for a durable browser session.
+      this.accountExitContinuation=null;
       if (value) this.session = null;
+      if (!sameSession(previous,this.session)) this.invalidateOwnerSessionEpoch();
       throw new Error('Browser storage is unavailable. Enable storage to sign in.');
+    }
+    if (!sameSession(previous,value)) {
+      this.invalidateOwnerSessionEpoch(continuation);
+      const notice={};
+      for (const notify of ownerSessionWriteNotices) {
+        try { notify(this.storage,this,notice); } catch { /* isolated subscriber */ }
+      }
     }
   }
 
@@ -179,12 +315,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   private async refreshed(): Promise<StoredSession | null> {
+    this.reconcileOwnerSessionEpoch(); // Recheck even without a mounted observer.
     const starting = this.session;
     if (!starting) return null;
     if (starting.expires_at > Math.floor(Date.now() / 1000) + 45) return starting;
     if (!this.refreshPromise) {
       const token = starting.refresh_token;
-      this.refreshPromise = (async () => {
+      const pending = (async () => {
         try {
           const response = await this.request('/token?grant_type=refresh_token', 'POST', { refresh_token: token });
           const updated = this.decodeSession(response);
@@ -200,7 +337,11 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           }
           return null;
         }
-      })().finally(() => { this.refreshPromise = null; });
+      })();
+      const tracked = pending.finally(() => {
+        if (this.refreshPromise === tracked) this.refreshPromise = null;
+      });
+      this.refreshPromise = tracked;
     }
     return this.refreshPromise;
   }
@@ -307,33 +448,114 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  private async verifyCurrentOwnerPassword(password: string,attempt: number) {
+  private async verifyCurrentOwnerPassword(password: string,attempt: number,expectedEpoch?:number) {
     const {session,userId}=await this.ownerSession();
     const email=session.user.email;
     if (!email) throw new Error('Sign in with a verified email account first.');
     this.assertCurrentAuthAttempt(attempt);
+    if(expectedEpoch!==undefined && expectedEpoch!==this.ownerSessionEpoch)
+      throw new Error('Owner session changed before verifying identity.');
     const verified=this.decodeSession(await this.request('/token?grant_type=password','POST',{email,password}));
     this.assertCurrentAuthAttempt(attempt);
+    if(expectedEpoch!==undefined && expectedEpoch!==this.ownerSessionEpoch)
+      throw new Error('Owner session changed while verifying identity.');
     if (!this.isCurrentSession(session) || verified.user.id!==userId ||
         verified.user.email?.trim().toLowerCase()!==email.trim().toLowerCase())
       throw new Error('Current password verification did not match the active account.');
     return {session,verified};
   }
 
-  async reauthenticateCurrentOwner(password: string): Promise<AuthOutcome<{verified:true}>> {
+  async reauthenticateCurrentOwner(password: string,accountExit?:OwnerAccountExitReauthContext): Promise<AuthOutcome<{verified:true}>> {
     return this.outcome(async () => {
+      const context=accountExit ? {...accountExit} : null;
+      if(context && (this.reconcileOwnerSessionEpoch()!==context.expectedEpoch ||
+          !PROJECT_ID_PATTERN.test(context.requestId) || !PROJECT_ID_PATTERN.test(context.challengeId)))
+        throw new Error('Account-exit verification is no longer current.');
       const attempt=++this.authAttempt;
-      const {session,verified}=await this.verifyCurrentOwnerPassword(password,attempt);
+      const {session,verified}=await this.verifyCurrentOwnerPassword(password,attempt,context?.expectedEpoch);
       this.assertCurrentAuthAttempt(attempt);
-      if (!this.isCurrentSession(session) || verified.access_token===session.access_token)
+      if (!this.isCurrentSession(session) || verified.access_token===session.access_token ||
+          (context && context.expectedEpoch!==this.ownerSessionEpoch))
         throw new Error('A fresh sign-in could not be confirmed.');
-      this.store(verified);
+      // Store the non-authoritative pointer before synchronous epoch notification
+      // so a newly mounted, verified Settings consumer can recover the challenge.
+      this.store(verified,context ? {
+        ownerUserId:verified.user.id,requestId:context.requestId,
+        challengeId:context.challengeId,deadline:Date.now()+5*60*1000
+      } : null);
       return {verified:true};
     });
   }
 
+  /** Re-read the server's short-lived proof after fail-closed workspace remount.
+   * Only call from a newly verified owner gate, with that mount's captured epoch.
+   * No local receipt, owner ID or challenge ID is itself reauthentication authority. */
+  async recoverOwnerAccountExitReauth(expectedEpoch:number):
+    Promise<AuthOutcome<RecoveredOwnerAccountExitReauth|null>> {
+    return this.outcome(async()=>{
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        throw new Error('Owner session changed before recovering identity verification.');
+      const pending=this.accountExitContinuation;
+      if(!pending || pending.epoch!==expectedEpoch)return null;
+      if(pending.deadline<=Date.now()){
+        this.accountExitContinuation=null;return null;
+      }
+      const attempt=this.authAttempt;
+      const {session,userId}=await this.ownerSession();
+      const stillCurrent=()=>this.reconcileOwnerSessionEpoch()===expectedEpoch &&
+        this.accountExitContinuation===pending && this.authAttempt===attempt &&
+        pending.ownerUserId===userId && pending.deadline>Date.now() &&
+        this.isCurrentSession(session);
+      if(!stillCurrent())throw new Error('Owner session changed during identity verification.');
+      const account=await import('../../../packages/contracts/src/private-account-erasure-service.ts');
+      if(!stillCurrent())throw new Error('Owner session changed during identity verification.');
+      // Pin the verified initiating credential rather than dynamically adopting
+      // a newly signed-in owner or even another session of the same owner.
+      const service=new account.SupabasePrivateAccountErasureService(
+        this.origin,this.publishableKey,async()=>stillCurrent()?session.access_token:null,this.fetcher);
+      try{
+        const requests=await service.list();
+        if(!stillCurrent())throw new Error('Owner session changed during identity verification.');
+        if(!requests.some(item=>item.id===pending.requestId && item.status==='REQUESTED_BLOCKED')){
+          this.discardOwnerAccountExitReauth(expectedEpoch);
+          throw new Error('The account-exit request is no longer pending.');
+        }
+        // Existing SQL validates the live auth.sessions row, owner, DIFFERENT
+        // initial session, creation time and expiry; repeated completion is
+        // idempotent only for the very same verified session.
+        const verification=await service.completeReauth(pending.challengeId);
+        if(!stillCurrent())
+          throw new Error('Identity verification expired or the owner session changed.');
+        if(Date.parse(verification.expiresAt)<=Date.now()){
+          this.discardOwnerAccountExitReauth(expectedEpoch);
+          throw new Error('Identity verification expired or the owner session changed.');
+        }
+        return {requestId:pending.requestId,verification};
+      }catch(error){
+        // A lost/failed RPC response can be retried with exactly this pointer.
+        // Definitive provider rejections and malformed acknowledgments do not
+        // become reusable authority.
+        if(this.accountExitContinuation===pending &&
+            error instanceof account.PrivateAccountErasureError &&
+            error.code!=='PROVIDER_UNAVAILABLE')this.accountExitContinuation=null;
+        throw error;
+      }
+    });
+  }
+
+  /** UI dismissal/withdrawal discards only the current mount's local pointer. */
+  discardOwnerAccountExitReauth(expectedEpoch:number):void {
+    if(this.reconcileOwnerSessionEpoch()===expectedEpoch)
+      this.accountExitContinuation=null;
+  }
+
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
     return this.outcome(async () => {
+      // Password updates must not silently adopt a different persisted owner.
+      // The shell must reverify that principal before any protected mutation.
+      const starting = this.session;
+      this.reconcileOwnerSessionEpoch();
+      if (starting !== this.session) throw new Error('Session expired or changed.');
       const session = await this.refreshed();
       if (!session || !this.isCurrentSession(session)) throw new Error('Session expired or changed.');
       const result = await this.request('/user', 'PUT', { password }, session.access_token);
@@ -512,10 +734,19 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           throw new Error('Your public profile is live. Confirm withdrawal before saving these changes.');
       }
     }
-    if (!response.ok)
-      throw new Error(response.status === 401 || response.status === 403
-        ? 'Private workspace access was denied.' : response.status === 409
-        ? 'Project conflicts with an existing owner record. Choose a different slug.' : 'Private workspace request failed.');
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403)
+        throw new Error('Private workspace access was denied.');
+      if (response.status === 429)
+        throw new Error('Too many private workspace requests. Try again later.');
+      if (response.status === 409) {
+        const isProjectCreation = method === 'POST' && path.startsWith('projects?');
+        throw new Error(isProjectCreation
+          ? 'Project conflicts with an existing owner record. Choose a different slug.'
+          : 'Private workspace conflict. Reload the latest data before trying again.');
+      }
+      throw new Error('Private workspace request failed.');
+    }
     try { return await response.json() as unknown; }
     catch { throw new Error('Private workspace returned an invalid response.'); }
   }
@@ -567,6 +798,77 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         typeof row.head_revision !== 'number' || !Number.isSafeInteger(row.head_revision) || row.head_revision < 0)
       throw new Error('Private portfolio response could not be verified.');
     return {id: row.id, title: row.title, slug: row.slug, templateId: row.template_id, revision: row.head_revision};
+  }
+
+  /**
+   * Additive v1 owner-private keyset pagination. Legacy list methods stay
+   * unchanged until S2/S3 consumers migrate. No global total is claimed.
+   * Concurrent edits can move rows between pages; callers must dedupe/reset.
+   */
+  private ownerLibraryPage<T>(
+    collection: 'projects' | 'portfolios',
+    select: string, pageSize: number, after: OwnerPrivateCursorV1 | null,
+    parse: (row: Json, ownerId: string) => T
+  ): Promise<AuthOutcome<OwnerPrivatePageV1<T>>> {
+    return this.outcome(async () => {
+      if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 50)
+        throw new Error('Private library page size must be between 1 and 50.');
+      const {session, userId} = await this.ownerSession();
+      if (after !== null && (
+        typeof after !== 'object' || Array.isArray(after) ||
+        Object.keys(after).length !== 5 ||
+        after.version !== 1 || after.collection !== collection ||
+        after.ownerUserId !== userId ||
+        typeof after.id !== 'string' || !PROJECT_ID_PATTERN.test(after.id) ||
+        typeof after.updatedAt !== 'string' ||
+        !OWNER_CURSOR_TIMESTAMP.test(after.updatedAt) ||
+        !Number.isFinite(Date.parse(after.updatedAt))
+      )) throw new Error('Private library cursor is invalid for the current owner.');
+
+      const params = new URLSearchParams({
+        select, owner_user_id: 'eq.' + userId, trashed_at: 'is.null',
+        order: 'updated_at.desc,id.asc', limit: String(pageSize + 1)
+      });
+      if (after !== null) {
+        // AND with the owner/Trash filters. User input is shape-validated, then encoded.
+        params.set('or', '(updated_at.lt.' + after.updatedAt +
+          ',and(updated_at.eq.' + after.updatedAt + ',id.gt.' + after.id + '))');
+      }
+      const raw = await this.ownerRest(collection + '?' + params, session.access_token);
+      if (!this.isCurrentSession(session) || !Array.isArray(raw) || raw.length > pageSize + 1)
+        throw new Error('Private library page could not be verified.');
+      const seen = new Set<string>();
+      const records = raw.map((value: unknown) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+          throw new Error('Private library page returned an invalid row.');
+        const row = value as Json;
+        if (row.owner_user_id !== userId ||
+            typeof row.id !== 'string' || !PROJECT_ID_PATTERN.test(row.id) ||
+            seen.has(row.id) || typeof row.updated_at !== 'string' ||
+            !OWNER_CURSOR_TIMESTAMP.test(row.updated_at) ||
+            !Number.isFinite(Date.parse(row.updated_at)))
+          throw new Error('Private library page failed owner or cursor validation.');
+        seen.add(row.id);
+        return {item: parse(row, userId), updatedAt: row.updated_at, id: row.id};
+      });
+      const visible = records.slice(0, pageSize);
+      const tail = records.length > pageSize ? visible[visible.length - 1] : undefined;
+      return {
+        items: visible.map(row => row.item),
+        nextCursor: tail ? {
+          version: 1 as const, collection, ownerUserId: userId,
+          updatedAt: tail.updatedAt, id: tail.id
+        } : null
+      };
+    });
+  }
+
+  listOwnerPortfoliosPage(
+    pageSize = 50, after: OwnerPrivateCursorV1 | null = null
+  ): Promise<AuthOutcome<OwnerPrivatePageV1<OwnerPortfolio>>> {
+    return this.ownerLibraryPage('portfolios',
+      'id,owner_user_id,title,slug,template_id,head_revision,updated_at',
+      pageSize, after, (row, ownerId) => this.parseOwnerPortfolio(row, ownerId));
   }
 
   async listOwnerPortfolios(): Promise<AuthOutcome<OwnerPortfolio[]>> {
@@ -985,17 +1287,27 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** A delegated service is scoped to its creating verified owner epoch.
+   * On refresh or any observed transition the shell creates a new service.
+   * A stale service must never acquire a bearer merely because A returned. */
+  private ownerEpochToken(userId:string,epoch:number):()=>Promise<string|null> {
+    return async()=>{
+      try{
+        if(this.reconcileOwnerSessionEpoch()!==epoch)return null;
+        const current=await this.ownerSession();
+        return this.reconcileOwnerSessionEpoch()===epoch && current.userId===userId &&
+          this.isCurrentSession(current.session) ? current.session.access_token : null;
+      }catch{return null;}
+    };
+  }
+
   /** Owner reads rely on RLS. Operator RPCs independently check the role. */
   async privateModeration() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
+      const epoch=this.ownerSessionEpoch;
       const {SupabasePrivateModerationService} = await import('../../../packages/contracts/src/private-moderation-service.ts');
-      const token = async () => {
-        try {
-          const current = await this.ownerSession();
-          return current.userId === userId ? current.session.access_token : null;
-        } catch { return null; }
-      };
+      const token=this.ownerEpochToken(userId,epoch);
       return new SupabasePrivateModerationService(this.origin, this.publishableKey, token, this.fetcher);
     });
   }
@@ -1004,12 +1316,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   async ownerGrowth() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
-      const token = async () => {
-        try {
-          const current = await this.ownerSession();
-          return current.userId === userId ? current.session.access_token : null;
-        } catch { return null; }
-      };
+      const token=this.ownerEpochToken(userId,this.ownerSessionEpoch);
       const [goalModule,linkModule] = await Promise.all([
         import('../../../packages/contracts/src/private-goals-service.ts'),
         import('../../../packages/contracts/src/private-platform-links-service.ts')
@@ -1024,12 +1331,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   async ownerSettings() {
     return this.outcome(async () => {
       const {userId} = await this.ownerSession();
-      const token = async () => {
-        try {
-          const current = await this.ownerSession();
-          return current.userId === userId ? current.session.access_token : null;
-        } catch { return null; }
-      };
+      const token=this.ownerEpochToken(userId,this.ownerSessionEpoch);
       const [identity, notifications, trash, account, data] = await Promise.all([
         import('../../../packages/contracts/src/private-identity-service.ts'),
         import('../../../packages/contracts/src/private-notifications-service.ts'),
@@ -1165,6 +1467,13 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       description:row.description,updatedAt:row.updated_at,revision:row.revision,
       repositoryUrl:row.repository_url,liveUrl:row.live_url
     };
+  }
+
+  listOwnerProjectsPage(
+    pageSize = 50, after: OwnerPrivateCursorV1 | null = null
+  ): Promise<AuthOutcome<OwnerPrivatePageV1<OwnerProject>>> {
+    return this.ownerLibraryPage('projects', OWNER_PROJECT_FIELDS,
+      pageSize, after, (row, ownerId) => this.parsePrivateProject(row, ownerId));
   }
 
   /** Bounded initial owner-private library. 100 is a page size, not a total. */

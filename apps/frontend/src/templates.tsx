@@ -119,7 +119,7 @@ export function TemplateExplorer(){
             <option value="Featured">Sort: Featured</option><option value="A–Z">Sort: A–Z</option>
           </select>
         </form>
-        <p className="template-results" role="status">{available.length} template design {available.length===1?'concept':'concepts'} shown. These are previews, not live published portfolios.</p>
+        <p className="template-results" role="status">{available.length} template design {available.length===1?'concept':'concepts'} shown. These are illustrations, not applied presets or published portfolios.</p>
         {available.length===0 ?
           <div className="no-template-results"><h2>No matching templates</h2><p>Try another search or choose a broader category.</p>
             <button className="outline-small" type="button" onClick={()=>{setQuery('');setCategory('All categories');setLayout('All layouts');setSort('Featured');}}>Clear filters</button></div>
@@ -134,13 +134,13 @@ export function TemplateExplorer(){
             </div>
             <div className="template-card-actions">
               <button type="button" className="outline-small" onClick={event=>{previewOpener.current=event.currentTarget;setPreview(item);}}>Preview</button>
-              <a className="header-signin" href={getAuthHref()}>Use Template <Icon name="arrow" size={16}/></a>
+              <a className="header-signin" href={getAuthHref()} aria-label={'Sign in to build — ' + item.title + ' concept preview'}>Sign in to build <Icon name="arrow" size={16}/></a>
             </div>
           </article>)}</div>}
         <section className="template-signin-note" aria-labelledby="template-note-title">
           <span className="strip-icon"><Icon name="user" size={24}/></span><div>
             <h2 id="template-note-title">Explore templates, then sign in to author.</h2>
-            <p>You can preview concepts publicly; creating, editing and publishing require an authenticated account and verified backend workflow.</p></div>
+            <p>Preview concepts publicly. Sign in, then choose an available preset in your workspace; this gallery does not silently apply or reserve a template.</p></div>
           <ActionLink href={getAuthHref()}>Sign in to get started</ActionLink>
         </section>
       </main>
