@@ -473,6 +473,70 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   </SettingsCard></div>;
 }
 
+type LinkedMethodsSnapshot = Readonly<{
+  ownerUserId:string;source:'GOTRUE_LIVE_USER';
+  identities:readonly Readonly<{identityId:string;provider:string;createdAt:string|null;lastSignInAt:string|null}>[];
+  passwordMethodConfirmed:false;publicVerificationAllowed:false;
+}>;
+// The producer was promoted independently on main. An older worker adapter
+// must fail closed, never simulate an empty identity directory.
+type LinkedMethodsPort = {
+  reconcileOwnerSessionEpoch():number;
+  readOwnerLinkedMethods?:()=>Promise<{data:LinkedMethodsSnapshot|null;error?:{message:string}|null}>;
+};
+async function readLinkedMethodsForSettings(port:LinkedMethodsPort,epoch:number):Promise<LinkedMethodsSnapshot>{
+  if(port.reconcileOwnerSessionEpoch()!==epoch)throw new Error('Owner session changed.');
+  if(typeof port.readOwnerLinkedMethods!=='function')throw new Error('Linked authentication methods are unavailable in this version.');
+  const result=await port.readOwnerLinkedMethods();
+  if(port.reconcileOwnerSessionEpoch()!==epoch)throw new Error('Owner session changed.');
+  const data=result.data;
+  if(result.error||!data||data.source!=='GOTRUE_LIVE_USER'||data.passwordMethodConfirmed!==false||
+    data.publicVerificationAllowed!==false||!Array.isArray(data.identities)||data.identities.length>16)
+    throw new Error('Linked authentication methods could not be confirmed. Retry when available.');
+  return data;
+}
+
+function LinkedMethods({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const [attempt,setAttempt]=useState(0);
+  const [result,setResult]=useState<{attempt:number;data:LinkedMethodsSnapshot|null;error:string}|null>(null);
+  const currentResult=result?.attempt===attempt?result:null;
+  const data=currentResult?.data??null;
+  const pending=currentResult===null;
+  const inFlight=useRef(true);
+  useEffect(()=>{
+    let active=true;inFlight.current=true;
+    const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
+    void readLinkedMethodsForSettings(port,epoch).then(value=>{
+      if(current())setResult({attempt,data:value,error:''});
+    }).catch(()=>{
+      if(current())setResult({attempt,data:null,error:'Linked authentication methods could not be confirmed. Retry when available.'});
+    }).finally(()=>{if(current())inFlight.current=false;});
+    return()=>{active=false;};
+  },[port,epoch,attempt]);
+  function refresh(){
+    if(inFlight.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    inFlight.current=true;setAttempt(value=>value+1);
+  }
+  return <SettingsCard title="Linked sign-in methods">
+    <p>Identity records reported by the authentication provider for your current account. These are not public verification badges or proof of password availability.</p>
+    {pending&&<p role="status">Checking linked sign-in methods…</p>}
+    {currentResult?.error&&<p role="alert">{currentResult.error}</p>}
+    {data&&<>
+      {data.identities.length===0?<p>No linked identity records returned by the provider.</p>:
+        <ul className="ws-settings-records" aria-label="Provider-reported linked identities">
+          {data.identities.map(identity=><li key={identity.identityId}>
+            <strong>{identity.provider==='email'?'Email identity':identity.provider==='google'?'Google identity':identity.provider+' identity'}</strong>
+            {identity.createdAt&&<p>Linked <time dateTime={identity.createdAt}>{new Date(identity.createdAt).toLocaleString()}</time></p>}
+            {identity.lastSignInAt&&<p>Last provider-reported sign-in <time dateTime={identity.lastSignInAt}>{new Date(identity.lastSignInAt).toLocaleString()}</time></p>}
+          </li>)}
+        </ul>}
+      <p>Linking and unlinking sign-in methods are unavailable here. This list does not establish email verification or a device session directory.</p>
+    </>}
+    <button type="button" className="ws-secondary" disabled={pending} onClick={refresh}>{currentResult?.error?'Retry linked sign-in methods':'Refresh linked sign-in methods'}</button>
+  </SettingsCard>;
+}
+
 function Security({port}: {port: SupabaseBrowserAuthPort}) {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -543,6 +607,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
         <button type="button" className="ws-secondary" disabled={busy}
           onClick={() => {setConfirmOthers(false); otherSessionsTrigger.current?.focus();}}>Cancel</button>
       </div>}</SettingsCard>
+    <LinkedMethods port={port}/>
     </div>
     <section className="ws-security-guidance" aria-labelledby="security-guidance-title">
       <h2 id="security-guidance-title">Security confirmations</h2>
