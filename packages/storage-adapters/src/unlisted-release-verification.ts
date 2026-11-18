@@ -235,6 +235,12 @@ async function readGet(http:typeof fetch,route:URL,indexable:boolean,media=false
   });
 }
 
+function matchesFrozenPng(bytes:Uint8Array,sha:string):boolean {
+  const signature=[137,80,78,71,13,10,26,10];
+  return bytes.byteLength>=signature.length&&signature.every((value,index)=>bytes[index]===value)&&
+    createHash('sha256').update(bytes).digest('hex')===sha;
+}
+
 async function digestHtml(indexable:boolean,route:URL,
   host:URL,http:typeof fetch,expectedSha:string,requirePublicAliasProof=false):Promise<DeliverySample|null> {
   const get=await readGet(http,route,indexable);
@@ -292,7 +298,7 @@ async function digestHtml(indexable:boolean,route:URL,
   for(const [src,sha] of media){
     const assetRoute=new URL(src.replaceAll('&amp;','&'),host);
     const png=await readGet(http,assetRoute,false,true);
-    if(!png||createHash('sha256').update(png.bytes).digest('hex')!==sha||
+    if(!png||!matchesFrozenPng(png.bytes,sha)||
        !optionalServedDigest(png.headers,sha))return null;
     if(!await verifyHead(http,assetRoute,png.headers,sha,false,true))return null;
   }
