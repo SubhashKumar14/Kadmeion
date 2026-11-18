@@ -1281,9 +1281,19 @@ test('eligible private static ZIP and expired Trash remain owner scoped',async({
     select count(*) from portfolio;
   `,owner.id,portfolioId);
   expect(changed).toBe('1');
+  let restoreWrites=0;
+  page.on('request',request=>{
+    const u=new URL(request.url());
+    if(u.origin===origin&&request.method()==='POST'&&u.pathname==='/rest/v1/rpc/restore_private_item')restoreWrites++;
+  });
   await restore.click();
-  await expect(page.getByRole('alert')).toContainText('15-day restoration window has ended');
+  await expect(page.getByRole('alert')).toContainText('The current Trash record could not be verified. No restore request was sent.');
   await expect(restore).toBeDisabled();
+  expect(restoreWrites).toBe(0);
+  await page.getByRole('button',{name:'Refresh confirmed Trash'}).click();
+  await expect(page.getByText('Recovery window ended. Restore is unavailable.')).toBeVisible();
+  await expect(restore).toBeDisabled();
+  expect(runLocalFixtureSql("select count(*) from public.private_trash_items where owner_user_id=:'actor_id'::uuid and item_id=:'item_id'::uuid and restored_at is null and restore_until<statement_timestamp();",owner.id,portfolioId)).toBe('1');
   await page.reload();
   await expect(page.getByText('Recovery window ended. Restore is unavailable.')).toBeVisible();
   await expect(restore).toBeDisabled();
@@ -4078,8 +4088,66 @@ test('B16 C05 WF-047 R7 actual avatar V2 ZIP and JSON reopen verify exact bytes,
     if(!res.ok)return '';
     return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await res.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('');
   })).toBe(digest);
+  // Real disposable owner JWT; trusted credentials stay in the runner.
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,service=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if(!key||!service||process.env.VITE_SUPABASE_URL!==origin)throw Error('Local owner/trusted writer credentials required.');
+  const call=(path:string,token:string,apiKey:string,payload?:Record<string,unknown>)=>fetch(origin+path,{
+    method:payload===undefined?'GET':'POST',headers:{apikey:apiKey,Authorization:'Bearer '+token,...(payload===undefined?{}:{'Content-Type':'application/json'})},
+    ...(payload===undefined?{}:{body:JSON.stringify(payload)}),cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15000)});
+  const auth=await call('/auth/v1/token?grant_type=password',key,key,{email:owner.email,password:owner.password});
+  if(!auth.ok)throw Error('Local owner auth HTTP '+auth.status);
+  const signed=await auth.json();
+  if(typeof signed.access_token!=='string'||signed.user?.id!==owner.id)throw Error('Owner JWT not verified.');
+  const jwt:string=signed.access_token;
+  const selected=await call('/rest/v1/rpc/read_private_profile_avatar',jwt,key,{});
+  if(!selected.ok)throw Error('Avatar read HTTP '+selected.status);
+  const selectedBody=await selected.json(),assetId=selectedBody.asset?.assetId??selectedBody.asset?.id;
+  if(typeof assetId!=='string'||! /^[a-f0-9-]{36}$/i.test(assetId))throw Error('Registered avatar ID missing.');
+  const readPin=async()=>{
+    const result=await call('/rest/v1/rpc/read_owner_private_asset_pin',jwt,key,{p_scope:'PROFILE',p_asset_id:assetId,p_project_id:null});
+    if(!result.ok)throw Error('PROFILE pin read HTTP '+result.status);
+    return result.json();
+  };
+  const unpinned=await readPin();
+  expect(unpinned.status).toBe('UNPINNED');expect(unpinned.expectedSha256).toBeNull();
+  const storagePath=unpinned.path??unpinned.objectPath;
+  if(typeof storagePath!=='string'||!storagePath.startsWith(owner.id+'/profile/'))throw Error('Invalid PROFILE path.');
+  const stored=await call('/storage/v1/object/authenticated/kadmeion-private-assets/'+storagePath.split('/').map(encodeURIComponent).join('/'),jwt,key);
+  if(!stored.ok)throw Error('Actual stored avatar read HTTP '+stored.status);
+  const actual=Buffer.from(await stored.arrayBuffer());
+  expect(actual.equals(png)).toBe(true);
+  const hash=createHash('sha256').update(actual).digest('hex');expect(hash).toBe(digest);
+  const args={p_asset_id:assetId,p_owner_user_id:owner.id,p_storage_object_id:unpinned.objectId,p_storage_version:unpinned.version,p_expected_sha256:hash};
+  const denied=await call('/rest/v1/rpc/record_private_profile_asset_content_attestation',jwt,key,args);
+  expect(denied.ok).toBe(false);await denied.body?.cancel();
   await page.goto('/app/export');
-  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download profile-inclusive recovery ZIP',exact:true}).click()]);
+  let downloads=0;page.on('download',()=>downloads++);
+  const stages:{stage:string;status:number}[]=[];
+  page.on('response',response=>{
+    const u=new URL(response.url());
+    if(u.origin!==origin)return;
+    const stage=({create_private_account_exit_inventory_v2:'CAPTURE',reconcile_private_account_exit_storage_v2:'RECONCILE',owner_export_account_metadata_v2:'METADATA',read_private_asset_content_attestations_v2:'PINS'} as Record<string,string>)[u.pathname.split('/').at(-1)??''];
+    if(stage)stages.push({stage,status:response.status()});
+  });
+  await page.getByRole('button',{name:'Download profile-inclusive recovery ZIP',exact:true}).click();
+  await expect(page.getByRole('alert').filter({hasText:'No file was downloaded'})).toBeVisible({timeout:30000});
+  expect(downloads).toBe(0);
+  expect(stages.some(x=>x.stage==='PINS'&&x.status===200)).toBe(true);
+  // Trusted runner hashes actual bytes, not a browser-provided digest.
+  const trusted=await call('/rest/v1/rpc/record_private_profile_asset_content_attestation',service,service,args);
+  if(!trusted.ok)throw Error('Trusted local PROFILE writer HTTP '+trusted.status);
+  expect(await trusted.json()).toMatchObject({assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',deletionAllowed:false});
+  const pinned=await readPin();expect(pinned.status).toBe('SERVER_HASH_PINNED');expect(pinned.expectedSha256).toBe(digest);
+  let download:import('@playwright/test').Download;
+  try{
+    [download]=await Promise.all([page.waitForEvent('download',{timeout:35000}),page.getByRole('button',{name:'Retry failed export',exact:true}).click()]);
+  }catch(error){
+    const dir='/tmp/kadmeion-owner-captures';await mkdir(dir,{recursive:true});
+    await writeFile(dir+'/'+randomUUID()+'.route-diagnostics.json',JSON.stringify({pathname:'/app/export',gate:'C05_V2_PINNED_EXPORT',stages:stages.slice(-30),downloadCount:downloads,errorVisible:await page.getByRole('alert').filter({hasText:'No file was downloaded'}).isVisible().catch(()=>false)}));
+    throw error;
+  }
+  expect(downloads).toBe(1);
+  expect(stages.filter(x=>x.stage==='CAPTURE'&&x.status===200)).toHaveLength(1);
   expect(download.suggestedFilename()).toBe('kadmeion-private-account-partial-v2.zip');
   const downloaded=await download.path();if(!downloaded)throw new Error('No archive download.');
   const zip=await readFile(downloaded);
