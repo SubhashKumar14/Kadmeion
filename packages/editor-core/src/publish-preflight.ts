@@ -111,11 +111,18 @@ function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:Portf
       return assignment!==undefined&&assignment!==null&&(!record(assignment)||assignment.use!==slot.componentId);
     }))return null;
     const names=section.slotKeys;
-    if(Array.isArray(names)&&(
-      names.length!==layout.slots.length||
-      layout.slots.some(name=>!names.includes(name))||
-      layout.required.some(name=>!slots.some(slot=>slot.required===true&&
-        slot.slotKey===section.id+'-'+name.toLowerCase()))))return null;
+    // Modern slotKeys manifests represent the pinned layout, not a second
+    // independently reorderable list. The static renderer, media slots and
+    // editable canvas must agree on canonical slot order. Reject the caller's
+    // conflicting plan rather than silently permute the frozen projection.
+    if(Array.isArray(names)){
+      const canonical=layout.slots.map(name=>slotPrefix+name.toLowerCase());
+      if(names.length!==layout.slots.length||
+         layout.slots.some(name=>!names.includes(name))||
+         slots.length!==canonical.length||slots.some((slot,index)=>slot.slotKey!==canonical[index])||
+         layout.required.some(name=>!slots.some(slot=>slot.required===true&&
+           slot.slotKey===section.id+'-'+name.toLowerCase())))return null;
+    }
     groups.push({id:section.id,layout:layout.renderId,slotKeys:slots.map(slot=>slot.slotKey)});
   }
   return groupedSections(groups,plan.map(slot=>slot.slotKey));
