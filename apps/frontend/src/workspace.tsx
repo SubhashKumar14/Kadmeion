@@ -50,7 +50,8 @@ function workspacePageTitle(path: string): string {
   const portfolio = portfolioIdFromRoute(path);
   if (portfolio && path.endsWith('/preview/fullscreen')) return 'Fullscreen portfolio preview';
   if (portfolio && path.endsWith('/preview')) return 'Portfolio preview';
-  if (releaseRoute(path)) return 'Portfolio release';
+  const release = releaseRoute(path);
+  if (release) return ({staging:'Reviewer staging',publish:'Publish preflight',releases:'Releases & rollback',share:'Sharing controls'} as const)[release.mode];
   if (portfolio) return 'Portfolio editor';
   if (isSettingsRoute(path)) return 'Account settings';
   if (isOperatorRoute(path)) return 'Restricted operations';
@@ -63,15 +64,33 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
 }) {
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [offline, setOffline] = useState(() => !navigator.onLine);
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const editorOnly=!!portfolioIdFromRoute(route)&&(route.endsWith('/edit')||route.endsWith('/preview'));
   const overview = route === '/app' || route === '/app/onboarding';
   return <div className={'ws-shell' + (editorOnly ? ' ws-editor-shell' : overview ? ' ws-overview-shell' : '')}>
-    <a className="skip-link" href="#ws-content">Skip to workspace content</a>
+    <a className="skip-link" href="#ws-content" onClick={event => {
+      const content = document.getElementById('ws-content');
+      if (content) { event.preventDefault(); content.focus(); }
+    }}>Skip to workspace content</a>
     <aside className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
       if (event.key === 'Escape' && menuOpen) {
         setMenuOpen(false);
-        event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu')?.focus();
+        const trigger = event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu');
+        if (trigger?.getClientRects().length) {
+          event.preventDefault();
+          trigger.focus();
+        }
       }
     }}>
       <a className="ws-brand" href="/app" aria-label="Kadmeion workspace home, Build · Showcase · Evolve">
@@ -115,6 +134,11 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
         </div>
       </header>
       <main id="ws-content" className="ws-content" tabIndex={-1}>
+        <p className="ws-network-status" data-state={offline ? 'offline' : 'online'} aria-live="polite" aria-atomic="true">
+          {offline
+            ? 'Browser reports offline. Cloud actions may fail; keep this page open and retry when connected.'
+            : 'Browser online · cloud actions verify separately.'}
+        </p>
         {message && <p role="alert" className="ws-inline-alert">{message}</p>}
         {children}
       </main>
@@ -126,12 +150,14 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
   const [choice, setChoice] = useState<StartChoice>('portfolio');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const skipFlight = useRef(false);
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Private portfolio chooser available' },
     { key: 'connections', title: 'Connect developer accounts', description: 'Optional. You can continue without GitHub or any external account.', state: 'Optional private handle links available' }
   ];
   function choose() {
+    if (skipFlight.current) return;
     if (choice === 'portfolio') { window.location.assign('/app/portfolios/new'); return; }
     if (choice === 'profile') { window.location.assign('/app/profile'); return; }
     window.location.assign('/app/integrations');
@@ -141,7 +167,7 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
       <h1 id="ws-title">Your developer identity starts here.</h1>
       <p>Choose where to begin. Your projects and portfolio stay private unless you explicitly publish them.</p>
     </div>
-    <fieldset className="ws-choice-set">
+    <fieldset className="ws-choice-set" disabled={saving}>
       <legend>Choose your next step</legend>
       <div className="ws-choice-grid">
         {cards.map(card => <label key={card.key} className={'ws-choice' + (choice === card.key ? ' selected' : '')}>
@@ -153,19 +179,25 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
         </label>)}
       </div>
     </fieldset>
-    {note && <p role="status" className="ws-inline-alert">{note}</p>}
+    <p role="status" className={note ? "ws-onboarding-note ws-inline-alert" : "ws-onboarding-note"}>{note}</p>
     <div className="ws-actions">
-      <button type="button" className="ws-primary" onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" disabled={saving} onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
       <button type="button" className="ws-secondary" disabled={saving} onClick={() => {
-        setSaving(true); setNote('');
-        void onSkip(choice).then(saved => {
+        if (skipFlight.current) return;
+        skipFlight.current = true;
+        const selectedStep = choice;
+        setSaving(true); setNote('Saving selected step…');
+        void onSkip(selectedStep).then(saved => {
           setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
-            'The server did not confirm this skipped step. Nothing was marked saved.');
+            'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying.');
         }).catch(() => {
-          setNote('The private onboarding update could not be completed. Nothing was marked skipped; retry when the connection is available.');
-        }).finally(()=>setSaving(false));
+          setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
+        }).finally(() => {
+          skipFlight.current = false;
+          setSaving(false);
+        });
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
-      <a href="/app" className="ws-secondary">Open workspace without saving</a>
+      <a href="/app" className="ws-secondary">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
     </div>
     <p className="ws-footnote">You can get started without connecting a developer account.</p>
   </section>;
@@ -242,8 +274,17 @@ export function WorkspaceApp() {
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
   const release = releaseRoute(route);
+  // Title follows access state independently of the existing provider gate.
   useEffect(() => {
-    document.title = workspacePageTitle(route) + ' · Kadmeion';
+    document.title = (gate.status === 'verified' ? workspacePageTitle(route) :
+      gate.status === 'checking' ? 'Verifying owner session' : 'Sign in required') + ' · Kadmeion';
+  }, [route, gate.status]);
+  useEffect(() => {
+    if (gate.status === 'locked' && document.activeElement === document.body) {
+      document.getElementById('ws-content')?.focus();
+    }
+  }, [gate.status]);
+  useEffect(() => {
     let cancelled = false;
     let attempt = 0;
     let unsubscribe = () => {};
@@ -343,9 +384,14 @@ export function WorkspaceApp() {
     }
   }
   if (gate.status === 'checking') return <main id="ws-content" className="ws-gate" role="main" aria-busy="true">
+    <h1>Verifying owner session…</h1>
     <p role="status">Verifying your owner session with the authentication service…</p>
+    <div className="glyph-skeleton" aria-hidden="true">
+      <span className="glyph-skeleton-line is-medium"/>
+      <span className="glyph-skeleton-line is-short"/>
+    </div>
   </main>;
-  if (gate.status === 'locked') return <main id="ws-content" className="ws-gate" role="main">
+  if (gate.status === 'locked') return <main id="ws-content" className="ws-gate" role="main" tabIndex={-1}>
     <p className="ws-kicker">OWNER ACCESS REQUIRED</p>
     <h1>Sign in required.</h1>
     <p role="alert">{gate.message}</p>
@@ -363,7 +409,7 @@ export function WorkspaceApp() {
       release && authRef.current ? <PortfolioRelease port={authRef.current} id={release.id} mode={release.mode}/> :
       portfolioId && route.endsWith('/preview') && authRef.current
         ? <PortfolioPreviewModes port={authRef.current} id={portfolioId}/> :
-      portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId}/> :
+      portfolioId && authRef.current ? <PortfolioEditor port={authRef.current} id={portfolioId} verifiedOwner={{id:gate.owner.id,epoch:gate.epoch}}/> :
       route === '/app/portfolios/new' && authRef.current ? <PortfolioChooser port={authRef.current}/> :
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
       isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
@@ -372,10 +418,26 @@ export function WorkspaceApp() {
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div aria-hidden="true">
-        <div className="ws-skeleton-heading">◩ ◿ ◬ ◜ ◩ ◿ ◬</div>
-        <div className="ws-skeleton-grid">
-          {[0, 1, 2].map(index => <span key={index}>◩ ◿ ◬<br/>◜ ◩ ◿ ◬ ◜</span>)}
+        <div className="ws-skeleton-heading glyph-skeleton">
+          <span className="glyph-skeleton-line is-title"/>
+          <span className="glyph-skeleton-line"/>
+          <span className="glyph-skeleton-line is-medium"/>
         </div>
+        <div className="ws-skeleton-grid">
+          {[0, 1, 2].map(index => <div className="glyph-skeleton" key={index}>
+            <span className="glyph-skeleton-line is-label"/>
+            <span className="glyph-skeleton-line"/>
+            <span className="glyph-skeleton-line is-medium"/>
+            <span className="glyph-skeleton-line is-short"/>
+          </div>)}
+        </div>
+        {route === '/app' && <div className="ws-recent-grid">
+          {[0,1].map(index=><div className="glyph-skeleton" key={index}>
+            <span className="glyph-skeleton-line is-medium"/>
+            <span className="glyph-skeleton-line"/>
+            <span className="glyph-skeleton-line is-short"/>
+          </div>)}
+        </div>}
       </div>
     </section> : snapshot.status === 'error' ? <section className="ws-error">
       <h1>Private records unavailable.</h1><p role="alert">{snapshot.message}</p>

@@ -36,6 +36,8 @@ const SHA256=/^[a-f0-9]{64}$/;
 const PNG_PATH=/\/([a-f0-9]{64})\.png$/;
 const CACHE_HEADERS=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control'];
 function isUncacheable(headers:Headers):boolean {
+  const age=headers.get('age');
+  if(age!==null&&!/^0+$/.test(age.trim()))return false;
   return CACHE_HEADERS.every((name)=>{
     const value=headers.get(name);
     if(value===null)return name!=='cache-control';
@@ -61,19 +63,22 @@ function trustedOrigin(origin:string,local:boolean):URL {
     throw new HostRevocationProbeError('INVALID_INPUT');
   return u;
 }
+function publicApiAlias(canonicalPath:string):string|undefined {
+  if(UNLISTED.test(canonicalPath))return undefined;
+  const [,handle,slug]=canonicalPath.split('/');
+  return '/api/public-portfolio?'+new URLSearchParams({handle,slug});
+}
 function scopedMediaSha(path:string,canonicalPath:string):string|undefined {
-  const publicRoute=canonicalPath.split('/');
-  const unlisted=UNLISTED.test(canonicalPath);
-  const scope=unlisted?canonicalPath:'/api/public-portfolio?'+
-    new URLSearchParams({handle:publicRoute[1],slug:publicRoute[2]});
-  if(!path.startsWith(scope+'&manifest='))return undefined;
+  const scope=UNLISTED.test(canonicalPath)?canonicalPath:publicApiAlias(canonicalPath);
+  if(!scope||!path.startsWith(scope+'&manifest='))return undefined;
   return /^&manifest=[a-f0-9]{64}&asset=([a-f0-9]{64})$/.exec(path.slice(scope.length))?.[1];
 }
 function pathValid(path:string,canonicalPath:string):boolean {
   if(typeof path!=='string'||path.includes('//')||path.includes('..')||
      path.includes('%')||path.includes('\\')||path.includes('#')||
      path.includes('@')||path.split('/').includes('.'))return false;
-  return DIRECT.test(path)||scopedMediaSha(path,canonicalPath)!==undefined;
+  return DIRECT.test(path)||path===publicApiAlias(canonicalPath)||
+    scopedMediaSha(path,canonicalPath)!==undefined;
 }
 function validatedOrigin(input:HostRevocationProbeInput):URL {
   if(!input||!Array.isArray(input.candidateDirectPaths)||
@@ -85,11 +90,67 @@ function validatedOrigin(input:HostRevocationProbeInput):URL {
   return trustedOrigin(input.origin,input.allowLocal===true);
 }
 
+const PROBE_TIMEOUT_MS=5000;
+const MAX_PROBE_CHUNKS=65536;
+type ProbeErrorCode=HostRevocationProbeError['code'];
+function cancelProbeBody(body:ReadableStream<Uint8Array>|ReadableStreamDefaultReader<Uint8Array>|null|undefined):void {
+  // Cancellation of one tee branch can wait forever for its unread sibling.
+  try{void body?.cancel().catch(()=>{});}catch{}
+}
 async function fetchPath(url:URL,method:'GET'|'HEAD',http:typeof fetch):Promise<Response>{
+  const controller=new AbortController();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  let expired=false;
   try{
-    return await http(url,{method,credentials:'omit',cache:'no-store',redirect:'error',
-      signal:AbortSignal.timeout(5000)});
+    const pending=Promise.resolve().then(()=>http(url,{method,credentials:'omit',cache:'no-store',
+      redirect:'error',signal:controller.signal})).then(response=>{
+        if(expired){cancelProbeBody(response.body);throw new HostRevocationProbeError('HOST_UNAVAILABLE');}
+        return response;
+      });
+    const deadline=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>{
+        expired=true;controller.abort();reject(new HostRevocationProbeError('HOST_UNAVAILABLE'));
+      },PROBE_TIMEOUT_MS);
+    });
+    return await Promise.race([pending,deadline]);
   }catch{throw new HostRevocationProbeError('HOST_UNAVAILABLE');}
+  finally{clearTimeout(timer);}
+}
+/** Read to EOF even for HEAD. An initial zero-length chunk is not bodylessness.
+ * Bound elapsed time, chunks and bytes independently; never await cleanup. */
+async function consumeProbeBody(response:Response,maxBytes:number,code:ProbeErrorCode,
+  onChunk:(bytes:Uint8Array)=>void,allowAbsent=false):Promise<number>{
+  let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  let finished=false,expired=false,size=0,chunks=0;
+  try{
+    if(!response.body){
+      if(allowAbsent)return 0;
+      throw new HostRevocationProbeError(code);
+    }
+    const active=response.body.getReader();reader=active;
+    const drain=async()=>{
+      for(;;){
+        const part=await active.read();
+        if(expired)throw new HostRevocationProbeError(code);
+        if(part.done)break;
+        if(!(part.value instanceof Uint8Array)||++chunks>MAX_PROBE_CHUNKS||
+           (size+=part.value.byteLength)>maxBytes)throw new HostRevocationProbeError(code);
+        onChunk(part.value);
+      }
+    };
+    const deadline=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>{expired=true;reject(new HostRevocationProbeError(code));},PROBE_TIMEOUT_MS);
+    });
+    await Promise.race([drain(),deadline]);
+    finished=true;
+    return size;
+  }catch{throw new HostRevocationProbeError(code);}
+  finally{
+    clearTimeout(timer);
+    if(!finished)cancelProbeBody(reader??response.body);
+    try{reader?.releaseLock();}catch{}
+  }
 }
 function canonicalPathValid(path:unknown):boolean {
   if(typeof path!=='string')return false;
@@ -100,51 +161,31 @@ function canonicalPathValid(path:unknown):boolean {
 }
 async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void> {
   if(response.status!==404&&response.status!==410){
-    await response.body?.cancel();
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('STILL_VISIBLE');
   }
   const h=response.headers;
-  if(response.redirected||!isUncacheable(h)||
-     !/(?:^|,)\s*noindex\s*(?:,|$)/i.test(h.get('x-robots-tag')??'')||
-     h.has('location')||h.has('etag')||
+  const robots=(h.get('x-robots-tag')??'').toLowerCase().split(',').map(x=>x.trim());
+  if(response.redirected||!isUncacheable(h)||!robots.includes('noindex')||
+     robots.includes('index')||h.has('location')||h.has('etag')||
      !/^text\/plain(?:;|$)/i.test(h.get('content-type')??'')){
-    await response.body?.cancel();
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('UNSAFE_HEADERS');
   }
   if(method==='HEAD'){
-    if(response.body){
-      const reader=response.body.getReader();
-      try{
-        const first=await reader.read();
-        if(!first.done&&first.value?.byteLength)
-          throw new HostRevocationProbeError('UNSAFE_BODY');
-      }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-    }
+    await consumeProbeBody(response,0,'UNSAFE_BODY',()=>{},true);
     return;
   }
-  const reader=response.body?.getReader();
-  if(!reader)throw new HostRevocationProbeError('UNSAFE_BODY');
-  let size=0;
   const chunks:Uint8Array[]=[];
+  const size=await consumeProbeBody(response,4096,'UNSAFE_BODY',part=>chunks.push(part));
   try{
-    for(;;){
-      const next=await reader.read();
-      if(next.done)break;
-      if(!(next.value instanceof Uint8Array))throw new HostRevocationProbeError('UNSAFE_BODY');
-      size+=next.value.byteLength;
-      if(size>4096)throw new HostRevocationProbeError('UNSAFE_BODY');
-      chunks.push(next.value);
-    }
-    // Require an expected generic denial, even when the body is delivered in chunks.
     const content=new Uint8Array(size);
     let offset=0;
     for(const chunk of chunks){content.set(chunk,offset);offset+=chunk.byteLength;}
     const text=new TextDecoder('utf-8',{fatal:true}).decode(content).trim();
     if(text!==''&&text!==(response.status===404?'Not found':'Gone'))
       throw new HostRevocationProbeError('UNSAFE_BODY');
-  }catch{
-    throw new HostRevocationProbeError('UNSAFE_BODY');
-  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  }catch{throw new HostRevocationProbeError('UNSAFE_BODY');}
 }
 export async function probeHostRevocation(
   input:HostRevocationProbeInput,http:typeof fetch=fetch
@@ -169,51 +210,37 @@ export async function probeHostRevocation(
 }
 
 async function verifyLiveBytes(
-  response:Response, mime:RegExp, maxBytes:number, expectedDigest:string
+  response:Response, mime:RegExp, maxBytes:number, expectedDigest:string,
+  inspect?:(bytes:Uint8Array)=>void
 ):Promise<void> {
-  const reader=response.body?.getReader();
-  if(!reader)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  try {
-    if(response.status!==200||response.redirected||response.headers.has('location')||
-       !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers))
-      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-    const digest=createHash('sha256');
-    let size=0;
-    for(;;){
-      const chunk=await reader.read();
-      if(chunk.done)break;
-      size+=chunk.value.byteLength;
-      if(size>maxBytes)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-      digest.update(chunk.value);
-    }
-    if(size===0||digest.digest('hex')!==expectedDigest)
-      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  } catch {
+  if(response.status!==200||response.redirected||response.headers.has('location')||
+     !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers)){
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  } finally {
-    await reader.cancel().catch(()=>{});
-    reader.releaseLock();
+  }
+  const digest=createHash('sha256'),pieces:Uint8Array[]=[];
+  const size=await consumeProbeBody(response,maxBytes,'RELEASE_NOT_OBSERVED',part=>{
+    digest.update(part);
+    if(inspect)pieces.push(part);
+  });
+  if(size===0||digest.digest('hex')!==expectedDigest)
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  if(inspect){
+    const bytes=new Uint8Array(size);let offset=0;
+    for(const part of pieces){bytes.set(part,offset);offset+=part.byteLength;}
+    inspect(bytes);
   }
 }
 
-/** A live HEAD has to match the same noncacheable delivery contract as GET.
- * It cannot quietly advertise cacheable metadata or return private bytes. */
+/** Live HEAD must meet the same noncacheable delivery contract as GET and
+ * contain no bytes over the entire independently observed stream. */
 async function verifyLiveHead(response:Response,mime:RegExp):Promise<void>{
   if(response.status!==200||response.redirected||response.headers.has('location')||
      !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers)){
-    await response.body?.cancel().catch(()=>{});
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   }
-  if(response.body){
-    const reader=response.body.getReader();
-    try{
-      const sample=await reader.read();
-      if(!sample.done&&sample.value?.byteLength)
-        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-    }catch{
-      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-    }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-  }
+  await consumeProbeBody(response,0,'RELEASE_NOT_OBSERVED',()=>{},true);
 }
 
 /** Verify exact GET bytes and HEAD metadata for canonical HTML and every
@@ -221,6 +248,13 @@ async function verifyLiveHead(response:Response,mime:RegExp):Promise<void>{
 export async function verifyReleaseWithdrawal(
   input:ReleaseWithdrawalInput,expectedServedSha256:string,
   withdraw:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
+  return observeReleaseWithdrawal(input,expectedServedSha256,withdraw,http);
+}
+async function observeReleaseWithdrawal(
+  input:ReleaseWithdrawalInput,expectedServedSha256:string,
+  withdraw:()=>Promise<void>,http:typeof fetch,
+  inspectHtml?:(bytes:Uint8Array)=>void
 ):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
   const origin=validatedOrigin(input);
   if(typeof expectedServedSha256!=='string'||!SHA256.test(expectedServedSha256)||
@@ -239,10 +273,15 @@ export async function verifyReleaseWithdrawal(
     liveAssets.set(asset.path,asset.sha256);
   }
 
-  const html=await fetchPath(new URL(paths.canonicalPath,origin),'GET',http);
-  await verifyLiveBytes(html,/^text\/html(?:;|$)/i,750_000,expectedServedSha256);
-  await verifyLiveHead(await fetchPath(new URL(paths.canonicalPath,origin),'HEAD',http),
-    /^text\/html(?:;|$)/i);
+  // A supplied exact public API alias is itself an observable live HTML
+  // representation, not just a path to check after withdrawal.
+  const alias=publicApiAlias(paths.canonicalPath);
+  const htmlPaths=[paths.canonicalPath,...(alias&&paths.candidateDirectPaths.includes(alias)?[alias]:[])];
+  for(const path of htmlPaths){
+    const html=await fetchPath(new URL(path,origin),'GET',http);
+    await verifyLiveBytes(html,/^text\/html(?:;|$)/i,750_000,expectedServedSha256,inspectHtml);
+    await verifyLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),/^text\/html(?:;|$)/i);
+  }
   for(const [path,sha256] of liveAssets){
     const image=await fetchPath(new URL(path,origin),'GET',http);
     await verifyLiveBytes(image,/^image\/png$/i,5*1024*1024,sha256);
@@ -251,7 +290,48 @@ export async function verifyReleaseWithdrawal(
   await withdraw();
   const after=await probeHostRevocation(paths,http);
   return Object.freeze({...after,liveAssetPathsVerified:liveAssets.size,
-    observedHttpRequests:after.observedHttpRequests+2+2*liveAssets.size});
+    observedHttpRequests:after.observedHttpRequests+2*htmlPaths.length+2*liveAssets.size});
+}
+
+const PUBLIC_RELEASE_IMG=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
+function matchPublicMediaSet(bytes:Uint8Array,paths:readonly string[]):void{
+  try{
+    const html=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+    const tags=[...html.matchAll(PUBLIC_RELEASE_IMG)];
+    const expected=new Set(paths.map(path=>path.replaceAll('&','&amp;')));
+    const seen=new Set(tags.map(tag=>tag[1]));
+    if((html.match(/<img\b/gi)??[]).length!==tags.length||
+       seen.size!==expected.size||[...seen].some(src=>!expected.has(src)))
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
+}
+
+/**
+ * Strict public withdrawal entry point for a trusted server-provided exact
+ * pre-withdrawal manifest. Derives the canonical API and all scoped media
+ * paths internally; caller cannot substitute another handle or omit aliases.
+ * The older generic probe remains explicitly scoped to paths supplied.
+ */
+export async function verifyCanonicalPublicWithdrawal(
+  input:{origin:string;canonicalPath:string;expectedServedSha256:string;
+    manifestSha256:string;assetHashes:readonly string[];allowLocal?:boolean},
+  withdraw:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
+  if(!input||!canonicalPathValid(input.canonicalPath)||UNLISTED.test(input.canonicalPath)||
+     typeof input.manifestSha256!=='string'||!SHA256.test(input.manifestSha256)||
+     !Array.isArray(input.assetHashes)||input.assetHashes.length>8||
+     input.assetHashes.some(sha=>typeof sha!=='string'||!SHA256.test(sha))||
+     new Set(input.assetHashes).size!==input.assetHashes.length)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const alias=publicApiAlias(input.canonicalPath)!;
+  const assets=input.assetHashes.map(sha256=>({
+    path:alias+'&manifest='+input.manifestSha256+'&asset='+sha256,sha256
+  }));
+  const assetPaths=assets.map(asset=>asset.path);
+  return observeReleaseWithdrawal({
+    origin:input.origin,canonicalPath:input.canonicalPath,allowLocal:input.allowLocal,
+    candidateDirectPaths:[alias,...assetPaths],liveAssets:assets
+  },input.expectedServedSha256,withdraw,http,bytes=>matchPublicMediaSet(bytes,assetPaths));
 }
 
 const PORTFOLIO_ASSET_QUERY=/^\/api\/public-portfolio\?handle=([a-z][a-z0-9_]{2,29})&slug=([a-z0-9-]{3,64})(?:&manifest=[a-f0-9]{64}&asset=[a-f0-9]{64})?$/;
@@ -356,23 +436,14 @@ function reviewerHttpHeaders(response:Response,media:boolean):boolean {
 }
 async function reviewerLiveHtml(response:Response,expectedSha:string):Promise<string> {
   if(!reviewerHttpHeaders(response,false)){
-    await response.body?.cancel();
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   }
-  const reader=response.body?.getReader();
-  if(!reader)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   const hash=createHash('sha256'),pieces:Uint8Array[]=[];
-  let length=0;
+  const length=await consumeProbeBody(response,750_000,'RELEASE_NOT_OBSERVED',part=>{
+    hash.update(part);pieces.push(part);
+  });
   try{
-    for(;;){
-      const part=await reader.read();
-      if(part.done)break;
-      if(!(part.value instanceof Uint8Array)||
-         (length+=part.value.byteLength)>750_000)
-        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-      hash.update(part.value);
-      pieces.push(part.value);
-    }
     if(length===0||hash.digest('hex')!==expectedSha)
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
     const bytes=new Uint8Array(length);
@@ -386,22 +457,13 @@ async function reviewerLiveHtml(response:Response,expectedSha:string):Promise<st
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
     return html;
   }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
-  finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 async function reviewerLiveHead(response:Response,media:boolean):Promise<void>{
   if(!reviewerHttpHeaders(response,media)){
-    await response.body?.cancel();
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   }
-  if(response.body){
-    const reader=response.body.getReader();
-    try{
-      const first=await reader.read();
-      if(!first.done&&first.value?.byteLength)
-        throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-    }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
-    finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-  }
+  await consumeProbeBody(response,0,'RELEASE_NOT_OBSERVED',()=>{},true);
 }
 function reviewerHostPaths(input:ReviewerHostWithdrawalInput):{
   origin:URL;htmlPaths:string[];mediaPaths:{path:string;sha256:string}[];
@@ -456,7 +518,7 @@ export async function verifyReviewerHostWithdrawal(
   for(const asset of mediaPaths){
     const media=await fetchPath(new URL(asset.path,origin),'GET',http);
     if(!reviewerHttpHeaders(media,true)){
-      await media.body?.cancel();
+      cancelProbeBody(media.body);
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
     }
     await verifyLiveBytes(media,/^image\/png(?:;|$)/i,4_000_000,asset.sha256);

@@ -1,41 +1,73 @@
 import {createHash} from 'node:crypto';
 
+/** Initiate cleanup without awaiting a potentially blocked stream tee branch. */
+export function cancelRpcBody(body) {
+  try { void body?.cancel().catch(()=>{}); } catch {}
+}
+
+/** Only accept an unambiguous origin-form request target. Never derive authority
+ * from a request URL, Host header, or a URL parser's normalized path. */
+export function parseDeliveryTarget(raw) {
+  if(typeof raw!=='string'||!raw.startsWith('/')||raw.startsWith('//')||
+     /[\x00-\x20\x7f\\#]/.test(raw))return null;
+  try {
+    const target=new URL(raw,'https://kadmeion.invalid');
+    if(target.origin!=='https://kadmeion.invalid'||
+       target.pathname!==raw.split('?')[0])return null;
+    return target;
+  } catch {return null;}
+}
+
 /**
  * Fail-closed bounded JSON reader for private service-key RPC calls.
  * Transport JSON can be roughly twice the served HTML size when quotes and
  * backslashes are escaped. The HTML envelope retains its own 750 KB cap.
  */
 export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
-  if(!Number.isSafeInteger(limit)||limit<1||limit>5_350_000)throw Error('Invalid RPC limit');
-  const type=response?.headers?.get('content-type');
-  if(typeof type!=='string'||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
-    throw Error('Invalid RPC content type');
-  const length=response.headers.get('content-length');
-  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
-    throw Error('RPC length limit');
-  if(!response.body?.getReader)throw Error('Missing RPC body');
-  const reader=response.body.getReader(), chunks=[];
-  let size=0;
+  let reader, timer, finished=false;
   try {
-    for(;;) {
-      const {done,value}=await reader.read();
-      if(done)break;
-      if(!(value instanceof Uint8Array))throw Error('Invalid RPC chunk');
-      size+=value.byteLength;
-      if(size>limit){await reader.cancel();throw Error('RPC size limit');}
-      chunks.push(value);
-    }
-  } finally {reader.releaseLock();}
-  // Fetch may transparently decompress gzip/brotli responses while retaining
-  // the wire Content-Length. Compare byte counts only for identity encoding;
-  // a fabricated or truncated uncompressed response must fail closed.
-  const encoding=response.headers.get('content-encoding');
-  if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==size)
-    throw Error('RPC response length mismatch');
-  const bytes=new Uint8Array(size);
-  let offset=0;
-  for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
-  return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+    if(!Number.isSafeInteger(limit)||limit<1||limit>5_350_000)throw Error('Invalid RPC limit');
+    const type=response?.headers?.get('content-type');
+    if(typeof type!=='string'||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
+      throw Error('Invalid RPC content type');
+    const length=response.headers.get('content-length');
+    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
+      throw Error('RPC length limit');
+    if(!response.body?.getReader)throw Error('Missing RPC body');
+    reader=response.body.getReader();
+    const chunks=[];
+    let size=0;
+    const drain=async()=>{
+      for(;;) {
+        const {done,value}=await reader.read();
+        if(done)break;
+        if(!(value instanceof Uint8Array))throw Error('Invalid RPC chunk');
+        size+=value.byteLength;
+        if(size>limit)throw Error('RPC size limit');
+        chunks.push(value);
+      }
+    };
+    // A transport may ignore fetch's AbortSignal or return a stalled body.
+    // Race the entire drain once; do not attach a deadline listener per chunk.
+    const deadline=new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('RPC body timeout')),5000);
+    });
+    await Promise.race([drain(),deadline]);
+    finished=true;
+    // Fetch may decompress while retaining wire Content-Length. Compare
+    // byte counts only for identity encoding.
+    const encoding=response.headers.get('content-encoding');
+    if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==size)
+      throw Error('RPC response length mismatch');
+    const bytes=new Uint8Array(size);
+    let offset=0;
+    for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+    return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+  } finally {
+    clearTimeout(timer);
+    if(!finished)cancelRpcBody(reader??response?.body);
+    reader?.releaseLock();
+  }
 }
 
 /**

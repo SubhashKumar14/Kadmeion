@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortfolioPresetDraft, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { ActionLink, Brand, Icon, useTheme, getAuthHref } from './landing.tsx';
 
 type PresetCategory = 'All categories' | 'Showcase' | 'Editorial' | 'Minimal';
 type LayoutFilter = 'All layouts' | 'Single page' | 'Project focused' | 'Modular';
 type Preset = {
   id: string;
+  presetId: Exclude<PortfolioPresetId, 'blank'>;
   title: string;
   description: string;
   category: Exclude<PresetCategory, 'All categories'>;
@@ -14,11 +16,11 @@ type Preset = {
   tags: string[];
 };
 export const PRESET_PREVIEWS: readonly Preset[] = [
-  {id:'curved-hero',title:'Curved Hero',description:'A bold, focused intro with fluid geometry.',category:'Showcase',layout:'Single page',tone:'curved',tags:['Portfolio','Single page']},
-  {id:'interlocking-showcase',title:'Interlocking Showcase',description:'A dynamic composition that emphasizes real work.',category:'Showcase',layout:'Project focused',tone:'interlocking',tags:['Portfolio','Project-focused']},
-  {id:'editorial-grid',title:'Editorial Grid',description:'A content-forward grid for work, writing and more.',category:'Editorial',layout:'Modular',tone:'editorial',tags:['Portfolio','Editorial']},
-  {id:'modular-portfolio',title:'Modular Portfolio',description:'A flexible block layout with room to grow.',category:'Editorial',layout:'Modular',tone:'modular',tags:['Portfolio','Modular']},
-  {id:'stepped-minimal',title:'Stepped Minimal',description:'A clean hierarchy that puts your work first.',category:'Minimal',layout:'Single page',tone:'stepped',tags:['Portfolio','Minimal']}
+  {id:'curved-hero',presetId:'arc',title:'Curved Hero',description:'A bold, focused intro with fluid geometry.',category:'Showcase',layout:'Single page',tone:'curved',tags:['Portfolio','Single page']},
+  {id:'interlocking-showcase',presetId:'collage',title:'Interlocking Showcase',description:'A dynamic composition that emphasizes real work.',category:'Showcase',layout:'Project focused',tone:'interlocking',tags:['Portfolio','Project-focused']},
+  {id:'editorial-grid',presetId:'editorial',title:'Editorial Grid',description:'A content-forward grid for work, writing and more.',category:'Editorial',layout:'Modular',tone:'editorial',tags:['Portfolio','Editorial']},
+  {id:'modular-portfolio',presetId:'studio',title:'Modular Portfolio',description:'A flexible block layout with room to grow.',category:'Editorial',layout:'Modular',tone:'modular',tags:['Portfolio','Modular']},
+  {id:'stepped-minimal',presetId:'stairs',title:'Stepped Minimal',description:'A clean hierarchy that puts your work first.',category:'Minimal',layout:'Single page',tone:'stepped',tags:['Portfolio','Minimal']}
 ] as const;
 export function filterPresets(items: readonly Preset[],query:string,category:PresetCategory,layout:LayoutFilter,order:'Featured'|'A–Z'):Preset[] {
   const term=query.trim().toLocaleLowerCase('en');
@@ -35,6 +37,104 @@ export function TemplateGraphic({tone}:{tone:string}){
     <span className="template-faux-geometry"/>
   </div>;
 }
+// Public, deterministic demo of the actual editor preset. These values are not
+// read from a user, saved, applied to drafts, or passed to the publish pipeline.
+// Leave EMPTY media slots untouched; sample copy cannot attest an image or URL.
+const demoSectionTitles: Readonly<Record<string,string>> = {
+  'arc-hero':'Introduce your work', 'collage-hero':'Introduce your work',
+  'stepped-hero':'Introduce your work', 'project-showcase':'Selected work',
+  'editorial-bento':'Project stories', 'skills':'Skills', 'experience':'Experience',
+  'contact':'Contact'
+};
+export function createPublicPresetDemo(presetId:Preset['presetId']):PortfolioSnapshot {
+  const snapshot=createPortfolioPresetDraft(presetId);
+  for (const [slotKey,slot] of Object.entries(snapshot.slots)) {
+    if(slot.state!=='S0')continue;
+    const section=slotKey.slice(0,slotKey.lastIndexOf('-'));
+    switch(slot.componentId){
+      case 'title-stacked@1': slot.content={title:demoSectionTitles[section]??'Section title'};break;
+      case 'body-copy@1': slot.content={text:'Describe your work, responsibilities and what you learned here.'};break;
+      case 'external-link@1': slot.content={label:'Example action (inactive)'};break;
+      case 'project-card@1': slot.content={title:'Example project',summary:'Add an authored project story.'};break;
+      case 'skills-list@1': slot.content={items:'Add your own skills or experience.'};break;
+      case 'technology-tag@1': slot.content={text:'Technology label'};break;
+      // Never invent metrics or imply that a real provider verified demo content.
+      default: break;
+    }
+  }
+  return snapshot;
+}
+
+type DemoCanvas=typeof import('./portfolio-tools.tsx').PortfolioCanvas;
+type DemoTheme='light'|'dark';
+// Use the existing editor's flat preview palette contract. Only the ephemeral
+// demo snapshot is changed; this never applies a template or persists a theme.
+const demoPalettes:Readonly<Record<DemoTheme,{surface:string;text:string;accent:string}>>={
+  light:{surface:'#f9fafb',text:'#152738',accent:'#b9734d'},
+  dark:{surface:'#162433',text:'#f7f5ef',accent:'#eab087'}
+};
+function withDemoPalette(snapshot:PortfolioSnapshot,mode:DemoTheme):PortfolioSnapshot {
+  return {...snapshot,files:{...snapshot.files,'theme/tokens.json':JSON.stringify({mode,...demoPalettes[mode]})}};
+}
+// Bound actual module loading, including a transport that never settles.
+function startPresetLoad<T>(load:()=>Promise<T>,onReady:(value:T)=>void,onFailure:()=>void,timeoutMs=12000):()=>void {
+  let active=true;
+  const stop=()=>{active=false;clearTimeout(timer);};
+  const fail=()=>{if(active){stop();onFailure();}};
+  const timer=setTimeout(fail,timeoutMs);
+  try{
+    void load().then(value=>{if(active){stop();onReady(value);}},fail);
+  }catch{fail();}
+  return stop;
+}
+function ActualPresetPreview({preset}:{preset:Preset}){
+  const [mode,setMode]=useState<DemoTheme>('light');
+  const baseSnapshot=useMemo(()=>createPublicPresetDemo(preset.presetId),[preset.presetId]);
+  const snapshot=useMemo(()=>withDemoPalette(baseSnapshot,mode),[baseSnapshot,mode]);
+  const [Canvas,setCanvas]=useState<DemoCanvas|null>(null);
+  const [failed,setFailed]=useState(false);
+  const [width,setWidth]=useState<number|undefined>(undefined);
+  const [measuredWidth,setMeasuredWidth]=useState<number|null>(null);
+  // Keep the same demo draft while switching presentation-only palettes.
+  useEffect(()=>startPresetLoad(
+    ()=>Promise.all([import('./portfolio-tools.tsx'),import('./workspace.css')]),
+    ([module])=>setCanvas(()=>module.PortfolioCanvas),
+    ()=>setFailed(true)
+  ),[]);
+  const reloadPreview=()=>window.location.reload();
+  const page=JSON.parse(snapshot.files['pages/home.page.json']!) as {header:{layout:string}|null;sections:{id:string;layout:string}[]};
+  return <section aria-label={'Demo of '+preset.title+' preset'}>
+    <p>Demo content only. The shared editor canvas uses the real preset section order. Its author-preview labels do not indicate a saved or published portfolio. Media and example actions are inactive.</p>
+    <p>Included sections: {page.sections.map(section=>demoSectionTitles[section.id]??section.layout).join(' · ')}</p>
+    <p>Preset header: {page.header?.layout.split('@')[0]?.replace(/^header-/,'').replace(/-/g,' ')??'None'}. The shared canvas currently uses a common header preview.</p>
+    <fieldset disabled={failed||!Canvas}>
+      <legend>Preview width</legend>
+      <p>Width limits, not device emulation. The canvas can be narrower than the selected limit; some layout rules follow the browser viewport.</p>
+      <button type="button" className="outline-small" aria-pressed={width===undefined} onClick={()=>setWidth(undefined)}>Fit</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={width===1440} onClick={()=>setWidth(1440)}>Up to 1440 px (desktop)</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={width===768} onClick={()=>setWidth(768)}>Up to 768 px (tablet)</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>Up to 390 px (phone width)</button>
+      {Canvas&&!failed&&<p>{measuredWidth===null?'Canvas content width is not measured.':'Measured canvas content width: '+Math.round(measuredWidth)+' px.'}</p>}
+    </fieldset>
+    <fieldset disabled={failed||!Canvas}>
+      <legend>Portfolio preview theme</legend>
+      <p>Compare the two editor palettes in this demo only. This does not change your site theme or save a portfolio.</p>
+      <button type="button" className="outline-small" aria-pressed={mode==='light'} onClick={()=>setMode('light')}>Light</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={mode==='dark'} onClick={()=>setMode('dark')}>Dark</button>
+    </fieldset>
+    {failed?<div><p role="alert">The preset renderer could not load or did not respond in time. No portfolio was created or changed.</p><button type="button" className="outline-small" onClick={reloadPreview}>Reload templates to retry</button></div>:
+      Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll onContentWidth={setMeasuredWidth}/></div>:
+      <div>
+        <p role="status">Loading preset layout…</p>
+        <div className="glyph-skeleton" aria-hidden="true">
+          <span className="glyph-skeleton-line is-title"/>
+          <span className="glyph-skeleton-line is-medium"/>
+          <span className="glyph-skeleton-line is-short"/>
+        </div>
+      </div>}
+  </section>;
+}
+
 function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
   const dialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{
@@ -48,15 +148,32 @@ function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
     // not be interpreted as a user request to dismiss the React preview state.
     onCancel={event=>{event.preventDefault();onClose();}} aria-labelledby="template-dialog-title">
     <div className="template-dialog-top">
-      <p className="eyebrow"><span/> Concept preview</p>
+      <p className="eyebrow"><span/> Preset preview</p>
       <button type="button" className="dialog-close" onClick={onClose} aria-label="Close template preview">×</button>
     </div>
     <h2 id="template-dialog-title">{preset.title}</h2>
-    <p>{preset.description} This is a visual concept, not an exported or published website.</p>
-    <TemplateGraphic tone={preset.tone}/>
+    <p>{preset.description} This is an in-app layout demo, not an exported or published website.</p>
+    <ActualPresetPreview preset={preset}/>
     <div className="template-dialog-actions"><button type="button" onClick={onClose} className="outline-small">Back to templates</button>
       <ActionLink href={getAuthHref()}>Sign in to begin</ActionLink></div>
   </dialog>;
+}
+function presetPreviewId(search:string,allowed:readonly string[]):string|null {
+  const values=new URLSearchParams(search).getAll('preview');
+  return values.length===1&&allowed.includes(values[0]??'')?values[0]!:null;
+}
+function presetPreviewAddress(href:string,id:string|null,allowed:readonly string[]):string {
+  const url=new URL(href);
+  // The browser's current path is retained; no navigation to an input URL.
+  if(id!==null&&!allowed.includes(id))throw new Error('Unknown template preview.');
+  if(id===null)url.searchParams.delete('preview');
+  else url.searchParams.set('preview',id);
+  return url.pathname+url.search+url.hash;
+}
+const previewIds=PRESET_PREVIEWS.map(item=>item.id);
+function presetAtLocation():Preset|null{
+  const id=presetPreviewId(window.location.search,previewIds);
+  return PRESET_PREVIEWS.find(item=>item.id===id)??null;
 }
 export function TemplateExplorer(){
   const [theme,toggleTheme]=useTheme();
@@ -64,13 +181,34 @@ export function TemplateExplorer(){
   const [category,setCategory]=useState<PresetCategory>('All categories');
   const [layout,setLayout]=useState<LayoutFilter>('All layouts');
   const [sort,setSort]=useState<'Featured'|'A–Z'>('Featured');
-  const [preview,setPreview]=useState<Preset|null>(null);
+  const [preview,setPreview]=useState<Preset|null>(()=>presetAtLocation());
   const previewOpener=useRef<HTMLButtonElement|null>(null);
-  const closePreview=()=>{
-    setPreview(null);
-    // Native <dialog> handles Escape and the inert background while open.
-    requestAnimationFrame(()=>previewOpener.current?.focus());
+  const updatePreviewAddress=(id:string|null)=>{
+    try{
+      window.history.replaceState(window.history.state,'',presetPreviewAddress(window.location.href,id,previewIds));
+    }catch{/* Navigation state is optional; the demo remains usable. */}
   };
+  const openPreview=(item:Preset,opener:HTMLButtonElement)=>{
+    previewOpener.current=opener;
+    updatePreviewAddress(item.id);
+    setPreview(item);
+  };
+  const closePreview=()=>{
+    updatePreviewAddress(null);
+    setPreview(null);
+    // Direct/reloaded previews may not have a live trigger.
+    requestAnimationFrame(()=>{
+      const opener=previewOpener.current;
+      if(opener?.isConnected)opener.focus();
+      else document.getElementById('templates-main')?.focus();
+      previewOpener.current=null;
+    });
+  };
+  useEffect(()=>{
+    const sync=()=>{previewOpener.current=null;setPreview(presetAtLocation());};
+    window.addEventListener('popstate',sync);
+    return ()=>window.removeEventListener('popstate',sync);
+  },[]);
   const available=filterPresets(PRESET_PREVIEWS,query,category,layout,sort);
   return <>
     <a className="skip-link" href="#templates-main">Skip to templates</a>
@@ -98,7 +236,7 @@ export function TemplateExplorer(){
           <h1 id="templates-title">Portfolio Templates</h1>
           <p className="templates-intro">Professional, developer-focused compositions to start from. Explore how your work can look, then sign in to build your own.</p>
           <div className="template-facts">
-            <div><Icon name="layers" size={24}/><p><strong>5 planned presets</strong><span>Curated starting points; production renderer acceptance pending.</span></p></div>
+            <div><Icon name="layers" size={24}/><p><strong>5 initial presets</strong><span>Curated starting layouts; published renderer acceptance pending.</span></p></div>
             <div><Icon name="arrow" size={23}/><p><strong>Built to extend</strong><span>A template system designed to grow with your work.</span></p></div>
           </div>
         </section>
@@ -119,7 +257,7 @@ export function TemplateExplorer(){
             <option value="Featured">Sort: Featured</option><option value="A–Z">Sort: A–Z</option>
           </select>
         </form>
-        <p className="template-results" role="status">{available.length} template design {available.length===1?'concept':'concepts'} shown. These are illustrations, not applied presets or published portfolios.</p>
+        <p className="template-results" role="status">{available.length} template design {available.length===1?'concept':'concepts'} shown. Open Preview to view the corresponding editor layout with demo content. Nothing is applied or published.</p>
         {available.length===0 ?
           <div className="no-template-results"><h2>No matching templates</h2><p>Try another search or choose a broader category.</p>
             <button className="outline-small" type="button" onClick={()=>{setQuery('');setCategory('All categories');setLayout('All layouts');setSort('Featured');}}>Clear filters</button></div>
@@ -133,18 +271,18 @@ export function TemplateExplorer(){
               </div>
             </div>
             <div className="template-card-actions">
-              <button type="button" className="outline-small" onClick={event=>{previewOpener.current=event.currentTarget;setPreview(item);}}>Preview</button>
+              <button type="button" className="outline-small" onClick={event=>openPreview(item,event.currentTarget)}>Preview</button>
               <a className="header-signin" href={getAuthHref()} aria-label={'Sign in to build — ' + item.title + ' concept preview'}>Sign in to build <Icon name="arrow" size={16}/></a>
             </div>
           </article>)}</div>}
         <section className="template-signin-note" aria-labelledby="template-note-title">
           <span className="strip-icon"><Icon name="user" size={24}/></span><div>
             <h2 id="template-note-title">Explore templates, then sign in to author.</h2>
-            <p>Preview concepts publicly. Sign in, then choose an available preset in your workspace; this gallery does not silently apply or reserve a template.</p></div>
+            <p>Preview preset layouts publicly. Sign in, then choose an available preset in your workspace; this gallery does not silently apply or reserve a template.</p></div>
           <ActionLink href={getAuthHref()}>Sign in to get started</ActionLink>
         </section>
       </main>
     </div>
-    {preview && <PreviewDialog preset={preview} onClose={closePreview}/>}
+    {preview && <PreviewDialog key={preview.id} preset={preview} onClose={closePreview}/>}
   </>;
 }
