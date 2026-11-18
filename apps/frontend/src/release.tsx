@@ -396,14 +396,21 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       }
       setGrantNow(now);
       setGrant({grantId,requestId:frozen.requestId,expiresAt,status:'REGISTERED_UNSERVABLE'});
-      const updated=await port.listOwnerReviewerGrants(id);
-      if (!current()) return;
-      if (updated.data) {setGrants(updated.data);setGrantListError('');}
-      else setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
+      // A verified registration receipt is durable independently of the list
+      // readback. Do not report it as failed or retain a spent operation key
+      // just because refreshing the owner catalogue throws.
       grantOperation.current=null;
       setNotice(Date.parse(expiresAt)<=Date.now()
         ? 'The recorded reviewer grant has expired. No reviewer link is available.'
         : 'Private reviewer grant registered. The link remains disabled pending hosted delivery verification.');
+      try{
+        const updated=await port.listOwnerReviewerGrants(id);
+        if (!current()) return;
+        if (updated.data) {setGrants(updated.data);setGrantListError('');}
+        else setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
+      }catch{
+        if(current())setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
+      }
     } catch {if (current()) setError('Reviewer registration failed. Retry the same request.');}
     finally {if (current()) setBusy(false);}
   }
@@ -422,12 +429,18 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       }
       setRevokedGrantIds(previous=>new Set([...previous,grant.grantId]));
       setGrant(previous=>previous?.grantId===grant.grantId ? {...previous,status:'REVOKED'} : previous);
-      const refreshed=await port.listOwnerReviewerGrants(id);
-      if (!current()) return;
-      if (refreshed.data) {setGrants(refreshed.data);setGrantListError('');}
-      else setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
+      // A confirmed revoke is terminal for this grant ID, even if the
+      // subsequent catalogue read throws or returns an unavailable result.
       setConfirmRevoke(false);
       setNotice('Private reviewer grant revoked. External delivery revocation has not been independently verified.');
+      try{
+        const refreshed=await port.listOwnerReviewerGrants(id);
+        if (!current()) return;
+        if (refreshed.data) {setGrants(refreshed.data);setGrantListError('');}
+        else setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
+      }catch{
+        if(current())setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
+      }
     } catch {if (current()) setError('Reviewer revocation could not be checked. Retry safely.');}
     finally {if (current()) setBusy(false);}
   }
@@ -625,6 +638,21 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       document.removeEventListener('visibilitychange',refresh);
     };
   },[mode,grant,grants]);
+  // Revocation may also have been recorded by another owner session.
+  // A successful catalogue read can establish terminal state, but absence
+  // from the bounded catalogue never establishes either active or revoked.
+  useEffect(()=>{
+    if(!grants)return;
+    const terminalIds=new Set(grants.filter(item=>item.revokedAt!==null).filter(item=>!!item.revokedAt).map(item=>item.grantId));
+    if(!terminalIds.size)return;
+    setRevokedGrantIds(previous=>{
+      if([...terminalIds].every(grantId=>previous.has(grantId)))return previous;
+      return new Set([...previous,...terminalIds]);
+    });
+    setGrant(previous=>previous&&previous.status!=='REVOKED'&&terminalIds.has(previous.grantId)
+      ? {...previous,status:'REVOKED'}:previous);
+    if(grant&&terminalIds.has(grant.grantId))setConfirmRevoke(false);
+  },[grants,grant]);
   const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=grantNow;
   return <section aria-labelledby="release-title" data-release-mode={mode} className="ws-owner-page ws-release-page">
     <div className="ws-heading">
