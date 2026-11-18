@@ -13,6 +13,8 @@ const baselinePaths = new Set(execFileSync('git', ['ls-tree', '-r', '--name-only
 const authorizedAdditionPaths = [
   // RESERVE-B16-S01-001; WF-009/013/041; S1; exact authorized migration path.
   'supabase/migrations/20261117083520_owner_private_project_thumbnails.sql',
+  // EVENT-B16-S00-015 / S15-013; C04/WF-021; S1 PROJECT pin-only reservation.
+  'supabase/migrations/20261117155900_owner_private_asset_pin.sql',
 ];
 const reservedAdditions = new Set(authorizedAdditionPaths);
 // Exact reservations must not collide with the grandfathered baseline or each other.

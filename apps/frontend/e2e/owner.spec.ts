@@ -461,8 +461,8 @@ test('real owner onboarding and project revision are private across browser sess
     buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64')
   });
   await page.getByRole('button',{name:'Upload private image'}).click();
-  await expect(page.locator('.ws-asset-manager').getByRole('status'))
-    .toContainText('Image uploaded and privately registered.');
+  await expect(page.locator('.ws-asset-manager').getByRole('status').filter({hasText:'Image uploaded and privately registered.'}))
+    .toBeVisible();
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
   // The portfolio has local revision operations at this point. Saving before
@@ -1041,7 +1041,7 @@ test('F6 restricted operations 48–50 reflow without leaking account directory'
   }
 });
 
-test('F1 recovery request and password reset use isolated GoTrue and Mailpit', async ({ page }) => {
+test('F1 recovery request and password reset use isolated GoTrue and Mailpit', async ({ page, browser }) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
   test.setTimeout(60_000);
   const user = await localUser('CI Recovery');
@@ -1114,6 +1114,23 @@ test('F1 recovery request and password reset use isolated GoTrue and Mailpit', a
   await page.getByRole('button', { name: 'Save new password' }).click();
   await expect(page.getByRole('heading', { name: 'Password updated' })).toBeFocused();
   await signIn(page, {email: user.email, password: newPassword});
+  // Replay only the original one-time provider link, not an issued session JWT.
+  const replay=await fetch(verification,{redirect:'manual'});
+  const replayTarget=URL.parse(replay.headers.get('location')??'');
+  expect(replay.status>=400||([302,303].includes(replay.status)&&!!replayTarget&&
+    !new URLSearchParams(replayTarget.hash.slice(1)).has('access_token'))).toBe(true);
+  const fresh=await browser.newPage();
+  try{
+    await fresh.goto(new URL('/signin',page.url()).href);
+    await fresh.getByLabel('Email address').fill(user.email);
+    await fresh.locator('#signin-password').fill(user.password);
+    await fresh.getByRole('button',{name:'Sign in',exact:true}).click();
+    await expect(fresh.getByRole('alert')).toContainText('Incorrect credentials or sign-in unavailable.');
+    await expect(fresh.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+    await fresh.goto(new URL('/app',page.url()).href);
+    await expect(fresh.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+    await expect(fresh.locator('.ws-shell')).toHaveCount(0);
+  }finally{await fresh.close();}
 });
 
 test('new email/password account can open the workspace immediately', async ({page}) => {
@@ -2516,4 +2533,184 @@ test('B16 verified owner and workspace glyph pending states are real, decorative
     await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toBeVisible();
     await auditAccessibility(page,'B16_S14_GLYPH_RESOLVED_REDUCED',process.env.KADMEION_BROWSER_CAPTURE_DIR);
   }finally{releaseAuth();releaseRecords();}
+});
+
+ 
+test('B16 auth confirmation denial, neutral resend failures and explicit retry (injected provider boundary)', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Requires disposable local Supabase.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 confirmation boundary');
+  let tokenCalls=0, resendCalls=0;
+  let mode:'deny'|'rate'|'outage'|'transport'|'accepted'='deny';
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/token'&&url.searchParams.get('grant_type')==='password',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    tokenCalls++;
+    await route.fulfill({status:400,json:{error_code:'email_not_confirmed',msg:'S6_RAW_PROVIDER_MARKER'}});
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/resend',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    resendCalls++;
+    const body=route.request().postDataJSON();
+    expect(body.type==='signup'&&body.email===owner.email).toBe(true);
+    expect(new URL(route.request().url()).searchParams.get('redirect_to')).toBe(new URL('/auth/callback',page.url()).href);
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='accepted')return route.fulfill({status:200,json:{}});
+    await route.fulfill({status:mode==='deny'?403:mode==='rate'?429:503,json:{message:'S6_RAW_PROVIDER_MARKER'}});
+  });
+  await page.goto('/signin');
+  await page.getByLabel('Email address').fill(owner.email);
+  await page.locator('#signin-password').fill(owner.password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Registration submitted'})).toBeVisible();
+  expect(tokenCalls).toBe(1);
+  const resend=page.getByRole('button',{name:'Request another confirmation link'});
+  const noWorkspace=async()=>{
+    await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+    await expect(page.getByText('S6_RAW_PROVIDER_MARKER',{exact:false})).toHaveCount(0);
+  };
+  for(const failure of ['deny','rate','outage','transport'] as const){
+    mode=failure;
+    await resend.click();
+    await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Unable to submit the confirmation request.');
+    await expect(page.getByText('provider accepted another request',{exact:false})).toHaveCount(0);
+    await expect(resend).toBeEnabled();
+    await noWorkspace();
+  }
+  expect(resendCalls).toBe(4);
+  mode='accepted';
+  await resend.click();
+  await expect(page.getByRole('status')).toContainText('Email delivery is not confirmed.');
+  expect(resendCalls).toBe(5);
+  await noWorkspace();
+  await page.goto('/app');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('link',{name:'Go to sign in'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+});
+
+test('B16 C06 opt-in autosave coalesces private edits, stops on failure and never confirms withdrawal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 profile autosave');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await expect(auto).not.toBeChecked();
+  const writes:Array<{headline:string;withdrawal:boolean}>=[];
+  let deny=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const data=route.request().postDataJSON();
+    writes.push({headline:data.p_draft.headline,withdrawal:data.p_confirm_projection_withdrawal});
+    if(deny)return route.fulfill({status:503,json:{message:'S6 synthetic outage'}});
+    await route.continue();
+  });
+  await headline.fill('Off by default');
+  // Negative observation exceeds the 1200ms documented debounce.
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await auto.check();
+  await headline.fill('Intermediate');
+  await headline.fill('Final private draft');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false}]);
+  await page.reload();
+  await expect(headline).toHaveValue('Final private draft');
+  await expect(auto).not.toBeChecked();
+  deny=true;
+  await auto.check();
+  await headline.fill('Retained after outage');
+  await expect(auto).not.toBeChecked();
+  await expect(headline).toHaveValue('Retained after outage');
+  await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
+  await page.waitForTimeout(1500);
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false},{headline:'Retained after outage',withdrawal:false}]);
+});
+
+test('B16 C06 pending skill pauses scheduled autosave until add or clear',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase and S2 pending-skill successor.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 pending skill');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  const skill=page.getByLabel('Add skill',{exact:true});
+  await skill.fill('TypeScript');
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await page.getByRole('button',{name:'Save profile draft'}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Profile',exact:true}).click();
+  const writes:Array<{headline:string;skills:string[];withdrawal:boolean}>=[];
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const body=route.request().postDataJSON();
+    writes.push({headline:body.p_draft.headline,skills:body.p_draft.skills,withdrawal:body.p_confirm_projection_withdrawal});
+    await route.continue();
+  });
+  await auto.check();
+  await headline.fill('Pending skill must pause this save');
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await skill.fill('typescript');
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await expect(page.getByText('This skill is already in your profile.',{exact:true})).toBeVisible();
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await skill.fill('Rust');
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Pending skill must pause this save',skills:['TypeScript','Rust'],withdrawal:false}]);
+  await page.getByRole('button',{name:'Profile',exact:true}).click();
+  await headline.fill('Clear pending skill resumes save');
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await skill.fill('Unadded skill');
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(1);
+  await skill.fill('');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toEqual({headline:'Clear pending skill resumes save',skills:['TypeScript','Rust'],withdrawal:false});
+  await page.reload();
+  await expect(headline).toHaveValue('Clear pending skill resumes save');
+  await expect(auto).not.toBeChecked();
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Remove Rust'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Remove Unadded skill'})).toHaveCount(0);
+});
+
+test('B16 real invalid and absent recovery grants cannot open reset form or mutate password',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(45_000);
+  let writes=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin===origin&&url.pathname==='/auth/v1/user'&&request.method()==='PUT')writes++;
+  });
+  await page.goto('/reset-password');
+  await expect(page.getByRole('alert')).toContainText('does not contain an active recovery grant');
+  await expect(page.getByRole('button',{name:'Save new password'})).toHaveCount(0);
+  const invalid=randomUUID().replaceAll('-','')+randomUUID().replaceAll('-','');
+  const provider=page.waitForResponse(response=>{
+    const url=new URL(response.url());
+    return url.origin===origin&&url.pathname==='/auth/v1/verify'&&response.request().method()==='POST';
+  });
+  await page.goto('/reset-password?type=recovery&token_hash='+invalid);
+  const receipt=await provider;
+  expect(receipt.ok()).toBe(false);
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save new password'})).toHaveCount(0);
+  await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+  expect(new URL(page.url()).search).toBe('');
+  expect(new URL(page.url()).hash).toBe('');
+  await page.goto('/app');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(writes).toBe(0);
 });

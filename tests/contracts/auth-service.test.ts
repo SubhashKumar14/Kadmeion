@@ -15,12 +15,12 @@ function mockPort(): AuthPort {
   };
 }
 
-test('registration is available without mail delivery while recovery remains gated', async () => {
+test('registration and ordinary recovery requests remain available without verified mail delivery', async () => {
   const service = new AuthService(mockPort(),{siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false});
   assert.deepEqual(await service.register({email:'user@example.com',password:'strong-password-123',displayName:'Dev',handle:'developer'}),{
     status:'confirmation_required',handleCandidate:'developer'
   });
-  await assert.rejects(service.requestPasswordReset('user@example.com'),AuthFlowError);
+  assert.equal(await service.requestPasswordReset('user@example.com'),undefined);
   await assert.rejects(service.googleLogin(),AuthFlowError);
 });
 
@@ -238,4 +238,45 @@ test('B16 resend capability, provider denial, missing response and explicit retr
   port.resend=async()=>{calls++;return {data:{},error:null};};
   assert.equal(await service.resendSignupConfirmation('dev@example.com'),undefined);
   assert.equal(calls,3);
+});
+
+test('OWNER-AUTH ordinary recovery is neutral without mailbox delivery verification and does not establish a session',async()=>{
+  for(const emailDeliveryVerified of [false,true]){
+    const port=mockPort();let calls=0,verifies=0,updates=0;
+    port.getUser=async()=>{verifies++;return {data:{user:null},error:null};};
+    port.updateUser=async()=>{updates++;return {data:{user:null},error:null};};
+    port.resetPasswordForEmail=async(email,options)=>{
+      calls++;assert.equal(email,'dev@example.com');
+      assert.deepEqual(options,{redirectTo:'https://app.example/reset-password'});
+      return {data:{},error:null};
+    };
+    const service=new AuthService(port,{siteOrigin:'https://app.example',emailDeliveryVerified,googleOAuthConfigured:false});
+    await assert.rejects(service.requestPasswordReset('not-email'),{code:'VALIDATION'});
+    assert.equal(calls,0);
+    assert.equal(await service.requestPasswordReset(' DEV@example.com '),undefined);
+    assert.equal(calls,1);assert.equal(verifies,0);assert.equal(updates,0);
+    port.resetPasswordForEmail=async()=>{calls++;return {data:null,error:{status:429,message:'private provider account details'}};};
+    await assert.rejects(service.requestPasswordReset('dev@example.com'),{code:'PROVIDER_UNAVAILABLE',message:'Unable to submit the recovery request.'});
+    assert.equal(calls,2);
+    port.resetPasswordForEmail=async()=>{calls++;throw Error('private provider account details');};
+    await assert.rejects(service.requestPasswordReset('dev@example.com'),{code:'PROVIDER_UNAVAILABLE',message:'Unable to submit the recovery request.'});
+    assert.equal(calls,3);
+    for(const invalid of [undefined,null,{}, {data:{},error:undefined},{data:{user:{id:'unexpected'}},error:null}]){
+      port.resetPasswordForEmail=async()=>{calls++;return invalid as unknown as Awaited<ReturnType<AuthPort['resetPasswordForEmail']>>;};
+      await assert.rejects(service.requestPasswordReset('dev@example.com'),{code:'PROVIDER_UNAVAILABLE'});
+    }
+    assert.equal(calls,8);assert.equal(verifies,0);assert.equal(updates,0);
+    await assert.rejects(service.updatePassword('strong-password'),{code:'AUTH_EXPIRED'});
+    assert.equal(updates,1);
+  }
+});
+test('OWNER-AUTH resend rejects ambiguous acknowledgement rather than claim delivery',async()=>{
+  const port=mockPort();
+  const service=new AuthService(port,{siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false});
+  for(const data of [null,[],false,'ok',{user:{id:'unexpected'}},{access_token:'unexpected'}]){
+    port.resend=async()=>({data,error:null});
+    await assert.rejects(service.resendSignupConfirmation('dev@example.com'),{code:'PROVIDER_UNAVAILABLE'});
+  }
+  port.resend=async()=>({data:{},error:null});
+  assert.equal(await service.resendSignupConfirmation('dev@example.com'),undefined);
 });
