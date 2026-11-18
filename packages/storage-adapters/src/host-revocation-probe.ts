@@ -104,7 +104,7 @@ async function fetchPath(url:URL,method:'GET'|'HEAD',http:typeof fetch):Promise<
   let expired=false;
   try{
     const pending=Promise.resolve().then(()=>http(url,{method,credentials:'omit',cache:'no-store',
-      redirect:'error',signal:controller.signal})).then(response=>{
+      redirect:'error',headers:{Purpose:'prefetch','Sec-GPC':'1'},signal:controller.signal})).then(response=>{
         if(expired||response.redirected||(response.url!==''&&response.url!==url.href)){
           cancelProbeBody(response.body);throw new HostRevocationProbeError('HOST_UNAVAILABLE');
         }
@@ -521,27 +521,32 @@ export async function attestAccountExitHostDenial(input:{
     body:Record<string,string|number>)=>Promise<unknown>;
   http?:typeof fetch;
 }):Promise<{status:'APPLICATION_HOST_DENIAL_RECORDED';observedHttpRequests:number}>{
-  if(!REQUEST_UUID.test(input.requestId))
-    throw new HostRevocationProbeError('INVALID_INPUT');
+  if(!input||typeof input.requestId!=='string'||!REQUEST_UUID.test(input.requestId)||
+     typeof input.rpc!=='function')throw new HostRevocationProbeError('INVALID_INPUT');
+  // Capture the target and callbacks once: a concurrently changed input may
+  // never redirect a successful denial receipt to a different request.
+  const requestId=input.requestId,rpc=input.rpc,http=input.http??fetch;
   const origin=trustedOrigin(input.origin,input.allowLocal===true);
-  const raw=await input.rpc('service_account_exit_withdrawal_plan',{p_request_id:input.requestId});
+  const raw=await rpc('service_account_exit_withdrawal_plan',{p_request_id:requestId});
   if(raw===null||typeof raw!=='object'||Array.isArray(raw))
     throw new HostRevocationProbeError('INVALID_INPUT');
   const {paths,planSha256}=raw as Record<string,unknown>;
   if(typeof planSha256!=='string'||!SHA256.test(planSha256)||
-     !Array.isArray(paths)||paths.length>256||paths.some(path=>!accountExitPath(path))||
-     new Set(paths).size!==paths.length)
+     !Array.isArray(paths)||paths.length>256||
+     // Array#some/map/forEach skip holes: an authority plan must be dense.
+     ![...paths].every(accountExitPath)||new Set(paths).size!==paths.length)
     throw new HostRevocationProbeError('INVALID_INPUT');
-  const http=input.http??fetch;
-  for(let offset=0;offset<paths.length;offset+=6){
-    await Promise.all(paths.slice(offset,offset+6).map(async(path:string)=>{
+  // Retain an immutable, bounded snapshot across all awaited network reads.
+  const checked=Object.freeze([...paths] as string[]);
+  for(let offset=0;offset<checked.length;offset+=6){
+    await Promise.all(checked.slice(offset,offset+6).map(async path=>{
       for(const method of ['GET','HEAD'] as const)
         await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
     }));
   }
-  const count=paths.length*2;
-  const recorded=await input.rpc('service_record_account_exit_host_denial',{
-    p_request_id:input.requestId,p_plan_sha256:planSha256,p_checks:count
+  const count=checked.length*2;
+  const recorded=await rpc('service_record_account_exit_host_denial',{
+    p_request_id:requestId,p_plan_sha256:planSha256,p_checks:count
   });
   if(recorded!==true) throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   return {status:'APPLICATION_HOST_DENIAL_RECORDED',observedHttpRequests:count};
