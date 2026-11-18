@@ -231,3 +231,32 @@ test('owner change during atomic restore discards late acknowledgement',async()=
   await assert.rejects(client.restoreGeneration('project',id,journal),{code:'AUTH_EXPIRED'});
   assert.equal(calls,1);
 });
+
+test('generation service rejects extra acknowledgement keys and reversed chronology',async()=>{
+  const ack={item_type:'project',item_id:id,status:'restored',public_visibility:'private',trash_id:journal};
+  for(const response of [{...ack,unexpected:true},{...ack,public_visibility:'public'}]){
+    await assert.rejects(makeClient(async()=>Response.json(response)).restoreGeneration('project',id,journal),{code:'INVALID_STATE'});
+  }
+  const row={id:journal,item_type:'project',item_id:id,trashed_at:'2026-11-13T10:00:00Z',restore_until:'2026-11-12T10:00:00Z'};
+  await assert.rejects(makeClient(async()=>Response.json([row])).list(),{code:'INVALID_STATE'});
+});
+test('generation list uses 101-row sentinel and no-store, rejecting over-cap results',async()=>{
+  const row={id:journal,item_type:'project',item_id:id,trashed_at:'2026-11-13T10:00:00Z',restore_until:'2026-11-28T10:00:00Z'};
+  const client=makeClient(async(url,init)=>{
+    assert.equal(new URL(String(url)).searchParams.get('limit'),'101');
+    assert.equal(init?.cache,'no-store');
+    assert.equal(init?.redirect,'error');
+    return Response.json(Array.from({length:101},()=>row));
+  });
+  await assert.rejects(client.list(),{code:'INVALID_STATE'});
+});
+test('generation receipt is discarded if post-response owner token disappears',async()=>{
+  let reads=0,calls=0;
+  const client=new SupabasePrivateTrashService(base,'publishable-key',async()=>++reads===1?'owner-jwt':null,async()=>{
+    calls++;
+    return Response.json({item_type:'project',item_id:id,status:'restored',public_visibility:'private',trash_id:journal});
+  },()=>true);
+  await assert.rejects(client.restoreGeneration('project',id,journal),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,1);
+  assert.equal(reads,2);
+});
