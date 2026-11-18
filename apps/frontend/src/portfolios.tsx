@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { IndexedDbEditorDraftStore, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
+import { IndexedDbEditorDraftStore, recoverEditorHistory, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
 import { JournaledEditorFolderStore, FolderCommitError, type FolderDirectory } from '../../../packages/storage-adapters/src/journaled-editor-folder.ts';
 import { exportPortableSnapshot, importPortableSnapshot } from '../../../packages/storage-adapters/src/portable-editor-snapshot.ts';
 import { unappliedSourceBufferCount } from './behavior.ts';
@@ -917,8 +917,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!view.record||!view.head)throw new Error('Working draft unavailable.');
     return {formatVersion:1,cloudBaseRevision:view.record.revision,localRevision:view.head.revision,
       cloudOperationId:view.operation||null,snapshot:view.head.snapshot,fieldDrafts:view.fieldDrafts,
+      ...((view.head.undo.length||view.head.redo.length)?{history:{undo:view.head.undo,redo:view.head.redo}}:{}),
       sourceDrafts:view.sourceDrafts,seoDraft:view.seoDraft};
   }
+  const hasHistory=!!head&&(head.undo.length>0||head.redo.length>0);
+  const canPreserveWorking=!!operation||pendingFields||sourceDirty||hasHistory;
   // A checkpoint is optional and bound to this verified mounted editor only.
   // It never authenticates a new session, replaces another tab, or writes cloud.
   useLayoutEffect(()=>{
@@ -926,7 +929,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     return ()=>{checkpointEnabled.current=false;};
   },[autoRecovery]);
   useEffect(()=>{
-    if(!autoRecovery||!verifiedOwner||!head||!record||!(operation||pendingFields||sourceDirty)||saving||recoveryBusy)return;
+    if(!autoRecovery||!verifiedOwner||!head||!record||!canPreserveWorking||saving||recoveryBusy)return;
     const view=latestRecovery.current;
     if(!view||!scopeCurrent(view))return;
     const payload=recoveryPayload(view);
@@ -968,7 +971,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   },[autoRecovery,verifiedOwner?.id,verifiedOwner?.epoch,port,id,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,recoveryBusy,checkpointRetry]);
   function retryCheckpoint(){
     const view=captureRecovery();
-    if(!view||!view.dirty||!checkpointEnabled.current||checkpointFlight.current||recoveryLock.current)return;
+    if(!view||(!view.dirty&&!view.head?.undo.length&&!view.head?.redo.length)||!checkpointEnabled.current||checkpointFlight.current||recoveryLock.current)return;
     const writer=checkpointWriter.current;
     // Only an explicit owner retry may abandon a rejected sequence. Ordinary I/O
     // failures retain the ID and sequence for an idempotent acknowledgement retry.
@@ -987,7 +990,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
   async function preserveRecovery(keepBoth:boolean){
     const view=captureRecovery();
-    if(!view||!view.dirty||recoveryLock.current||!view.record||!view.head)return;
+    if(!view||!view.record||!view.head||recoveryLock.current||(!view.dirty&&(keepBoth||(!view.head.undo.length&&!view.head.redo.length))))return;
     recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
     let acknowledged=false;
     try{
@@ -1082,18 +1085,22 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           'A separate Save is required and will be rejected if the cloud advances again.');
         if(!accepted||!draftCurrent(view)){setRecoveryNotice('Recovery restore cancelled. Both versions remain unchanged.');return;}
       }
-      const next=restoreHistoricalSnapshot(createEditorHead(saved),recovered.snapshot,crypto.randomUUID());
+      // Reopen same-base history losslessly; stale restore is a deliberate new
+      // transaction against current cloud, never resurrect an old replay ID.
+      const recoveredHistory=stale?null:recoverEditorHistory(recovered);
+      const next=recoveredHistory??restoreHistoricalSnapshot(createEditorHead(saved),recovered.snapshot,crypto.randomUUID());
       const issues:Record<string,string>={};
       for(const [key,value] of Object.entries(recovered.fieldDrafts)){
         if(key.endsWith(':url')){const warning=ownerLinkError(value);if(warning)issues[key]=warning;}
       }
       installCloudDraft(fresh.data);
-      setHead(next);setOperation(crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
+      setHead(next);setOperation(sameDraftSnapshot(saved,next.snapshot)?'':crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
       setFieldIssues(issues);setSeoDraft(recovered.seoDraft);setSourceDrafts(recovered.sourceDrafts);
       if(Object.keys(recovered.sourceDrafts).length)setOpenedSource(true);
       setRecoveryNotice(action==='restore'?
         'Older recovery copy restored into an unsaved working draft. Both saved versions remain intact; review buffers before an explicit CAS Save.':
-        'Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.');
+        recoveredHistory?'Recovery copy reopened with its exact local Undo/Redo history. Original copy and cloud revision unchanged.':
+        'Recovery copy opened as a working draft. Original copy and cloud revision unchanged.');
     }catch{
       if(scopeCurrent(view))setRecoveryNotice('Recovery operation not completed. No working or cloud draft was replaced.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
@@ -1271,9 +1278,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     // This exports only bytes currently visible to an already verified,
     // mounted owner. It never loads local copies or bypasses the gate.
     const view=captureRecovery();
-    if(!view||!view.dirty||recoveryLock.current)return;
+    if(!view||(!view.dirty&&!view.head?.undo.length&&!view.head?.redo.length)||recoveryLock.current)return;
     try{
-      const url=URL.createObjectURL(new Blob([JSON.stringify(recoveryPayload(view),null,2)],{type:'application/json'}));
+      const url=URL.createObjectURL(new Blob([JSON.stringify(recoveryPayload(view))],{type:'application/json'}));
       const link=document.createElement('a');
       link.href=url;link.download='kadmeion-working-recovery-'+view.id+'.json';
       try{if(!scopeCurrent(view))return;document.body.append(link);link.click();}
@@ -1401,22 +1408,22 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       <label><input type="checkbox" checked={autoRecovery} onChange={event=>{
         checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
         if(!event.target.checked)setCheckpointState('idle');
-      }}/> Automatically checkpoint unsaved edits on this browser during this editor session</label>
-      {autoRecovery&&<p role="status">{!(operation||pendingFields||sourceDirty)?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
+      }}/> Automatically checkpoint unsaved edits and Undo/Redo history on this browser during this editor session</label>
+      {autoRecovery&&<p role="status">{!canPreserveWorking?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
         checkpointState==='saved'?'Latest captured working edits acknowledged by browser storage only.':
         checkpointState==='failed'?'Browser checkpoint failed or storage is full; your current edits remain.':
         'Automatic browser checkpoints enabled; waiting for unsaved edits.'}
-        {checkpointState==='failed'&&!!(operation||pendingFields||sourceDirty)&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
+        {checkpointState==='failed'&&canPreserveWorking&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
       </p>}
-      <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit, never prune another copy, and are retained until explicitly removed.</p>
+      <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit and 8 MiB per-copy bound, never prune another copy, and are retained until explicitly removed. Opening a same-base copy restores its acknowledged Undo/Redo history. Restoring an older copy creates one new undoable draft against the current cloud revision; the original history remains in that copy.</p>
       <div className="ws-actions">
-        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!canPreserveWorking}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
           onClick={()=>void preserveRecovery(false)}>Save browser recovery copy</button>
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
           onClick={()=>void preserveRecovery(true)}>Keep Both and load latest cloud draft</button>
-        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!canPreserveWorking}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
           onClick={exportWorkingRecovery}>Export current working recovery</button>
       </div>
