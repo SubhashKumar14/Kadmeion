@@ -2078,6 +2078,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** Private owner service factory only; no collector activation or schema assumption. */
+  async ownerAnalytics(){
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const token=this.ownerEpochToken(userId,epoch);
+      const {SupabasePrivateAnalyticsService}=await import('../../../packages/contracts/src/private-analytics-service.ts');
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private analytics.');
+      const service=new SupabasePrivateAnalyticsService(this.origin,this.publishableKey,userId,token,isCurrentOwner,this.fetcher);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private analytics.');
+      return {service,ownerId:userId,adapterEpoch:epoch,isCurrentOwner};
+    });
+  }
+
   async ownerSettings() {
     return this.outcome(async () => {
       const {userId,epoch} = await this.ownerSession();
