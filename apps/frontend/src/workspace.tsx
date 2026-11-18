@@ -102,7 +102,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     const rail = railRef.current;
     const trigger = rail?.querySelector<HTMLButtonElement>('.ws-mobile-menu');
     const nav = rail?.querySelector<HTMLElement>('#ws-nav');
-    if (!trigger || !nav) return;
+    if (!rail || !trigger || !nav) return;
     // Keep this media query aligned with the compact rail in workspace.css.
     const media = window.matchMedia('(max-width:720px)');
     const editorMedia = window.matchMedia('(min-width:901px)');
