@@ -5,7 +5,7 @@ import type { AuthOutcome } from '../../../packages/contracts/src/auth-service.t
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
 import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
-import type { CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
+import { normalizePrivateCaseStudy, type CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
 import { Icon } from './landing.tsx';
 import { MoveToTrash } from './settings.tsx';
 
@@ -472,8 +472,6 @@ type DetailState =
 // Only confirmed contiguous overview-only receipts can advance the sibling
 // case-study baseline without replacing the user's independent section buffer.
 type RevisionRange = Readonly<{from: number; to: number}>;
-const projectConflict=(message:string)=>message.includes('changed while you were editing') ||
-  message === 'Private workspace conflict. Reload the latest data before trying again.';
 
 type DestinationChange = {label:string;before:string|null;after:string|null};
 type DestinationReview = {changes:DestinationChange[];key:string|null;error:string};
@@ -1241,6 +1239,12 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const [loading, setLoading] = useState(true);
   const [needsReload, setNeedsReload] = useState(false);
   const pending = useRef(true);
+  const ownerEpoch=useRef(port.getOwnerSessionEpoch());
+  const generation=useRef(0);
+  const expired=useRef(false);
+  const [uncertain,setUncertain]=useState<{base:number;sections:CaseStudySection[]}|null>(null);
+  const currentOwner=()=>!expired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
+  const current=(id:number)=>generation.current===id&&currentOwner();
   const minimumRevision=useRef(knownRevision);
   useEffect(()=>{minimumRevision.current=knownRevision;},[knownRevision]);
   const locked = busy || loading;
@@ -1252,22 +1256,36 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const stale=needsReload || (baseRevision!==undefined && knownRevision>baseRevision);
   const dirty=!!(draft && savedSections && JSON.stringify(draft.sections)!==JSON.stringify(savedSections));
   useEffect(()=>{onDirty(dirty);},[dirty,onDirty]);
+  useEffect(()=>{
+    ownerEpoch.current=port.getOwnerSessionEpoch();expired.current=false;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next===ownerEpoch.current||expired.current)return;
+      expired.current=true;++generation.current;pending.current=true;
+      setDraft(null);setSavedSections(null);setUncertain(null);setNotice('');
+      setBusy(false);setLoading(false);setNeedsReload(true);
+      setError('Your owner session changed. Reopen this project.');
+    });
+    return()=>{++generation.current;unsubscribe();};
+  },[port,projectId]);
 
   useEffect(() => {
     let active = true;
+    const id=++generation.current;
+    const valid=()=>active&&current(id);
+    if(!valid())return;
     pending.current = true;
     onPending(true);
     setLoading(true);
     const failRead = (message: string) => {
-      if (!active) return;
+      if (!valid()) return;
       setError(message);
       setNeedsReload(true);
     };
     void port.readOwnerCaseStudy(projectId).then(result => {
-      if (!active) return;
+      if (!valid()) return;
       if (result.data && !result.error && result.data.revision>=minimumRevision.current) {
         setDraft(result.data);
-        setSavedSections(result.data.sections);
+        setSavedSections(result.data.sections);setUncertain(null);
         onObserved(result.data.revision);
         setError('');
         setNeedsReload(false);
@@ -1275,7 +1293,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     }).catch(() => {
       failRead('Could not reach your private case study. Your unsaved edits remain available.');
     }).finally(() => {
-      if (active) {
+      if (valid()) {
         pending.current = false;
         setLoading(false);
         onPending(false);
@@ -1285,7 +1303,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   }, [port, projectId, version, onObserved, onPending]);
 
   function reloadSections() {
-    if (pending.current) return;
+    if (!currentOwner()||pending.current) return;
     pending.current = true;
     onPending(true);
     setLoading(true);
@@ -1296,14 +1314,14 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   }
 
   function update(index: number, changes: Partial<CaseStudySection>) {
-    if (pending.current) return;
+    if (!currentOwner()||pending.current) return;
     setDraft(current => current && {...current, sections: current.sections.map((section, position) =>
       index === position ? {...section, ...changes} : section)});
     setNotice('');
   }
 
   function move(index: number, offset: number) {
-    if (pending.current) return;
+    if (!currentOwner()||pending.current) return;
     setDraft(current => {
       if (!current) return current;
       const sections = [...current.sections];
@@ -1318,31 +1336,58 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft || baseRevision===undefined || pending.current || stale) return;
+    if (!currentOwner()||!draft || baseRevision===undefined || pending.current || stale) return;
+    let submitted:CaseStudySection[];
+    try{submitted=normalizePrivateCaseStudy({sections:draft.sections}).sections;}
+    catch(cause){setError(cause instanceof Error?cause.message:'Enter valid case study sections.');return;}
+    const id=generation.current;
     pending.current = true;
     onPending(true);
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const result = await port.saveOwnerCaseStudy(projectId, baseRevision, {sections: draft.sections});
+      const result = await port.saveOwnerCaseStudy(projectId, baseRevision, {sections: submitted});
+      if(!current(id))return;
       if (!result.data || result.error || result.data.revision!==baseRevision+1) {
         const message = result.error?.message ?? 'Case study save could not be confirmed.';
         setError(message);
-        if (projectConflict(message)) setNeedsReload(true);
+        setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
         return;
       }
       setDraft(result.data);
-      setSavedSections(result.data.sections);
+      setSavedSections(result.data.sections);setUncertain(null);
       onSaved(baseRevision,result.data.revision);
       setNotice('Private case study saved.');
     } catch {
-      setError('The case study save could not be verified. Your unsaved sections are retained.');
+      if(current(id)){setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
+        setError('The case study save could not be verified. Your unsaved sections are retained.');}
     } finally {
-      pending.current = false;
-      setBusy(false);
-      onPending(false);
+      if(current(id)){pending.current=false;setBusy(false);onPending(false);}
     }
+  }
+
+  async function verifyUncertain(){
+    if(!currentOwner()||pending.current||!uncertain||!draft)return;
+    const id=generation.current;
+    pending.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    try{
+      const result=await port.readOwnerCaseStudy(projectId);
+      if(!current(id))return;
+      if(result.error||!result.data||result.data.revision<minimumRevision.current){
+        setError('Latest saved sections could not be verified. Your edits are retained.');return;
+      }
+      onObserved(result.data.revision);
+      const same=(left:CaseStudySection[],right:CaseStudySection[])=>
+        JSON.stringify(normalizePrivateCaseStudy({sections:left}))===JSON.stringify(normalizePrivateCaseStudy({sections:right}));
+      if(result.data.revision===uncertain.base+1&&same(result.data.sections,uncertain.sections)&&same(draft.sections,uncertain.sections)){
+        setDraft(result.data);setSavedSections(result.data.sections);setUncertain(null);setNeedsReload(false);
+        setNotice('Requested sections match the current saved revision. No additional write was made.');
+      }else if(result.data.revision===uncertain.base&&savedSections&&same(result.data.sections,savedSections)){
+        setUncertain(null);setNeedsReload(false);setNotice('Saved sections are unchanged. Your edits are retained; save explicitly.');
+      }else setError('The saved case study differs from your attempted save. Your edits are retained; discard and reload only if you choose.');
+    }catch{if(current(id))setError('Saved sections could not be verified. Your edits are retained.');}
+    finally{if(current(id)){pending.current=false;setBusy(false);onPending(false);}}
   }
 
   return <form className="ws-project-fields ws-case-form" onSubmit={event => void save(event)}>
@@ -1353,6 +1398,8 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     {loading && <p role="status">{draft
       ? 'Loading latest saved sections… Your edits are retained until the read succeeds.'
       : 'Loading case study…'}</p>}
+    {uncertain&&!loading&&<button type="button" className="ws-secondary" disabled={locked}
+      onClick={()=>void verifyUncertain()}>Check latest saved sections</button>}
     {(error || stale || dirty) && !loading && <button type="button" className="ws-secondary"
       disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
     {draft && stale && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
@@ -1374,14 +1421,14 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
           <button type="button" className="ws-secondary" disabled={index === 0} onClick={() => move(index, -1)}>Move up</button>
           <button type="button" className="ws-secondary" disabled={index === draft.sections.length - 1} onClick={() => move(index, 1)}>Move down</button>
           <button type="button" className="ws-secondary" onClick={() => {
-            if (pending.current) return;
+            if (!currentOwner()||pending.current) return;
             setDraft({...draft, sections: draft.sections.filter(item => item.id !== section.id)}); setNotice('');
           }}>Remove from draft</button>
         </div>
       </fieldset>)}
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={locked || draft.sections.length >= 24} onClick={() => {
-          if (pending.current) return;
+          if (!currentOwner()||pending.current) return;
           setDraft({...draft, sections: [...draft.sections, {id: crypto.randomUUID(), kind: 'custom', title: '', body: '', visible: false}]});
           setNotice('');
         }}>Add section</button>
