@@ -110,16 +110,19 @@ function discard(body:ReadableStream<Uint8Array>|null):void {
  * The first parse validates grammar, then a bounded lexical walk detects
  * duplicate decoded object keys without recursively traversing untrusted data.
  */
-function parseReceipt(text:string):unknown {
+function parseReceipt(text:string,strictNumbers:boolean):unknown {
   const value:unknown=JSON.parse(text);
-  const tokens=/"(?:[^"\\]|\\[\s\S])*"|[{}\[\]:]/g;
+  const tokens=/"(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]:]/g;
   const stack:Array<Set<string>|null>=[];
   for(let match=tokens.exec(text);match;match=tokens.exec(text)){
     const token=match[0];
     if(token==='{')stack.push(new Set<string>());
     else if(token==='[')stack.push(null);
     else if(token==='}'||token===']')stack.pop();
-    else if(token[0]==='"'){
+    else if(strictNumbers&&/^[0-9-]/.test(token)){
+      // All success DTO numbers are nonnegative safe SQL integers, not rounded decimals.
+      if(!/^(?:0|[1-9]\d*)$/.test(token)||!Number.isSafeInteger(Number(token)))return fail('INVALID_RESPONSE');
+    }else if(token[0]==='"'){
       let next=tokens.lastIndex;
       while(next<text.length&&/[\x20\t\r\n]/.test(text[next]))next++;
       if(text[next]!==':')continue;
@@ -151,7 +154,7 @@ async function boundedJson(response:Response,limit:number,signal:AbortSignal):Pr
     }
     const encoding=response.headers.get('content-encoding');
     if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&size!==Number(length))return fail('INVALID_RESPONSE');
-    try{return parseReceipt(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)))}
+    try{return parseReceipt(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)),response.ok)}
     catch{return fail('INVALID_RESPONSE')}
   }finally{
     signal.removeEventListener('abort',cancel);

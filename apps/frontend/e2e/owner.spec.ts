@@ -461,8 +461,8 @@ test('real owner onboarding and project revision are private across browser sess
     buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64')
   });
   await page.getByRole('button',{name:'Upload private image'}).click();
-  await expect(page.locator('.ws-asset-manager').getByRole('status'))
-    .toContainText('Image uploaded and privately registered.');
+  await expect(page.locator('.ws-asset-manager').getByRole('status').filter({hasText:'Image uploaded and privately registered.'}))
+    .toBeVisible();
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
   // The portfolio has local revision operations at this point. Saving before

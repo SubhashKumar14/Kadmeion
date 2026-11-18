@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SupabasePrivateAnalyticsService} from '../../packages/contracts/src/private-analytics-service.ts';
+import {SupabasePrivateAnalyticsService,PrivateAnalyticsError} from '../../packages/contracts/src/private-analytics-service.ts';
 
 const owner='10000000-0000-4000-8000-000000000001';
 const portfolio='10000000-0000-4000-8000-000000000002';
@@ -174,4 +174,46 @@ test('C13 explicit transport only, 55000 allowlist, rate limits and network sani
   const network=fixture(()=>{throw Error('secret');});
   await assert.rejects(network.service.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT',message:'Private analytics: TRANSPORT'});
   assert.equal(network.calls(),1);
+});
+
+test('C13 rejects duplicate decoded receipt keys, including nested and escaped aliases',async()=>{
+  const base=JSON.stringify(state);
+  for(const raw of [base.replace('"version":0','"version":777,"version":0'),
+    base.replace('"version":0','"ver\\u0073ion":777,"version":0')]){
+    const f=fixture(()=>new Response(raw,{headers:{'content-type':'application/json'}}));
+    await assert.rejects(f.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+    assert.equal(f.calls(),1);
+  }
+  const counted={...comparison,portfolios:[{...comparison.portfolios[0]!,quality:'PARTIAL',
+    days:[{...days[0],views:1,quality:'PARTIAL',buckets:{DIRECT_OR_UNKNOWN:1,SEARCH:0,SOCIAL:0,OTHER_EXTERNAL:0,INTERNAL:0}},...days.slice(1)]}]};
+  const nested=JSON.stringify(counted).replace('"SEARCH":0','"SEARCH":200,"SEARCH":0');
+  await assert.rejects(fixture(()=>new Response(nested,{headers:{'content-type':'application/json'}})).service.getOwnerAnalytics(query),
+    {code:'INVALID_RESPONSE'});
+});
+test('C13 untrusted transport exceptions cannot manufacture typed analytics outcomes',async()=>{
+  const external=fixture(()=>{throw new PrivateAnalyticsError('CONFLICT');});
+  await assert.rejects(external.service.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT'});
+  const reader=fixture(()=>new Response(new ReadableStream({start(controller){controller.error(new PrivateAnalyticsError('INELIGIBLE'));}}),
+    {headers:{'content-type':'application/json'}}));
+  await assert.rejects(reader.service.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT'});
+  const token=new SupabasePrivateAnalyticsService('https://local.example','synthetic-publishable-key',owner,
+    async()=>{throw new PrivateAnalyticsError('CONFLICT');},()=>true,async()=>{throw Error('must not fetch');});
+  await assert.rejects(token.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT'});
+});
+test('C13 deadline covers a stalled token and a stalled response stream without waiting on cancel',{timeout:16000},async()=>{
+  let fetches=0;
+  const stuckToken=new SupabasePrivateAnalyticsService('https://local.example','synthetic-publishable-key',owner,
+    ()=>new Promise<string|null>(()=>{}),()=>true,async()=>{fetches++;return response(state);});
+  const tokenStart=Date.now();
+  await assert.rejects(stuckToken.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT'});
+  assert.ok(Date.now()-tokenStart<7500);assert.equal(fetches,0);
+  let canceled=0;
+  const stuck=fixture(()=>new Response(new ReadableStream({
+    pull(){return new Promise<void>(()=>{});},
+    cancel(){canceled++;return new Promise<void>(()=>{});}
+  }),{headers:{'content-type':'application/json'}}));
+  const readStart=Date.now();
+  await assert.rejects(stuck.service.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT'});
+  assert.ok(Date.now()-readStart<7500);assert.equal(stuck.calls(),1);
+  assert.equal(canceled,1);
 });
