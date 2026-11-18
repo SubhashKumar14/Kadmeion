@@ -369,6 +369,8 @@ test('B16 WF-045 stale preference intent compares real saved row before writing'
     await reviewer.uncheck();
     await expect(panel.getByRole('alert')).toContainText('Saved notification preferences changed.');
     const atomic=casBodies.length>0;
+    // R5 paired-C08 verification: a legacy comparison-only pass is not CAS proof.
+    expect(atomic,'paired C08 must dispatch the atomic RPC').toBe(true);
     if(atomic){
       expect(paths).toHaveLength(1);
       await expect.poll(()=>conflicts.length).toBe(1);
