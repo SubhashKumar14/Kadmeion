@@ -217,14 +217,14 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
     <p role="status" className={note ? "ws-onboarding-note ws-inline-alert" : "ws-onboarding-note"}>{note}</p>
     <div className="ws-actions">
       <button type="button" className="ws-primary" disabled={saving} onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
-      <button type="button" className="ws-secondary" disabled={saving} onClick={() => {
+      <button type="button" className="ws-secondary" aria-disabled={saving} onClick={() => {
         if (skipFlight.current) return;
         skipFlight.current = true;
         const selectedStep = choice;
         setSaving(true); setNote('Saving selected step…');
         void onSkip(selectedStep).then(saved => {
-          setNote(saved ? 'This step is confirmed as skipped in your private account. You can return later.' :
-            'The selected step could not be confirmed as skipped. Reopen Welcome to check the account before retrying.');
+          setNote(saved ? 'The current private account record is saved as skipped. You can return later.' :
+            'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying; the write outcome may be uncertain.');
         }).catch(() => {
           setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
         }).finally(() => {
