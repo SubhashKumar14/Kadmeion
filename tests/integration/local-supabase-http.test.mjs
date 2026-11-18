@@ -2298,3 +2298,94 @@ test('C08 physical terminal ledger, privacy reduction, tombstone and expired-ses
       assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1',[actor.id])).rows[0].n,0);
     }finally{await pg.end();}
   });
+
+test('C12 real local provider consent, SQL claim/finish, revoked late receipt and physical owner deletion',
+  {timeout:120_000},async()=>{
+  // Live GoTrue/JWT, local-only Supabase SQL; provider bytes are injected,
+  // never fetched from GitHub or another external endpoint.
+  const owner=await adminUser('c12-facts-owner');
+  const other=await adminUser('c12-facts-foreign');
+  const createLink=async(who,handle)=>successful(await send(
+    '/rest/v1/private_platform_links?select=id',{
+      ...json(who),method:'POST',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{provider:'GITHUB',handle}
+    }),'Create private GitHub link')[0].id;
+  const link=await createLink(owner,'fixtureuser');
+  const foreign=await createLink(other,'foreignuser');
+  const rpc=(who,name,body)=>send('/rest/v1/rpc/'+name,{...json(who),method:'POST',body});
+  const trusted=(name,body)=>send('/rest/v1/rpc/'+name,{
+    method:'POST',key:cfg.service,bearer:cfg.service,
+    headers:{'Content-Type':'application/json'},body
+  });
+  const change=(action,version)=>rpc(owner,'change_owner_github_provider_consent',{
+    p_link_id:link,p_action:action,p_expected_version:version,
+    p_operation_id:randomUUID(),p_policy_version:1
+  });
+  const claims=JSON.parse(Buffer.from(owner.token.split('.')[1],'base64url').toString('utf8'));
+  assert.equal(claims.sub,owner.id);assert.match(claims.session_id,/^[0-9a-f-]{36}$/i);
+  assert.equal(successful(await rpc(owner,'read_owner_github_provider_state',{p_link_id:link}),
+    'Read private provider initial state').status,'OFF');
+  assert.ok(!(await rpc(other,'read_owner_github_provider_state',{p_link_id:link})).ok,
+    'Another owner must not access a provider link');
+  const enabled=successful(await change('ENABLE',0),'Enable owner provider consent');
+  assert.equal(enabled.status,'APPLIED');assert.equal(enabled.state.status,'READY');
+  assert.equal(enabled.state.version,1);
+  const attemptOp=randomUUID();
+  const claim=successful(await trusted('service_claim_github_provider_sync',{
+    p_owner_id:owner.id,p_session_id:claims.session_id,p_link_id:link,
+    p_action:'LOOKUP',p_expected_version:enabled.state.version,
+    p_operation_id:attemptOp,p_policy_version:1
+  }),'Claim bounded local provider attempt');
+  assert.equal(claim.status,'CLAIMED');
+  assert.equal(claim.handle,'fixtureuser');
+  assert.match(claim.attemptId,/^[0-9a-f-]{36}$/i);
+  const completion={
+    p_owner_id:owner.id,p_session_id:claims.session_id,p_link_id:link,
+    p_claim_version:claim.state.version,p_attempt_id:claim.attemptId,
+    p_outcome:'SUCCESS',p_login:'fixtureuser',p_provider_id:12345,
+    p_html_url:'https://github.com/fixtureuser',p_public_repos:7,p_public_gists:2
+  };
+  const finished=successful(await trusted('service_finish_github_provider_sync',completion),
+    'Finish injected provider fact receipt');
+  assert.equal(finished.status,'APPLIED');
+  assert.equal(finished.state.status,'AWAITING_CONFIRMATION');
+  assert.equal(finished.state.candidate.id,12345);
+  assert.equal(finished.state.facts,null);
+  const revoked=successful(await change('DISABLE',finished.state.version),
+    'Disable owner consent and erase candidate');
+  assert.equal(revoked.state.status,'OFF');assert.equal(revoked.state.consent,false);
+  assert.equal(revoked.state.candidate,null);assert.equal(revoked.state.facts,null);
+  const delayed=successful(await trusted('service_finish_github_provider_sync',completion),
+    'Replay stale completion after consent withdrawal');
+  assert.equal(delayed.status,'IGNORED','Late provider bytes must not resurrect facts');
+  const read=successful(await rpc(owner,'read_owner_github_provider_state',{p_link_id:link}),
+    'Read persisted consent-off state');
+  assert.equal(read.status,'OFF');assert.equal(read.facts,null);assert.equal(read.candidate,null);
+  const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+  const match=raw.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(match,'Local database address missing');
+  const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+  assert.equal(db.pathname,'/postgres');
+  const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false,
+    connectionTimeoutMillis:3000,query_timeout:10000});
+  try{
+    await pg.connect();
+    await pg.query('DELETE FROM public.private_platform_links WHERE id=$1',[link]);
+    const afterLink=(await pg.query(
+      'SELECT count(*)::int n FROM kadmeion_private.github_provider_state WHERE link_id=$1',[link])).rows[0].n;
+    assert.equal(afterLink,0,'Deleting a link physically cascades its provider facts');
+    assert.equal((await pg.query('DELETE FROM auth.users WHERE id=$1 RETURNING id',[owner.id])).rowCount,1);
+    const counts=(await pg.query('SELECT '+
+      '(SELECT count(*)::int FROM public.private_platform_links WHERE owner_user_id=$1) owner_links,'+
+      '(SELECT count(*)::int FROM kadmeion_private.github_owner_quota WHERE owner_id=$1) owner_quotas,'+
+      '(SELECT count(*)::int FROM public.private_platform_links WHERE id=$2) foreign_links,'+
+      '(SELECT count(*)::int FROM auth.users WHERE id=$3) foreign_users',
+      [owner.id,foreign,other.id])).rows[0];
+    assert.deepEqual(counts,{owner_links:0,owner_quotas:0,foreign_links:1,foreign_users:1});
+  }finally{await pg.end().catch(()=>{});}
+});
