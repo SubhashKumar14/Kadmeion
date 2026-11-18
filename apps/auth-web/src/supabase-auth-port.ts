@@ -139,6 +139,14 @@ export type OwnerProjectThumbnailAsset = Readonly<{
 export type OwnerProjectThumbnail = Readonly<{
   projectId:string;revision:number;asset:OwnerProjectThumbnailAsset|null;publicDeliveryAllowed:false;
 }>;
+/** Provider-reported linked identities, not verification badges or password recovery grants. */
+export type OwnerLinkedIdentity = Readonly<{
+  identityId:string;provider:string;createdAt:string|null;lastSignInAt:string|null;
+}>;
+export type OwnerLinkedMethods = Readonly<{
+  ownerUserId:string;source:'GOTRUE_LIVE_USER';identities:readonly OwnerLinkedIdentity[];
+  passwordMethodConfirmed:false;publicVerificationAllowed:false;
+}>;
 export type OwnerProfileAvatarAsset = Readonly<{
   id:string;scope:'PROFILE';mime:OwnerPrivateImageMime;size:number;altText:string;createdAt:string;
 }>;
@@ -2243,6 +2251,80 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const {SupabasePrivateModerationService} = await import('../../../packages/contracts/src/private-moderation-service.ts');
       const token=this.ownerEpochToken(userId,epoch);
       return new SupabasePrivateModerationService(this.origin, this.publishableKey, token, this.fetcher);
+    });
+  }
+
+  /** Refresh-only, owner-bound view of GoTrue identities. Never publishes
+   * identity_data, email addresses or provider subject IDs. A missing
+   * identities property is not evidence of zero linked methods. */
+  async readOwnerLinkedMethods():Promise<AuthOutcome<OwnerLinkedMethods>>{
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      if(!current())throw new Error('Owner session changed before linked-method read.');
+      const url=this.origin+'/auth/v1/user';
+      let response:Response;
+      try{
+        response=await this.fetcher(url,{
+          method:'GET',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+            Accept:'application/json'},
+          credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10_000)
+        });
+      }catch{throw new Error('Linked authentication methods are temporarily unavailable.');}
+      try{
+        if(!current()||response.redirected||(response.url&&response.url!==url)||
+          !response.ok||!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type')??'')||
+          !response.body)throw new Error('Linked authentication methods could not be verified.');
+        const length=response.headers.get('content-length');
+        if(length!==null&&(!/^\d+$/.test(length)||Number(length)>32768))
+          throw new Error('Linked authentication response exceeded its verified bounds.');
+        const reader=response.body.getReader();
+        const chunks:Uint8Array[]=[];let size=0;let empty=0;let count=0;
+        try{
+          for(;;){
+            const part=await reader.read();
+            if(!current())throw new Error('Owner session changed during linked-method read.');
+            if(part.done)break;
+            if(++count>128||!(part.value instanceof Uint8Array)||
+              (size+=part.value.byteLength)>32768)throw new Error('Linked authentication response exceeded its verified bounds.');
+            if(part.value.byteLength===0){if(++empty>8)throw new Error('Invalid authentication response stream.');continue;}
+            empty=0;chunks.push(part.value);
+          }
+        }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+        if(length!==null&&size!==Number(length))throw new Error('Linked authentication response length mismatch.');
+        const body=new Uint8Array(size);let offset=0;
+        for(const chunk of chunks){body.set(chunk,offset);offset+=chunk.byteLength;}
+        let raw:unknown;
+        try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(body));}
+        catch{throw new Error('Invalid linked authentication response.');}
+        const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+        if(!row||row.id!==userId||!Array.isArray(row.identities)||row.identities.length>16)
+          throw new Error('Linked authentication methods could not be verified.');
+        const identities:OwnerLinkedIdentity[]=[];const seen=new Set<string>();
+        const date=(value:unknown):string|null=>{
+          if(value===null||value===undefined)return null;
+          if(typeof value!=='string'||value.length>40||!Number.isFinite(Date.parse(value)))
+            throw new Error('Invalid authentication identity timestamp.');
+          return value;
+        };
+        for(const value of row.identities){
+          const identity=value&&typeof value==='object'&&!Array.isArray(value)?value as Json:null;
+          const id=identity?.id;
+          const provider=identity?.provider;
+          if(!identity||(identity.user_id!==undefined&&identity.user_id!==userId)||
+            typeof id!=='string'||!PROJECT_ID_PATTERN.test(id)||id!==id.toLowerCase()||
+            seen.has(id)||typeof provider!=='string'||!/[a-z]/.test(provider)||
+            !/^[a-z][a-z0-9_-]{0,31}$/.test(provider))
+            throw new Error('Linked authentication identity was invalid.');
+          seen.add(id);
+          identities.push({identityId:id,provider,createdAt:date(identity.created_at),
+            lastSignInAt:date(identity.last_sign_in_at)});
+        }
+        if(!current())throw new Error('Owner session changed during linked-method read.');
+        return {ownerUserId:userId,source:'GOTRUE_LIVE_USER' as const,identities,
+          passwordMethodConfirmed:false as const,publicVerificationAllowed:false as const};
+      }finally{void response.body?.cancel().catch(()=>{});}
     });
   }
 
