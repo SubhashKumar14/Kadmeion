@@ -1,6 +1,7 @@
 import { isSafeSupabaseClientKey } from '../../contracts/src/project.ts';
 /**
- * B5 bounded, read-only owner data export. This is deliberately NOT a complete
+ * B5 bounded owner data export. V2 may request a trusted, write-once
+ * registered private asset hash before reading bytes; no public or deletion writes. This is deliberately NOT a complete
  * account export, atomic snapshot, erasure manifest, or public release.
  */
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -265,6 +266,30 @@ function parseV2Pins(raw:unknown,ownerId:string,snapshotId:string,requestId:stri
   }
   return pins;
 }
+// The aggregate RPC withholds the entire pin set when coverage is incomplete.
+// Only this exact owner/snapshot receipt permits a bounded attestation attempt.
+function missingV2PinCoverage(raw:unknown,ownerId:string,snapshotId:string,requestId:string|null,count:number):boolean {
+  return object(raw)&&exactFields(raw,['snapshotId','schemaVersion','requestId','ownerUserId','status',
+    'registeredAssets','attestedAssets','attestations','providerSigned','deletionAllowed'])&&
+    raw.schemaVersion===2&&raw.snapshotId===snapshotId&&raw.requestId===requestId&&raw.ownerUserId===ownerId&&
+    raw.status==='UNVERIFIED'&&raw.providerSigned===false&&raw.deletionAllowed===false&&count>0&&
+    raw.registeredAssets===count&&raw.attestedAssets===0&&Array.isArray(raw.attestations)&&raw.attestations.length===0;
+}
+type OwnerV2PinReadback={objectId:string;version:string;status:'UNPINNED'|'SERVER_HASH_PINNED';expectedSha256:string|null};
+function verifyOwnerV2Pin(raw:unknown,ownerId:string,asset:V2RegistryAsset):OwnerV2PinReadback {
+  requireCondition(object(raw)&&exactFields(raw,['scope','assetId','ownerUserId','projectId','objectId','version',
+    'mimeType','byteSize','status','expectedSha256','publicDeliveryAllowed'])&&
+    raw.ownerUserId===ownerId&&raw.scope===asset.scope&&raw.assetId===asset.assetId&&raw.projectId===asset.projectId&&
+    raw.mimeType===asset.mimeType&&raw.byteSize===asset.byteSize&&raw.publicDeliveryAllowed===false&&
+    isUuid(raw.objectId)&&typeof raw.version==='string'&&raw.version.length>=1&&raw.version.length<=128&&
+    (asset.scope!=='PROFILE'||(raw.objectId===asset.objectId&&raw.version===asset.version))&&
+    ((raw.status==='UNPINNED'&&raw.expectedSha256===null)||
+      (raw.status==='SERVER_HASH_PINNED'&&typeof raw.expectedSha256==='string'&&/^[0-9a-f]{64}$/.test(raw.expectedSha256))),
+    'INTEGRITY','Private media pin is not bound to the current owner registry and object.');
+  return {objectId:raw.objectId as string,version:raw.version as string,
+    status:raw.status as OwnerV2PinReadback['status'],expectedSha256:raw.expectedSha256 as string|null};
+}
+
 function base64(bytes:Uint8Array):string {
   let binary='';
   for(let i=0;i<bytes.length;i+=8192)
@@ -636,6 +661,46 @@ export class SupabasePrivateAccountDataExporter {
     await sameSession();
     return artifact;
   }
+  // Called only after a verified owner V2 inventory and exact aggregate
+  // UNVERIFIED receipt. The worker, not the browser, computes and records
+  // the digest. A missing worker or ambiguous receipt cannot grant export.
+  private async prepareV2PinCoverage(ownerId:string,registry:Map<string,V2RegistryAsset>):Promise<void>{
+    const read=async(asset:V2RegistryAsset)=>verifyOwnerV2Pin(
+      await this.json('/rest/v1/rpc/read_owner_private_asset_pin',65536,
+        {p_scope:asset.scope,p_asset_id:asset.assetId,p_project_id:asset.projectId}),ownerId,asset);
+    // Verify all registered targets before making any worker request.
+    const missing:{asset:V2RegistryAsset;before:OwnerV2PinReadback}[]=[];
+    for(const asset of registry.values()){
+      const pin=await read(asset);
+      if(pin.status==='UNPINNED')missing.push({asset,before:pin});
+    }
+    for(const {asset,before} of missing){
+      // A concurrent attestation or object change must be reconciled first.
+      const current=await read(asset);
+      requireCondition(current.objectId===before.objectId&&current.version===before.version,
+        'INTEGRITY','Private object identity changed before trusted attestation.');
+      if(current.status==='SERVER_HASH_PINNED')continue;
+      let receipt:unknown;
+      try{
+        // PROJECT retains the established legacy request. PROFILE requires
+        // the explicitly scoped companion Edge handler; no project fallback.
+        receipt=await this.json('/functions/v1/complete-private-asset',65536,
+          asset.scope==='PROFILE'?{assetId:asset.assetId,scope:'PROFILE'}:{assetId:asset.assetId});
+      }catch(error){
+        if(error instanceof PrivateAccountExportError&&error.code!=='PROVIDER_UNAVAILABLE')throw error;
+        throw new PrivateAccountExportError('UNVERIFIED','Trusted private media attestation is unavailable; no recovery file was produced.');
+      }
+      requireCondition(object(receipt)&&exactFields(receipt,asset.scope==='PROFILE'?
+        ['assetId','scope','status','publicPublishingAllowed','accountDeletionAllowed']:
+        ['assetId','status','publicPublishingAllowed','accountDeletionAllowed'])&&
+        receipt.assetId===asset.assetId&&(asset.scope!=='PROFILE'||receipt.scope==='PROFILE')&&
+        receipt.status==='WRITE_ONCE_ATTESTED'&&receipt.publicPublishingAllowed===false&&receipt.accountDeletionAllowed===false,
+        'INTEGRITY','Trusted private media attestation was not confirmed.');
+      const after=await read(asset);
+      requireCondition(after.status==='SERVER_HASH_PINNED'&&after.objectId===before.objectId&&after.version===before.version,
+        'UNVERIFIED','Trusted private media hash was not confirmed for the registered object.');
+    }
+  }
   private async exportForSessionV2(snapshotId:string,requestId:string|null):Promise<PrivateAccountExportArtifact>{
     const owner=await this.owner();
     const args={p_snapshot_id:snapshotId,p_expected_request_id:requestId};
@@ -672,9 +737,20 @@ export class SupabasePrivateAccountDataExporter {
       requireCondition(total<=MAX_TOTAL_ASSET_BYTES,'LIMIT_EXCEEDED','Private asset bytes exceed recovery limits.');
       minimum=enforceExportBudget(minimum,4*Math.ceil(asset.byteSize/3));
     }
-    const readPins=async()=>parseV2Pins(await this.json('/rest/v1/rpc/read_private_asset_content_attestations_v2',
-      65536,args),owner.id,snapshotId,requestId,registry);
-    const pins=await readPins();
+    const readRawPins=()=>this.json('/rest/v1/rpc/read_private_asset_content_attestations_v2',65536,args);
+    const readPins=async()=>parseV2Pins(await readRawPins(),owner.id,snapshotId,requestId,registry);
+    let initialPins=await readRawPins();
+    if(missingV2PinCoverage(initialPins,owner.id,snapshotId,requestId,registry.size)){
+      await this.prepareV2PinCoverage(owner.id,registry);
+      // Reconcile the same durable snapshot; do not recapture, skip media or
+      // substitute a client hash for the authoritative aggregate.
+      const ready=await reconcile();
+      requireCondition(ready.inventoryCapturedAt===before.inventoryCapturedAt&&ready.registeredAssets===before.registeredAssets&&
+        ready.projectRegistered===before.projectRegistered&&ready.profileRegistered===before.profileRegistered,
+        'UNVERIFIED','Private asset inventory changed while preparing recovery.');
+      initialPins=await readRawPins();
+    }
+    const pins=parseV2Pins(initialPins,owner.id,snapshotId,requestId,registry);
     const infos=new Map<string,{id:string;version:string;updatedAt:string}>();
     for(const asset of registry.values()){
       const pin=pins.get(asset.path)!;
