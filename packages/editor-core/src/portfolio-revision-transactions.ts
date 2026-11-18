@@ -28,10 +28,25 @@ export interface EditorHead {
   operations: Record<string,string>;
 }
 
+export type LayoutMappingRequest = {
+  sectionId:string;expectedLayout:string;targetLayout:string;
+  mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>;
+};
+export type ChangeSectionLayoutIntent=LayoutMappingRequest & {
+  kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;
+  confirmStash:boolean;confirmOwnedRelocation:boolean;
+};
+export type RestoreLayoutStashIntent={
+  kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
+  expectedRevision:number;confirmOwnedRelocation:boolean;
+};
+
 export type EditorIntent =
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
+  | ChangeSectionLayoutIntent
+  | RestoreLayoutStashIntent
   | { kind:'CLEAR_SLOT'; slotKey:string }
   | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
@@ -202,6 +217,200 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
 }
 
 
+type LayoutSection={id:string;layout:string;raw:Record<string,unknown>;keys:string[];names:string[]};
+export type LayoutChangePlan={
+  expectedRevision:number;sectionId:string;expectedLayout:string;targetLayout:string;
+  rows:Array<{fromSlotKey:string;toSlotKey:string|null;componentId:string;state:SlotState;
+    fields:string[];sourcePath?:string;sourceBytes?:number;disposition:'retain'|'move'|'stash'|'relocate'}>;
+  targetKeys:string[];emptyTargetKeys:string[];stashedKeys:string[];
+  addedFiles:number;addedStashAssignments:number;requiresStashConfirmation:boolean;
+  requiresOwnedRelocationConfirmation:boolean;
+};
+const PAGE_PATH='pages/home.page.json';
+const mediaKinds=['avatar','image','imagea','imageb','media','thumbs'];
+const invalidLayout=(message:string):never=>{throw new ContractError('VALIDATION',message);};
+function dataRecord(value:unknown):value is Record<string,unknown>{
+  return !!value&&typeof value==='object'&&!Array.isArray(value);
+}
+function exactFields(value:unknown,fields:readonly string[]):boolean{
+  return dataRecord(value)&&Object.keys(value).length===fields.length&&fields.every(k=>Object.hasOwn(value,k));
+}
+/** Resolve real declared own slots; reject malformed/ambiguous manifests rather
+ * than infer section ownership from a string prefix. Legacy declarations
+ * with opaque data cannot be discarded by canonicalization. */
+function layoutManifest(snapshot:PortfolioSnapshot):{page:Record<string,unknown>;sections:LayoutSection[]}{
+  validateSnapshot(snapshot);
+  const source=snapshot.files[PAGE_PATH];
+  if(typeof source!=='string')return invalidLayout('Managed page is unavailable.');
+  const raw:unknown=JSON.parse(source);
+  if(!dataRecord(raw)||!Array.isArray(raw.sections)||raw.sections.length>32)
+    return invalidLayout('Invalid managed section list.');
+  const ids=new Set<string>(),keys=new Set<string>(),sections:LayoutSection[]=[];
+  for(const item of raw.sections){
+    if(!dataRecord(item)||typeof item.id!=='string'||typeof item.layout!=='string')
+      return invalidLayout('Invalid section declaration.');
+    const id=item.id;assertSlotKey(id);
+    const pinned=portfolioLayout(item.layout);
+    if(!pinned||ids.has(id))return invalidLayout('Unknown or duplicate section layout.');
+    ids.add(id);
+    const full=pinned.slots.map(name=>id+'-'+name.toLowerCase());
+    if(Object.hasOwn(item,'slots')===Object.hasOwn(item,'slotKeys'))
+      return invalidLayout('Section must declare exactly one slot representation.');
+    if(Object.hasOwn(item,'slotKeys')){
+      const names=item.slotKeys;
+      if(!Array.isArray(names)||names.length!==pinned.slots.length||
+        new Set(names).size!==names.length||pinned.slots.some(name=>!names.includes(name)))
+        return invalidLayout('Section slot manifest does not match its pinned layout.');
+    }else{
+      const legacy=item.slots;
+      if(!dataRecord(legacy)||Object.keys(legacy).length!==pinned.slots.length||
+        pinned.slots.some(name=>!Object.hasOwn(legacy,name)))
+        return invalidLayout('Legacy slots do not match the pinned layout.');
+      for(const name of pinned.slots){
+        const saved=snapshot.slots[id+'-'+name.toLowerCase()],value=legacy[name];
+        if(value===null){
+          if(saved?.state!=='EMPTY')return invalidLayout('Legacy slot disagrees with saved assignment.');
+        }else if(!exactFields(value,['use'])||!dataRecord(value)||typeof value.use!=='string'||
+          saved?.state!=='S0'||saved.componentId!==value.use)
+          return invalidLayout('Legacy slot contains unsupported or nonmatching data; preserve it before changing layout.');
+      }
+    }
+    for(const key of full){
+      assertSlotKey(key);
+      if(keys.has(key)||!Object.hasOwn(snapshot.slots,key))
+        return invalidLayout('Missing or ambiguous declared slot.');
+      keys.add(key);
+    }
+    sections.push({id,layout:item.layout,raw:item,keys:full,names:pinned.slots});
+  }
+  return {page:raw,sections};
+}
+function assignmentFits(assignment:SlotAssignment,kind:string):boolean{
+  const pin=assignment.componentId;
+  return typeof pin==='string'&&(pin==='image@1'?
+    assignment.state==='S0'&&mediaKinds.includes(kind):
+    Object.hasOwn(libraryKinds,pin)&&libraryKinds[pin]!.includes(kind));
+}
+function stashComplete(next:PortfolioSnapshot,key:string,assignment:SlotAssignment):void{
+  const history=Object.hasOwn(next.stashes,key)?next.stashes[key]!: [];
+  next.stashes[key]=[...history,structuredClone(assignment)];
+}
+function relocationPath(key:string,operationId:string):string{
+  return 'slots/'+key+'/owned/'+operationId+'/component-source.tsx';
+}
+/** A new path is necessary because provenance is bound to the original slot.
+ * Never rename/delete original files or normalize opaque source. */
+function relocateOwned(next:PortfolioSnapshot,assignment:SlotAssignment,to:string,operationId:string):SlotAssignment{
+  const old=assignment.sourcePath;
+  if(!old||!old.endsWith('.tsx')||!Object.hasOwn(next.files,old))
+    return invalidLayout('Only compatible owned TSX may relocate. Stash unsupported source instead.');
+  const path=relocationPath(to,operationId);
+  assertOwnedSourcePath(path);
+  if(Object.hasOwn(next.files,path))return invalidLayout('Owned relocation path already exists.');
+  next.files[path]=next.files[old]!;
+  return {...structuredClone(assignment),sourcePath:path};
+}
+function constructLayoutChange(head:EditorHead,request:LayoutMappingRequest,operationId:string):{
+  plan:LayoutChangePlan;snapshot:PortfolioSnapshot
+}{
+  if(!exactFields(request,['sectionId','expectedLayout','targetLayout','mappings'])||
+    typeof request.sectionId!=='string'||typeof request.expectedLayout!=='string'||
+    typeof request.targetLayout!=='string'||!Array.isArray(request.mappings)||request.mappings.length>8)
+    return invalidLayout('Invalid bounded layout mapping.');
+  const {page,sections}=layoutManifest(head.snapshot);
+  const section=sections.find(item=>item.id===request.sectionId);
+  const target=portfolioLayout(request.targetLayout);
+  if(!section||section.layout!==request.expectedLayout||!target||section.layout===request.targetLayout)
+    return invalidLayout('Select a different pinned layout for the current section.');
+  const next=structuredClone(head.snapshot);
+  const targetKeys=target.slots.map(name=>section.id+'-'+name.toLowerCase());
+  const oldKeys=new Set(section.keys),otherKeys=new Set(sections.filter(s=>s!==section).flatMap(s=>s.keys));
+  for(const key of targetKeys){
+    assertSlotKey(key);
+    if(otherKeys.has(key)||(!oldKeys.has(key)&&Object.hasOwn(next.slots,key)))
+      return invalidLayout('A target slot collides with another assignment.');
+  }
+  const filled=section.keys.filter(key=>head.snapshot.slots[key]!.state!=='EMPTY');
+  if(request.mappings.length!==filled.length)return invalidLayout('Choose a destination or stash for every assigned slot.');
+  const taken=new Set<string>(),rows:LayoutChangePlan['rows']=[],stashedKeys:string[]=[];
+  const beforeFileCount=Object.keys(next.files).length;
+  let relocation=false;
+  for(const key of section.keys)delete next.slots[key];
+  for(const key of targetKeys)next.slots[key]={state:'EMPTY',content:{}};
+  for(let index=0;index<filled.length;index++){
+    const from=filled[index]!,row=request.mappings[index];
+    if(!row||!exactFields(row,['fromSlotKey','toSlotKey'])||row.fromSlotKey!==from||
+      (row.toSlotKey!==null&&typeof row.toSlotKey!=='string'))
+      return invalidLayout('Mapping must list each assigned source exactly once in manifest order.');
+    const assignment=head.snapshot.slots[from]!,to=row.toSlotKey;
+    let disposition:LayoutChangePlan['rows'][number]['disposition'];
+    if(to===null){
+      stashComplete(next,from,assignment);stashedKeys.push(from);disposition='stash';
+    }else{
+      const position=targetKeys.indexOf(to);
+      if(position<0||taken.has(to))return invalidLayout('Choose a unique declared destination in this section.');
+      if(!assignmentFits(assignment,target.slots[position]!.toLowerCase()))
+        return invalidLayout('Incompatible pinned assignment; choose a compatible slot or stash it.');
+      taken.add(to);
+      if(from!==to&&isOwned(assignment)){
+        next.slots[to]=relocateOwned(next,assignment,to,operationId);
+        stashComplete(next,from,assignment);stashedKeys.push(from);relocation=true;disposition='relocate';
+      }else{
+        next.slots[to]=structuredClone(assignment);disposition=from===to?'retain':'move';
+      }
+    }
+    rows.push({fromSlotKey:from,toSlotKey:to,componentId:assignment.componentId!,
+      state:assignment.state,fields:Object.keys(assignment.content).sort(),disposition,
+      ...(assignment.sourcePath?{sourcePath:assignment.sourcePath,
+        sourceBytes:new TextEncoder().encode(head.snapshot.files[assignment.sourcePath]!).byteLength}:{})});
+  }
+  // Only this managed section's representation changes. Unknown sibling and
+  // top-level fields survive; Undo retains the exact original page string.
+  const {slots:_legacy,slotKeys:_oldNames,...other}=section.raw;
+  next.files[PAGE_PATH]=JSON.stringify({...page,sections:sections.map(item=>item===section?
+    {...other,layout:request.targetLayout,slotKeys:target.slots}:item.raw)});
+  validateSnapshot(next);
+  return {snapshot:next,plan:{expectedRevision:head.revision,sectionId:section.id,
+    expectedLayout:section.layout,targetLayout:request.targetLayout,rows,targetKeys,
+    emptyTargetKeys:targetKeys.filter(key=>!taken.has(key)),stashedKeys,
+    addedFiles:Object.keys(next.files).length-beforeFileCount,
+    addedStashAssignments:stashedKeys.length,requiresStashConfirmation:stashedKeys.length>0,
+    requiresOwnedRelocationConfirmation:relocation}};
+}
+/** Preview uses an unused synthetic UUID only inside a disposable clone.
+ * No source bytes, real operation ID or mutable snapshot are returned. The
+ * real transaction repeats collision and quota checks for its own UUID. */
+export function planSectionLayoutChange(head:EditorHead,request:LayoutMappingRequest):LayoutChangePlan{
+  let id='';
+  for(let n=0;n<=100;n++){
+    const candidate='00000000-0000-4000-8000-'+n.toString(16).padStart(12,'0');
+    if(!Object.keys(head.snapshot.files).some(path=>path.includes('/owned/'+candidate+'/'))){
+      id=candidate;break;
+    }
+  }
+  if(!id)return invalidLayout('No safe relocation preview path.');
+  return constructLayoutChange(head,request,id).plan;
+}
+function restoreLayoutAssignment(head:EditorHead,next:PortfolioSnapshot,intent:RestoreLayoutStashIntent,operationId:string):void{
+  assertSlotKey(intent.fromSlotKey);assertSlotKey(intent.toSlotKey);
+  const {sections}=layoutManifest(head.snapshot);
+  const target=sections.flatMap(section=>section.keys.map((key,i)=>({key,kind:section.names[i]!.toLowerCase()})))
+    .filter(item=>item.key===intent.toSlotKey);
+  const stash=Object.hasOwn(next.stashes,intent.fromSlotKey)?next.stashes[intent.fromSlotKey]:undefined;
+  if(target.length!==1||next.slots[intent.toSlotKey]?.state!=='EMPTY'||!stash||
+    !Number.isSafeInteger(intent.stashIndex)||intent.stashIndex<0||intent.stashIndex>=stash.length)
+    return invalidLayout('Restore requires one available stash entry and a declared empty target.');
+  const saved=stash[intent.stashIndex]!;
+  if(saved.state==='EMPTY'||!assignmentFits(saved,target[0]!.kind))
+    return invalidLayout('Stashed assignment is incompatible with this target.');
+  if(intent.fromSlotKey!==intent.toSlotKey&&isOwned(saved)){
+    if(!intent.confirmOwnedRelocation)return invalidLayout('Explicit owned-source relocation confirmation is required.');
+    next.slots[intent.toSlotKey]=relocateOwned(next,saved,intent.toSlotKey,operationId);
+  }else next.slots[intent.toSlotKey]=structuredClone(saved);
+  const remaining=stash.filter((_item,i)=>i!==intent.stashIndex);
+  if(remaining.length)next.stashes[intent.fromSlotKey]=remaining;else delete next.stashes[intent.fromSlotKey];
+}
+
 /**
  * Runtime-facing commands must match their discriminated contracts exactly.
  * Unknown actions previously produced a successful no-op revision, while
@@ -221,6 +430,8 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     WRITE_MANAGED_FILE:['kind','path','source'],
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
+    CHANGE_SECTION_LAYOUT:['kind','sectionId','expectedLayout','targetLayout','mappings','expectedRevision','confirmStash','confirmOwnedRelocation'],
+    RESTORE_LAYOUT_STASH:['kind','fromSlotKey','stashIndex','toSlotKey','expectedRevision','confirmOwnedRelocation'],
     CLEAR_SLOT:['kind','slotKey'],
     ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement','preserveMatchingContent'],
     UPDATE_CONTENT:['kind','slotKey','content'],
@@ -281,7 +492,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     return head; // idempotent duplicate; no new version
   }
   assertBaseRevision(command.baseRevision,head.revision);
-  const next = structuredClone(head.snapshot);
+  let next = structuredClone(head.snapshot);
   const intent = command.intent;
   if (intent.kind==='UNDO' || intent.kind==='REDO') {
     const source = intent.kind==='UNDO'?head.undo:head.redo;
@@ -300,6 +511,21 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
   if (intent.kind==='WRITE_MANAGED_FILE') {
     validateManagedJson(intent.path,intent.source);
     next.files[intent.path]=intent.source; // exact user bytes; no implicit formatting
+  } else if(intent.kind==='CHANGE_SECTION_LAYOUT'){
+    assertBaseRevision(intent.expectedRevision,head.revision);
+    if(typeof intent.confirmStash!=='boolean'||typeof intent.confirmOwnedRelocation!=='boolean')
+      return invalidLayout('Explicit layout confirmation flags are required.');
+    const {sectionId,expectedLayout,targetLayout,mappings}=intent;
+    const result=constructLayoutChange(head,{sectionId,expectedLayout,targetLayout,mappings},operationId);
+    if(result.plan.requiresStashConfirmation&&!intent.confirmStash)
+      return invalidLayout('Confirm preservation of unplaced or relocated assignments in the stash.');
+    if(result.plan.requiresOwnedRelocationConfirmation&&!intent.confirmOwnedRelocation)
+      return invalidLayout('Confirm byte-identical owned source relocation; relative imports may no longer resolve.');
+    next=result.snapshot;
+  } else if(intent.kind==='RESTORE_LAYOUT_STASH'){
+    assertBaseRevision(intent.expectedRevision,head.revision);
+    if(typeof intent.confirmOwnedRelocation!=='boolean')return invalidLayout('Explicit relocation flag is required.');
+    restoreLayoutAssignment(head,next,intent,operationId);
   } else if (intent.kind==='ADD_SECTION') {
     const layout=portfolioLayout(intent.layout);
     const path='pages/home.page.json';
@@ -468,6 +694,11 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
           throw new ContractError('VALIDATION','Restore requires an empty slot and an available stash.');
         const saved=stash[index];
         if(!saved||saved.state==='EMPTY')throw new ContractError('VALIDATION','Stashed assignment unavailable.');
+        // Older layoutless projects retain their original restore behavior;
+        // declared layouts cannot bypass compatibility via the legacy command.
+        const kind=declaredLayoutSlotKind(next,intent.slotKey);
+        if(kind!==undefined&&(kind===null||!assignmentFits(saved,kind)))
+          return invalidLayout('Archived assignment does not fit the current declared slot.');
         next.slots[intent.slotKey]=structuredClone(saved);
         next.stashes[intent.slotKey]=stash.filter((_item,i)=>i!==index);
         break;

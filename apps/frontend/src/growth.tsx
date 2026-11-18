@@ -190,22 +190,92 @@ function Activity({service}:{service:SupabasePrivateGoalsService}){
   </section>;
 }
 
-function DevScore(){
+/** Read-only, self-reported context. Goal templates are not persisted as an
+ * authoritative category, so do not classify arbitrary titles or notes. */
+function GoalEvidence({service,goal}:{service:SupabasePrivateGoalsService;goal:PrivateGoal}){
+  const [attempt,setAttempt]=useState(0);
+  const [loaded,setLoaded]=useState<{attempt:number;page:Awaited<ReturnType<SupabasePrivateGoalsService['listMilestonesPage']>>|null;error:boolean}|null>(null);
+  const current=loaded?.attempt===attempt?loaded:null;
+  useEffect(()=>{
+    let active=true;
+    void service.listMilestonesPage(goal.id,50).then(page=>{
+      if(active)setLoaded({attempt,page,error:false});
+    }).catch(()=>{if(active)setLoaded({attempt,page:null,error:true});});
+    return()=>{active=false;};
+  },[service,goal.id,attempt]);
+  const milestones=current?.page;
+  return <section aria-label="Selected goal evidence">
+    <h3>{goal.title}</h3>
+    <dl>
+      <dt>Source</dt><dd>Owner-entered private goal · self-reported</dd>
+      <dt>Saved status</dt><dd>{goal.status}</dd>
+      <dt>Personal target</dt><dd>{goal.target_value===null?'Not set':String(goal.target_value)+' '+(goal.unit??'units')}</dd>
+      <dt>Last saved goal update</dt><dd><time dateTime={goal.updated_at}>{goal.updated_at}</time></dd>
+    </dl>
+    <p>Targets are personal intentions, not standardized benchmarks. The history below contains absolute values, including corrections; summing the entries would not measure achievement.</p>
+    <ProgressHistory key={goal.id} service={service} goalId={goal.id}/>
+    <h4>Milestone evidence</h4>
+    <p>Source: owner-entered milestone records, not independent proof of project delivery.</p>
+    {!current&&<p role="status">Loading private milestone evidence…</p>}
+    {current?.error&&<p role="alert">Milestone evidence is unavailable. No count has been assumed.</p>}
+    {milestones&&<><p>{milestones.items.filter(item=>item.completed_at!==null).length} marked complete among {milestones.items.length} loaded milestones. {milestones.nextCursor?'Additional records may exist; this is a partial view.':'End of this read; records may change.'}</p>
+      {milestones.items.length===0?<p>No milestones recorded for this goal.</p>:
+        <ul className="ws-growth-milestones">{milestones.items.map(item=><li key={item.id}>
+          <span>{item.title} · {item.completed_at?'Completed (manual)':'Open'}{item.completed_at&&<> · <time dateTime={item.completed_at}>{item.completed_at}</time></>}</span>
+        </li>)}</ul>}</>}
+    {current&&<button type="button" className="ws-secondary" onClick={()=>setAttempt(n=>n+1)}>{current.error?'Retry milestone evidence':'Refresh milestone evidence'}</button>}
+  </section>;
+}
+
+function DevScore({services}:{services:GrowthServices}){
+  const [attempt,setAttempt]=useState(0);
+  const [selectedId,setSelectedId]=useState('');
+  const [loaded,setLoaded]=useState<{attempt:number;goals:PrivateGoal[]|null;error:boolean}|null>(null);
+  const current=loaded?.attempt===attempt?loaded:null;
+  useEffect(()=>{
+    let active=true;
+    void services.goals.listGoals().then(goals=>{
+      if(active)setLoaded({attempt,goals,error:false});
+    }).catch(()=>{if(active)setLoaded({attempt,goals:null,error:true});});
+    return()=>{active=false;};
+  },[services,attempt]);
+  const selected=current?.goals?.find(goal=>goal.id===selectedId);
   return <div className="ws-growth-layout">
     <section className="ws-project-aside">
       <h2>Evidence first.</h2>
       <p className="ws-growth-unknown">A numeric DevScore is unavailable.</p>
-      <p>There is no validated composite formula with reliable source freshness, coverage and weighting. We do not invent points, ranks, streaks or comparisons.</p>
+      <p>Evidence view: DevScore-evidence-v0. No composite, weights, ranks, streaks, or comparisons are calculated.</p>
+      <h3>Practice, learning and project context</h3>
+      <p>Choose a real private goal to inspect its recorded evidence. Goal titles and units are self-reported; they are not automatically classified or treated as validated competencies.</p>
+      {!current&&<p role="status">Loading private goal evidence…</p>}
+      {current?.error&&<p role="alert">Goal evidence is unavailable. No saved value or coverage has been assumed.</p>}
+      {current?.goals&&<>
+        {current.goals.length===0?<p>No private goals recorded yet. Missing evidence is not zero performance.</p>:
+          <label className="ws-growth-field">Evidence goal<select value={selected?.id??''} onChange={event=>setSelectedId(event.target.value)}>
+            <option value="">Choose a goal to inspect</option>
+            {current.goals.map(goal=><option key={goal.id} value={goal.id}>{goal.title}</option>)}
+          </select></label>}
+        {current.goals.length===100&&<p>Showing at most 100 recent private goals. This is not complete lifetime coverage.</p>}
+        {selected&&<GoalEvidence key={selected.id+':'+attempt} service={services.goals} goal={selected}/>}
+      </>}
+      {current&&<button type="button" className="ws-secondary" onClick={()=>setAttempt(n=>n+1)}>{current.error?'Retry goal evidence':'Refresh goal evidence'}</button>}
       <a href="/app/growth/goals" className="ws-primary">Track goals without scoring</a>
     </section>
     <section className="ws-project-aside">
-      <h2>What would a defensible score require?</h2>
+      <h2>Evidence boundaries</h2>
+      <dl>
+        <dt>External coding and public artifact facts</dt><dd>Unavailable: platform links do not establish imported facts or account ownership.</dd>
+        <dt>Competitive practice</dt><dd>Unavailable: no verified provider retrieval is active.</dd>
+        <dt>Comparability and coverage</dt><dd>Unvalidated: personal units, time windows and correction histories differ.</dd>
+      </dl>
+      <p>Unavailable evidence is not treated as zero. No provider request is made from this view, and no analytics or popularity metric affects it.</p>
+      <a className="ws-secondary" href="/app/integrations">Manage private platform links</a>
+      <h3>What would a defensible score require?</h3>
       <ol className="ws-project-guide">
         <li><strong>Provenance</strong> Identify which facts come from an official source versus your own entries.</li>
         <li><strong>Fair coverage</strong> Avoid penalizing people who do not use a particular platform.</li>
-        <li><strong>Explainability</strong> Publish versioned weights, limitations and fresh data boundaries before computation.</li>
+        <li><strong>Explainability</strong> Validate comparable inputs and versioned methods before computation.</li>
       </ol>
-      <p>None of these requirements is demonstrated for a live composite score. This screen remains private and unscored.</p>
     </section>
   </div>;
 }
@@ -720,7 +790,7 @@ export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}
   const error=current?.error??'';
   const view=path as GrowthRoute;
   useEffect(()=>{
-    if(path==='/app/analytics'||path==='/app/growth/devscore')return;
+    if(path==='/app/analytics')return;
     let active=true;
     void port.ownerGrowth().then(result=>{
       if(!active)return;
@@ -746,10 +816,10 @@ export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}
         <a key={href} href={href} aria-current={href===path?'page':undefined}>{title}</a>)}
     </nav>
     {path==='/app/analytics'?<Analytics/>:
-      path==='/app/growth/devscore'?<DevScore/>:
       error?<div className="ws-project-aside"><p role="alert">{error}</p>
         <button type="button" className="ws-secondary" onClick={()=>setAttempt(n=>n+1)}>Retry private Growth</button></div>:
       !services?<p role="status">Checking your owner-private growth records…</p>:
+      path==='/app/growth/devscore'?<DevScore key={current!.viewKey} services={services}/>:
       path==='/app/growth'?<GrowthHome key={current!.viewKey} service={services.goals}/>:
       path==='/app/growth/activity'?<Activity key={current!.viewKey} service={services.goals}/>:
       path==='/app/growth/goals'?<Goals key={current!.viewKey} service={services.goals}/>:

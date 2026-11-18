@@ -40,25 +40,47 @@ export class PrivateAssetAttestationError extends Error {
 }
 function requireValid(v:unknown,code:PrivateAssetAttestationError['code']):
   asserts v {if(!v)throw new PrivateAssetAttestationError(code);}
-async function bytes(response:Response):Promise<Uint8Array> {
-  const declared=response.headers.get('content-length');
-  if(declared!==null)requireValid(/^\d+$/.test(declared)&&Number(declared)<=MAX_BYTES,'LIMIT');
-  requireValid(response.body!==null,'PROVIDER');
-  const reader=response.body.getReader(),chunks:Uint8Array[]=[];
-  let size=0;
-  try {
-    while(true){
+const ATTEST_TIMEOUT_MS=10_000;
+const MAX_STREAM_CHUNKS=65_536;
+function cancelAttestationBody(body:{cancel:()=>Promise<void>}|null|undefined):void {
+  try{void body?.cancel().catch(()=>{});}catch{}
+}
+async function bytes(response:Response,signal:AbortSignal):Promise<Uint8Array> {
+  let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+  const stop=()=>cancelAttestationBody(reader??response.body);
+  signal.addEventListener('abort',stop,{once:true});
+  let completed=false;
+  try{
+    requireValid(!signal.aborted,'PROVIDER');
+    const declared=response.headers.get('content-length');
+    if(declared!==null)requireValid(/^\d+$/.test(declared)&&Number(declared)<=MAX_BYTES,'LIMIT');
+    requireValid(response.body!==null,'PROVIDER');
+    reader=response.body.getReader();
+    const chunks:Uint8Array[]=[];
+    let size=0,count=0;
+    for(;;){
       const part=await reader.read();
+      requireValid(!signal.aborted,'PROVIDER');
       if(part.done)break;
+      requireValid(part.value instanceof Uint8Array,'INTEGRITY');
+      requireValid(++count<=MAX_STREAM_CHUNKS,'LIMIT');
       size+=part.value.byteLength;
       requireValid(size<=MAX_BYTES,'LIMIT');
       chunks.push(part.value);
     }
-  }finally{reader.releaseLock();}
-  requireValid(declared===null||Number(declared)===size,'INTEGRITY');
-  const result=new Uint8Array(size);let i=0;
-  for(const chunk of chunks){result.set(chunk,i);i+=chunk.length;}
-  return result;
+    completed=true;
+    requireValid(declared===null||Number(declared)===size,'INTEGRITY');
+    const result=new Uint8Array(size);let i=0;
+    for(const chunk of chunks){result.set(chunk,i);i+=chunk.length;}
+    return result;
+  }catch(error){
+    if(error instanceof PrivateAssetAttestationError)throw error;
+    throw new PrivateAssetAttestationError('PROVIDER');
+  }finally{
+    signal.removeEventListener('abort',stop);
+    if(!completed)stop();
+    try{reader?.releaseLock();}catch{}
+  }
 }
 export class PrivateServerAssetByteAttestor {
   private readonly origin:string;
@@ -84,27 +106,46 @@ export class PrivateServerAssetByteAttestor {
   }
   private async get(path:string,jwt:string,privileged=false,body?:Json):
     Promise<{data:unknown;headers:Headers;raw?:Uint8Array}> {
-    let response:Response;
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const deadline=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>{
+        reject(new PrivateAssetAttestationError('PROVIDER'));
+        controller.abort();
+      },ATTEST_TIMEOUT_MS);
+    });
     try{
-      response=await this.http(this.origin+path,{
-        method:body===undefined?'GET':'POST',
-        headers:{apikey:privileged?this.serviceKey:this.publishableKey,
-          Authorization:'Bearer '+(privileged?this.serviceKey:jwt),
-          Accept:body===undefined?'*/*':'application/json',
-          ...(body===undefined?{}:{'Content-Type':'application/json'})},
-        body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error',
-        signal:AbortSignal.timeout(10000)
-      });
-    }catch{throw new PrivateAssetAttestationError('PROVIDER');}
-    if(!response.ok)throw new PrivateAssetAttestationError(
-      response.status===401||response.status===403?'AUTH':'PROVIDER');
-    if(path.startsWith('/storage/v1/object/authenticated/'))
-      return {data:null,headers:response.headers,raw:await bytes(response)};
-    const content=await bytes(response);
-    try{return {data:JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(content)),
-      headers:response.headers};}
-    catch{throw new PrivateAssetAttestationError('INTEGRITY');}
+      const attempt=(async()=>{
+        const response=await this.http(this.origin+path,{
+          method:body===undefined?'GET':'POST',
+          headers:{apikey:privileged?this.serviceKey:this.publishableKey,
+            Authorization:'Bearer '+(privileged?this.serviceKey:jwt),
+            Accept:body===undefined?'*/*':'application/json',
+            ...(body===undefined?{}:{'Content-Type':'application/json'})},
+          body:body===undefined?undefined:JSON.stringify(body),
+          credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
+        });
+        if(controller.signal.aborted){
+          cancelAttestationBody(response.body);
+          throw new PrivateAssetAttestationError('PROVIDER');
+        }
+        if(!response.ok||response.redirected){
+          cancelAttestationBody(response.body);
+          throw new PrivateAssetAttestationError(
+            response.status===401||response.status===403?'AUTH':'PROVIDER');
+        }
+        const content=await bytes(response,controller.signal);
+        if(path.startsWith('/storage/v1/object/authenticated/'))
+          return {data:null,headers:response.headers,raw:content};
+        try{return {data:JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(content)),
+          headers:response.headers};}
+        catch{throw new PrivateAssetAttestationError('INTEGRITY');}
+      })();
+      return await Promise.race([attempt,deadline]);
+    }catch(error){
+      if(error instanceof PrivateAssetAttestationError)throw error;
+      throw new PrivateAssetAttestationError('PROVIDER');
+    }finally{clearTimeout(timer);controller.abort();}
   }
   private async info(path:string,jwt:string,ownerId:string,mime:string,size:number){
     const encoded=path.split('/').map(encodeURIComponent).join('/');
@@ -127,7 +168,7 @@ export class PrivateServerAssetByteAttestor {
       version:string;bytes:Uint8Array}> {
     requireValid(UUID.test(assetId)&&typeof ownerJwt==='string'&&ownerJwt.length>0,'VALIDATION');
     const {data:user}=await this.get('/auth/v1/user',ownerJwt);
-    requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id),'AUTH');
+    requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id)&&user.is_anonymous!==true,'AUTH');
     const ownerId=user.id;
     const {data:rows}=await this.get('/rest/v1/project_assets?select=id,owner_user_id,object_path,mime_type,byte_size&id=eq.'+
       encodeURIComponent(assetId)+'&limit=2',ownerJwt);
@@ -183,7 +224,7 @@ export class PrivateServerAssetByteAttestor {
           UUID.test(query.assetId)&&UUID.test(query.portfolioId)&&
           Number.isSafeInteger(query.revision)&&query.revision>=1,'VALIDATION');
         const {data:user}=await this.get('/auth/v1/user',ownerJwt);
-        requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id),'AUTH');
+        requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id)&&user.is_anonymous!==true,'AUTH');
         // Check target portfolio ownership BEFORE any privileged attestation.
         const {data:portfolios}=await this.get(
           '/rest/v1/portfolios?select=id,owner_user_id&id=eq.'+

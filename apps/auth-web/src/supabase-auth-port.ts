@@ -900,26 +900,48 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       handle: row.handle, skills: row.private_skills as string[]};
   }
 
-  async readOwnerProfile(): Promise<AuthOutcome<OwnerProfile>> {
+  /** Optional initiating mount epoch protects delayed/automatic profile saves
+   * across owner transitions. Older explicit callers retain the same signature
+   * and live-session verification; their returned owner epoch is still checked. */
+  private assertOwnerProfileEpoch(session:StoredSession,epoch:number):void {
+    if(this.reconcileOwnerSessionEpoch()!==epoch||!this.isCurrentSession(session))
+      throw new Error('Owner session changed during profile access.');
+  }
+
+  private async ownerProfileDraftSession(expectedEpoch?:number) {
+    if(expectedEpoch!==undefined&&this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      throw new Error('Owner session changed before profile access.');
+    const checked=await this.ownerSession();
+    this.assertOwnerProfileEpoch(checked.session,expectedEpoch??checked.epoch);
+    return checked;
+  }
+
+  async readOwnerProfile(expectedEpoch?:number): Promise<AuthOutcome<OwnerProfile>> {
     return this.outcome(async () => {
-      const {session, userId} = await this.ownerSession();
+      const {session, userId, epoch} = await this.ownerProfileDraftSession(expectedEpoch);
+      this.assertOwnerProfileEpoch(session,expectedEpoch??epoch);
       const rows = await this.ownerRest('profiles?select=user_id,handle,display_name,headline,bio,private_skills&user_id=eq.' +
         encodeURIComponent(userId) + '&limit=1', session.access_token);
-      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
+      this.assertOwnerProfileEpoch(session,expectedEpoch??epoch);
+      if (!Array.isArray(rows) || rows.length !== 1)
         throw new Error('Private profile could not be loaded.');
       return this.parseOwnerProfile(rows[0], userId);
     });
   }
 
-  async saveOwnerProfile(expected: ProfileDraft, draft: ProfileDraft, confirmWithdrawal: boolean): Promise<AuthOutcome<OwnerProfile>> {
+  async saveOwnerProfile(expected: ProfileDraft, draft: ProfileDraft, confirmWithdrawal: boolean,
+    expectedEpoch?:number): Promise<AuthOutcome<OwnerProfile>> {
     return this.outcome(async () => {
-      const {session, userId} = await this.ownerSession();
-      const {displayName, headline, bio, skills} = expected;
+      // Snapshot the caller's exact CAS inputs before live verification awaits.
+      const baseline={displayName:expected.displayName,headline:expected.headline,bio:expected.bio,skills:[...expected.skills]};
+      const desired={displayName:draft.displayName,headline:draft.headline,bio:draft.bio,skills:[...draft.skills]};
+      const {session, userId, epoch} = await this.ownerProfileDraftSession(expectedEpoch);
+      this.assertOwnerProfileEpoch(session,expectedEpoch??epoch);
       const result = await this.ownerRest('rpc/owner_save_profile_draft', session.access_token, 'POST', {
-        p_expected: {displayName, headline, bio, skills},
-        p_draft: draft, p_confirm_projection_withdrawal: confirmWithdrawal
+        p_expected: baseline,
+        p_draft: desired, p_confirm_projection_withdrawal: confirmWithdrawal
       });
-      if (!this.isCurrentSession(session)) throw new Error('Owner session changed during profile save.');
+      this.assertOwnerProfileEpoch(session,expectedEpoch??epoch);
       return this.parseOwnerProfile(result, userId);
     });
   }

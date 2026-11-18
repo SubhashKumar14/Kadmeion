@@ -15,6 +15,8 @@ type VerificationPorts = {
   origin: string;
   rpc: (operation: VerificationOperation, input: Record<string, string>) => Promise<unknown>;
   http?: typeof fetch;
+  /** Production server requires independent canonical and public API samples. */
+  requirePublicAliasProof?: boolean;
 };
 
 type Activation = {
@@ -22,10 +24,22 @@ type Activation = {
   intentId: string;
   htmlSha256: string;
   publicPath?: string;
+  releaseGeneration?: number;
 };
 
+type PublicDeliveryObservation = {
+  portfolioId:string; intentId:string; preparedReleaseGeneration:number;
+  canonicalPath:string; apiPath:string; servedHtmlSha256:string;
+  observedMediaManifest:string|null; observedAssetHashes:readonly string[];
+  observedHttpRequests:number;
+};
+type DeliverySample = {
+  htmlSha256:string; servedHtmlSha256:string; apiPath:string|null;
+  mediaManifest:string|null; assetHashes:readonly string[]; observedHttpRequests:number;
+};
 export type DeliveryVerification =
-  | {status: 'DELIVERY_ACKNOWLEDGED'; htmlSha256: string}
+  | {status: 'DELIVERY_ACKNOWLEDGED'; htmlSha256: string;
+      observedPublicDelivery?: PublicDeliveryObservation}
   | {status: 'DELIVERY_REVOKED'}
   | {status: 'PRIOR_RELEASE_RESTORED'; releaseGeneration: number};
 
@@ -222,7 +236,7 @@ async function readGet(http:typeof fetch,route:URL,indexable:boolean,media=false
 }
 
 async function digestHtml(indexable:boolean,route:URL,
-  host:URL,http:typeof fetch,expectedSha:string):Promise<string|null> {
+  host:URL,http:typeof fetch,expectedSha:string,requirePublicAliasProof=false):Promise<DeliverySample|null> {
   const get=await readGet(http,route,indexable);
   if(!get)return null;
   const {bytes,headers}=get;
@@ -262,6 +276,19 @@ async function digestHtml(indexable:boolean,route:URL,
   if(digest!==expectedSha)return null;
   // Verify the canonical representation before sampling any direct assets.
   if(!await verifyHead(http,route,headers,servedSha,indexable))return null;
+  let apiPath:string|null=null;
+  if(requirePublicAliasProof&&!unlisted){
+    // The alias is itself a separately reachable HTML resource, not a
+    // redirect or a HEAD substitute. Both representations must contain the
+    // same final bytes and observable delivery policy.
+    apiPath='/api/public-portfolio?'+new URLSearchParams({handle,slug}).toString();
+    const alias=new URL(apiPath,host);
+    const aliasGet=await readGet(http,alias,indexable);
+    if(!aliasGet||!aliasGet.bytes.equals(bytes)||
+       !sameDeliveryPolicy(headers,aliasGet.headers)||
+       !optionalServedDigest(aliasGet.headers,servedSha)||
+       !await verifyHead(http,alias,aliasGet.headers,servedSha,indexable))return null;
+  }
   for(const [src,sha] of media){
     const assetRoute=new URL(src.replaceAll('&amp;','&'),host);
     const png=await readGet(http,assetRoute,false,true);
@@ -269,13 +296,15 @@ async function digestHtml(indexable:boolean,route:URL,
        !optionalServedDigest(png.headers,sha))return null;
     if(!await verifyHead(http,assetRoute,png.headers,sha,false,true))return null;
   }
-  return digest;
+  return {htmlSha256:digest,servedHtmlSha256:servedSha,apiPath,
+    mediaManifest:manifest??null,assetHashes:[...new Set(media.values())],
+    observedHttpRequests:2+(apiPath?2:0)+2*media.size};
 }
 
 /** Trusted worker only. The configured origin must come from server configuration. */
 export async function verifyActivatedUnlistedRelease(
   activation: Activation,
-  {origin, rpc, http = fetch}: VerificationPorts,
+  {origin, rpc, http = fetch, requirePublicAliasProof=false}: VerificationPorts,
   policy: 'RECOVER_UNVERIFIED_ACTIVATION' | 'CHECK_ACKNOWLEDGED_ONLY' = 'RECOVER_UNVERIFIED_ACTIVATION'
 ): Promise<DeliveryVerification> {
   const {portfolioId, intentId, htmlSha256, publicPath} = activation;
@@ -291,9 +320,13 @@ export async function verifyActivatedUnlistedRelease(
   }
   const route = new URL(publicPath ?? '/api/unlisted', host);
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
-  const checkHost = async(indexable:boolean):Promise<string|null>=>{
+  const strictPublic=requirePublicAliasProof&&publicPath!==undefined;
+  if(strictPublic&&(typeof activation.releaseGeneration!=='number'||
+      !Number.isSafeInteger(activation.releaseGeneration)||activation.releaseGeneration<1))
+    throw new Error('Invalid trusted release generation.');
+  const checkHost = async(indexable:boolean):Promise<DeliverySample|null>=>{
     try {
-      return await digestHtml(indexable,route,host,http,htmlSha256);
+      return await digestHtml(indexable,route,host,http,htmlSha256,strictPublic);
     }catch{return null;}
   };
   // A newly activated PUBLIC route serves a noindex canary UNTIL the
@@ -302,10 +335,22 @@ export async function verifyActivatedUnlistedRelease(
   // indexable and match the same immutable source digest.
   const publicRoute=publicPath!==undefined;
   const initialIndexable=publicRoute&&policy==='CHECK_ACKNOWLEDGED_ONLY';
+  const acknowledgment=(sample:DeliverySample):DeliveryVerification=>{
+    if(!strictPublic)return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256};
+    if(!sample.apiPath||sample.htmlSha256!==htmlSha256||!publicPath||
+       activation.releaseGeneration===undefined)
+      throw new Error('Incomplete public alias observation.');
+    return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256,observedPublicDelivery:{
+      portfolioId,intentId,preparedReleaseGeneration:activation.releaseGeneration,
+      canonicalPath:publicPath,apiPath:sample.apiPath,servedHtmlSha256:sample.servedHtmlSha256,
+      observedMediaManifest:sample.mediaManifest,observedAssetHashes:sample.assetHashes,
+      observedHttpRequests:sample.observedHttpRequests
+    }};
+  };
   const actualDigest=await checkHost(initialIndexable);
-  if (actualDigest === htmlSha256) {
+  if (actualDigest?.htmlSha256 === htmlSha256) {
     if (policy === 'CHECK_ACKNOWLEDGED_ONLY')
-      return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
+      return acknowledgment(actualDigest);
     const ack = await rpc('service_acknowledge_unlisted_release', {
       p_portfolio_id: portfolioId, p_intent_id: intentId, p_html_sha256: htmlSha256
     });
@@ -313,9 +358,15 @@ export async function verifyActivatedUnlistedRelease(
     // Indexing changes the delivered robots marker; prove the AFTER-ack
     // response, not merely the preceding private noindex canary. A failure
     // cannot roll back a now-acknowledged live pointer on this read.
-    if(publicRoute && await checkHost(true)!==htmlSha256)
-      throw new Error('Acknowledged public release failed its indexable HTTP verification.');
-    return {status: 'DELIVERY_ACKNOWLEDGED', htmlSha256};
+    if(publicRoute){
+      const postAck=await checkHost(true);
+      if(postAck?.htmlSha256!==htmlSha256||
+         (strictPublic&&(postAck.mediaManifest!==actualDigest.mediaManifest||
+          postAck.assetHashes.join(',')!==actualDigest.assetHashes.join(','))))
+        throw new Error('Acknowledged public release failed its indexable HTTP verification.');
+      return acknowledgment(postAck);
+    }
+    return acknowledgment(actualDigest);
   }
 
   // A transient outage of an already-acknowledged release must not
@@ -380,7 +431,7 @@ export async function publishConsentedUnlistedRelease(
   switch (prepared.status) {
     case 'ACKNOWLEDGED':
       return verifyActivatedUnlistedRelease(
-        {portfolioId, intentId, htmlSha256, publicPath}, ports, 'CHECK_ACKNOWLEDGED_ONLY');
+        {portfolioId, intentId, htmlSha256, publicPath, releaseGeneration}, ports, 'CHECK_ACKNOWLEDGED_ONLY');
     case 'AWAITING_VERIFICATION':
       break;
     case 'PROBE_PENDING': {
@@ -407,7 +458,7 @@ export async function publishConsentedUnlistedRelease(
     default:
       throw new Error('Unexpected unlisted publication status.');
   }
-  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256, publicPath}, ports);
+  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256, publicPath, releaseGeneration}, ports);
 }
 
 function record(value: unknown): value is Record<string, unknown> {

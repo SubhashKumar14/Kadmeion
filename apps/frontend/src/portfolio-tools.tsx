@@ -121,6 +121,20 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       !showMissing?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
   };
 
+/** Partition manifest-declared slots once; do not project historical stashes
+ * or let a special-case hero silently omit a declared assignment. */
+function canvasSlotGroups(section:CanvasSection){
+  const hero=['L1','L2','L5'].includes(section.renderId);
+  const headline=section.slots.includes('title');
+  const textSlot=section.slots.includes('text')?'text':section.slots.includes('text1')?'text1':undefined;
+  const buttons=section.slots.filter(name=>['cta','cta1','cta2','btn1','btn2'].includes(name));
+  const media=hero?section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)):[];
+  const note=hero&&section.slots.includes('note');
+  const reserved=new Set(['title',...(textSlot?[textSlot]:[]),...buttons,...media,...(note?['note']:[])]);
+  const others=section.slots.filter(name=>!reserved.has(name));
+  return {hero,headline,textSlot,buttons,media,note,others};
+}
+
 export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll}: {
   snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean;
   simulation?:boolean; width?: number; keyboardScroll?:boolean;
@@ -151,12 +165,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
         <h2>No authored sections yet.</h2>
         <p>{standalone?'This saved portfolio has no authored sections.':'Add a section using Structure & layers to begin building your page.'}</p>
       </section>:sections.map((section,index)=>{
-        const headline=section.slots.includes('title');
-        const hero=['L1','L2','L5'].includes(section.renderId);
-        const others=section.slots.filter(name=>name!=='title'&&!['text','cta1','cta2','btn1','btn2'].includes(name));
-        const textSlot=section.slots.includes('text')?'text':
-          section.slots.includes('text1')?'text1':undefined;
-        const buttons=section.slots.filter(name=>['cta','cta1','cta2','btn1','btn2'].includes(name));
+        const {hero,headline,textSlot,buttons,media,note,others}=canvasSlotGroups(section);
         return <section key={section.id} className={'pv-section pv-layout-'+section.renderId+(hero?' pv-hero':' pv-content-section')}
           aria-label={'Portfolio section '+(index+1)}>
           {hero?<div className="pv-hero-grid">
@@ -166,10 +175,13 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
               {textSlot&&<div className="pv-summary"><PortfolioSlot {...slotProps} section={section} name={textSlot}/></div>}
               <div className="pv-actions">{buttons.map(name=>
                 <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="action"/>)}</div>
-              {section.slots.includes('note')&&<div className="pv-hero-note"><PortfolioSlot {...slotProps} section={section} name="note" kind="tag"/></div>}
+              {note&&<div className="pv-hero-note"><PortfolioSlot {...slotProps} section={section} name="note" kind="tag"/></div>}
+              {others.map(name=><div className="pv-slot-cell" key={name}>
+                <PortfolioSlot {...slotProps} section={section} name={name}/>
+              </div>)}
             </div>
-            {section.slots.some(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name))?
-              <div className="pv-hero-art">{section.slots.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)).map(name=>
+            {media.length>0?
+              <div className="pv-hero-art">{media.map(name=>
                 <PortfolioSlot {...slotProps} section={section} key={name} name={name} kind="media"/>)}</div>:
               <div className="pv-hero-art" aria-hidden="true"><div className="pv-art-arc"/><div className="pv-art-fold"/></div>}
           </div>:<>
@@ -179,7 +191,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
             </div>
             {textSlot&&<div className="pv-summary"><PortfolioSlot {...slotProps} section={section} name={textSlot}/></div>}
             <div className={'pv-section-slots pv-section-slots-'+section.renderId}>
-              {others.filter(name=>name!==textSlot).map(name=>{
+              {others.map(name=>{
                 const media=/^(image|imageA|imageB|media|avatar|thumbs)$/i.test(name);
                 return <div className={'pv-slot-cell'+(media?' pv-media-cell':'')} key={name}>
                   <PortfolioSlot {...slotProps} section={section} name={name} kind={media?'media':'copy'}/>
@@ -567,7 +579,15 @@ export type LayoutToolsIntent=
       confirmStash:boolean;confirmOwnedRelocation:boolean})
   | {kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
       expectedRevision:number;confirmOwnedRelocation:boolean};
-type LayoutPlanFlags={requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean};
+type LayoutPlanRow={fromSlotKey:string;toSlotKey:string|null;componentId:string;
+  state:Assignment['state'];fields:string[];sourcePath?:string;sourceBytes?:number;
+  disposition:'retain'|'move'|'stash'|'relocate'};
+/** Additive details match the now-exported S3 LayoutChangePlan, without
+ * breaking the agreed flags-only structural parent interface. */
+type LayoutPlanFlags={requiresStashConfirmation:boolean;requiresOwnedRelocationConfirmation:boolean;
+  expectedRevision?:number;sectionId?:string;expectedLayout?:string;targetLayout?:string;
+  rows?:LayoutPlanRow[];targetKeys?:string[];emptyTargetKeys?:string[];stashedKeys?:string[];
+  addedFiles?:number;addedStashAssignments?:number};
 export type LayoutToolsProps={
   head:EditorHead;sectionId:string;blocked:boolean;
   planLayout:(head:EditorHead,request:LayoutMappingRequest)=>LayoutPlanFlags;
@@ -647,13 +667,16 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
     draft.expectedLayout===section.layout&&sameWorkingHead(draft.head,head);
   const sourceSection=draft?canvasSections(draft.head.snapshot).find(item=>item.id===draft.sectionId):undefined;
   const sourceSlots=sourceSection?sourceSection.slots.map(name=>({name,key:layoutSlotKey(sourceSection.id,name)})):[];
-  const targetSlots=draft?(portfolioLayout(draft.targetLayout)?.slots??[]).
-    map(name=>({name,key:layoutSlotKey(draft.sectionId,name)})):[];
+  const targetManifest=draft?portfolioLayout(draft.targetLayout):undefined;
+  const targetSlots=draft?(targetManifest?.slots??[]).
+    map(name=>({name,key:layoutSlotKey(draft.sectionId,name),required:targetManifest?.required.includes(name)===true})):[];
   const assignedKeys=sourceSlots.filter(item=>{
     const assignment=draft&&ownAssignment(draft.head.snapshot,item.key);
     return !!assignment&&assignment.state!=='EMPTY';
   }).map(item=>item.key);
   const mappings=draft?explicitLayoutMappings(assignedKeys,targetSlots.map(item=>item.key),draft.choices):null;
+  const requiredUnfilled=targetSlots.filter(item=>item.required&&
+    !assignedKeys.some(key=>draft?.choices[key]===item.key));
   const reviewCurrent=!!review&&draftCurrent&&review.draft===draft;
   const emptyTargets=sections.flatMap(item=>item.slots.map(name=>({
     key:layoutSlotKey(item.id,name),label:item.renderId+' · '+name+' ('+item.id+')'
@@ -707,6 +730,15 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
       const flags=planLayout(draft.head,request);
       if(typeof flags.requiresStashConfirmation!=='boolean'||typeof flags.requiresOwnedRelocationConfirmation!=='boolean'){
         setMessage('The authoritative layout plan is unavailable. No change was applied.');return;
+      }
+      if((flags.expectedRevision!==undefined&&flags.expectedRevision!==draft.head.revision)||
+        (flags.sectionId!==undefined&&flags.sectionId!==request.sectionId)||
+        (flags.expectedLayout!==undefined&&flags.expectedLayout!==request.expectedLayout)||
+        (flags.targetLayout!==undefined&&flags.targetLayout!==request.targetLayout)||
+        (flags.rows!==undefined&&(flags.rows.length!==request.mappings.length||
+          flags.rows.some((row,index)=>row.fromSlotKey!==request.mappings[index]?.fromSlotKey||
+            row.toSlotKey!==request.mappings[index]?.toSlotKey)))){
+        setMessage('The authoritative layout plan no longer matches the requested mapping. No change was applied.');return;
       }
       setReview({draft,request,flags});
     }catch{
@@ -787,13 +819,14 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
           <section aria-label="Proposed layout"><h4>Proposed · {layoutLabel(draft.targetLayout)}</h4>
             <ol>{targetSlots.map(item=>{
               const candidates=assignedKeys.filter(key=>draft.choices[key]===item.key);
-              return <li key={item.key}><strong>{item.name}</strong>
+              return <li key={item.key}><strong>{item.name}{item.required?' · Required for release':''}</strong>
                 {candidates.length===1?<AssignmentImpact assignment={ownAssignment(draft.head.snapshot,candidates[0]!)} snapshot={draft.head.snapshot}/>:
                   <p>{candidates.length?'Mapping conflict':'No assignment mapped; will be empty'}</p>}
               </li>;
             })}</ol>
           </section>
         </div>
+        {requiredUnfilled.length>0&&<p role="status">Required target slots not yet mapped: {requiredUnfilled.map(item=>item.name).join(', ')}. A draft may retain empty slots, but release needs separate preflight.</p>}
         <p>Slot structure comparison only. Responsive appearance and static export must be checked after the layout transaction; no source is executed here.</p>
         <fieldset disabled={blocked}>
           <legend>Map outgoing assignments</legend>
@@ -819,8 +852,21 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
         {review&&reviewCurrent&&<section aria-label="Layout change confirmation">
           <h4 ref={reviewTitle} tabIndex={-1}>Confirm layout transformation</h4>
           <p>Validated working revision {review.draft.head.revision}. {review.request.mappings.filter(row=>row.toSlotKey===null).length} assignments marked Unplaced.</p>
-          {review.request.mappings.filter(row=>row.toSlotKey===null).map(row=><p key={row.fromSlotKey}>
-            Stash full assignment: {row.fromSlotKey}</p>)}
+          <ul>{review.request.mappings.map((row,index)=>{
+            const detail=review.flags.rows?.[index];
+            return <li key={row.fromSlotKey}>
+              {row.fromSlotKey} → {row.toSlotKey??'Unplaced (full assignment)'}
+              {detail&&<span> · {detail.disposition} · {detail.componentId} ({detail.state})</span>}
+              {detail&&<p>Retained fields: {detail.fields.join(', ')||'None'}</p>}
+              {detail?.sourcePath&&<p>Original source: <code>{detail.sourcePath}</code>{detail.sourceBytes===undefined?'':' · '+detail.sourceBytes+' bytes'}</p>}
+              {row.toSlotKey&&row.toSlotKey!==row.fromSlotKey&&ownedAssignment(ownAssignment(review.draft.head.snapshot,row.fromSlotKey))?
+                <span> · Original owned file and outgoing assignment retained; new operation-specific file required</span>:null}
+            </li>;
+          })}</ul>
+          {review.flags.addedFiles!==undefined&&review.flags.addedStashAssignments!==undefined&&
+            <p>Planner impact: {review.flags.addedFiles} additional owned files; {review.flags.addedStashAssignments} additional stash assignments.</p>}
+          {review.flags.emptyTargetKeys!==undefined&&
+            <p>Empty targets after change: {review.flags.emptyTargetKeys.join(', ')||'None'}.</p>}
           {review.flags.requiresStashConfirmation&&<label><input type="checkbox" checked={confirmStash}
             disabled={blocked} onChange={event=>setConfirmStash(event.target.checked)}/> Confirm preservation of outgoing assignments in Unplaced</label>}
           {review.flags.requiresOwnedRelocationConfirmation&&<>
