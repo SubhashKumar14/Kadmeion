@@ -3519,3 +3519,71 @@ test('unmounted private analytics stays consent-off without collection after own
   await expect(page).toHaveURL(/\/app\/portfolios(?:[?#].*)?$/);
   expect(observed).toEqual([{classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}]);
 });
+
+test('B16 WF-001/002 R6 core registration creates exactly one owner and durable private profile without mailbox dependency',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Actual loopback GoTrue and PostgREST only.');
+  test.setTimeout(100_000);
+  const credentials={email:'r6-core-'+randomUUID()+'@testing.invalid',password:'LocalFixture!'+randomUUID()};
+  const handle='r6_'+randomUUID().slice(0,8),displayName='R6 registered owner';
+  const appUrl='http://127.0.0.1:5173';
+  let ownerId:string|null=null,signupPosts=0,verifiedReads=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin===origin&&url.pathname==='/auth/v1/signup'&&request.method()==='POST')signupPosts++;
+  });
+  page.on('response',async response=>{
+    const url=new URL(response.url());
+    if(url.origin!==origin||url.pathname!=='/auth/v1/user'||!response.ok())return;
+    const value=await response.json().catch(()=>null);
+    if(typeof value?.id==='string'&&/^[0-9a-f-]{36}$/i.test(value.id)){
+      ownerId=value.id;verifiedReads++;
+    }
+  });
+  // No admin-created signup fixture: complete the mounted form with a new email.
+  await page.goto('/signup');
+  await page.getByLabel('Display name',{exact:true}).fill(displayName);
+  await page.getByLabel('Preferred handle',{exact:true}).fill(handle);
+  await page.getByLabel('Email address',{exact:true}).fill(credentials.email);
+  await page.getByLabel('Create password',{exact:true}).fill(credentials.password);
+  await page.getByLabel('Confirm password',{exact:true}).fill(credentials.password);
+  await page.getByRole('button',{name:'Create account',exact:true}).click();
+  await expect(page).toHaveURL('/app');
+  await expect(page.getByRole('heading',{name:'A place for what you build next.'})).toBeVisible();
+  await expect.poll(()=>verifiedReads).toBeGreaterThan(0);
+  expect(signupPosts).toBe(1);
+  if(!ownerId)throw new Error('No verified signup owner.');
+  const id:string=ownerId;
+  const bootstrap=runLocalFixtureSql("select (select count(*) from auth.users where id=:'actor_id'::uuid)||':'||(select count(*) from public.profiles where user_id=:'actor_id'::uuid);",id);
+  expect(bootstrap).toBe('1:1');
+  await page.goto('/app/profile');
+  await expect(page.getByLabel('Display name',{exact:true})).toHaveValue(displayName);
+  const headline='R6 private durable headline';
+  await page.getByLabel('Headline',{exact:true}).fill(headline);
+  await page.getByRole('button',{name:'Save profile draft',exact:true}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  expect(runLocalFixtureSql("select headline from public.profiles where user_id=:'actor_id'::uuid;",id)).toBe(headline);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  const fresh=await browser.newPage({baseURL:appUrl});
+  try{
+    await fresh.goto('/signin');
+    await fresh.getByLabel('Email address').fill(credentials.email);
+    await fresh.locator('#signin-password').fill('Incorrect!'+randomUUID());
+    const denial=fresh.waitForResponse(r=>new URL(r.url()).origin===origin&&new URL(r.url()).pathname==='/auth/v1/token'&&r.request().method()==='POST');
+    await fresh.getByRole('button',{name:'Sign in',exact:true}).click();
+    expect((await denial).ok()).toBe(false);
+    await expect(fresh.getByRole('alert')).toContainText('Incorrect credentials or sign-in unavailable.');
+    await fresh.goto('/app/profile');
+    await expect(fresh.locator('.ws-shell')).toHaveCount(0);
+    await expect(fresh.getByLabel('Headline',{exact:true})).toHaveCount(0);
+    await signIn(fresh,credentials);
+    await fresh.goto('/app/profile');
+    await expect(fresh.getByLabel('Display name',{exact:true})).toHaveValue(displayName);
+    await expect(fresh.getByLabel('Headline',{exact:true})).toHaveValue(headline);
+    await fresh.reload();
+    await expect(fresh.getByLabel('Headline',{exact:true})).toHaveValue(headline);
+    await fresh.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(fresh).toHaveURL(/\/signin$/);
+  }finally{await fresh.close();}
+  expect(runLocalFixtureSql("select (select count(*) from auth.users where id=:'actor_id'::uuid)||':'||(select count(*) from public.profiles where user_id=:'actor_id'::uuid);",id)).toBe('1:1');
+});
