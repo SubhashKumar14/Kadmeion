@@ -146,21 +146,21 @@ begin
  select * into s from kadmeion_private.github_provider_state where link_id=l.id for update;
  if not found then
   if p_action='DISABLE' and p_expected_version=0 then return jsonb_build_object('status','NO_CHANGE','state',kadmeion_private.github_state_json(l,s,clock_timestamp()));end if;
-  if p_action<>'ENABLE' or p_expected_version<>0 then raise exception using errcode='40001',message='CONFLICT';end if;
+  if p_action<>'ENABLE' or p_expected_version<>0 then raise exception using errcode='PT409',message='CONFLICT';end if;
   insert into kadmeion_private.github_provider_state(link_id) values(l.id) returning * into s;
  end if;
  t:=clock_timestamp();
  if s.last_op=p_operation_id then
   if s.last_expected=p_expected_version and s.last_action=p_action and s.last_session=sess then return jsonb_build_object('status','REPLAYED','state',kadmeion_private.github_state_json(l,s,t));end if;
-  raise exception using errcode='40001',message='CONFLICT';
+  raise exception using errcode='PT409',message='CONFLICT';
  end if;
- if s.version<>p_expected_version then raise exception using errcode='40001',message='CONFLICT';end if;
+ if s.version<>p_expected_version then raise exception using errcode='PT409',message='CONFLICT';end if;
  if p_action='DISABLE' and not s.consent then return jsonb_build_object('status','NO_CHANGE','state',kadmeion_private.github_state_json(l,s,t));end if;
- if p_action<>'DISABLE' and s.version>=9007199254740990 then raise exception using errcode='40001',message='CONFLICT';end if;
+ if p_action<>'DISABLE' and s.version>=9007199254740990 then raise exception using errcode='PT409',message='CONFLICT';end if;
  if p_action='ENABLE' and not s.consent then s.consent:=true;s.status:='READY';
  elsif p_action='DISABLE' then s.consent:=false;s.status:='OFF';s.facts:=null;s.candidate:=null;s.candidate_expires_at:=null;s.attempt_id:=null;s.lease_until:=null;s.last_error:=null;s.last_attempt_at:=null;
  elsif p_action='CONFIRM' and s.consent and s.status='AWAITING_CONFIRMATION' and s.candidate_expires_at>t then s.facts:=s.candidate;s.candidate:=null;s.candidate_expires_at:=null;s.status:='SYNCED';s.last_error:=null;
- else raise exception using errcode='40001',message='CONFLICT';end if;
+ else raise exception using errcode='PT409',message='CONFLICT';end if;
  s.version:=s.version+1;s.last_op:=p_operation_id;s.last_expected:=p_expected_version;s.last_action:=p_action;s.last_session:=sess;
  update kadmeion_private.github_provider_state set version=s.version,consent=s.consent,status=s.status,facts=s.facts,candidate=s.candidate,candidate_expires_at=s.candidate_expires_at,attempt_id=s.attempt_id,lease_until=s.lease_until,last_error=s.last_error,last_attempt_at=s.last_attempt_at,last_op=s.last_op,last_expected=s.last_expected,last_action=s.last_action,last_session=s.last_session where link_id=l.id;
  return jsonb_build_object('status','APPLIED','state',kadmeion_private.github_state_json(l,s,t));
@@ -177,6 +177,8 @@ $$;
 revoke all on function public.change_owner_github_provider_consent(uuid,text,bigint,uuid,smallint),public.confirm_owner_github_provider_candidate(uuid,bigint,uuid,smallint) from public,anon,authenticated,service_role;
 grant execute on function public.change_owner_github_provider_consent(uuid,text,bigint,uuid,smallint),public.confirm_owner_github_provider_candidate(uuid,bigint,uuid,smallint) to authenticated;
 
+-- Domain revision conflicts are PT409, not PostgreSQL serialization failures.
+-- PostgREST must not automatically retry an intentionally rejected intent.
 -- Service-only claim consumes a single committed attempt and reserves the
 -- completion revision before any outbound I/O. Limited/replay never fetch.
 create function public.service_claim_github_provider_sync(p_owner_id uuid,p_session_id uuid,p_link_id uuid,p_action text,p_expected_version bigint,p_operation_id uuid,p_policy_version smallint) returns jsonb language plpgsql security definer set search_path='' set lock_timeout='250ms' as $$
@@ -186,17 +188,19 @@ begin
  if p_action is null or p_action not in('LOOKUP','SYNC') or p_policy_version is distinct from 1 or p_operation_id is null or p_expected_version is null or p_expected_version not between 0 and 9007199254740988 then raise exception using errcode='22023',message='INVALID';end if;
  perform kadmeion_private.github_lock_owner(p_owner_id,p_session_id,true);l:=kadmeion_private.github_lock_link(p_owner_id,p_link_id);
  select * into s from kadmeion_private.github_provider_state where link_id=l.id for update;
- if not found or not s.consent then raise exception using errcode='40001',message='CONFLICT';end if;
+ if not found or not s.consent then raise exception using errcode='PT409',message='CONFLICT';end if;
  t:=clock_timestamp();
  if s.last_op=p_operation_id then
-   if s.last_expected is distinct from p_expected_version or s.last_action is distinct from p_action or s.last_session is distinct from p_session_id then raise exception using errcode='40001',message='CONFLICT';end if;
+   if s.last_expected is distinct from p_expected_version or s.last_action is distinct from p_action or s.last_session is distinct from p_session_id then raise exception using errcode='PT409',message='CONFLICT';end if;
    -- An expired claim needs an authoritative read and a new explicit operation;
    -- never mint a replacement attempt or claim success at the old revision.
-   if s.status='PENDING' and s.lease_until<=t then raise exception using errcode='40001',message='CONFLICT';end if;
+   if s.status='PENDING' and s.lease_until<=t then raise exception using errcode='PT409',message='CONFLICT';end if;
    return jsonb_build_object('status',case when s.status='PENDING' then 'PENDING' else 'REPLAYED' end,'state',kadmeion_private.github_state_json(l,s,t),'attemptId',null,'handle',null);
  end if;
- if s.version<>p_expected_version or (p_action='LOOKUP' and (s.facts).provider_id is not null) or (p_action='SYNC' and (s.facts).provider_id is null) then raise exception using errcode='40001',message='CONFLICT';end if;
- if s.status='PENDING' and s.lease_until>t then raise exception using errcode='40001',message='CONFLICT';end if;
+ if s.version<>p_expected_version or (p_action='LOOKUP' and (s.facts).provider_id is not null) or (p_action='SYNC' and (s.facts).provider_id is null) then raise exception using errcode='PT409',message='CONFLICT';end if;
+ if (s.status='PENDING' and s.lease_until>t) or
+    (p_action='LOOKUP' and s.status='AWAITING_CONFIRMATION' and s.candidate_expires_at>t) then
+   raise exception using errcode='PT409',message='CONFLICT';end if;
  begin
    insert into kadmeion_private.github_owner_quota(owner_id,next_allowed_at) values(p_owner_id,'-infinity') on conflict(owner_id) do nothing;
    select * into q from kadmeion_private.github_owner_quota where owner_id=p_owner_id for update;
