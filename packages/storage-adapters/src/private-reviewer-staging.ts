@@ -8,6 +8,10 @@
  */
 import {ContractError} from '../../contracts/src/project.ts';
 import {createPrivateImmutableArtifact} from './private-immutable-artifact.ts';
+import {portfolioLayout} from '../../editor-core/src/managed-project-files.ts';
+import type {SafeSlotPlan,SafeSlotKind} from '../../editor-core/src/publish-preflight.ts';
+import type {PortfolioSnapshot} from '../../editor-core/src/portfolio-revision-transactions.ts';
+import type {PrivatePointerReceipt,PrivatePointerSnapshot} from '../../contracts/src/private-release-visibility-service.ts';
 import {bindPrivateArtifactToPointer, type PrivateBindingContext}
   from './private-artifact-pointer-binding.ts';
 
@@ -165,4 +169,138 @@ export async function stagePrivateReviewerArtifact(
     htmlSha256:bound.htmlSha256,alreadyStored:raw.alreadyStored,
     publicServingEnabled:false,publicUrl:null
   };
+}
+
+/** Server-side only. The request supplies identifiers, NEVER HTML or a plan. */
+export interface OwnerPublicStageRequest {
+  portfolioId:string;requestId:string;operationId:string;expectedGeneration:number;
+}
+export interface TrustedOwnerPublicStageContext {
+  /** Must verify the actual live owner JWT/session for this portfolio, not
+   * a caller identity string or a client boolean. */
+  isCurrentOwner():Promise<boolean>;
+  loader:PrivateBindingContext['loader'];
+  pointer:PrivateBindingContext['pointer'] & {
+    prepare(portfolioId:string,requestId:string,manifestSha256:string,
+      expectedGeneration:number,operationId:string):Promise<PrivatePointerReceipt>;
+  };
+  writer:PrivateBindingContext['writer'];
+  stageWriter:TrustedReviewerStageWriter;
+}
+export interface OwnerPublicStageReceipt {
+  status:'STAGED_PRIVATE';portfolioId:string;requestId:string;operationId:string;
+  generation:number;manifestSha256:string;htmlSha256:string;
+  alreadyStored:boolean;publicServingEnabled:false;publicUrl:null;
+}
+const safeKinds:Readonly<Record<string,SafeSlotKind>>={
+  'title-stacked@1':'heading','body-copy@1':'paragraph','external-link@1':'external-link',
+  'technology-tag@1':'badge','author-metric@1':'metric','skills-list@1':'list',
+  'project-card@1':'project-card','image@1':'image'
+};
+/** Same pinned layout/component rules as the owner preflight. Unknown owned
+ * source is not a renderable component; the preflight must reject it. */
+function trustedPublicStagePlan(snapshot:PortfolioSnapshot):SafeSlotPlan[]{
+  const file=snapshot.files['pages/home.page.json'];
+  if(!file)return [];
+  const page=JSON.parse(file) as {sections?:{id?:unknown;layout?:unknown}[]};
+  if(!Array.isArray(page.sections))return [];
+  return page.sections.flatMap(section=>{
+    if(!section||typeof section.id!=='string'||typeof section.layout!=='string')return [];
+    const layout=portfolioLayout(section.layout);
+    if(!layout)return [];
+    return layout.slots.map(slot=>{
+      const slotKey=section.id+'-'+slot.toLowerCase(),assigned=snapshot.slots[slotKey]?.componentId;
+      const kind=assigned&&Object.hasOwn(safeKinds,assigned)?safeKinds[assigned]:undefined;
+      return {slotKey,componentId:kind&&assigned?assigned:'body-copy@1',kind:kind??'paragraph',
+        required:layout.required.includes(slot)};
+    });
+  });
+}
+/**
+ * Actual trusted text-only prepare -> bind -> stage, with owner-scoped read
+ * and atomic pointer CAS. Call from an authenticated server entry with
+ * least-privileged direct SQL writer. No HTML/manifest/plan from the caller.
+ * A retry must preserve expectedGeneration and operationId. Failed staging
+ * is not publication; an older verified live route is not withdrawn here.
+ */
+export async function prepareAndStageOwnerPublicCandidate(request:OwnerPublicStageRequest,
+  ctx:TrustedOwnerPublicStageContext):Promise<OwnerPublicStageReceipt>{
+  if(!request||!UUID.test(request.portfolioId)||!UUID.test(request.requestId)||!UUID.test(request.operationId)||
+    !Number.isSafeInteger(request.expectedGeneration)||request.expectedGeneration<0||
+    request.expectedGeneration>=Number.MAX_SAFE_INTEGER-1||typeof ctx?.isCurrentOwner!=='function')
+    throw new PrivateReviewerStagingError('INVALID_INPUT');
+  const target=Object.freeze({...request});
+  const requiredGeneration=target.expectedGeneration+1;
+  const check=async()=>{
+    if(!await ctx.isCurrentOwner())throw new PrivateReviewerStagingError('UNCONFIRMED');
+  };
+  await check();
+  const loaded=await ctx.loader.load(target.requestId);
+  await check();
+  if(loaded.frozen.portfolioId!==target.portfolioId||loaded.loadedPortfolioId!==target.portfolioId||
+     loaded.frozen.visibilityIntent!=='PUBLIC'||loaded.frozen.status!=='FROZEN'||loaded.frozen.publicUrl!==null)
+    throw new PrivateReviewerStagingError('INVALID_INPUT');
+  const plan=trustedPublicStagePlan(loaded.snapshot);
+  const artifact=await createPrivateImmutableArtifact({...loaded,plan});
+  await check();
+  const before=await ctx.pointer.read(target.portfolioId);
+  await check();
+  if(before.portfolioId!==target.portfolioId||
+     !(before.generation===target.expectedGeneration||
+       (before.generation===requiredGeneration&&before.status==='PREPARED_PRIVATE'&&
+        before.candidateRequestId===target.requestId&&before.candidateManifestSha256===artifact.manifestSha256)))
+    throw new PrivateReviewerStagingError('UNCONFIRMED');
+  // Even a matching prepared pointer is not proof that this operation
+  // produced it. SQL checks the exact operation replay and CAS.
+  const prepared=await ctx.pointer.prepare(target.portfolioId,target.requestId,
+    artifact.manifestSha256,target.expectedGeneration,target.operationId);
+  await check();
+  if(prepared.portfolioId!==target.portfolioId||prepared.status!=='PREPARED_PRIVATE'||
+     prepared.generation!==requiredGeneration||typeof prepared.alreadyRecorded!=='boolean'||
+     prepared.publicServingEnabled!==false||prepared.publicUrl!==null||prepared.hostRevocationVerified!==false)
+    throw new PrivateReviewerStagingError('INVALID_ACK');
+  const readExact=async(id:string):Promise<PrivatePointerSnapshot>=>{
+    await check();
+    if(id!==target.portfolioId)throw new PrivateReviewerStagingError('INVALID_INPUT');
+    const row=await ctx.pointer.read(id);
+    await check();
+    if(row.portfolioId!==id||row.status!=='PREPARED_PRIVATE'||row.generation!==requiredGeneration||
+       row.candidateRequestId!==target.requestId||row.candidateManifestSha256!==artifact.manifestSha256||
+       row.revocationGeneration>=requiredGeneration||row.publicServingEnabled!==false||
+       row.publicUrl!==null||row.hostRevocationVerified!==false)
+      throw new PrivateReviewerStagingError('UNCONFIRMED');
+    return row;
+  };
+  const staged=await stagePrivateReviewerArtifact({
+    portfolioId:target.portfolioId,requestId:target.requestId,plan,
+    loader:{load:async id=>{
+      if(id!==target.requestId)throw new PrivateReviewerStagingError('INVALID_INPUT');
+      await check();
+      const pin=await ctx.loader.load(id);
+      await check();
+      if(pin.loadedPortfolioId!==target.portfolioId||pin.loadedRevision!==loaded.loadedRevision||
+         pin.loadedSnapshotSha256!==loaded.loadedSnapshotSha256||pin.frozen.visibilityIntent!=='PUBLIC')
+        throw new PrivateReviewerStagingError('INTEGRITY');
+      return pin;
+    }},
+    pointer:{read:readExact},
+    writer:{bindPrivateArtifact:async input=>{
+      await check();
+      if(input.requestId!==target.requestId||input.expectedGeneration!==requiredGeneration)
+        throw new PrivateReviewerStagingError('INVALID_INPUT');
+      const result=await ctx.writer.bindPrivateArtifact(input);await check();return result;
+    }}
+  },{store:async input=>{
+    await check();
+    if(input.requestId!==target.requestId||input.generation!==requiredGeneration)
+      throw new PrivateReviewerStagingError('INVALID_INPUT');
+    const result=await ctx.stageWriter.store(input);await check();return result;
+  }});
+  await readExact(target.portfolioId);
+  if(staged.requestId!==target.requestId||staged.generation!==requiredGeneration||
+     staged.htmlSha256!==artifact.manifest.files[0].sha256)
+    throw new PrivateReviewerStagingError('INVALID_ACK');
+  return {status:'STAGED_PRIVATE',portfolioId:target.portfolioId,requestId:target.requestId,
+    operationId:target.operationId,generation:requiredGeneration,manifestSha256:artifact.manifestSha256,
+    htmlSha256:staged.htmlSha256,alreadyStored:staged.alreadyStored,publicServingEnabled:false,publicUrl:null};
 }
