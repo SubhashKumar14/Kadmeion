@@ -252,3 +252,17 @@ test('C13 multi-chunk bytes enforce exact declared identity length and preserve 
     assert.equal(f.calls(),1);
   }
 });
+
+test('C13 absent consent version zero cannot claim a persisted update or acknowledge a mutation',async()=>{
+  for(const updatedAt of [stamp,'2026-11-18T12:00:00.000001Z']){
+    const read=fixture(()=>response({...state,updatedAt}));
+    await assert.rejects(read.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+    assert.equal(read.calls(),1);
+    const mutation=fixture(()=>response({...receipt,updatedAt}));
+    await assert.rejects(mutation.service.changeOwnerAnalytics(change),{code:'INVALID_RESPONSE'});
+    assert.equal(mutation.calls(),1);
+  }
+  const persisted={...state,version:1,updatedAt:stamp};
+  assert.deepEqual(await fixture(()=>response(persisted)).service.getOwnerAnalyticsState(portfolio),persisted);
+  assert.deepEqual(await fixture(()=>response(state)).service.getOwnerAnalyticsState(portfolio),state);
+});
