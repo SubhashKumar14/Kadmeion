@@ -2343,10 +2343,10 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
       .finally(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)setCatalogueBusy(false);});
     return ()=>{active=false;};
   },[port,id,ownerKey,catalogueAttempt]);
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     setFrozenReceipt(null);setFrozenError('');
-    if(!ownerKey||!selectedFrozen)return;
-    const choice=catalogue&&catalogue.ownerKey===ownerKey?catalogue.rows.find(row=>row.requestId===selectedFrozen):undefined;
+    if(!ownerKey||!selectedFrozen||!catalogue||catalogue.ownerKey!==ownerKey)return;
+    const choice=catalogue.rows.find(row=>row.requestId===selectedFrozen);
     if(!choice){setFrozenError('Selected frozen request is unavailable. Choose a verified request again.');return;}
     const epoch=port.getOwnerSessionEpoch();
     let active=true;
@@ -2370,7 +2370,12 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
     })();
     return ()=>{active=false;};
   },[port,id,ownerKey,selectedFrozen,catalogue,frozenAttempt]);
-  const frozen=frozenReceipt?.ownerKey===ownerKey&&frozenReceipt?.request.requestId===selectedFrozen?frozenReceipt:null;
+  const selectedRequest=catalogue?.ownerKey===ownerKey?catalogue?.rows.find(row=>row.requestId===selectedFrozen):undefined;
+  const frozen=frozenReceipt&&selectedRequest&&frozenReceipt.ownerKey===ownerKey&&
+    frozenReceipt.request.requestId===selectedRequest.requestId&&
+    frozenReceipt.request.revision===selectedRequest.revision&&
+    frozenReceipt.request.snapshotSha256===selectedRequest.snapshotSha256&&
+    frozenReceipt.request.visibilityIntent===selectedRequest.visibilityIntent?frozenReceipt:null;
   const previewSnapshot=selectedFrozen?frozen?.snapshot??null:record?.snapshot??null;
   const previewTitle=frozen?(readSeoFields(frozen.snapshot).title||'Frozen private portfolio'):record?.title??'Portfolio preview';
   const reviewMedia=privateMedia&&(!selectedFrozen||frozen)?
@@ -2412,7 +2417,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
               <option key={row.requestId} value={row.requestId}>Frozen revision {row.revision} · {row.visibilityIntent} · {row.snapshotSha256.slice(0,10)}</option>)}
           </select>
           <button type="button" className="ws-secondary" disabled={catalogueBusy}
-            onClick={()=>setCatalogueAttempt(n=>n+1)}>{catalogueBusy?'Checking frozen revisions…':catalogue?'Refresh frozen revisions':'Load frozen revisions'}</button>
+            onClick={()=>{setCatalogue(null);setFrozenReceipt(null);setFrozenError('');setCatalogueAttempt(n=>n+1);}}>{catalogueBusy?'Checking frozen revisions…':catalogue?'Refresh frozen revisions':'Load frozen revisions'}</button>
           {catalogueError&&<p role="alert">{catalogueError}</p>}
           {catalogue&&catalogue.ownerKey===ownerKey&&catalogue.rows.length===0&&<p>No private frozen revisions are available.</p>}
           {frozen&&<p>Verified frozen snapshot SHA-256: <code style={{overflowWrap:'anywhere'}}>{frozen.request.snapshotSha256}</code></p>}
@@ -2447,13 +2452,13 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         <div className="ws-preview-stage">
           {previewSnapshot?<PortfolioCanvas snapshot={previewSnapshot} title={previewTitle}
             simulation={view==='visitor'} privateMedia={view==='author'?reviewMedia:undefined} width={device||undefined}/>:
-            frozenError?<div role="alert" className="ws-inline-alert">{frozenError}
-              <button type="button" className="ws-secondary" onClick={()=>setFrozenAttempt(n=>n+1)}>Retry frozen revision</button></div>:
+            (frozenError||catalogueError)?<div role="alert" className="ws-inline-alert">{frozenError||catalogueError}
+              <button type="button" className="ws-secondary" onClick={()=>{setFrozenReceipt(null);if(catalogueError){setCatalogue(null);setCatalogueAttempt(n=>n+1);}else setFrozenAttempt(n=>n+1);}}>Retry frozen revision</button></div>:
               <p role="status">Verifying the selected frozen snapshot…</p>}
         </div>
         <p className="ws-preview-caution" role="status">{view==='visitor'
           ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
-          : 'Private author preview of the '+(selectedFrozen?'selected frozen revision':'saved revision')+'. Verified owner-private images may be shown. A frozen image requires a matching server pin and independent static artifact verification; no draft is published here.'}</p>
+          : 'Private author preview. Showing the '+(selectedFrozen?'selected frozen revision':'saved revision')+'. Verified owner-private images may be shown. A frozen image requires a matching server pin and independent static artifact verification; no draft is published here.'}</p>
       </div>
       <aside className="ws-preview-checklist" aria-label="Private release checklist">
         <p className="ws-kicker">PREVIEW CHECKLIST</p>
