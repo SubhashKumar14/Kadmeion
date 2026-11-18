@@ -1352,6 +1352,15 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
     event.dataTransfer.setData('text/plain','kadmeion-editor-drag');
   }
   function finishDrag(){drag.current=null;setDragging(null);}
+  function allowPinDrop(event:DragEvent<HTMLElement>,key:string){
+    const item=drag.current;
+    if(!item||item.kind!=='pin'||blocked||review||!sameWorkingHead(item.head,head))return;
+    const rule=placementRule(head.snapshot,key,item.id);
+    if(rule==='incompatible'||rule==='same')return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect='move';
+  }
   function pinDrop(event:DragEvent<HTMLElement>,key:string){
     const item=drag.current;finishDrag();
     if(!item||item.kind!=='pin')return;
@@ -1418,7 +1427,8 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
         const fit=rule==='empty'||rule==='replace'||rule==='owned';
         return <li key={item.key} data-drop-fit={fit?'compatible':undefined}
           style={fit?{outline:'2px dashed currentColor',outlineOffset:'2px'}:undefined}
-          onDragOver={event=>{if(liveDrag?.kind==='pin'){event.preventDefault();event.dataTransfer.dropEffect=fit?'move':'none';}}}
+          onDragEnter={event=>allowPinDrop(event,item.key)}
+          onDragOver={event=>allowPinDrop(event,item.key)}
           onDrop={event=>pinDrop(event,item.key)}>
           <button type="button" aria-pressed={target===item.key} disabled={blocked}
             onClick={()=>{setTarget(item.key);setReview(null);}}>{item.label} · {head.snapshot.slots[item.key]?.state==='EMPTY'?'EMPTY':head.snapshot.slots[item.key]?.state}</button>
