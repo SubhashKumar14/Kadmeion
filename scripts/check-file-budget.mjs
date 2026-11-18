@@ -18,6 +18,9 @@ const authorizedAdditionPaths = [
   // S15-013 / S00-016: isolated C13 S12/S13 service and test only.
   'packages/contracts/src/private-analytics-service.ts',
   'tests/contracts/private-analytics.test.ts',
+  // EVENT-019: previously reserved C12 isolated owner service and independent fixture.
+  'packages/contracts/src/private-provider-facts-service.ts',
+  'tests/contracts/private-provider-facts.test.ts',
 ];
 const reservedAdditions = new Set(authorizedAdditionPaths);
 // Exact reservations must not collide with the grandfathered baseline or each other.
