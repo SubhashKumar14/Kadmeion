@@ -44,6 +44,7 @@ function samePreparedPointer(a:PrivatePointerSnapshot,b:PrivatePointerSnapshot):
 type SnapshotDelta={key:string;kind:'Added'|'Removed'|'Changed';beforeBytes:number|null;afterBytes:number|null;fields?:string[]};
 type FrozenComparison={
   requestId:string; frozenRevision:number; draftRevision:number;
+  targetKind:'SAVED_DRAFT'|'FROZEN';targetRequestId?:string;
   files:SnapshotDelta[];slots:SnapshotDelta[];stashes:SnapshotDelta[];
   frozenSnapshot:PortfolioSnapshot;draftSnapshot:PortfolioSnapshot;title:string;
 };
@@ -152,6 +153,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [historySelectionError,setHistorySelectionError]=useState('');
   const [result,setResult]=useState<SafePreviewResult|null>(null);
   const [comparison,setComparison]=useState<FrozenComparison|null>(null);
+  const [comparisonTarget,setComparisonTarget]=useState('');
   const [editableConsent,setEditableConsent]=useState<string|null>(null);
   const [sourceArchiveSha,setSourceArchiveSha]=useState<{requestId:string;sha256:string}|null>(null);
   const [staticArchiveSha,setStaticArchiveSha]=useState<{requestId:string;sha256:string;htmlSha256:string}|null>(null);
@@ -204,7 +206,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setSelectedRevision(null);setRevisionError('');setPointer(null);
     setVisibility('UNLISTED');setFrozen(null);setPinnedPreviewReceipt(null);
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setGrants(null);setRevokedGrantIds(new Set());setGrantListError('');
     setConfirmRevoke(false);setConfirmBlock(null);setNotice('');setError('');setBusy(false);
     operation.current=null;grantOperation.current=null;blockOperation.current=null;actionFlight.current=null;
@@ -219,7 +221,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!active) return;
         if (!reply.data) {setError(reply.error?.message ?? 'Portfolio unavailable.');return;}
         setRecord(reply.data);
-        setComparison(previous=>previous&&previous.draftRevision!==reply.data!.revision?null:previous);
+        setComparison(previous=>previous?.targetKind==='SAVED_DRAFT'&&previous.draftRevision!==reply.data!.revision?null:previous);
         if (mode==='staging'||mode==='publish'||mode==='releases') {
           setReadPhase('revisions');
           const saved=await port.listOwnerPortfolioRevisions(id);
@@ -321,11 +323,42 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       if(draft.data.revision===frozen.revision&&canonicalValue(before)!==canonicalValue(after))
         throw new Error('Same-revision snapshots disagree.');
       setComparison({requestId:frozen.requestId,frozenRevision:frozen.revision,
-        draftRevision:draft.data.revision,files:snapshotDelta(before.files,after.files),
+        draftRevision:draft.data.revision,targetKind:'SAVED_DRAFT',files:snapshotDelta(before.files,after.files),
         slots:snapshotDelta(before.slots,after.slots),stashes:snapshotDelta(before.stashes,after.stashes),
         frozenSnapshot:before,draftSnapshot:after,title:draft.data.title});
     }catch{
       if(current())setError('The frozen revision and current saved draft could not both be verified. No comparison was produced.');
+    }finally{finish();}
+  }
+
+  /** A historical comparison reads both actual immutable owner pins.
+   * Neither historical acknowledgement nor private candidate means live. */
+  async function compareFrozenHistory(){
+    if(mode!=='releases'||!frozen||!record||readsBusy||historySelection!==null||ackSelection!==null)return;
+    const known=frozenRequests?.filter(item=>item.requestId===comparisonTarget)??[];
+    const target=known.length===1?known[0]:undefined;
+    if(!target||target.requestId===frozen.requestId||target.portfolioId!==id||target.status!=='FROZEN')return;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
+    setBusy(true);setComparison(null);setError('');setNotice('');
+    try{
+      const before=await port.loadOwnerFrozenRelease(frozen.requestId);
+      if(!current())return;
+      if(frozen.portfolioId!==id||!matchesFrozenPin(before.data,frozen))throw new Error('Selected frozen pin not verified.');
+      const after=await port.loadOwnerFrozenRelease(target.requestId);
+      if(!current())return;
+      if(!matchesFrozenPin(after.data,target))throw new Error('Comparison frozen pin not verified.');
+      if(before.data.loadedRevision===after.data.loadedRevision&&
+         (before.data.loadedSnapshotSha256!==after.data.loadedSnapshotSha256||
+          canonicalValue(before.data.snapshot)!==canonicalValue(after.data.snapshot)))
+        throw new Error('Same-revision pins disagree.');
+      const a=before.data.snapshot,b=after.data.snapshot;
+      setComparison({requestId:frozen.requestId,frozenRevision:frozen.revision,
+        draftRevision:target.revision,targetKind:'FROZEN',targetRequestId:target.requestId,
+        files:snapshotDelta(a.files,b.files),slots:snapshotDelta(a.slots,b.slots),
+        stashes:snapshotDelta(a.stashes,b.stashes),frozenSnapshot:a,draftSnapshot:b,title:record.title});
+    }catch{
+      if(current())setError('Both exact owner-private frozen revisions could not be verified. No historical comparison was produced.');
     }finally{finish();}
   }
 
@@ -560,7 +593,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   async function selectFrozenRequest(request:OwnerFrozenRequest){
     if (readsBusy||actionFlight.current!==null) return;
     setAckSelection(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     const visible=revisions?.find(item=>item.revision===request.revision);
     if (request.portfolioId!==id||request.status!=='FROZEN'||
         (visible!==undefined&&visible.snapshotSha256!==request.snapshotSha256)) {
@@ -613,7 +646,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     const epoch=++historySelectionEpoch.current;
     setHistorySelection(null);setAckSelection(row);setHistorySelectionPending(true);setHistorySelectionError('');
     setFrozen(null);setPinnedPreviewReceipt(null);setPinnedPreviewError('');setResult(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setConfirmRevoke(false);setError('');setNotice('');
     try{
       const response=await port.loadOwnerFrozenRelease(row.requestId);
@@ -641,7 +674,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   function cancelHistoricalSelection(){
     historySelectionEpoch.current+=1;
     setHistorySelection(null);setAckSelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     // Returning to the saved draft requires an explicit, listed selection;
     // do not leave an older absent-in-list revision silently selected.
     setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
@@ -881,7 +914,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   historySelectionEpoch.current+=1;
                   setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
                   setFrozen(null);setResult(null);setGrant(null);setConfirmRevoke(false);
-                  setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+                  setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
                   setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
                     ? record!.revision : null);
                   operation.current=null;grantOperation.current=null;
@@ -990,6 +1023,21 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <p>Compare the immutable pin with the latest saved owner draft, not a live website. Unsaved changes are excluded.</p>
             <button className="ws-secondary" type="button" disabled={readsBusy} onClick={()=>void compareFrozenWithSaved()}>
               {busy?'Checking…':'Compare frozen revision with saved draft'}</button>
+            {mode==='releases'&&<div className="ws-release-action" role="group" aria-label="Compare historical frozen revisions">
+              <h4>Compare with another frozen request</h4>
+              <p>Both immutable snapshots are loaded again from the owner service. This is not a live-site comparison or a rollback.</p>
+              <label>Other frozen request
+                <select aria-label="Other frozen request" value={comparisonTarget}
+                  disabled={readsBusy||!frozenRequests?.some(item=>item.requestId!==frozen.requestId)}
+                  onChange={event=>{if(actionFlight.current===null){setComparisonTarget(event.target.value);setComparison(null);}}}>
+                  <option value="">Select a different frozen request</option>
+                  {frozenRequests?.filter(item=>item.requestId!==frozen.requestId).map(item=>
+                    <option key={item.requestId} value={item.requestId}>Revision {item.revision} · {item.requestId.slice(0,8)}</option>)}
+                </select>
+              </label>
+              <button className="ws-secondary" type="button" disabled={readsBusy||!comparisonTarget}
+                onClick={()=>void compareFrozenHistory()}>Compare two frozen requests</button>
+            </div>}
             {comparison?.requestId===frozen.requestId&&<FrozenComparisonResults comparison={comparison}/>}
           </section>}
         {(mode==='publish'||mode==='releases')&&frozen&&!historySelection&&
@@ -1246,10 +1294,11 @@ function FrozenArchiveReopen({port,request,disabled,kind}:{
 }
 
 function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
+  const targetLabel=comparison.targetKind==='FROZEN'?'Frozen revision':'Saved draft revision';
   const groups=[['Project files',comparison.files],['Component slots',comparison.slots],
     ['Stash entries',comparison.stashes]] as const;
   return <div className="ws-release-diagnostics" aria-label="Verified private snapshot comparison">
-    <p role="status">Private frozen revision {comparison.frozenRevision} compared with saved draft revision {comparison.draftRevision}.</p>
+    <p role="status">Private frozen revision {comparison.frozenRevision} compared with {targetLabel.toLowerCase()} {comparison.draftRevision}.</p>
     {groups.map(([name,items])=><details key={name}>
       <summary>{name}: {items.length} {items.length===1?'difference':'differences'}</summary>
       {items.length?<ul>{items.map(item=><li key={item.key}><strong>{item.kind}</strong> · <code style={{overflowWrap:'anywhere'}}>{item.key}</code>
@@ -1264,7 +1313,7 @@ function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
       <p>Read-only simulations of saved snapshots using the current portfolio title. Custom source is never executed here.</p>
       <h4>Frozen revision {comparison.frozenRevision}</h4>
       <div className="ws-release-visual-canvas"><PortfolioCanvas snapshot={comparison.frozenSnapshot} title={comparison.title} simulation keyboardScroll/></div>
-      <h4>Saved draft revision {comparison.draftRevision}</h4>
+      <h4>{targetLabel} {comparison.draftRevision}</h4>
       <div className="ws-release-visual-canvas"><PortfolioCanvas snapshot={comparison.draftSnapshot} title={comparison.title} simulation keyboardScroll/></div>
     </details>
   </div>;
