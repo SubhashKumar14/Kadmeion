@@ -67,6 +67,14 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [saving,setSaving]=useState(false);
   const creationInFlight=useRef(false);
   const creationAttempt=useRef(0);
+  const [unconfirmed,setUnconfirmed]=useState<NewPrivateProject|null>(null);
+  const uncertainCreate=useRef<NewPrivateProject|null>(null);
+  const scanCursor=useRef<ProjectCursor|null>(null);
+  const scanSeen=useRef(new Set<string>());
+  const [confirmedProject,setConfirmedProject]=useState<string|null>(null);
+  const [existingProject,setExistingProject]=useState<string|null>(null);
+  function clearUncertain(){uncertainCreate.current=null;setUnconfirmed(null);scanCursor.current=null;scanSeen.current.clear();setExistingProject(null);}
+  function markUncertain(value:NewPrivateProject){clearUncertain();uncertainCreate.current=value;setUnconfirmed(value);}
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const modal=useRef<HTMLDialogElement>(null);
@@ -88,7 +96,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setDraft(freshDraft());
     setCustomSlug(false);
     setError('');
-    setNotice('');
+    setNotice('');setConfirmedProject(null);clearUncertain();
     modal.current?.close();
     setState({status:'error',message:accountChangedMessage});
   }
@@ -256,13 +264,14 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current)return;
+    if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current||uncertainCreate.current)return;
     creationInFlight.current=true;
     const attempt=++creationAttempt.current;
     const sessionEpoch=port.getOwnerSessionEpoch();
     const submitted={...draft};
     const stillCurrent=()=>attempt===creationAttempt.current&&currentOwner();
-    setSaving(true);setError('');setNotice('');
+    setSaving(true);setError('');setNotice('');setConfirmedProject(null);
+    let dispatched=false;
     try {
       const identity=await port.getUser();
       if(!stillCurrent())return;
@@ -273,6 +282,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         invalidateOwner();
         return;
       }
+      dispatched=true;
       const saved=await port.createPrivateProject(submitted);
       if(!stillCurrent())return;
       if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
@@ -283,23 +293,17 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       if(saved.error||!saved.data) {
-        setError(saved.error?.message||'Private project save was not confirmed. Your form is retained.');
+        markUncertain(submitted);
+        setError(saved.error?.message||'Private project save was not confirmed. Check saved projects before another write.');
         return;
       }
       // Reload the owner-bound first page after a confirmed create. Do not
       // mix an optimistic record with a stale cursor or a previous owner.
-      requestEpoch.current++;
-      pageInFlight.current=false;
-      setState({status:'loading'});
-      setPageError('');
-      setReload(value=>value+1);
-      modal.current?.close();
-      setDraft(freshDraft());setCustomSlug(false);
-      setNotice('Saved privately in your account. This did not publish or connect a repository.');
+      completeCreate(saved.data.id,'Saved privately in your account. This did not publish or connect a repository.');
     } catch {
       if(stillCurrent()) {
         if(port.getOwnerSessionEpoch()!==sessionEpoch) invalidateOwner();
-        else setError('Project creation could not be verified. Your form values are retained.');
+        else {if(dispatched)markUncertain(submitted);setError('Project creation could not be verified. Your form values are retained.');}
       }
     } finally {
       if(stillCurrent()) {
@@ -307,6 +311,53 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         setSaving(false);
       }
     }
+  }
+  function completeCreate(id:string,message:string){
+    clearUncertain();setConfirmedProject(id);requestEpoch.current++;pageInFlight.current=false;
+    setState({status:'loading'});setPageError('');setReload(value=>value+1);
+    modal.current?.close();setDraft(freshDraft());setCustomSlug(false);setNotice(message);
+  }
+  async function checkCreatedProject(){
+    const submitted=uncertainCreate.current;
+    if(!submitted||!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current)return;
+    const read=(port as ProjectPagePort).listOwnerProjectsPage;
+    if(typeof read!=='function'){setError('The private project lookup is unavailable. Your draft is retained.');return;}
+    const ownerId=state.ownerId,attempt=++creationAttempt.current;
+    const valid=()=>attempt===creationAttempt.current&&currentOwner();
+    creationInFlight.current=true;setSaving(true);setError('');setExistingProject(null);
+    try{
+      const identity=await port.getUser();if(!valid())return;
+      if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      for(let index=0;index<10;index++){
+        const cursor:ProjectCursor|null=scanCursor.current;
+        const key=cursor?JSON.stringify([cursor.updatedAt,cursor.id]):'first';
+        if(scanSeen.current.has(key)){setError('The lookup cursor repeated. Refresh the project lookup before retrying.');return;}
+        const response:AuthOutcome<ProjectPage>=await read.call(port,PAGE_SIZE,cursor);
+        if(!valid())return;
+        const owner=await port.getUser();if(!valid())return;
+        if(owner.error||owner.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(response.error||!response.data||!validProjectPage(response.data,ownerId,cursor)){
+          setError('Saved project lookup could not be verified. Your draft is retained; retry the lookup.');return;
+        }
+        const page:ProjectPage=response.data;
+        const existing=page.items.find(item=>item.slug===submitted.slug.trim());
+        if(existing){
+          const normalizedUrl=(value:string|null)=>value?new URL(value).href:null;
+          let same=false;
+          try{same=existing.revision===0&&existing.title===submitted.title.trim()&&
+            existing.summary===submitted.summary.trim()&&existing.description===''&&
+            existing.repositoryUrl===normalizedUrl(submitted.repositoryUrl)&&existing.liveUrl===normalizedUrl(submitted.liveUrl);}catch{/* do not infer a match */}
+          if(same){completeCreate(existing.id,'The requested private project matches a saved record. No additional write was made.');return;}
+          setExistingProject(existing.id);setError('This private slug is already in use but the saved record differs. Review that record or choose another slug.');return;
+        }
+        scanSeen.current.add(key);scanCursor.current=page.nextCursor;
+        if(!page.nextCursor){
+          clearUncertain();setError('No matching saved project was found in the current pages. Your draft is retained; you may explicitly retry.');return;
+        }
+      }
+      setError('No match in the pages checked yet. Continue checking before another write.');
+    }catch{if(valid())setError('The saved-project lookup failed. Retry without submitting another write.');}
+    finally{if(valid()){creationInFlight.current=false;setSaving(false);}}
   }
   return <section className="ws-projects ws-owner-page" aria-labelledby="ws-title">
     <div className="ws-project-head">
@@ -359,6 +410,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       {(hasFilters||sort!=='recent')&&<button type="button" className="ws-secondary" onClick={clearFilters}>Clear filters</button>}
     </div>}
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
+    {confirmedProject&&<a className="ws-secondary" href={'/app/projects/'+confirmedProject}>Continue editing saved project</a>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
      state.status==='error'?<div role="alert" className="ws-project-state">
        <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>{setState({status:'loading'});setReload(value=>value+1);}}>Retry securely</button></div>:
@@ -424,31 +476,34 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
             disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>×</button></div>
         <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
-        <label>Project title<input disabled={saving} required autoComplete="off" maxLength={120} value={draft.title}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,title:event.target.value,
+        <label>Project title<input disabled={saving||!!unconfirmed} required autoComplete="off" maxLength={120} value={draft.title}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,title:event.target.value,
             slug:customSlug?old.slug:suggestSlug(event.target.value)}));}}/></label>
         <details className="ws-project-slug"><summary>Edit private URL slug</summary>
-        <label>Private URL slug<input disabled={saving} required spellCheck={false} minLength={3} maxLength={64}
+        <label>Private URL slug<input disabled={saving||!!unconfirmed} required spellCheck={false} minLength={3} maxLength={64}
           pattern="[a-z0-9]+(-[a-z0-9]+)*" value={draft.slug}
           onInvalid={event => {
             const disclosure = event.currentTarget.closest('details');
             if (disclosure) disclosure.open = true;
           }}
-          onChange={event=>{if(creationInFlight.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
+          onChange={event=>{if(creationInFlight.current||uncertainCreate.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
           <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
-        <label>Summary (optional)<textarea disabled={saving} rows={3} maxLength={360} value={draft.summary}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
-        <label>Repository URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+        <label>Summary (optional)<textarea disabled={saving||!!unconfirmed} rows={3} maxLength={360} value={draft.summary}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
+        <label>Repository URL (optional)<input disabled={saving||!!unconfirmed} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/repository" value={draft.repositoryUrl||''}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
-        <label>Live website URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
+        <label>Live website URL (optional)<input disabled={saving||!!unconfirmed} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
-        {saving&&<p role="status">Saving your private project…</p>}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
+        {saving&&<p role="status">{unconfirmed?'Checking saved private projects…':'Saving your private project…'}</p>}
+        {unconfirmed&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={saving} onClick={()=>void checkCreatedProject()}>Check saved project before retry</button>
+          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{scanCursor.current=null;scanSeen.current.clear();setError('Lookup reset. Check the saved project again.');}}>Restart lookup</button>
+          {existingProject&&<><a href={'/app/projects/'+existingProject}>Review existing private project</a><button type="button" className="ws-secondary" disabled={saving} onClick={()=>{clearUncertain();setCustomSlug(true);setError('Choose a different unique private slug before saving.');}}>Edit a different slug</button></>}</div>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>Cancel</button>
-          <button type="submit" className="ws-primary" disabled={saving}>{saving?'Saving…':'Save project'}</button>
+          <button type="submit" className="ws-primary" disabled={saving||!!unconfirmed}>{saving?'Saving…':'Save project'}</button>
         </div>
       </form>
     </dialog>
