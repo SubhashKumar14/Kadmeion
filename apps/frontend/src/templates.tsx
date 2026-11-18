@@ -71,6 +71,7 @@ function ActualPresetPreview({preset}:{preset:Preset}){
   const [Canvas,setCanvas]=useState<DemoCanvas|null>(null);
   const [failed,setFailed]=useState(false);
   const [width,setWidth]=useState<number|undefined>(undefined);
+  const [measuredWidth,setMeasuredWidth]=useState<number|null>(null);
   useEffect(()=>{
     let active=true;
     // Reuse the actual escaped React canvas and its layout styles; do not load
@@ -86,14 +87,17 @@ function ActualPresetPreview({preset}:{preset:Preset}){
     <p>Demo content only. The shared editor canvas uses the real preset section order. Its author-preview labels do not indicate a saved or published portfolio. Media and example actions are inactive.</p>
     <p>Included sections: {page.sections.map(section=>demoSectionTitles[section.id]??section.layout).join(' · ')}</p>
     <p>Preset header: {page.header?.layout.split('@')[0]?.replace(/^header-/,'').replace(/-/g,' ')??'None'}. The shared canvas currently uses a common header preview.</p>
-    <fieldset>
+    <fieldset disabled={failed||!Canvas}>
       <legend>Preview width</legend>
-      <p>Width comparison only; responsive breakpoints follow your actual browser viewport.</p>
+      <p>Width limits, not device emulation. The canvas can be narrower than the selected limit; some layout rules follow the browser viewport.</p>
       <button type="button" className="outline-small" aria-pressed={width===undefined} onClick={()=>setWidth(undefined)}>Fit</button>{' '}
-      <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>390 px (phone width)</button>
+      <button type="button" className="outline-small" aria-pressed={width===1440} onClick={()=>setWidth(1440)}>Up to 1440 px (desktop)</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={width===768} onClick={()=>setWidth(768)}>Up to 768 px (tablet)</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>Up to 390 px (phone width)</button>
+      {Canvas&&!failed&&<p>{measuredWidth===null?'Canvas content width is not measured.':'Measured canvas content width: '+Math.round(measuredWidth)+' px.'}</p>}
     </fieldset>
     {failed?<p role="alert">The preset renderer could not load. Close the preview and reload this page to try again.</p>:
-      Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll/></div>:
+      Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll onContentWidth={setMeasuredWidth}/></div>:
       <div>
         <p role="status">Loading preset layout…</p>
         <div className="glyph-skeleton" aria-hidden="true">
