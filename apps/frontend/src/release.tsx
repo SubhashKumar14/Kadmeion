@@ -102,6 +102,7 @@ export function PortfolioRelease(props:{port:SupabaseBrowserAuthPort;id:string;m
 }
 
 function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id:string;mode:ReleaseMode}) {
+  const [readPhase,setReadPhase]=useState<'portfolio'|'revisions'|'history'|'grants'|'pointer'|null>(null);
   const [record,setRecord]=useState<(OwnerPortfolio & {snapshot:PortfolioSnapshot|null})|null>(null);
   const [revisions,setRevisions]=useState<SavedOwnerRevision[]|null>(null);
   const [frozenRequests,setFrozenRequests]=useState<OwnerFrozenRequest[]|null>(null);
@@ -153,7 +154,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     historySelectionEpoch.current+=1;
     setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
     setPinReadRetry(0);
-    setRecord(null);setRevisions(null);setFrozenRequests(null);setFrozenListError('');
+    setReadPhase(null);setRecord(null);setRevisions(null);setFrozenRequests(null);setFrozenListError('');
     setSelectedRevision(null);setRevisionError('');setPointer(null);
     setVisibility('UNLISTED');setFrozen(null);setPinnedPreview(null);
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
@@ -165,7 +166,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
 
   useEffect(()=>{
     let active=true;
-    setError('');
+    setError('');setReadPhase('portfolio');
     void (async()=>{
       try {
         const reply=await port.readOwnerPortfolio(id);
@@ -174,6 +175,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         setRecord(reply.data);
         setComparison(previous=>previous&&previous.draftRevision!==reply.data!.revision?null:previous);
         if (mode==='staging'||mode==='publish'||mode==='releases') {
+          setReadPhase('revisions');
           const saved=await port.listOwnerPortfolioRevisions(id);
           if (!active) return;
           if (saved.data) {
@@ -185,12 +187,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           } else setRevisionError(saved.error?.message ?? 'The saved-revision catalogue is unavailable.');
         }
         if (mode==='staging'||mode==='publish'||mode==='releases') {
+          setReadPhase('history');
           const history=await port.listOwnerFrozenRequests(id);
           if (!active) return;
           if (history.data) {setFrozenRequests(history.data);setFrozenListError('');}
           else setFrozenListError(history.error?.message ?? 'Frozen request history could not be loaded.');
         }
         if (mode==='staging') {
+          setReadPhase('grants');
           const list=await port.listOwnerReviewerGrants(id);
           if (!active) return;
           if (list.data) {setGrants(list.data);setGrantListError('');}
@@ -198,13 +202,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           return;
         }
         if (mode!=='releases' && mode!=='share') return;
+        setReadPhase('pointer');
         const status=await port.readOwnerRelease(id);
         if (!active) return;
         if (status.data) {setPointer(status.data);setError('');}
         else setError(status.error?.message ?? 'Private release status unavailable.');
       } catch {
         if (active) setError('The private release service could not be reached.');
-      }
+      } finally {if(active)setReadPhase(null);}
     })();
     return ()=>{active=false;};
   },[port,id,mode,retry]);
@@ -583,7 +588,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     </nav>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {notice && <p role="status" className="ws-field-hint">{notice}</p>}
-    {!record && !error && <p role="status">Loading private release details…</p>}
+    {!record && !error && readPhase==='portfolio' && <ReleasePending label="Loading private release details…" detail />}
     {error && <button type="button" className="ws-secondary" disabled={busy||historySelectionPending} onClick={()=>{setError('');setRetry(value=>value+1);}}>
       Retry private release check</button>}
     {record && <div className="ws-project-detail ws-owner-columns">
@@ -596,8 +601,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           : frozen
             ? 'Frozen revision '+frozen.revision+' · '+(pinnedPreviewPending?'Verifying…':pinnedPreview?'Verified owner-private pin':'Pin verification required')
             : 'Current saved draft · Not yet frozen'}</p>
-        {historySelectionPending && <p role="status">Verifying the historical frozen revision with the owner service…</p>}
-        {pinnedPreviewPending && <p role="status">Verifying the exact private revision…</p>}
+        {historySelectionPending && !historySelectionError && <ReleasePending label="Verifying the historical frozen revision with the owner service…" detail />}
+        {pinnedPreviewPending && !historySelectionPending && !pinnedPreviewError && !pinnedPreview && <ReleasePending label="Verifying the exact private revision…" detail />}
         {pinnedPreviewError && <p role="alert">{pinnedPreviewError}</p>}
         {pinnedPreviewError && frozen && !pinnedPreviewPending &&
           <button type="button" className="ws-secondary" disabled={busy}
@@ -678,7 +683,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   {blockOperation.current?'Close review (keep operation)':'Cancel'}</button>
               </div>}
             </div>}
-          </> : !error && <p role="status">Checking the release pointer…</p>}
+          </> : !error && readPhase==='pointer' && <ReleasePending label="Checking the release pointer…" />}
           <h3>Release history and rollback</h3>
           <p>Review private freeze records and the candidate pointer. A verified live release timeline is unavailable; these records are not published releases.</p>
           {pointer?.candidateRequestId && <dl className="ws-release-facts">
@@ -686,13 +691,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <dt>Candidate manifest fingerprint</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateManifestSha256}</code></dd>
           </dl>}
           {revisionError&&<p role="alert">{revisionError}</p>}
-          <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
+          <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
             onSelect={request=>void selectFrozenRequest(request)}
             selectionDisabled={busy||historySelectionPending}
             activeRequestId={frozen?.requestId}
             candidateRequestId={pointer?.candidateRequestId??undefined} />
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
-            {historySelectionPending&&<p role="status">Verifying the exact private frozen revision…</p>}
+            {historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the exact private frozen revision…" />}
             {historySelectionError&&<p role="alert">{historySelectionError}</p>}
             {historySelectionError&&!historySelectionPending&&
               <button type="button" className="ws-secondary" disabled={busy}
@@ -754,7 +759,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   operation.current=null;grantOperation.current=null;
                 }}>Choose another saved revision or visibility intent</button>}
           </div>}
-          <FrozenRequestHistory requests={frozenRequests} error={frozenListError}
+          <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
             onSelect={request=>void selectFrozenRequest(request)}
             selectionDisabled={busy||historySelectionPending}
             activeRequestId={frozen?.requestId} />
@@ -773,7 +778,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <h3 id="reviewer-history-title">Registered reviewer grants</h3>
             <p>Owner-only metadata can be recovered after a reload. Raw reviewer credentials are never returned in this list.</p>
             {grantListError && <p role="alert">{grantListError}</p>}
-            {grants===null && !grantListError && <p role="status">Loading private reviewer grant records…</p>}
+            {grants===null && !grantListError && readPhase==='grants' && <ReleasePending label="Loading private reviewer grant records…" />}
             {grants?.length===0 && <p>No reviewer grants have been registered.</p>}
             {!!grants?.length && <ul className="ws-release-grant-list">{grants.map(item=><li key={item.grantId}>
               <div><strong>{item.revokedAt?'Revoked':Date.parse(item.expiresAt)<=grantNow?'Expired':'Registered (not servable)'}</strong>
@@ -892,8 +897,16 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
 }
 
 
-function FrozenRequestHistory({requests,error,onSelect,activeRequestId,selectionDisabled,candidateRequestId}:{
-  requests:OwnerFrozenRequest[]|null;error:string;
+function ReleasePending({label,detail=false}:{label:string;detail?:boolean}) {
+  return <><p role="status">{label}</p><div className="glyph-skeleton" aria-hidden="true">
+    <span className={'glyph-skeleton-line '+(detail?'is-title':'is-medium')} />
+    <span className="glyph-skeleton-line is-medium" />
+    <span className="glyph-skeleton-line is-short" />
+  </div></>;
+}
+
+function FrozenRequestHistory({requests,error,pending,onSelect,activeRequestId,selectionDisabled,candidateRequestId}:{
+  requests:OwnerFrozenRequest[]|null;error:string;pending:boolean;
   onSelect?:(request:OwnerFrozenRequest)=>void;activeRequestId?:string;
   selectionDisabled?:boolean;candidateRequestId?:string
 }) {
@@ -901,7 +914,7 @@ function FrozenRequestHistory({requests,error,onSelect,activeRequestId,selection
     <h3 id="frozen-history-title">Frozen private requests</h3>
     <p>Immutable owner-only revision pins. These records do not prove reviewer delivery, public hosting, release history or rollback.</p>
     {error && <p role="alert">{error}</p>}
-    {requests===null&&!error&&<p role="status">Loading frozen private requests…</p>}
+    {requests===null&&!error&&pending&&<ReleasePending label="Loading frozen private requests…" />}
     {requests?.length===0&&<p>No private revisions have been frozen.</p>}
     {!!requests?.length&&<ol className="ws-release-grant-list">{requests.map(request=>
       <li key={request.requestId}>
