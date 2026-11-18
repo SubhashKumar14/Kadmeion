@@ -5,13 +5,14 @@ export class PrivateProviderFactsError extends Error {
   constructor(code:ProviderErrorCode){super('Private provider facts: '+code);this.name='PrivateProviderFactsError';this.code=code;}
 }
 export type ProviderSnapshot={login:string;id:number;htmlUrl:string;publicRepos:number;publicGists:number;sourceUrl:string;fetchedAt:string;observedAt:null};
-export type ProviderState={schemaVersion:1;ownerId:string;linkId:string;provider:'GITHUB';handle:string;version:number;consent:boolean;status:'OFF'|'READY'|'PENDING'|'AWAITING_CONFIRMATION'|'SYNCED'|'UNAVAILABLE';facts:ProviderSnapshot|null;candidate:ProviderSnapshot|null;candidateExpiresAt:string|null;lastAttemptAt:string|null;cooldownUntil:string|null;lastError:ProviderErrorCode|null;freshness:'NONE'|'FRESH'|'STALE';ownershipVerified:false};
+export type ProviderFactFailure='NOT_FOUND'|'RATE_LIMITED'|'PROVIDER_UNAVAILABLE'|'INVALID_SOURCE'|'IDENTITY_CHANGED';
+export type ProviderState={schemaVersion:1;ownerId:string;linkId:string;provider:'GITHUB';handle:string;version:number;consent:boolean;status:'OFF'|'READY'|'PENDING'|'AWAITING_CONFIRMATION'|'SYNCED'|'UNAVAILABLE';facts:ProviderSnapshot|null;candidate:ProviderSnapshot|null;candidateExpiresAt:string|null;lastAttemptAt:string|null;cooldownUntil:string|null;lastError:ProviderFactFailure|null;freshness:'NONE'|'FRESH'|'STALE';ownershipVerified:false};
 export type ProviderOperation={linkId:string;expectedVersion:number;operationId:string;policyVersion:1};
 export type ProviderConsentInput=ProviderOperation&{action:'ENABLE'|'DISABLE'};
 export type ProviderSyncInput=ProviderOperation&{action:'LOOKUP'|'SYNC'};
 export type ProviderReceipt={status:'APPLIED'|'REPLAYED'|'PENDING'|'NO_CHANGE';state:ProviderState};
 const MAX=Number.MAX_SAFE_INTEGER, LIMIT=16*1024;
-const errors:readonly ProviderErrorCode[]=['INVALID','AUTH_EXPIRED','FORBIDDEN','CONFLICT','LIMIT','RATE_LIMITED','UNAVAILABLE','INVALID_RESPONSE','INVALID_SOURCE','NOT_FOUND','IDENTITY_CHANGED'];
+const sourceErrors:readonly ProviderFactFailure[]=['NOT_FOUND','RATE_LIMITED','PROVIDER_UNAVAILABLE','INVALID_SOURCE','IDENTITY_CHANGED'];
 const fail=(code:ProviderErrorCode):never=>{throw new PrivateProviderFactsError(code)};
 const obj=(v:unknown):v is Record<string,unknown>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const exact=(v:unknown,keys:readonly string[]):v is Record<string,unknown>=>obj(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
@@ -47,10 +48,10 @@ export function parseProviderState(raw:unknown,owner:string,link:string):Provide
   if(!exact(raw,['schemaVersion','ownerId','linkId','provider','handle','version','consent','status','facts','candidate','candidateExpiresAt','lastAttemptAt','cooldownUntil','lastError','freshness','ownershipVerified'])||raw.schemaVersion!==1||raw.ownerId!==owner||raw.linkId!==link||raw.provider!=='GITHUB'||!handle(raw.handle)||!integer(raw.version)||typeof raw.consent!=='boolean'||raw.ownershipVerified!==false)return fail('INVALID_RESPONSE');
   if(!['OFF','READY','PENDING','AWAITING_CONFIRMATION','SYNCED','UNAVAILABLE'].includes(String(raw.status))||!['NONE','FRESH','STALE'].includes(String(raw.freshness))||typeof raw.status!=='string'||typeof raw.freshness!=='string')return fail('INVALID_RESPONSE');
   for(const k of ['candidateExpiresAt','lastAttemptAt','cooldownUntil'])if(raw[k]!==null&&instant(raw[k])===null)return fail('INVALID_RESPONSE');
-  if(raw.lastError!==null&&!errors.includes(raw.lastError as ProviderErrorCode))return fail('INVALID_RESPONSE');
+  if(raw.lastError!==null&&!sourceErrors.includes(raw.lastError as ProviderFactFailure))return fail('INVALID_RESPONSE');
   if(raw.facts!==null&&!snapshot(raw.facts,raw.handle)||raw.candidate!==null&&!snapshot(raw.candidate,raw.handle))return fail('INVALID_RESPONSE');
   const state=raw as unknown as ProviderState;
-  if(state.candidate!==null){if(state.facts!==null||state.candidateExpiresAt===null||instant(state.candidateExpiresAt)!<=instant(state.candidate.fetchedAt)!||instant(state.candidateExpiresAt)!-instant(state.candidate.fetchedAt)!>600000000n)return fail('INVALID_RESPONSE')}
+  if(state.candidate!==null){if(state.status!=='AWAITING_CONFIRMATION'||state.facts!==null||state.candidateExpiresAt===null||instant(state.candidateExpiresAt)!<=instant(state.candidate.fetchedAt)!||instant(state.candidateExpiresAt)!-instant(state.candidate.fetchedAt)!>600000000n)return fail('INVALID_RESPONSE')}
   else if(state.candidateExpiresAt!==null)return fail('INVALID_RESPONSE');
   if(state.facts===null?state.freshness!=='NONE':state.freshness==='NONE')return fail('INVALID_RESPONSE');
   if(!state.consent){if(state.status!=='OFF'||state.facts!==null||state.candidate!==null)return fail('INVALID_RESPONSE')}
@@ -113,8 +114,8 @@ export class SupabasePrivateProviderFactsService {
     if(!exact(raw,['status','state'])||typeof raw.status!=='string'||!['APPLIED','REPLAYED','PENDING','NO_CHANGE'].includes(raw.status))return fail('INVALID_RESPONSE');
     const s=parseProviderState(raw.state,this.owner,input.linkId);const status=raw.status as ProviderReceipt['status'];const sync=action==='LOOKUP'||action==='SYNC';
     if(status==='NO_CHANGE'){if(action!=='DISABLE'||s.consent||s.version!==input.expectedVersion)return fail('INVALID_RESPONSE')}
-    else if(sync){if(!s.consent||s.version!==(input.expectedVersion+(s.status==='PENDING'?1:2))||status==='PENDING'&&s.status!=='PENDING'||status==='APPLIED'&&s.status==='PENDING'||action==='LOOKUP'&&s.facts!==null||action==='SYNC'&&(s.facts===null||s.candidate!==null))return fail('INVALID_RESPONSE')}
-    else if(status==='PENDING'||s.version!==input.expectedVersion+1||s.consent!==(action!=='DISABLE')||action==='CONFIRM'&&s.facts===null||action==='ENABLE'&&s.status!=='READY')return fail('INVALID_RESPONSE');
+    else if(sync){if(!s.consent||s.version!==(input.expectedVersion+(s.status==='PENDING'?1:2))||status==='PENDING'&&s.status!=='PENDING'||status==='APPLIED'&&s.status==='PENDING'||action==='LOOKUP'&&(s.facts!==null||status==='APPLIED'&&s.status!=='AWAITING_CONFIRMATION'&&s.status!=='UNAVAILABLE')||action==='SYNC'&&(s.facts===null||s.candidate!==null))return fail('INVALID_RESPONSE')}
+    else if(status==='PENDING'||s.version!==input.expectedVersion+1||s.consent!==(action!=='DISABLE')||action==='CONFIRM'&&(s.status!=='SYNCED'||s.facts===null)||action==='ENABLE'&&s.status!=='READY')return fail('INVALID_RESPONSE');
     return {status,state:s};
   }
   private args(input:ProviderOperation){return {p_link_id:input.linkId,p_expected_version:input.expectedVersion,p_operation_id:input.operationId,p_policy_version:1}}
