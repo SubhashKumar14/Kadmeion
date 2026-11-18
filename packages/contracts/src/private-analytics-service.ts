@@ -57,7 +57,7 @@ function consent(v:Record<string,unknown>,id:string):boolean{
     return v.version>0&&v.version<MAX&&enabled!==null&&coverage!==null&&updated!==null&&enabled<=coverage&&coverage<=updated;
   }
   return v.enabledAt===null&&v.coverageStartedAt===null&&
-    (v.updatedAt===null?v.version===0:updated!==null);
+    (v.version===0?v.updatedAt===null:updated!==null);
 }
 function state(v:unknown,id:string):OwnerAnalyticsState{
   if(!exact(v,[...common,'eligible','retentionDays'])||!consent(v,id)||typeof v.eligible!=='boolean'||v.retentionDays!==30) return fail('INVALID_RESPONSE');

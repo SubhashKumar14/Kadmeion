@@ -17,6 +17,7 @@ import {verifyReleaseWithdrawal,probePublicReplacementDenial,probePublicTakedown
 import {once} from 'node:events';
 import {SupabasePrivateFrozenRevisionLoader}
   from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
+import {SupabasePrivateAnalyticsService} from '../../packages/contracts/src/private-analytics-service.ts';
 import {SupabasePrivateReleasePointerService}
   from '../../packages/contracts/src/private-release-visibility-service.ts';
 import {createPrivateImmutableArtifact,createPrivateImmutableMediaCandidateFromFrozenSlots}
@@ -307,6 +308,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       KADMEION_SUPABASE_SERVICE_ROLE_KEY: cfg.service
     };
     let deliveryFailure = 'unavailable';
+    let trustedLocalAnalyticsOrigin=null;
     const server = createServer((request, response) => {
       if (deliveryFailure === 'unavailable') {
         response.writeHead(503).end();
@@ -319,7 +321,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
         return;
       }
       const handler = request.url.startsWith('/api/unlisted') ? handleUnlistedRequest : handlePublicPortfolio;
-      void handler(request, response, {env: deliveryEnv});
+      void handler(request, response, {env: deliveryEnv, trustedLocalAnalyticsOrigin});
     });
     server.listen(0, '127.0.0.1');
     t.after(() => new Promise((resolve, reject) => {
@@ -327,6 +329,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     }));
     await once(server, 'listening');
     const deliveryOrigin = 'http://127.0.0.1:' + server.address().port;
+    trustedLocalAnalyticsOrigin=deliveryOrigin;
     deliveryEnv.KADMEION_RELEASE_HOST_ORIGIN=deliveryOrigin;
     deliveryEnv.KADMEION_RELEASE_HOSTNAME='127.0.0.1';
     const verificationPorts = {
@@ -597,6 +600,74 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.match(await canonicalResponse.text(), /content="index,follow"/);
     assert.equal((await publicHostRead()).statusCode, 404);
     assert.equal((await fetch(canonical + '/assets/secret.png')).status, 404);
+
+    // Real signed password owner JWT + actual canonical HTTP and physical C13
+    // rows. The local-only composition is held separate from hosted ingress.
+    const analytics=new SupabasePrivateAnalyticsService(cfg.origin,cfg.anon,owner.id,
+      async()=>owner.jwt,()=>true,fetch);
+    const countAnalytics=()=>Number(dbQuery(
+      "select coalesce(sum(views),0) from kadmeion_private.aggregate_daily where portfolio_id=:'pid'::uuid;",
+      {vars:{pid:portfolioId}}).trim());
+    let state=await analytics.getOwnerAnalyticsState(portfolioId);
+    assert.equal(state.enabled,false,'C13 consent is OFF by default');
+    assert.equal(state.version,0);
+    assert.equal(state.eligible,true,'C11 acknowledged public release is eligible');
+    assert.equal(countAnalytics(),0,'C13 verified pre-consent visit writes no aggregate');
+    const changeAnalytics=(action,expectedVersion)=>analytics.changeOwnerAnalytics({
+      portfolioId,action,expectedVersion,operationId:randomUUID(),policyVersion:1});
+    const optIn=await changeAnalytics('ENABLE',0);
+    assert.equal(optIn.status,'APPLIED');
+    assert.equal(optIn.version,1);
+    const trustedHeaders={'user-agent':'Kadmeion CI interactive request','referer':'https://www.google.com/search?q=disposable'};
+    // No counted request for HEAD, rewritten direct URL, opt-out, prefetch.
+    for(const [url,init] of [
+      [canonical,{method:'HEAD'}],
+      [deliveryOrigin+'/api/public-portfolio?'+new URLSearchParams({handle,slug}),{headers:trustedHeaders}],
+      [canonical,{headers:{...trustedHeaders,'sec-gpc':'1'}}],
+      [canonical,{headers:{...trustedHeaders,'dnt':'1'}}],
+      [canonical,{headers:{...trustedHeaders,'purpose':'prefetch'}}]
+    ]){
+      const result=await fetch(url,init);
+      assert.equal(result.status,200);
+      await result.arrayBuffer();
+    }
+    assert.equal(countAnalytics(),0,'C13 disabled surfaces and visitor privacy opt-outs write nothing');
+    const event=await fetch(canonical,{headers:trustedHeaders});
+    assert.equal(event.status,200);
+    await event.arrayBuffer();
+    assert.equal(countAnalytics(),1,'C13 one actual trusted canonical GET writes exactly one aggregate');
+    const days=await analytics.getOwnerAnalytics({portfolioIds:[portfolioId],windowDays:7});
+    assert.equal(days.portfolios[0].days.reduce((n,d)=>n+(d.views??0),0),1);
+    assert.equal(days.portfolios[0].days.find(d=>d.views===1)?.buckets?.SEARCH,1);
+    assert.equal((await analytics.getOwnerAnalytics({portfolioIds:[portfolioId],windowDays:30})).portfolios[0].days.length,30);
+    const oldEnvelope=ok(await authorityRpc('service_read_public_portfolio_with_analytics',{p_handle:handle,p_slug:slug}),'C13 authoritative envelope');
+    const oldReceipt=oldEnvelope.analytics;
+    assert.equal(oldReceipt.consentVersion,1);
+    assert.equal((await changeAnalytics('CLEAR',1)).version,2);
+    assert.equal(countAnalytics(),0,'C13 clear physically deletes counted row');
+    const late=ok(await authorityRpc('collect_portfolio_analytics_view',{
+      p_portfolio_id:oldReceipt.portfolioId,p_intent_id:oldReceipt.intentId,
+      p_release_generation:oldReceipt.releaseGeneration,p_stage_generation:oldReceipt.stageGeneration,
+      p_delivery_epoch:oldReceipt.deliveryEpoch,p_html_sha256:oldReceipt.htmlSha256,
+      p_consent_version:oldReceipt.consentVersion,p_bucket:'SEARCH'
+    }),'C13 stale receipt after clear');
+    assert.equal(late.status,'IGNORED');
+    assert.equal(countAnalytics(),0);
+    const secondEvent=await fetch(canonical,{headers:trustedHeaders});
+    assert.equal(secondEvent.status,200);await secondEvent.arrayBuffer();
+    assert.equal(countAnalytics(),1,'C13 fresh generation can collect after clear');
+    assert.equal((await changeAnalytics('DISABLE',2)).version,3);
+    assert.equal(countAnalytics(),0,'C13 disable deletes physical aggregate');
+    const afterDisable=await fetch(canonical,{headers:trustedHeaders});
+    assert.equal(afterDisable.status,200);await afterDisable.arrayBuffer();
+    assert.equal(countAnalytics(),0,'C13 post-disable canonical GET writes nothing');
+    state=await analytics.getOwnerAnalyticsState(portfolioId);
+    assert.equal(state.enabled,false);
+    assert.equal(state.version,3);
+    const outsiderAnalytics=new SupabasePrivateAnalyticsService(cfg.origin,cfg.anon,outsider.id,
+      async()=>outsider.jwt,()=>true,fetch);
+    await assert.rejects(outsiderAnalytics.getOwnerAnalyticsState(portfolioId));
+    // C11's remaining publication/rollback/privacy assertions continue.
     const updateSnapshot=structuredClone(snapshot);
     updateSnapshot.slots.hero.content.title='Replacement verified content';
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');

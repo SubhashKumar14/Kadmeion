@@ -224,6 +224,98 @@ select is(public.service_read_unlisted_release(
   '10000000-0000-4000-8000-0000000000d1'),null::jsonb,
   'UNLISTED resolver cannot expose an expressly PUBLIC release');
 
+-- C13 diagnostic extension: real PostgreSQL RPCs and persisted counters on the
+-- same verified C11 fixture. Transaction-local only; no hosted traffic.
+reset role;
+insert into auth.sessions(id,user_id,created_at,updated_at,not_after)
+values('a0000000-0000-4000-8000-0000000000d1','00000000-0000-4000-8000-0000000000d1',
+ now(),now(),clock_timestamp()+interval '10 minutes');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+ cross join unnest(array['kadmeion_private.analytics_opt_in','kadmeion_private.aggregate_daily','kadmeion_private.analytics_rate_window']) t
+ where has_any_column_privilege(r,t,'SELECT,INSERT,UPDATE,REFERENCES')
+ or has_table_privilege(r,t,'DELETE,TRUNCATE,TRIGGER')),
+ 'C13 private tables deny direct access to all API roles');
+select ok(not has_function_privilege('anon','public.collect_portfolio_analytics_view(uuid,uuid,bigint,bigint,bigint,text,bigint,text)','EXECUTE')
+ and not has_function_privilege('authenticated','public.collect_portfolio_analytics_view(uuid,uuid,bigint,bigint,bigint,text,bigint,text)','EXECUTE')
+ and has_function_privilege('service_role','public.collect_portfolio_analytics_view(uuid,uuid,bigint,bigint,bigint,text,bigint,text)','EXECUTE'),
+ 'C13 only trusted worker can collect');
+set local role service_role;
+select set_config('request.jwt.claim.role','service_role',true);
+select is(public.service_read_public_portfolio_with_analytics('release_owner','release-fixture')->'analytics','null'::jsonb,
+ 'C13 verified public release receives no collection receipt before opt-in');
+select is(public.collect_portfolio_analytics_view(
+ '10000000-0000-4000-8000-0000000000d1','50000000-0000-4000-8000-0000000000d1',1,1,
+ (current_setting('kd.public_fixture.ack_receipt')::jsonb->>'deliveryEpoch')::bigint,current_setting('kd.public_fixture.sha'),1,'SEARCH')->>'status',
+ 'IGNORED','C13 real collector rejects pre-consent event');
+reset role;
+select is((select count(*) from kadmeion_private.aggregate_daily),0::bigint,'C13 no stored pre-consent aggregate');
+set local role authenticated;
+select set_config('request.jwt.claim.role','authenticated',true);
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000d1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000d1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000d1','is_anonymous',false)::text,true);
+select is(public.read_owner_analytics_state('10000000-0000-4000-8000-0000000000d1')->>'enabled','false','C13 default OFF');
+select is(public.change_owner_analytics('10000000-0000-4000-8000-0000000000d1','ENABLE',0,'c1300000-0000-4000-8000-000000000001',1::smallint)->>'status','APPLIED','C13 owner opt-in persisted');
+reset role;
+set local role service_role;
+select set_config('request.jwt.claim.role','service_role',true);
+select set_config('kd.c13.receipt',(public.service_read_public_portfolio_with_analytics('release_owner','release-fixture')->'analytics')::text,true);
+select is(current_setting('kd.c13.receipt')::jsonb->>'consentVersion','1','C13 envelope bound to current consent version');
+select is(public.collect_portfolio_analytics_view(
+ '10000000-0000-4000-8000-0000000000d1','50000000-0000-4000-8000-0000000000d1',1,1,
+ (current_setting('kd.c13.receipt')::jsonb->>'deliveryEpoch')::bigint,current_setting('kd.public_fixture.sha'),1,'SEARCH')->>'status',
+ 'COUNTED','C13 exactly one real eligible RPC event');
+reset role;
+select is((select sum(views)::bigint from kadmeion_private.aggregate_daily),1::bigint,'C13 physical aggregate equals one');
+set local role authenticated;
+select set_config('request.jwt.claim.role','authenticated',true);
+select is((select sum((d->>'views')::integer)::bigint from jsonb_array_elements(public.read_owner_analytics(array['10000000-0000-4000-8000-0000000000d1']::uuid[],7)->'portfolios'->0->'days') d),1::bigint,'C13 seven-day real count');
+select is(jsonb_array_length(public.read_owner_analytics(array['10000000-0000-4000-8000-0000000000d1']::uuid[],30)->'portfolios'->0->'days'),30,'C13 thirty-day real query');
+select is(public.owner_export_portfolio_analytics_annex()->'aggregates'->0->>'views','1','C13 independent owner export includes real aggregate');
+select is(public.change_owner_analytics('10000000-0000-4000-8000-0000000000d1','CLEAR',1,'c1300000-0000-4000-8000-000000000002',1::smallint)->>'version','2','C13 clear advances consent version');
+reset role;
+select is((select count(*) from kadmeion_private.aggregate_daily),0::bigint,'C13 clear physically deletes counts');
+set local role service_role;
+select set_config('request.jwt.claim.role','service_role',true);
+select is(public.collect_portfolio_analytics_view(
+ '10000000-0000-4000-8000-0000000000d1','50000000-0000-4000-8000-0000000000d1',1,1,
+ (current_setting('kd.c13.receipt')::jsonb->>'deliveryEpoch')::bigint,current_setting('kd.public_fixture.sha'),1,'SEARCH')->>'status',
+ 'IGNORED','C13 stale pre-clear consent receipt rejected');
+select is(public.collect_portfolio_analytics_view(
+ '10000000-0000-4000-8000-0000000000d1','50000000-0000-4000-8000-0000000000d1',1,1,
+ (current_setting('kd.c13.receipt')::jsonb->>'deliveryEpoch')::bigint,current_setting('kd.public_fixture.sha'),2,'DIRECT_OR_UNKNOWN')->>'status',
+ 'COUNTED','C13 post-clear valid new consent collects');
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.role','authenticated',true);
+select is(public.change_owner_analytics('10000000-0000-4000-8000-0000000000d1','DISABLE',2,'c1300000-0000-4000-8000-000000000003',1::smallint)->>'version','3','C13 disable advances version');
+reset role;
+select is((select count(*) from kadmeion_private.aggregate_daily),0::bigint,'C13 disable physically deletes counts');
+-- Rollover seed tests retention maintenance, not simulated visitor metrics.
+update kadmeion_private.analytics_rate_window set
+ minute_start=date_trunc('day',clock_timestamp(),'UTC')-interval '1 day',
+ utc_day=(clock_timestamp() at time zone 'UTC')::date-1,minute_used=1,day_used=1
+ where scope_key='GLOBAL';
+set local role service_role;
+select set_config('request.jwt.claim.role','service_role',true);
+select ok(public.service_purge_expired_portfolio_analytics(1000) is not null,'C13 service-only real retention purge executes');
+reset role;
+select ok((select day_used=0 and minute_used=0 and utc_day=(clock_timestamp() at time zone 'UTC')::date
+ from kadmeion_private.analytics_rate_window where scope_key='GLOBAL'),'C13 idle GLOBAL counter physically reset at UTC rollover');
+set local role service_role;
+select set_config('request.jwt.claim.role','service_role',true);
+select is(public.service_read_public_portfolio_with_analytics('release_owner','release-fixture')->'analytics','null'::jsonb,
+ 'C13 no collection receipt after disable');
+select is(public.collect_portfolio_analytics_view(
+ '10000000-0000-4000-8000-0000000000d1','50000000-0000-4000-8000-0000000000d1',1,1,
+ (current_setting('kd.c13.receipt')::jsonb->>'deliveryEpoch')::bigint,current_setting('kd.public_fixture.sha'),2,'SEARCH')->>'status',
+ 'IGNORED','C13 late disabled receipt cannot recreate aggregate');
+reset role;
+select set_config('request.jwt.claims','{}',true);
+-- Restore the original service-role JWT claim; the existing C11 test switches
+-- SQL roles after privacy withdrawal but intentionally retains this claim.
+select set_config('request.jwt.claim.role','service_role',true);
+-- End C13 extension; original C11 withdrawal tests continue unchanged.
+
 -- Withdraw just one surface; all old immutable owner portfolio routes must
 -- be disabled rather than relying on an unproven content-reference index.
 reset role;
