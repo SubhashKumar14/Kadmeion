@@ -12,7 +12,8 @@ import {PrivateServerAssetByteAttestor} from '../../../packages/storage-adapters
 import {completePrivateAssetRegistration} from '../../../packages/storage-adapters/src/private-asset-registration-completion.ts';
 
 type Env = Readonly<Record<string,string|undefined>>;
-type Attest = (assetId:string, jwt:string) => Promise<unknown>;
+type AssetScope='PROJECT'|'PROFILE';
+type Attest = (assetId:string, jwt:string, scope?:AssetScope) => Promise<unknown>;
 type Dependencies = {env?:Env;http?:typeof fetch;attest?:Attest};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const USER_JWT=/^Bearer (eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/;
@@ -134,20 +135,25 @@ export async function handleCompletePrivateAsset(request:Request,deps:Dependenci
   try{data=await boundedRequest(request);}
   catch{return json(400,'Invalid request',origin,allowed);}
   if(!data||typeof data!=='object'||Array.isArray(data)||
-     Object.keys(data).length!==1||!Object.hasOwn(data,'assetId')||
+     !Object.hasOwn(data,'assetId')||
+     (Object.keys(data).length!==1&&!(Object.keys(data).length===2&&Object.hasOwn(data,'scope')))||
      typeof (data as {assetId:unknown}).assetId!=='string'||
      !UUID.test((data as {assetId:string}).assetId))
     return json(400,'Invalid asset',origin,allowed);
   const assetId=(data as {assetId:string}).assetId;
+  const suppliedScope=(data as {scope?:unknown}).scope;
+  if(Object.hasOwn(data,'scope')&&suppliedScope!=='PROJECT'&&suppliedScope!=='PROFILE')
+    return json(400,'Invalid asset scope',origin,allowed);
+  const scope:AssetScope=suppliedScope==='PROFILE'?'PROFILE':'PROJECT';
   try{
-    const attest:Attest=deps.attest??(async(id,jwt)=>{
+    const attest:Attest=deps.attest??(async(id,jwt,selected)=>{
       const worker=new PrivateServerAssetByteAttestor(
         config.endpoint,config.publishable,config.service,deps.http??fetch);
-      return worker.attest(id,jwt);
+      return selected==='PROFILE'?worker.attestProfile(id,jwt):worker.attest(id,jwt);
     });
     // This routine checks the committed owner registration, Storage version,
     // byte stream, live Auth token and trusted immutable SHA-256 receipt.
-    const result=await completePrivateAssetRegistration({attest:attest as
+    const result=await completePrivateAssetRegistration({attest:((id:string,jwt:string)=>scope==='PROFILE'?attest(id,jwt,scope):attest(id,jwt)) as
       (assetId:string,ownerJwt:string)=>Promise<{assetId:string;status:'WRITE_ONCE_ATTESTED'}>},
       {assetId,ownerJwt:token});
     return Response.json(result,{status:200,headers:headers(origin,allowed)});
