@@ -159,7 +159,9 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     res.setHeader('CDN-Cache-Control', 'no-store');
     res.setHeader('Surrogate-Control', 'no-store');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'no-referrer');
+    // Same-origin native POST needs a serializable Origin. Never send a
+    // referrer cross-origin; the frozen portfolio retains no-referrer.
+    res.setHeader('Referrer-Policy', reportUi ? 'same-origin' : 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src " + (media ? "'self'" : "'none'") + "; frame-ancestors 'none'; base-uri 'none'" + (reportUi ? "; form-action 'self'" : ''));
     res.setHeader('Content-Type', type ?? (status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8'));
@@ -172,6 +174,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     return reply(405, 'Method not allowed');
   }
   if (env.KADMEION_PUBLIC_PORTFOLIO_ENABLED !== 'true') return reply(404, 'Not found');
+  let validatedReportPage=false;
   try {
     const target = parseDeliveryTarget(req.url);
     if (!target) return reply(404, 'Not found');
@@ -192,6 +195,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       : Boolean(path) && target.search === '';
     if (!uniqueRoute || !handlePattern.test(handle ?? '') || reservedHandles.has(handle) ||
         !slugPattern.test(slug ?? '')) return reply(404, 'Not found');
+    validatedReportPage=reportUi;
     const reportResponse=(status,body,type)=>reportUi?
       reply(status,reportResultDocument(status),'text/html; charset=utf-8',false,false,true):reply(status,body,type);
     if(reportUi){
@@ -214,7 +218,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     if ((!local && origin.origin !== 'https://scyooqjitjzjdxgtanso.supabase.co') ||
         origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash ||
         typeof key !== 'string' || !key.startsWith('eyJ') || key.length < 70) {
-      return reply(503, 'Temporarily unavailable');
+      return reportResponse(503, 'Temporarily unavailable');
     }
     const rpc = reporting ? 'service_submit_portfolio_abuse_report' :
       media ? 'service_read_frozen_release_png' : 'service_read_public_portfolio';
@@ -237,7 +241,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       return reportResponse(503, 'Temporarily unavailable');
     }
     if (!upstream.ok) {
-      return reply(503, 'Temporarily unavailable');
+      return reportResponse(503, 'Temporarily unavailable');
     }
 
     if (media) {
@@ -270,6 +274,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     if(release.indexable)res.setHeader('Link',canonicalPublicLink(handle,slug,env));
     return reply(200, published, undefined, release.indexable, rendered.media);
   } catch {
+    if(validatedReportPage)return reply(503,reportResultDocument(503),'text/html; charset=utf-8',false,false,true);
     return reply(503, 'Temporarily unavailable');
   }
 }
