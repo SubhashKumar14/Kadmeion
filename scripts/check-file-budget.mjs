@@ -15,6 +15,9 @@ const authorizedAdditionPaths = [
   'supabase/migrations/20261117083520_owner_private_project_thumbnails.sql',
   // EVENT-B16-S00-015 / S15-013; C04/WF-021; S1 PROJECT pin-only reservation.
   'supabase/migrations/20261117155900_owner_private_asset_pin.sql',
+  // EVENT-020: exact C05 and C08 reservations, local composed cutover.
+  'supabase/migrations/20261117160000_owner_profile_assets.sql',
+  'supabase/migrations/20261117160400_owner_preference_cas.sql',
   // S15-013 / S00-016: isolated C13 S12/S13 service and test only.
   'packages/contracts/src/private-analytics-service.ts',
   'tests/contracts/private-analytics.test.ts',
