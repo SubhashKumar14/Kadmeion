@@ -65,8 +65,22 @@ function workspacePageTitle(path: string): string {
   const release = releaseRoute(path);
   if (release) return ({staging:'Reviewer staging',publish:'Publish preflight',releases:'Releases & rollback',share:'Sharing controls'} as const)[release.mode];
   if (portfolio) return 'Portfolio editor';
-  if (isSettingsRoute(path)) return 'Account settings';
-  if (isOperatorRoute(path)) return 'Restricted operations';
+  if (isSettingsRoute(path)) {
+    const titles: Record<string,string> = {
+      '/app/settings':'Account settings', '/app/settings/privacy':'Privacy & sharing',
+      '/app/notifications':'Notifications', '/app/settings/security':'Account security',
+      '/app/trash':'Trash', '/app/export':'Export center',
+      '/app/settings/account/delete':'Account exit', '/app/settings/cases':'Your cases and appeals'
+    };
+    return titles[path] ?? 'Account settings';
+  }
+  if (isOperatorRoute(path)) {
+    const titles: Record<string,string> = {
+      '/app/operations/users':'Admin users', '/app/operations/moderation':'Portfolio moderation',
+      '/app/operations/appeals':'Appeals & case history'
+    };
+    return titles[path] ?? 'Restricted operations';
+  }
   if (isGrowthRoute(path)) {
     const titles: Record<string,string> = {
       '/app/growth':'Personal growth', '/app/growth/activity':'Developer activity',
@@ -200,8 +214,18 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   </div>;
 }
 
+function preferredOnboardingChoice(steps: OwnerWorkspaceSnapshot['onboarding']): StartChoice {
+  // Resume an unfinished step when the verified initial snapshot has one.
+  // Do not move the user's choice automatically after a later skip receipt.
+  const priority: readonly StartChoice[] = ['portfolio','profile','connections'];
+  return priority.find(choice => {
+    const status=steps.find(step=>step.step===choice)?.status;
+    return status===undefined || status==='pending';
+  }) ?? 'portfolio';
+}
+
 function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<SkipOutcome> }) {
-  const [choice, setChoice] = useState<StartChoice>('portfolio');
+  const [choice, setChoice] = useState<StartChoice>(()=>preferredOnboardingChoice(steps));
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const skipFlight = useRef(false);
@@ -253,7 +277,7 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
         setSaving(true); setNote('Saving selected step…');
         void onSkip(selectedStep).then(outcome => {
           setNote(outcome === 'confirmed' ? 'The current private account record is saved as skipped. You can return later.' :
-            outcome === 'offline' ? 'Browser reports offline. No skip request was sent. You can open the workspace without saving.' :
+            outcome === 'offline' ? 'Browser reports offline. No skip request was sent. You can leave without saving; the destination may not load until you reconnect.' :
             outcome === 'completed' ? 'The current private account record is completed. No skipped state was confirmed.' :
             'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying; the write outcome may be uncertain.');
         }).catch(() => {
@@ -265,7 +289,7 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
       <a href="/app" className="ws-secondary">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
     </div>
-    {offline && <p className="ws-footnote">Saving a skipped step requires a connection. You can still open the workspace without saving; private records there require owner verification.</p>}
+    {offline && <p className="ws-footnote">Saving a skipped step requires a connection. You can leave without saving, but the workspace may not load until you reconnect and verify your owner session.</p>}
     {selectedStatus === 'completed' && <p className="ws-footnote">This step was marked completed in the loaded account records. You can open it again without changing its status.</p>}
     {selectedStatus === 'skipped' && <p className="ws-footnote">This step was already marked skipped in the loaded account records. You can open it again whenever you are ready.</p>}
     <p className="ws-footnote">You can get started without connecting a developer account.</p>
