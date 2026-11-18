@@ -573,7 +573,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
        (verifiedOwner&&!scopeCurrent(live)))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
-    const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE';
+    const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE'||intent.kind==='MOVE_SECTION';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
     if(layoutMutation||themeMutation||sectionOrderMutation){
       const view=latestRecovery.current;
@@ -826,7 +826,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setSlot(target);setTool('Content');return true;
   }
   function canReorderSection():boolean{
-    return !!head&&!!verifiedOwner&&allowed&&!preview&&!['Components','Source','Assets','History'].includes(tool)&&
+    return !!head&&!!verifiedOwner&&allowed&&!preview&&!['Source','Assets','History'].includes(tool)&&
       !saving&&!recoveryBusy&&!pendingFields&&!sourceDirty&&layerGroups.length>1;
   }
   function sectionDropAllowed(sectionId:string,beforeSectionId:string|null):boolean{
@@ -844,6 +844,23 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const view=latestRecovery.current;
     if(!head||!drag||drag.head!==head||!view||!draftCurrent(view)||!sectionDropAllowed(drag.id,beforeSectionId))return false;
     return apply({kind:'MOVE_SECTION_BEFORE',sectionId:drag.id,beforeSectionId,expectedRevision:head.revision});
+  }
+  function canDropCanvasComponent(key:string):boolean{
+    const drag=componentDrag.current,view=latestRecovery.current;
+    return !!drag&&drag.head===head&&!!view&&view.head===head&&draftCurrent(view)&&canPlaceComponent(drag.pin,key);
+  }
+  function dropCanvasComponent(key:string):boolean{
+    if(!canDropCanvasComponent(key))return false;
+    const drag=componentDrag.current!;
+    componentDrag.current=null;
+    return placeComponent(drag.pin,key);
+  }
+  function canDropCanvasSection(before:string|null):boolean{
+    const drag=sectionDrag.current,view=latestRecovery.current;
+    return !!drag&&drag.head===head&&!!view&&view.head===head&&draftCurrent(view)&&sectionDropAllowed(drag.id,before);
+  }
+  function dropCanvasSection(before:string|null):boolean{
+    return canDropCanvasSection(before)&&moveSectionBefore(before);
   }
   // Local storage is not an identity authority. Gate context is mandatory.
   type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
@@ -1327,6 +1344,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     port.getOwnerSessionEpoch()===verifiedOwner.epoch?
     {port,ownerKey:JSON.stringify([verifiedOwner.id,verifiedOwner.epoch,id])}:undefined;
   const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth,privateMedia:canvasOwner,
+    dropTargets:canvasOwner?{canDropComponent:canDropCanvasComponent,dropComponent:dropCanvasComponent,
+      canDropSection:canDropCanvasSection,dropSection:dropCanvasSection}:undefined,
     onAddFirstSection:canvasOwner&&!saving&&!recoveryBusy?()=>{
       const view=latestRecovery.current;
       if(!view||!draftCurrent(view)||view.preview)return;
@@ -1555,15 +1574,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             <ul className="ws-editor-slots">{emptyComponentTargets.filter(target=>
               compatibleComponentsForSlot(target.key).some(item=>item.id===targetPin.id)).map(target=><li key={target.key}
                 onDragOver={event=>{
-                  const drag=componentDrag.current;
-                  if(drag?.head===head&&canPlaceComponent(drag.pin,target.key)){
+                  if(canDropCanvasComponent(target.key)){
                     event.preventDefault();event.dataTransfer.dropEffect='copy';
                   }
                 }}
                 onDrop={event=>{
-                  const drag=componentDrag.current;componentDrag.current=null;
-                  if(!drag||drag.head!==head||!canPlaceComponent(drag.pin,target.key))return;
-                  event.preventDefault();placeComponent(drag.pin,target.key);
+                  if(!canDropCanvasComponent(target.key))return;
+                  event.preventDefault();dropCanvasComponent(target.key);
                 }}>
                 <button type="button" disabled={!canPlaceComponent(targetPin.id,target.key)}
                   onClick={()=>placeComponent(targetPin.id,target.key)}>Add {targetPin.label} to {target.label}</button>
@@ -1610,9 +1627,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                 }}
                 onDragEnd={()=>{sectionDrag.current=null;setDraggingSection(null);}}>Drag</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' up'}
-                disabled={index===0||saving} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
+                disabled={index===0||!canReorderSection()} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' down'}
-                disabled={index===layerGroups.length-1||saving}
+                disabled={index===layerGroups.length-1||!canReorderSection()}
                 onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'down'})}>Down</button>
             </div>
           </div>
@@ -1699,7 +1716,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
         </section>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null}
-          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}/>}
+          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+          {...{onReuseTarget:(target:string)=>{
+            if(layerGroups.flatMap(group=>group.slots).filter(item=>item.key===target).length===1)setSlot(target);
+          }}}/>}
 
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
@@ -1835,7 +1855,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       <AssetList port={port} back={()=>setTool('Content')} snapshot={head.snapshot}
         targets={verifiedOwner?layerGroups.flatMap(group=>group.slots.filter(item=>canPlacePrivateImage(head.snapshot,item.key))
           .map(item=>({key:item.key,label:group.title+' · '+item.name,state:item.state}))):[]}
-        selectedSlot={slot} placementDisabled={saving||recoveryBusy||sourceDirty} onPlace={placeAsset}/>
+        selectedSlot={slot} placementDisabled={saving||recoveryBusy||sourceDirty} onPlace={placeAsset}
+        {...{active:!!verifiedOwner&&allowed&&!preview&&tool==='Assets'&&!saving&&!recoveryBusy}}/>
     </div>}
     </>)}
     {/* Author preview may hide the source panel, but must not unmount its
