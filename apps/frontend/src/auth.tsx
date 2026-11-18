@@ -9,7 +9,8 @@ import { BrandMark, Icon, useTheme } from './landing.tsx';
 import './auth.css';
 
 type Mode = 'signin' | 'signup' | 'forgot-password' | 'set-password' | 'outcome' | 'callback' | 'workspace';
-type Outcome = 'email-requested' | 'registered' | 'password-updated' | 'session-verified';
+type Outcome = 'email-requested' | 'registered' | 'password-updated' | 'session-verified' | 'initialization-pending';
+type VerifiedOutcomeIdentity = {ownerId:string;epoch:number;email:string|null};
 type AuthState = { auth: SupabaseBrowserAuthPort; service: AuthService; allowGoogle: boolean; emailAvailable: boolean };
 const authRoutes = new Set(['/signin','/login','/signup','/register','/forgot-password','/reset-password','/set-password','/auth/callback','/workspace','/auth/outcome','/auth/recovery-status']);
 export function isAuthRoute(path: string): boolean { return authRoutes.has(path); }
@@ -84,13 +85,13 @@ function AuthBrand({ mode }: { mode: Mode }) {
 function AuthInput({id,label,children}:{id:string;label:string;children:ReactNode}){
   return <div className="auth-field"><label htmlFor={id}>{label}</label>{children}</div>;
 }
-function AuthPassword({id,label,value,setValue,autoComplete}:{id:string;label:string;value:string;setValue:(next:string)=>void;autoComplete:'current-password'|'new-password'}){
+function AuthPassword({id,label,value,setValue,autoComplete,disabled}:{id:string;label:string;value:string;setValue:(next:string)=>void;autoComplete:'current-password'|'new-password';disabled:boolean}){
   const [visible,setVisible]=useState(false);
   return <AuthInput id={id} label={label}>
     <div className="auth-password-wrap">
       <input id={id} required minLength={autoComplete==='new-password'?8:undefined} maxLength={128}
         type={visible?'text':'password'} autoComplete={autoComplete}
-        value={value} onChange={event=>setValue(event.target.value)} />
+        value={value} disabled={disabled} onChange={event=>setValue(event.target.value)} />
       <button type="button" onClick={()=>setVisible(v=>!v)} aria-label={visible?'Hide '+label.toLowerCase():'Show '+label.toLowerCase()}
         aria-pressed={visible} className="auth-show-password">{visible?'Hide':'Show'}</button>
     </div>
@@ -108,15 +109,30 @@ export function AuthApp(){
   const [notice,setNotice]=useState('');
   const [error,setError]=useState('');
   const [pending,setPending]=useState(false);
+  // React state updates are not synchronous: fence duplicate submissions and
+  // mode changes before the first provider call starts.
+  const actionInFlight=useRef(false);
   const [outcome,setOutcome]=useState<Outcome | null>(null);
-  const [identity,setIdentity]=useState<string|null>(null);
+  const [identity,setIdentity]=useState<VerifiedOutcomeIdentity|null>(null);
+  const identityBinding=useRef<VerifiedOutcomeIdentity|null>(null);
   const heading=useRef<HTMLHeadingElement>(null);
   const enteredCallback = useRef(window.location.pathname === '/auth/callback');
   const redirectStarted=useRef(false);
   const stillMounted=useRef(true);
+  const recoveryBinding=useRef<{ownerId:string;epoch:number}|null>(null);
   const auth=config.value;
+  const recoveryChanged=()=>new Error('Your verified reset session has expired or changed. Request another recovery link.');
+  function retireRecovery(message:string) {
+    recoveryBinding.current=null;
+    identityBinding.current=null;
+    if(!stillMounted.current)return;
+    setPassword('');setConfirm('');setNotice('');setIdentity(null);setOutcome(null);
+    setError(message);setMode('outcome');
+    history.replaceState(null,'','/auth/recovery-status');
+  }
   function setAuthMode(next:Mode,route?:string,clearSecrets=true){
-    if(pending)return;
+    if(actionInFlight.current)return;
+    recoveryBinding.current=null;identityBinding.current=null;
     if(clearSecrets){setPassword('');setConfirm('');}
     setError('');setNotice('');setOutcome(null);setIdentity(null);
     setMode(next);
@@ -129,20 +145,56 @@ export function AuthApp(){
     setAuthMode(next,next==='signin'?'/signin':'/signup',false);
   }
   function result(kind:Outcome,message:string){
+    if(!stillMounted.current)return;
+    recoveryBinding.current=null;
+    if(kind!=='session-verified'){identityBinding.current=null;setIdentity(null);}
     setOutcome(kind);setNotice(message);
     setPassword('');setConfirm('');setError('');
     setMode('outcome');history.replaceState(null,'','/auth/outcome');
   }
+  async function runAuthAction(action:()=>Promise<void>):Promise<boolean>{
+    if(actionInFlight.current||!stillMounted.current)return false;
+    actionInFlight.current=true;
+    setPending(true);setError('');setNotice('');
+    try{await action();return stillMounted.current;}
+    catch(reason){if(stillMounted.current)setError(readError(reason));return false;}
+    finally{actionInFlight.current=false;if(stillMounted.current)setPending(false);}
+  }
   async function submit(event:FormEvent<HTMLFormElement>,action:()=>Promise<void>){
     event.preventDefault();
-    if(pending)return;
-    setPending(true);setError('');setNotice('');
-    try{await action();}catch(reason){setError(readError(reason));}
-    finally{setPending(false);}
+    await runAuthAction(action);
   }
-  async function signedIn(userEmail:string|null,kind:Outcome='session-verified'){
-    setIdentity(userEmail);
-    result(kind,'An authenticated session was independently verified. Open your private workspace to continue.');
+  async function verifyInitializedOwner(expected:{id:string}):Promise<VerifiedOutcomeIdentity|null>{
+    if(!auth||!stillMounted.current)return null;
+    const epoch=auth.auth.reconcileOwnerSessionEpoch();
+    const current=await auth.auth.getUser();
+    if(!stillMounted.current)return null;
+    const assertCurrent=()=>{
+      if(auth.auth.reconcileOwnerSessionEpoch()!==epoch)
+        throw new AuthFlowError('AUTH_EXPIRED','The authenticated account changed. Sign in again.');
+    };
+    if(current?.error!==null||current.data?.user?.id!==expected.id)
+      throw new AuthFlowError('AUTH_EXPIRED','The authenticated account changed. Sign in again.');
+    assertCurrent();
+    // Existing adapter verifies the live principal, RLS owner filter, exactly
+    // one initialized profile row and initiating session epoch. Never create
+    // a second account or synthesize a profile if bootstrap readback fails.
+    const profile=await auth.auth.readOwnerProfile(epoch);
+    if(!stillMounted.current)return null;
+    assertCurrent();
+    if(profile?.error!==null||typeof profile.data?.displayName!=='string'){
+      result('initialization-pending','The account session was verified, but the private profile could not be confirmed. Return to sign in and retry; do not register another account.');
+      return null;
+    }
+    return {ownerId:expected.id,epoch,email:current.data.user.email??null};
+  }
+  async function signedIn(expected:{id:string}){
+    const binding=await verifyInitializedOwner(expected);
+    if(!binding||!stillMounted.current||!auth)return;
+    if(auth.auth.reconcileOwnerSessionEpoch()!==binding.epoch)
+      throw new AuthFlowError('AUTH_EXPIRED','The authenticated account changed. Sign in again.');
+    identityBinding.current=binding;setIdentity(binding);
+    result('session-verified','An authenticated session and its private profile were verified. Open your private workspace to continue.');
   }
   useEffect(()=>{
     document.title='Kadmeion — '+({
@@ -150,6 +202,24 @@ export function AuthApp(){
       callback:'Checking your link',workspace:'Private workspace',outcome:'Account status'
     }[mode]);
   },[mode]);
+  useEffect(()=>{
+    if(!auth)return;
+    return auth.auth.subscribeOwnerSessionEpoch(epoch=>{
+      const binding=recoveryBinding.current;
+      const verified=identityBinding.current;
+      if((!binding||epoch===binding.epoch)&&(!verified||epoch===verified.epoch))return;
+      recoveryBinding.current=null;identityBinding.current=null;
+      if(!stillMounted.current)return;
+      // An observed owner/session transition permanently invalidates this form.
+      // Remove the entered secrets and offer a fresh link instead of leaving a
+      // stale reset form visible while an in-flight request settles.
+      setPassword('');setConfirm('');
+      setNotice('');setIdentity(null);setOutcome(null);
+      setError(binding?recoveryChanged().message:'Your verified account session changed. Sign in again.');
+      setMode('outcome');
+      history.replaceState(null,'',binding?'/auth/recovery-status':'/auth/outcome');
+    });
+  },[auth]);
   useEffect(()=>{
     // StrictMode re-runs effects in development. A single-use OAuth or email
     // grant must never be exchanged twice. Let the initiating request finish
@@ -163,12 +233,13 @@ export function AuthApp(){
       if (privateRoute==='/reset-password'||privateRoute==='/set-password'){
         setMode('outcome');setError('This link does not contain an active recovery grant. Request another link.');
       }
-      return;
+      return ()=>{stillMounted.current=false;};
     }
     // Scrub credentials BEFORE any async request or render-side navigation.
     if(redirect.kind!=='none')history.replaceState(null,'',privateRoute);
     if(!auth){
-      setMode('outcome');setError(config.error);return;
+      setMode('outcome');setError(config.error);
+      return ()=>{stillMounted.current=false;};
     }
     void (async()=>{
       setMode('callback');
@@ -176,7 +247,7 @@ export function AuthApp(){
         if(redirect.kind==='error')throw new Error(redirect.message);
         if(redirect.kind==='oauth_code'){
           const who=await auth.service.finishOAuth(redirect.code);
-          if(stillMounted.current)await signedIn(who.email??null);return;
+          if(stillMounted.current)await signedIn(who);return;
         }
         if(redirect.kind==='tokens' || redirect.kind==='token_hash'){
           const kind=redirect.kind==='tokens'
@@ -184,19 +255,24 @@ export function AuthApp(){
             : await auth.auth.verifyTokenHash(redirect.tokenHash,redirect.type);
           if(!stillMounted.current)return;
           if(kind==='recovery'||kind==='invite'){
+            // The adapter records the initiating provider-verified session at
+            // redemption. Never substitute a user from a later getUser call.
+            const binding=auth.auth.readVerifiedRecoveryBinding();
+            if(!binding||auth.auth.reconcileOwnerSessionEpoch()!==binding.epoch)throw recoveryChanged();
+            recoveryBinding.current=binding;
             setMode('set-password');
             setNotice('Your one-time link was verified. Choose a new password.');
             return;
           }
           const verified=await auth.auth.getUser();
           if(verified.error||!verified.data?.user)throw new Error('Account confirmation session could not be verified.');
-          if(stillMounted.current)await signedIn(verified.data.user.email??null);
+          if(stillMounted.current)await signedIn(verified.data.user);
           return;
         }
         if(privateRoute==='/workspace'){
           const verified=await auth.auth.getUser();
           if(verified.error||!verified.data?.user)throw new Error('Sign in to access your private workspace.');
-          if(stillMounted.current)await signedIn(verified.data.user.email??null);
+          if(stillMounted.current)await signedIn(verified.data.user);
           return;
         }
         throw new Error('This callback does not contain a supported one-time verification link.');
@@ -281,7 +357,7 @@ export function AuthApp(){
               if(!auth)throw new Error(config.error);
               try {
                 const who=await auth.service.login(email,password);
-                await signedIn(who.email??null);
+                await signedIn(who);
               } catch (reason) {
                 if (!(reason instanceof AuthFlowError) || reason.code !== 'EMAIL_CONFIRMATION_REQUIRED') throw reason;
                 result('registered', reason.message);
@@ -289,18 +365,22 @@ export function AuthApp(){
             })}>
               <AuthInput id="signin-email" label="Email address">
                 <input id="signin-email" autoComplete="username" type="email" required value={email}
-                  placeholder="you@example.com" onChange={event=>setEmail(event.target.value)}/>
+                  placeholder="you@example.com" disabled={pending} onChange={event=>{if(!actionInFlight.current)setEmail(event.target.value);}}/>
               </AuthInput>
-              <AuthPassword id="signin-password" label="Password" value={password} setValue={setPassword} autoComplete="current-password"/>
+              <AuthPassword id="signin-password" label="Password" value={password} setValue={value=>{if(!actionInFlight.current)setPassword(value);}} disabled={pending} autoComplete="current-password"/>
               <div className="auth-row"><span className="auth-privacy-note">Local session on this device</span>
                 <a href="/forgot-password" aria-disabled={pending || undefined} onClick={event=>{event.preventDefault();setAuthMode('forgot-password','/forgot-password');}}>Forgot password? <span aria-hidden="true">→</span></a></div>
               <button type="submit" className="auth-submit" disabled={pending||!auth}>Sign in <span aria-hidden="true">→</span></button>
             </form>
             <div className="auth-or"><span>Or</span></div>
             <button className="auth-google" type="button" disabled={pending||!auth?.allowGoogle} onClick={()=>{
-              if(!auth)return;
-              setPending(true);setError('');
-              void auth.service.googleLogin().then(url=>{window.location.assign(url);}).catch(reason=>{setError(readError(reason));setPending(false);});
+              if(!auth||!auth.allowGoogle)return;
+              void runAuthAction(async()=>{
+                const url=await auth.service.googleLogin();
+                if(!stillMounted.current)return;
+                setPassword('');setConfirm('');
+                window.location.assign(url);
+              });
             }}>{auth?.allowGoogle?'Continue with Google':'Google sign-in not configured'}</button>
             <p className="auth-switch">Don't have an account? <a href="/signup" aria-disabled={pending || undefined} onClick={event=>{event.preventDefault();swapMode('signup');}}>Create an account <span aria-hidden="true">→</span></a></p>
             <div className="auth-advisory">Drafts remain private until you explicitly choose what to share. Switching sign-in and sign-up preserves your entries.</div>
@@ -315,20 +395,30 @@ export function AuthApp(){
               if(handleIssue)throw new Error(handleIssue);
               const passwordIssue=validatePasswordPair(password,confirm);
               if(passwordIssue)throw new Error(passwordIssue);
-              const created=await auth.service.register({email,password,handle:cleanHandleInput(handle),displayName});
+              const created=await auth.service.registerWithIdentity({email,password,handle:cleanHandleInput(handle),displayName});
+              if(!stillMounted.current)return;
               if(created.status==='signed_in'){
-                const verified=await auth.auth.getUser();
-                if(verified.error||!verified.data?.user)throw new Error('Could not verify the new account session.');
-                window.location.replace('/app');
+                // A successful provider signup can already have committed, even
+                // if initialization readback later fails. Never repeat signup
+                // automatically and never redirect into a different owner.
+                try{
+                  const verified=await verifyInitializedOwner(created.user);
+                  if(!verified||!stillMounted.current)return;
+                  if(auth.auth.reconcileOwnerSessionEpoch()!==verified.epoch)
+                    throw new AuthFlowError('AUTH_EXPIRED','The authenticated account changed. Sign in again.');
+                  setPassword('');setConfirm('');window.location.replace('/app');
+                }catch{
+                  result('initialization-pending','Registration returned a session, but access to the new private profile could not be confirmed. Return to sign in and retry; do not register again.');
+                }
               } else result('registered','This environment requires email confirmation before sign-in. If the confirmation email arrives, open its link to continue.');
             })}>
-              <AuthInput id="signup-name" label="Display name"><input id="signup-name" required maxLength={80} autoComplete="name" value={displayName} onChange={event=>setDisplayName(event.target.value)}/></AuthInput>
+              <AuthInput id="signup-name" label="Display name"><input id="signup-name" required maxLength={80} autoComplete="name" value={displayName} disabled={pending} onChange={event=>{if(!actionInFlight.current)setDisplayName(event.target.value);}}/></AuthInput>
               <AuthInput id="signup-handle" label="Preferred handle"><input id="signup-handle" required minLength={3} maxLength={30} spellCheck={false} autoComplete="off" value={handle}
-                aria-describedby="signup-handle-note" onChange={event=>setHandle(event.target.value)}/></AuthInput>
+                aria-describedby="signup-handle-note" disabled={pending} onChange={event=>{if(!actionInFlight.current)setHandle(event.target.value);}}/></AuthInput>
               <p id="signup-handle-note" className="auth-field-hint">Letters, numbers and underscores, beginning with a letter. Your handle is not reserved until the server confirms it.</p>
-              <AuthInput id="signup-email" label="Email address"><input id="signup-email" required type="email" autoComplete="email" value={email} onChange={event=>setEmail(event.target.value)}/></AuthInput>
-              <AuthPassword id="signup-password" label="Create password" value={password} setValue={setPassword} autoComplete="new-password"/>
-              <AuthPassword id="signup-confirm" label="Confirm password" value={confirm} setValue={setConfirm} autoComplete="new-password"/>
+              <AuthInput id="signup-email" label="Email address"><input id="signup-email" required type="email" autoComplete="email" value={email} disabled={pending} onChange={event=>{if(!actionInFlight.current)setEmail(event.target.value);}}/></AuthInput>
+              <AuthPassword id="signup-password" label="Create password" value={password} setValue={value=>{if(!actionInFlight.current)setPassword(value);}} disabled={pending} autoComplete="new-password"/>
+              <AuthPassword id="signup-confirm" label="Confirm password" value={confirm} setValue={value=>{if(!actionInFlight.current)setConfirm(value);}} disabled={pending} autoComplete="new-password"/>
               <button type="submit" className="auth-submit" disabled={!auth||pending}>Create account <span aria-hidden="true">→</span></button>
             </form>
             {!auth&&<p className="auth-field-hint">Account creation is unavailable in this environment.</p>}
@@ -342,7 +432,7 @@ export function AuthApp(){
               await auth.service.requestPasswordReset(email);
               result('email-requested','If the account exists, the provider accepted a recovery request. Delivery is not confirmed.');
             })}>
-              <AuthInput id="forgot-email" label="Email address"><input id="forgot-email" required type="email" autoComplete="email" value={email} onChange={event=>setEmail(event.target.value)}/></AuthInput>
+              <AuthInput id="forgot-email" label="Email address"><input id="forgot-email" required type="email" autoComplete="email" value={email} disabled={pending} onChange={event=>{if(!actionInFlight.current)setEmail(event.target.value);}}/></AuthInput>
               <button type="submit" className="auth-submit" disabled={pending||!auth}>Request recovery link <span aria-hidden="true">→</span></button>
             </form>
             {auth&&!auth.emailAvailable&&<p className="auth-field-hint">Email delivery is not verified. You can still request a recovery link.</p>}
@@ -354,13 +444,35 @@ export function AuthApp(){
             <form className="auth-fields" onSubmit={event=>void submit(event,async()=>{
               if(!auth)throw new Error(config.error);
               const issue=validatePasswordPair(password,confirm);if(issue)throw new Error(issue);
-              const current=await auth.auth.getUser();
-              if(current.error||!current.data?.user)throw new Error('Your verified reset session has expired.');
-              await auth.service.updatePassword(password);
-              result('password-updated','The authenticated password update was accepted.');
+              const binding=recoveryBinding.current;
+              if(!binding||auth.auth.reconcileOwnerSessionEpoch()!==binding.epoch){
+                retireRecovery(recoveryChanged().message);return;
+              }
+              const issued=auth.auth.readVerifiedRecoveryBinding();
+              if(!issued||issued.ownerId!==binding.ownerId||issued.epoch!==binding.epoch){
+                retireRecovery(recoveryChanged().message);return;
+              }
+              // Do not reuse an ambiguous password-write acknowledgement. A PUT
+              // can already have committed even if delivery of its receipt failed.
+              try{
+                const updated=await auth.auth.updateRecoveryPassword(password,binding);
+                if(!stillMounted.current)return;
+                if(recoveryBinding.current!==binding)return; // epoch listener already retired the form
+                if(updated?.error!==null||updated.data?.user?.id!==binding.ownerId||
+                  auth.auth.reconcileOwnerSessionEpoch()!==binding.epoch){
+                  if(recoveryBinding.current===binding)
+                    retireRecovery('The password update could not be confirmed. Try signing in with the intended new password or request another recovery link.');
+                  return;
+                }
+                if(recoveryBinding.current===binding)
+                  result('password-updated','The authenticated password update was accepted.');
+              }catch{
+                if(stillMounted.current&&recoveryBinding.current===binding)
+                  retireRecovery('The password update could not be confirmed. Try signing in with the intended new password or request another recovery link.');
+              }
             })}>
-              <AuthPassword id="new-password" label="New password" value={password} setValue={setPassword} autoComplete="new-password"/>
-              <AuthPassword id="confirm-password" label="Confirm new password" value={confirm} setValue={setConfirm} autoComplete="new-password"/>
+              <AuthPassword id="new-password" label="New password" value={password} setValue={value=>{if(!actionInFlight.current)setPassword(value);}} disabled={pending} autoComplete="new-password"/>
+              <AuthPassword id="confirm-password" label="Confirm new password" value={confirm} setValue={value=>{if(!actionInFlight.current)setConfirm(value);}} disabled={pending} autoComplete="new-password"/>
               {notice && <p className="auth-notice auth-reset-note" role="status">{notice}</p>}
               <button className="auth-submit" type="submit" disabled={pending||!auth}>Save new password <span aria-hidden="true">→</span></button>
             </form>
@@ -368,7 +480,7 @@ export function AuthApp(){
           {mode==='outcome' && <section aria-labelledby="auth-heading">
             <p className="eyebrow"><span/> Account update</p><h1 id="auth-heading" tabIndex={-1} ref={heading}>
               {error?'Action not completed':outcome==='password-updated'?'Password updated':
-                outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Check your inbox':outcome==='session-verified'?'Session verified':'Account recovery status'}
+                outcome==='registered'?'Registration submitted':outcome==='email-requested'?'Check your inbox':outcome==='session-verified'?'Session verified':outcome==='initialization-pending'?'Profile verification pending':'Account recovery status'}
             </h1>
             <p className="auth-description" role={error?'alert':notice?'status':undefined}>{notice||error||'Check your account details before continuing.'}</p>
             {outcome === 'email-requested' &&
@@ -376,26 +488,24 @@ export function AuthApp(){
                 <strong>Waiting for the recovery email?</strong>
                 <ul><li>Check your spam or junk folder.</li><li>Use the most recent link if you requested more than one.</li></ul>
               </aside>}
-            {identity&&<p className="auth-identity">Signed in as {identity}</p>}
+            {identity?.email&&<p className="auth-identity">Signed in as {identity.email}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
             {outcome==='registered'&&auth&&<button type="button" className="auth-text-button" disabled={pending}
               onClick={()=>{
-                if(!auth||pending)return;
-                setPending(true);setError('');setNotice('');
-                void auth.service.resendSignupConfirmation(email)
-                  .then(()=>setNotice('If confirmation is required, the provider accepted another request. Email delivery is not confirmed.'))
-                  .catch(reason=>setError(readError(reason)))
-                  .finally(()=>setPending(false));
+                if(!auth)return;
+                void runAuthAction(async()=>{
+                  await auth.service.resendSignupConfirmation(email);
+                  if(stillMounted.current)setNotice('If confirmation is required, the provider accepted another request. Email delivery is not confirmed.');
+                });
               }}>{pending?'Requesting…':'Request another confirmation link'}</button>}
             <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {(outcome === 'email-requested' || (error && !identity)) &&
               <button type="button" className="auth-text-button" disabled={pending}
                 onClick={()=>setAuthMode('forgot-password','/forgot-password')}>Request another link</button>}
             {identity&&auth&&<button type="button" className="auth-text-button" disabled={pending} onClick={()=>{
-              setPending(true);
-              void auth.service.logout('local').then(()=>{
-                setAuthMode('signin','/signin');
-              }).catch(reason=>setError(readError(reason))).finally(()=>setPending(false));
+              void runAuthAction(async()=>{await auth.service.logout('local');}).then(ok=>{
+                if(ok&&stillMounted.current)setAuthMode('signin','/signin');
+              });
             }}>Sign out of this device</button>}
           </section>}
           {mode==='workspace' && <section aria-labelledby="auth-heading">
