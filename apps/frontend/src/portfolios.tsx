@@ -499,7 +499,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
-  const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;
+  const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;format:'json'|'zip';
     changedFiles:string[];changedSlots:string[]}|null>(null);
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
     cloudRevision:number;changedFiles:string[];changedSlots:string[]}|null>(null);
@@ -1152,7 +1152,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       }
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
-  async function portableOperation(action:'export'|'compare'|'restore',file?:File){
+  async function portableOperation(action:'export'|'compare'|'restore',file?:File,format:'json'|'zip'='json'){
     const view=captureRecovery(),previewed=portableComparison;
     if(!view||!view.head||!view.record||recoveryLock.current||pendingFields||sourceDirty||
       (action!=='export'&&view.dirty))return;
@@ -1161,17 +1161,26 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(action==='compare')setPortableComparison(null);
     try{
       if(action==='export'){
-        const data=exportPortableSnapshot(view.head.snapshot);
+        let data:Blob;
+        if(format==='zip'){
+          const {exportPortfolioSourceZip,importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+          if(!draftCurrent(view))return;
+          const archive=exportPortfolioSourceZip(view.head.snapshot);
+          if(!sameDraftSnapshot(importPortfolioSourceZip(archive),view.head.snapshot))throw new Error('Source ZIP round-trip failed.');
+          data=new Blob([new Uint8Array(archive).buffer],{type:'application/zip'});
+        }else data=new Blob([exportPortableSnapshot(view.head.snapshot)],{type:'application/json'});
         if(!draftCurrent(view))return;
-        const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+        const url=URL.createObjectURL(data);
         const link=document.createElement('a');
-        link.href=url;link.download='kadmeion-private-project-'+view.id+'.json';
+        link.href=url;link.download='kadmeion-private-project-'+view.id+'.'+format;
         try{document.body.append(link);link.click();}
         finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
         setPortableNotice('Private snapshot download requested. No cloud save or media-file export occurred.');return;
       }
-      if(action==='compare'&&(!file||file.size<1||file.size>1024*1024)){
-        setPortableNotice('Choose a Kadmeion private project JSON file within 1 MiB. Nothing was imported.');return;
+      const sizeLimit=(format==='zip'?2:1)*1024*1024;
+      if(action==='compare'&&(!file||file.size<1||file.size>sizeLimit)){
+        setPortableNotice(format==='zip'?'Choose an editable Kadmeion source ZIP within 2 MiB. Nothing was imported.':
+          'Choose a Kadmeion private project JSON file within 1 MiB. Nothing was imported.');return;
       }
       const fresh=await view.port.readOwnerPortfolio(view.id);
       if(!draftCurrent(view))return;
@@ -1182,12 +1191,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'){
         const bytes=await file!.arrayBuffer();
         if(!draftCurrent(view))return;
-        if(bytes.byteLength<1||bytes.byteLength>1024*1024)throw new Error('Invalid snapshot byte length.');
-        const source=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
-        const snapshot=importPortableSnapshot(source);
-        setPortableComparison({snapshot,cloudRevision:fresh.data.revision,
+        if(bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid snapshot byte length.');
+        let snapshot:PortfolioSnapshot;
+        if(format==='zip'){
+          const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+          if(!draftCurrent(view))return;
+          snapshot=importPortfolioSourceZip(new Uint8Array(bytes));
+        }else snapshot=importPortableSnapshot(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes));
+        if(!draftCurrent(view))return;
+        setPortableComparison({snapshot,format,cloudRevision:fresh.data.revision,
           ...portableDifference(fresh.data.snapshot,snapshot)});
-        setPortableNotice('Private project JSON parsed and compared. This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
+        setPortableNotice((format==='zip'?'Private source ZIP verified and compared.':'Private project JSON parsed and compared.')+
+          ' This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
       }
       if(!previewed||previewed.cloudRevision!==fresh.data.revision){
         setPortableComparison(null);setPortableNotice('Cloud version changed after comparison. Compare again; no draft was replaced.');return;
@@ -1201,7 +1216,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       setSourceReset(value=>value+1);setPortableComparison(null);
       setPortableNotice('Imported as an unsaved draft. Undo is available. No cloud save, media-byte verification or source execution occurred.');
     }catch{
-      if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON; your draft remains intact.');}
+      if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON or editable source ZIP; your draft remains intact.');}
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   function exportWorkingRecovery(){
@@ -1409,7 +1424,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     </details>}
     {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
       <summary>Private project JSON import &amp; export</summary>
-      <p>Portable applied snapshot only (1 MiB maximum). This is not an editable ZIP, a media backup, a published page or a browser recovery file with raw buffers. Authored source and text may contain sensitive information.</p>
+      <p>Portable applied snapshots: private JSON up to 1 MiB or editable Kadmeion source ZIP up to 2 MiB. Neither includes media bytes, public pages, cloud history or unapplied buffers. Authored source and text may contain sensitive information.</p>
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
@@ -1419,6 +1434,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
               if(file)void portableOperation('compare',file);}}/>
         </label>
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>void portableOperation('export',undefined,'zip')}>Export editable source ZIP</button>
+        <label>Compare editable source ZIP
+          <input type="file" accept=".zip,application/zip" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
+              if(file)void portableOperation('compare',file,'zip');}}/>
+        </label>
       </div>
       {portableNotice&&<p role="status">{portableNotice}</p>}
       {portableComparison&&<div aria-label="Portable snapshot comparison">
@@ -1427,8 +1450,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         <details><summary>Different slots or stashes</summary><ul>{portableComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
         <div className="ws-actions">
           <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
-            onClick={()=>void portableOperation('restore')}>Restore compared JSON as unsaved draft</button>
-          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setPortableComparison(null)}>Close JSON comparison</button>
+            onClick={()=>void portableOperation('restore')}>{portableComparison.format==='zip'?'Restore compared ZIP as unsaved draft':'Restore compared JSON as unsaved draft'}</button>
+          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setPortableComparison(null)}>{portableComparison.format==='zip'?'Close ZIP comparison':'Close JSON comparison'}</button>
         </div>
       </div>}
     </details>}
