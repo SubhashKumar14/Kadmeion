@@ -82,3 +82,71 @@ grant execute on function public.owner_save_private_project_draft(uuid,bigint,te
   to authenticated;
 comment on function public.owner_save_private_project_draft(uuid,bigint,text,text,text,text,text,boolean) is
   'Live owner session + atomic revision CAS and explicit case-study withdrawal consent. No mutation on unchanged draft.';
+
+-- R10 proposed extension of the still-unmerged guarded owner-mutation migration:
+-- UUID of the active Trash journal row is the immutable generation. No new
+-- migration path and no change to the existing autosave or legacy restore RPC.
+-- S15 must approve this scope extension before admission; never amend after apply.
+create function public.owner_restore_private_item_generation(
+  p_item_type text,p_item_id uuid,p_expected_trash_id uuid
+) returns jsonb language plpgsql security definer set search_path='' as $$
+declare
+  v_owner uuid := auth.uid();
+  v_session uuid;
+  v_actual timestamptz;
+  v_journal public.private_trash_items%rowtype;
+  v_receipt jsonb;
+begin
+  v_session:=kadmeion_private.require_live_exit_auth_session();
+  if p_item_type is null or p_item_type not in ('project','portfolio')
+    or p_item_id is null or p_expected_trash_id is null then
+    raise exception using errcode='22023',message='INVALID_TRASH_TARGET';
+  end if;
+  perform 1 from auth.users where id=v_owner for key share;
+  if not found then raise exception using errcode='42501',message='AUTH_REQUIRED'; end if;
+  perform 1 from auth.sessions where id=v_session and user_id=v_owner
+    and (not_after is null or not_after>clock_timestamp()) for share nowait;
+  if not found then raise exception using errcode='42501',message='AUTH_REQUIRED'; end if;
+  -- Match Trash's item-first order. NOWAIT fails closed if an old restore
+  -- (journal-first) or sweep is already in flight; no blind retry.
+  if p_item_type='project' then
+    select trashed_at into v_actual from public.projects
+      where id=p_item_id and owner_user_id=v_owner for update nowait;
+  else
+    select trashed_at into v_actual from public.portfolios
+      where id=p_item_id and owner_user_id=v_owner for update nowait;
+  end if;
+  if not found then raise exception using errcode='42501',message='PRIVATE_ITEM_NOT_FOUND'; end if;
+  select * into v_journal from public.private_trash_items
+    where item_type=p_item_type and item_id=p_item_id and owner_user_id=v_owner
+      and restored_at is null for update nowait;
+  if not found or v_journal.id is distinct from p_expected_trash_id
+    or v_actual is null or v_actual is distinct from v_journal.trashed_at then
+    raise exception using errcode='40001',message='PRIVATE_TRASH_GENERATION_CONFLICT';
+  end if;
+  if clock_timestamp()>=v_journal.restore_until then
+    raise exception using errcode='55000',message='PRIVATE_TRASH_EXPIRED';
+  end if;
+  -- Existing restore performs the actual private restoration in this same
+  -- transaction with both exact rows already locked.
+  v_receipt:=public.restore_private_item(p_item_type,p_item_id);
+  if v_receipt is distinct from jsonb_build_object('item_type',p_item_type,
+    'item_id',p_item_id,'status','restored','public_visibility','private')
+    or not exists(select 1 from public.private_trash_items where id=v_journal.id
+      and owner_user_id=v_owner and restored_at is not null)
+    or exists(select 1 from public.private_trash_items where item_type=p_item_type
+      and item_id=p_item_id and owner_user_id=v_owner and restored_at is null) then
+    raise exception using errcode='40001',message='PRIVATE_TRASH_GENERATION_CONFLICT';
+  end if;
+  if v_session is distinct from kadmeion_private.require_live_exit_auth_session()
+    or not exists(select 1 from auth.sessions where id=v_session and user_id=v_owner
+      and (not_after is null or not_after>clock_timestamp())) then
+    raise exception using errcode='42501',message='AUTH_REQUIRED';
+  end if;
+  return v_receipt || jsonb_build_object('trash_id',v_journal.id);
+end;
+$$;
+revoke all on function public.owner_restore_private_item_generation(text,uuid,uuid)
+ from public,anon,authenticated,service_role;
+grant execute on function public.owner_restore_private_item_generation(text,uuid,uuid)
+ to authenticated;

@@ -2459,3 +2459,41 @@ test('R9 guarded project RPC: actual password sessions, atomic CAS and explicit 
     assert.equal(dead.ok,false,'Revoked session cannot write');
     assert.equal((await read()).revision,final.revision);
   });
+
+test('R10 real Trash generation CAS rejects ABA and competing stale restore',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('trash-generation-owner'),foreign=await adminUser('trash-generation-foreign');
+  const rpc=(actor,name,body)=>send('/rest/v1/rpc/'+name,{...json(actor),method:'POST',body});
+  for(const kind of ['project','portfolio']){
+    const table=kind==='project'?'projects':'portfolios';
+    const create={owner_user_id:owner.id,slug:'trash-'+randomUUID().slice(0,8),title:'Trash generation fixture',
+      ...(kind==='portfolio'?{template_id:'starter'}:{})};
+    const [item]=successful(await send('/rest/v1/'+table+'?select=id',{
+      ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},body:create
+    }),'Create disposable private '+kind);
+    const target={p_item_type:kind,p_item_id:item.id};
+    const generation=async()=>{
+      const rows=successful(await send('/rest/v1/private_trash_items?select=id,item_id,item_type&item_id=eq.'+
+        item.id+'&item_type=eq.'+kind+'&restored_at=is.null',bearer(owner)),'Read exact active Trash row');
+      assert.equal(rows.length,1);return rows[0].id;
+    };
+    successful(await rpc(owner,'trash_private_item',target),'Trash generation A');
+    const a=await generation();
+    const restore=(who,id)=>rpc(who,'owner_restore_private_item_generation',{...target,p_expected_trash_id:id});
+    assert.equal((await restore(foreign,a)).data?.code,'42501');
+    const first=successful(await restore(owner,a),'Restore exact A');
+    assert.deepEqual(first,{item_type:kind,item_id:item.id,status:'restored',public_visibility:'private',trash_id:a});
+    successful(await rpc(owner,'trash_private_item',target),'Trash generation B');
+    const b=await generation();assert.notEqual(a,b);
+    const stale=await restore(owner,a);
+    assert.equal(stale.ok,false);assert.equal(stale.data?.code,'40001');
+    assert.equal(await generation(),b);
+    const pair=await Promise.all([restore(owner,b),restore(owner,b)]);
+    assert.equal(pair.filter(r=>r.ok).length,1);
+    assert.equal(pair.find(r=>r.ok).data.trash_id,b);
+    assert.equal(pair.find(r=>!r.ok).ok,false);
+    const active=successful(await send('/rest/v1/private_trash_items?select=id&item_id=eq.'+
+      item.id+'&restored_at=is.null',bearer(owner)),'No active row after exact restore');
+    assert.deepEqual(active,[]);
+  }
+});
