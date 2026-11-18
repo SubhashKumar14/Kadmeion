@@ -4220,13 +4220,19 @@ test('B16 C12 R9 real provider consent, physical claim/finish, cooldown and late
 // owner JWT. Only the upstream source bytes are injected by the local runner.
 test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and late deletion',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local stack and explicitly injected source only.');
-  test.setTimeout(140_000);
+  test.setTimeout(260_000);
   const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,serviceKey=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
   if(!key||!serviceKey||process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal provider lifecycle.');
   const {createLocalProviderHandler}=await import('../../../supabase/functions/sync-provider-facts/index.ts');
   const {SupabasePrivateProviderFactsService}=await import('../../../packages/contracts/src/private-provider-facts-service.ts');
   const owner=await localUser('R10 mounted C12 owner'),handle='ci-r10-'+randomUUID().slice(0,8);
   const endpoint=origin+'/functions/v1/sync-provider-facts';
+  // A prior disposable browser may hold the real 20-second global claim.
+  // Wait for the claim, cooldown, provider block and actual rate budgets;
+  // never write the shared quota or bypass production enforcement.
+  const waitForSharedQuota=async()=>{
+    await expect.poll(()=>runLocalFixtureSql("select case when g.next_allowed_at<=clock_timestamp() and (g.lease_until is null or g.lease_until<=clock_timestamp()) and (g.blocked_until is null or g.blocked_until<=clock_timestamp()) and (g.hour_start<>date_trunc('hour',clock_timestamp(),'UTC') or g.hour_count<20) and (g.day_start<>date_trunc('day',clock_timestamp(),'UTC') or g.day_count<80) and not exists(select 1 from kadmeion_private.github_owner_quota where owner_id=:'actor_id'::uuid and next_allowed_at>clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota g where singleton;",owner.id),{timeout:45000,intervals:[500,1000,2000]}).toBe('1');
+  };
   let sourceCalls=0,capabilityCalls=0,holdSource=false;
   let enter!:()=>void,release!:()=>void;
   const entered=new Promise<void>(resolve=>{enter=resolve;});
@@ -4265,7 +4271,7 @@ test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and l
     await panel.getByRole('button',{name:'Enable private GitHub synchronization'}).click();
     await expect(panel.getByText('Ready for explicit lookup',{exact:false})).toBeVisible();
     expect(sourceCalls).toBe(0);
-    await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) and (blocked_until is null or blocked_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:25000}).toBe('1');
+    await waitForSharedQuota();
     // A shared local quota can change between the SQL observation and the
     // browser claim. Exercise explicit user recovery from a real 429; never
     // silently bypass, reset shared quotas, or retry an uncertain write.
@@ -4278,7 +4284,7 @@ test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and l
     if(lookupStatus===429){
       await expect(panel.getByRole('alert')).toContainText('The server limited this request');
       expect(sourceCalls).toBe(0);
-      await expect.poll(()=>runLocalFixtureSql("select case when g.next_allowed_at<=clock_timestamp() and (g.lease_until is null or g.lease_until<=clock_timestamp()) and (g.blocked_until is null or g.blocked_until<=clock_timestamp()) and (g.hour_start<>date_trunc('hour',clock_timestamp(),'UTC') or g.hour_count<20) and (g.day_start<>date_trunc('day',clock_timestamp(),'UTC') or g.day_count<80) and not exists(select 1 from kadmeion_private.github_owner_quota where owner_id=:'actor_id'::uuid and next_allowed_at>clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota g where singleton;",owner.id),{timeout:25000}).toBe('1');
+      await waitForSharedQuota();
       await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
       await expect(panel.getByRole('button',{name:'Find public GitHub profile'})).toBeEnabled();
       lookupStatus=await lookup();
@@ -4295,7 +4301,7 @@ test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and l
     await expect(panel.getByText('Saved provider facts',{exact:false})).toBeVisible();expect(sourceCalls).toBe(1);
     await expect(panel.getByRole('button',{name:'Sync Now',exact:true})).toBeDisabled();
     runLocalFixtureSql("update kadmeion_private.github_owner_quota set next_allowed_at=clock_timestamp()-interval '1 second' where owner_id=:'actor_id'::uuid;",owner.id);
-    await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:15000}).toBe('1');
+    await waitForSharedQuota();
     await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
     await expect(panel.getByRole('button',{name:'Sync Now',exact:true})).toBeEnabled();
     await panel.getByRole('button',{name:'Sync Now',exact:true}).click();
@@ -4318,7 +4324,7 @@ test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and l
     if(token.user?.id!==owner.id||typeof token.access_token!=='string')throw Error('Second owner receipt mismatch.');
     const second=new SupabasePrivateProviderFactsService(origin,key,owner.id,async()=>token.access_token,()=>true,transport);
     runLocalFixtureSql("update kadmeion_private.github_owner_quota set next_allowed_at=clock_timestamp()-interval '1 second' where owner_id=:'actor_id'::uuid;",owner.id);
-    await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:15000}).toBe('1');
+    await waitForSharedQuota();
     await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
     await expect(panel.getByRole('button',{name:'Find public GitHub profile'})).toBeEnabled();
     holdSource=true;
