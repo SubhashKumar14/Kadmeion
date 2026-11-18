@@ -157,12 +157,14 @@ test('real owner onboarding and project revision are private across browser sess
     await page.goto(target);
     const expected=page.getByRole('heading',{name:heading,level:1});
     const locked=page.getByRole('heading',{name:'Sign in required.',level:1});
+    const unavailable=page.getByRole('heading',{name:'Owner verification unavailable.',level:1});
     await expect.poll(async()=>{
       if(await expected.isVisible())return 'VERIFIED';
       if(await locked.isVisible())return 'LOCKED';
+      if(await unavailable.isVisible())return 'UNAVAILABLE';
       return 'CHECKING';
     },{timeout:12_000}).not.toBe('CHECKING');
-    if(await locked.isVisible()){
+    if(await locked.isVisible()||await unavailable.isVisible()){
       await expect(page.locator('.ws-shell')).toHaveCount(0);
       const retry=page.getByRole('button',{name:'Retry verification'});
       await expect(retry).toBeVisible();
@@ -3091,7 +3093,9 @@ test('B16 WF-043/047 Settings fail-closed gate retries actual session before pri
     }finally{await response.dispose();}
   });
   await page.goto('/app/settings');
-  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('no private records are shown');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toHaveCount(0);
   await expect(page.locator('.ws-shell')).toHaveCount(0);
   await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
   expect(denials).toBeGreaterThan(0);
@@ -3243,6 +3247,152 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
   }
 });
 
+test('B16 WF-044/048 real owner verification distinguishes transport outage from session denial',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase and S14 truthful verification gate.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 transport versus denial');
+  await signIn(page,owner);
+  let mode:'transport'|'real'|'deny'='transport',privateWhileClosed=0,denials=0;
+  page.on('request',request=>{
+    const u=new URL(request.url());
+    if(mode!=='real'&&u.origin===origin&&u.pathname.startsWith('/rest/v1/'))privateWhileClosed++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='deny'){denials++;return route.fulfill({status:401,json:{message:'S6 disposable fixture denial'}});}
+    await route.continue();
+  });
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(privateWhileClosed).toBe(0);
+  mode='real';
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  mode='deny';
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toHaveCount(0);
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(denials).toBeGreaterThan(0);expect(privateWhileClosed).toBe(0);
+  mode='real';
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await signIn(page,owner);
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Account security'})).toBeVisible();
+});
+
+test('B16 C06 real A-B-A owner transition rejects delayed autosave acknowledgement',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Isolated local Supabase; requires latest S2 owner epoch and S1 verified session guard.');
+  test.setTimeout(85_000);
+  const owner=await localUser('S6 autosave epoch A'),other=await localUser('S6 autosave epoch B');
+  await signIn(page,owner);await page.goto('/app/profile');
+  const name=page.getByLabel('Display name',{exact:true});
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(name).toHaveValue('S6 autosave epoch A');
+  let accept!:()=>void,received!:()=>void,finished!:()=>void;
+  const hold=new Promise<void>(r=>{accept=r}),ack=new Promise<void>(r=>{received=r}),settled=new Promise<void>(r=>{finished=r});
+  let saves=0,committed=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    saves++;
+    if(saves!==1)return route.continue();
+    const body=route.request().postDataJSON();
+    expect(body.p_draft.headline).toBe('A committed before epoch switch');
+    expect(body.p_confirm_projection_withdrawal).toBe(false);
+    const result=await route.fetch();
+    try{
+      committed=result.ok();received();await hold;
+      // The earlier request may already have been aborted on owner remount.
+      await route.fulfill({response:result}).catch(()=>{});
+    }finally{await result.dispose();finished();}
+  });
+  const control=await page.context().newPage();
+  try{
+    await auto.check();await headline.fill('A committed before epoch switch');await ack;
+    expect(committed).toBe(true);expect(saves).toBe(1);
+    await control.goto('/app/settings');
+    await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);
+    await expect(page.locator('.ws-shell')).toHaveCount(0);
+    await expect(name).toHaveCount(0);
+    await signIn(control,other);
+    await expect(name).toHaveValue('S6 autosave epoch B');
+    await expect(headline).toHaveValue('');
+    await expect(auto).not.toBeChecked();
+    await expect(page.getByText('A committed before epoch switch',{exact:true})).toHaveCount(0);
+    await control.goto('/app/settings');
+    await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);
+    await signIn(control,owner);
+    await expect(name).toHaveValue('S6 autosave epoch A');
+    await expect(headline).toHaveValue('A committed before epoch switch');
+    await expect(auto).not.toBeChecked();
+    await headline.fill('New A unsaved buffer');
+    accept();await settled;
+    await expect(headline).toHaveValue('New A unsaved buffer');
+    await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Save profile draft'})).toBeEnabled();
+    expect(saves).toBe(1);
+    await page.getByRole('button',{name:'Save profile draft'}).click();
+    await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+    expect(saves).toBe(2);
+    await page.reload();await expect(headline).toHaveValue('New A unsaved buffer');
+  }finally{accept();await control.close();}
+});
+
+test('B16 WF-048 offline owner verification retries in place without cached authority or private reads',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable Supabase and S14 truthful gate required.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 true offline verification');
+  await signIn(page,owner);
+  let fail=true,verifications=0,privateReads=0,verified=false;
+  page.on('request',req=>{
+    const u=new URL(req.url());
+    if(!verified&&u.origin===origin&&u.pathname.startsWith('/rest/v1/'))privateReads++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    verifications++;
+    if(fail)return route.abort('failed');
+    const response=await route.fetch();
+    try{
+      if(response.ok()){
+        const result=await response.json();
+        if(result?.id===owner.id)verified=true;
+      }
+      await route.fulfill({response});
+    }finally{await response.dispose();}
+  });
+  await page.goto('/app/settings');
+  const unavailable=page.getByRole('heading',{name:'Owner verification unavailable.'});
+  const retry=page.getByRole('button',{name:'Retry verification'});
+  await expect(unavailable).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(privateReads).toBe(0);
+  const before=verifications;
+  await page.context().setOffline(true);
+  try{
+    await expect.poll(()=>page.evaluate(()=>navigator.onLine)).toBe(false);
+    await retry.click();
+    await expect(page.getByRole('alert')).toContainText('Your browser reports offline.');
+    await expect(unavailable).toBeVisible();
+    await expect(page.locator('.ws-shell')).toHaveCount(0);
+    expect(verifications).toBe(before);expect(privateReads).toBe(0);
+  }finally{await page.context().setOffline(false);}
+  await expect.poll(()=>page.evaluate(()=>navigator.onLine)).toBe(true);
+  await expect(unavailable).toBeVisible();await expect(page.locator('.ws-shell')).toHaveCount(0);
+  fail=false;
+  await retry.click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  expect(verified).toBe(true);expect(privateReads).toBe(0);
+  await expect(page.locator('#ws-content')).toBeFocused();
+});
+
 
 test('B16 release pending glyph reflects real owner read, failure and explicit recovery',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S4 release pending UI and disposable local Supabase.');
@@ -3270,7 +3420,8 @@ test('B16 release pending glyph reflects real owner read, failure and explicit r
   try{
     await page.goto(editorPath.replace('/edit','/staging'),{waitUntil:'domcontentloaded'});
     await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toBeVisible();
-    expect(heldReads>0).toBe(true);
+    // The loading glyph can render before verified owner transport dispatches its read.
+    await expect.poll(()=>heldReads,{timeout:10_000}).toBeGreaterThan(0);
     const glyph=section.locator('.glyph-skeleton[aria-hidden="true"]');
     await expect(glyph).toHaveCount(1);
     await expect(glyph.locator('a,button,input,select,textarea,[tabindex="0"]')).toHaveCount(0);
