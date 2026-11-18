@@ -1,5 +1,5 @@
 import { ContractError, isSafeSupabaseClientKey } from './project.ts';
-import { fetchBoundedPrivateReleaseRpc } from './private-release-service.ts';
+import { fetchBoundedPrivateReleaseRpc,isPrivateReleaseTimestamp } from './private-release-service.ts';
 
 export interface PrivateReviewerGrant {
   grantId:string; requestId:string; rawToken:string|null;
@@ -19,12 +19,16 @@ const TOKEN=/^[0-9a-f]{64}$/;
 const record=(value:unknown):value is Record<string,unknown>=>
   value!==null&&typeof value==='object'&&!Array.isArray(value);
 const uuid=(value:unknown):value is string=>typeof value==='string'&&UUID.test(value);
+const canonicalUuid=(value:unknown):value is string=>uuid(value)&&value===value.toLowerCase();
+const exactKeys=(value:Record<string,unknown>,keys:readonly string[])=>
+  Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 
 /** Relative reviewer route for the one-time token from an unexpired new grant. */
 export function reviewerSharePath(grant:PrivateReviewerGrant,now=Date.now()):string {
   if(!grant||grant.status!=='REGISTERED_UNSERVABLE'||grant.alreadyRegistered!==false||
-     !UUID.test(grant.grantId)||typeof grant.rawToken!=='string'||!TOKEN.test(grant.rawToken)||
-     !Number.isFinite(now)||!(Date.parse(grant.expiresAt)>now))
+     !canonicalUuid(grant.grantId)||!canonicalUuid(grant.requestId)||
+     typeof grant.rawToken!=='string'||!TOKEN.test(grant.rawToken)||
+     !isPrivateReleaseTimestamp(grant.expiresAt)||!Number.isFinite(now)||!(Date.parse(grant.expiresAt)>now))
     throw new ContractError('VALIDATION','A new, unexpired reviewer credential is required.');
   return '/r/'+grant.grantId+'.'+grant.rawToken;
 }
@@ -73,15 +77,16 @@ export class SupabasePrivateReviewerService {
     return response.body;
   }
   async issue(requestId:string,operationId:string,validMinutes:number):Promise<PrivateReviewerGrant>{
-    if(!UUID.test(requestId)||!UUID.test(operationId)||
+    if(!uuid(requestId)||!uuid(operationId)||
       !Number.isSafeInteger(validMinutes)||validMinutes<15||validMinutes>10080)
       throw new ContractError('VALIDATION','Invalid review target, operation, or duration.');
     const ack=await this.rpc('issue_private_reviewer_grant',{
       p_request_id:requestId,p_operation_id:operationId,p_valid_minutes:validMinutes
     });
-    if(!record(ack)||!uuid(ack.grantId)||ack.requestId!==requestId||
+    if(!record(ack)||!exactKeys(ack,['grantId','requestId','rawToken','expiresAt','status','alreadyRegistered'])||
+       !canonicalUuid(ack.grantId)||ack.requestId!==requestId||
        ack.status!=='REGISTERED_UNSERVABLE'||typeof ack.alreadyRegistered!=='boolean'||
-       typeof ack.expiresAt!=='string'||!Number.isFinite(Date.parse(ack.expiresAt))||
+       !isPrivateReleaseTimestamp(ack.expiresAt)||
        (ack.alreadyRegistered ? ack.rawToken!==null : typeof ack.rawToken!=='string'||!TOKEN.test(ack.rawToken)))
       throw new ReviewerGrantError('INVALID_ACK','Reviewer grant was not verified.');
     // Raw token appears once; return only the documented typed fields.
@@ -89,9 +94,10 @@ export class SupabasePrivateReviewerService {
       expiresAt:ack.expiresAt,status:'REGISTERED_UNSERVABLE',alreadyRegistered:ack.alreadyRegistered};
   }
   async revoke(grantId:string):Promise<PrivateReviewerRevocation>{
-    if(!UUID.test(grantId))throw new ContractError('VALIDATION','Invalid reviewer grant ID.');
+    if(!uuid(grantId))throw new ContractError('VALIDATION','Invalid reviewer grant ID.');
     const ack=await this.rpc('revoke_private_reviewer_grant',{p_grant_id:grantId});
-    if(!record(ack)||ack.grantId!==grantId||ack.status!=='REVOKED'||ack.publicRevocationVerified!==false)
+    if(!record(ack)||!exactKeys(ack,['grantId','status','publicRevocationVerified'])||
+       ack.grantId!==grantId||ack.status!=='REVOKED'||ack.publicRevocationVerified!==false)
       throw new ReviewerGrantError('INVALID_ACK','Revocation was not acknowledged.');
     return {grantId,status:'REVOKED',publicRevocationVerified:false};
   }
