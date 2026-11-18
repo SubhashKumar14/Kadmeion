@@ -64,6 +64,22 @@ jobs:
             const blob=git(['hash-object','-w','--stdin'],{input:''});
             const add=p=>git(['update-index','--add','--cacheinfo','100644,'+blob+','+p]);
             run(gate,true,/R7 conditional ceiling: 282/);
+            // EVENT-030: exercise actual exact S08 reservations, not scratch allowlist overrides.
+            const directoryPaths=['supabase/migrations/20261117161000_verified_public_directory.sql','api/public-discovery.mjs'];
+            for(const p of directoryPaths){
+              if(baseline.includes(p))continue;
+              assert.ok(baseline.length<ceiling,'Missing reserved directory path but counted ceiling is already full');
+              add(p);
+              run(gate,true,new RegExp('files: '+(baseline.length+1)+' /'));
+              git(['update-index','--force-remove',p]);
+            }
+            for(const p of ['supabase/migrations/20261117160300_verified_public_directory.sql','supabase/migrations/20261117161001_verified_public_directory.sql','api/public-discovery-v2.mjs']){
+              assert.ok(!baseline.includes(p),'Unexpected stale/near-match path');
+              add(p);
+              run(gate,false,/Unreserved counted additions/);
+              git(['update-index','--force-remove',p]);
+            }
+            console.log('R11: exact S08 reservations and stale/near-match path denials verified.');
             add(excluded);
             run(gate,true,new RegExp('files: '+baseline.length+' /'));
             for(const p of extras)add(p);
