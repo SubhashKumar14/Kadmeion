@@ -60,7 +60,7 @@ test('owner-only RLS-backed list and broken response rejection', async () => {
   const client = makeClient(async (url,init) => {
     assert.match(String(url),/private_trash_items\?select=/);
     assert.equal(init?.method,'GET');
-    return Response.json([{item_type:'project',item_id:id,trashed_at:'2026-11-13T10:00:00Z',
+    return Response.json([{id:'22222222-2222-4222-8222-222222222222',item_type:'project',item_id:id,trashed_at:'2026-11-13T10:00:00Z',
       restore_until:'2026-11-28T10:00:00Z'}]);
   });
   assert.equal((await client.list()).length,1);
@@ -179,4 +179,55 @@ test('B09 daily Trash schedule stays opt-in, secret-gated and bounded',()=>{
   assert.match(workflow,/payload\.pending!==0/);
   assert.doesNotMatch(workflow,/\b(curl|wget)\b.*--insecure/);
   assert.doesNotMatch(workflow,/echo.*(SWEEP_SECRET|Authorization)/);
+});
+
+const journal='22222222-2222-4222-8222-222222222222';
+test('atomic restore sends only exact journal RPC and requires matching private receipt', async()=>{
+  let calls=0;
+  const client=makeClient(async(url,init)=>{
+    calls++;
+    assert.equal(url,base+'/rest/v1/rpc/owner_restore_private_item_generation');
+    assert.deepEqual(JSON.parse(String(init?.body)),{p_item_type:'project',p_item_id:id,p_expected_trash_id:journal});
+    return Response.json({item_type:'project',item_id:id,status:'restored',public_visibility:'private',trash_id:journal});
+  });
+  assert.equal((await client.restoreGeneration('project',id,journal)).trash_id,journal);
+  assert.equal(calls,1);
+  for(const invalid of [undefined,id]){
+    const bad=makeClient(async()=>Response.json({item_type:'project',item_id:id,status:'restored',public_visibility:'private',trash_id:invalid}));
+    await assert.rejects(bad.restoreGeneration('project',id,journal),{code:'INVALID_STATE'});
+  }
+});
+test('atomic restore conflicts and expiry never dispatch item-only fallback',async()=>{
+  for(const [body,status,code] of [[{message:'PRIVATE_TRASH_GENERATION_CONFLICT',code:'40001'},409,'INVALID_STATE'],[{message:'PRIVATE_TRASH_EXPIRED'},409,'TRASH_EXPIRED'],[{message:'missing'},404,'PROVIDER_UNAVAILABLE']] as const){
+    let calls=0;
+    const client=makeClient(async(url)=>{
+      calls++;
+      assert.equal(url,base+'/rest/v1/rpc/owner_restore_private_item_generation');
+      return Response.json(body,{status});
+    });
+    await assert.rejects(client.restoreGeneration('project',id,journal),{code});
+    assert.equal(calls,1);
+  }
+});
+test('generation list rejects missing and duplicate identities; empty remains usable',async()=>{
+  const row={id:journal,item_type:'project',item_id:id,trashed_at:'2026-11-13T10:00:00Z',restore_until:'2026-11-28T10:00:00Z'};
+  const client=makeClient(async(url)=>{
+    assert.match(String(url),/select=id,item_type,item_id/);
+    return Response.json([row]);
+  });
+  assert.equal((await client.list())[0]?.id,journal);
+  for(const rows of [[{...row,id:undefined}],[row,row],[row,{...row,id:'33333333-3333-4333-8333-333333333333'}]]){
+    await assert.rejects(makeClient(async()=>Response.json(rows)).list(),{code:'INVALID_STATE'});
+  }
+  assert.deepEqual(await makeClient(async()=>Response.json([])).list(),[]);
+});
+test('owner change during atomic restore discards late acknowledgement',async()=>{
+  let current=true,calls=0;
+  const client=new SupabasePrivateTrashService(base,'publishable-key',async()=> 'owner-jwt',async()=>{
+    calls++;current=false;
+    return Response.json({item_type:'project',item_id:id,status:'restored',public_visibility:'private',trash_id:journal});
+  },()=>current);
+  await assert.rejects(client.restoreGeneration('project',id,journal),{code:'AUTH_EXPIRED'});
+  await assert.rejects(client.restoreGeneration('project',id,journal),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,1);
 });
