@@ -4181,6 +4181,53 @@ test('B16 C14 real administrator restriction lost ACK, mandatory notices, owner 
     await signIn(subject,owner);
     await subject.goto('/app');
     await expect(subject.locator('.ws-shell')).toBeVisible();
+    // Exercise the real HIGH mandatory notification inbox and acknowledgement.
+    const openMandatoryNotice=async(event:'restricted'|'restored')=>{
+      await subject.goto('/app/notifications');
+      const inbox=subject.locator('section.ws-setting-card').filter({has:subject.getByRole('heading',{name:'Inbox',exact:true})});
+      const notice=inbox.getByRole('listitem').filter({has:subject.getByText('moderation account '+event,{exact:true})});
+      await expect(notice).toHaveCount(1);
+      await expect(notice).toContainText('Unread');
+      await expect(notice).toContainText('High priority');
+      await notice.getByRole('button',{name:'Review related area'}).click();
+      await expect(subject).toHaveURL(new RegExp('/app/settings/cases\\?case='+caseId+'
+    const sharing=subject.getByRole('region',{name:'Your account public-sharing status'});
+    await expect(sharing.getByText('Your account\u0027s public sharing is restricted.',{exact:false})).toBeVisible();
+    await sharing.getByRole('link',{name:'Open restriction case'}).click();
+    await expect(subject).toHaveURL(new RegExp('/app/settings/cases\\?case='+caseId+'$'));
+    await expect(subject.getByRole('list',{name:'Case events'}).getByText('Public sharing restricted',{exact:true})).toBeVisible();
+    const appeal='Owner appeal asks for review of this documented public-sharing restriction.';
+    await subject.getByLabel('Appeal statement').fill(appeal);
+    await subject.getByRole('button',{name:'Submit private appeal',exact:true}).click();
+    await expect(subject.getByRole('heading',{name:'Appeal pending',exact:true})).toBeVisible();
+    await signIn(foreign,outsider);
+    await foreign.goto('/app/settings/cases?case='+caseId);
+    await expect(foreign.getByText('This case is unavailable to the current account.',{exact:true})).toBeVisible();
+    await expect(foreign.getByText(reason,{exact:true})).toHaveCount(0);
+    await expect(foreign.getByRole('button',{name:'Submit private appeal'})).toHaveCount(0);
+    await page.goto('/app/operations/appeals');
+    await authority.getByLabel('Account restriction case').selectOption(caseId);
+    await expect(authority.getByText(appeal,{exact:true})).toBeVisible();
+    await authority.getByLabel('Restriction decision').selectOption('RESTORE');
+    await authority.getByLabel('Owner-visible decision rationale').fill('Administrator reviewed the owner appeal and restores private sharing eligibility.');
+    await authority.getByLabel('Type RESTORE PUBLIC SHARING to confirm').fill('RESTORE PUBLIC SHARING');
+    await authority.getByRole('button',{name:'Record restriction decision',exact:true}).click();
+    await expect(page.getByRole('status')).toContainText('Sharing eligibility restored. Previous releases remain withdrawn');
+    expect(noticeCount('MODERATION_ACCOUNT_RESTORED')).toBe('1');
+    await openMandatoryNotice('restored');
+    await subject.reload();
+    await expect(sharing.getByText('No active account-wide public-sharing restriction was returned.',{exact:false})).toBeVisible();
+    await expect(sharing.getByRole('link',{name:'Open restriction case'})).toHaveCount(0);
+    await expect(subject.getByRole('heading',{name:'Closed',exact:true})).toBeVisible();
+    await expect(subject.getByRole('list',{name:'Case events'}).getByText('Sharing eligibility restored',{exact:true})).toBeVisible();
+    await expect(subject.getByRole('list',{name:'Case events'}).getByText(appeal,{exact:true})).toHaveCount(1);
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.profile_publications where user_id=:'actor_id'::uuid;",owner.id)).toBe('0');
+  }finally{await context.close();await outsiderContext.close();}
+});
+));
+      expect(runLocalFixtureSql("select count(*) from public.private_notifications where owner_user_id=:'actor_id'::uuid and target_id=:'item_id'::uuid and event_type='MODERATION_ACCOUNT_"+event.toUpperCase()+"' and read_at is not null;",owner.id,caseId)).toBe('1');
+    };
+    await openMandatoryNotice('restricted');
     await subject.goto('/app/settings/cases');
     const sharing=subject.getByRole('region',{name:'Your account public-sharing status'});
     await expect(sharing.getByText('Your account\u0027s public sharing is restricted.',{exact:false})).toBeVisible();
