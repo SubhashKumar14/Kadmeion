@@ -194,3 +194,71 @@ test('C12 persisted provider failures are distinct from private transport errors
   await assert.rejects(fixture(async()=>{calls++;return json({message:'PROVIDER_UNAVAILABLE'},503)}).readState(link),{code:'UNAVAILABLE'});
   assert.equal(calls,1);
 });
+
+test('C12 lookup candidates are valid only in the explicit confirmation state',async()=>{
+  assert.deepEqual(parseProviderState(candidate,owner,link),candidate);
+  for(const status of ['PENDING','UNAVAILABLE','READY','SYNCED','OFF'] as const){
+    const malformed={...candidate,status};
+    assert.throws(()=>parseProviderState(malformed,owner,link),{code:'INVALID_RESPONSE'});
+    await assert.rejects(fixture(async()=>json(malformed)).readState(link),{code:'INVALID_RESPONSE'});
+  }
+});
+
+test('C12 completed lookup and confirmation acknowledgements must match actual state transitions',async()=>{
+  const lookup={...input,expectedVersion:1,action:'LOOKUP'} as const;
+  const confirm={...input,expectedVersion:3};
+  const unavailable={...ready,version:3,status:'UNAVAILABLE',lastError:'PROVIDER_UNAVAILABLE'} as const;
+  for(const state of [candidate, unavailable]){
+    const receipt={status:'APPLIED',state};
+    assert.deepEqual(await fixture(async()=>json(receipt)).sync(lookup),receipt);
+  }
+  for(const state of [{...ready,version:3},{...candidate,status:'PENDING',version:2}]){
+    let calls=0;
+    await assert.rejects(fixture(async()=>{calls++;return json({status:'APPLIED',state})}).sync(lookup),{code:'INVALID_RESPONSE'});
+    assert.equal(calls,1);
+  }
+  const confirmed={status:'APPLIED',state:synced};
+  assert.deepEqual(await fixture(async()=>json(confirmed)).confirmCandidate(confirm),confirmed);
+  for(const status of ['PENDING','UNAVAILABLE'] as const){
+    let calls=0;
+    await assert.rejects(fixture(async()=>{calls++;return json({status:'APPLIED',state:{...synced,status}})}).confirmCandidate(confirm),{code:'INVALID_RESPONSE'});
+    assert.equal(calls,1);
+  }
+});
+
+test('C12 failed refresh retains only stale facts and OFF cannot retain provider failure or facts',async()=>{
+  const stale:ProviderState={...synced,status:'UNAVAILABLE',freshness:'STALE',lastError:'PROVIDER_UNAVAILABLE'};
+  assert.deepEqual(await fixture(async()=>json(stale)).readState(link),stale);
+  const disabled:ProviderState={...off,version:5,cooldownUntil:expires};
+  assert.deepEqual(await fixture(async()=>json(disabled)).readState(link),disabled);
+  for(const invalid of [{...stale,freshness:'FRESH'},{...stale,lastError:null},
+    {...synced,lastError:'RATE_LIMITED'},{...ready,lastError:'NOT_FOUND'},
+    {...disabled,lastError:'PROVIDER_UNAVAILABLE'},{...disabled,facts,freshness:'STALE'}]){
+    let calls=0;
+    await assert.rejects(fixture(async()=>{calls++;return json(invalid)}).readState(link),{code:'INVALID_RESPONSE'});
+    assert.equal(calls,1);
+  }
+});
+
+test('C12 exact PostgREST SQLSTATE conflict is actionable only on an owner RPC without retries',async()=>{
+  const envelope={code:'40001',message:'CONFLICT',details:null,hint:null};
+  let calls=0;
+  await assert.rejects(fixture(async(url)=>{calls++;assert.ok(String(url).endsWith('/rest/v1/rpc/change_owner_github_provider_consent'));return json(envelope,500)}).changeConsent({...input,action:'ENABLE'}),{code:'CONFLICT'});
+  assert.equal(calls,1);
+  for(const bad of [{...envelope,message:'OTHER'},{...envelope,code:'23505'},
+    {...envelope,unexpected:true},{code:'40001',message:'CONFLICT'}]){
+    calls=0;
+    await assert.rejects(fixture(async()=>{calls++;return json(bad,500)}).changeConsent({...input,action:'ENABLE'}),{code:'UNAVAILABLE'});
+    assert.equal(calls,1);
+  }
+  calls=0;
+  await assert.rejects(fixture(async(url)=>{calls++;assert.ok(String(url).endsWith('/functions/v1/sync-provider-facts'));return json(envelope,500)}).sync({...input,expectedVersion:1,action:'LOOKUP'}),{code:'UNAVAILABLE'});
+  assert.equal(calls,1);
+});
+
+test('C12 malformed duplicate conflict JSON cannot convert an uncertain failure into a safe conflict',async()=>{
+  const raw='{"code":"23505","code":"40001","message":"CONFLICT","details":null,"hint":null}';
+  let calls=0;
+  await assert.rejects(fixture(async()=>{calls++;return new Response(raw,{status:500,headers:{'content-type':'application/json'}})}).changeConsent({...input,action:'ENABLE'}),{code:'UNAVAILABLE'});
+  assert.equal(calls,1);
+});
