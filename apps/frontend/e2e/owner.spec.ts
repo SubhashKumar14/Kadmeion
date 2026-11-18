@@ -292,7 +292,7 @@ test('real owner onboarding and project revision are private across browser sess
   const gitHubCard = page.getByRole('article', {name: 'GitHub'});
   await gitHubCard.getByLabel('Public handle').fill('ci-browser-owner');
   await gitHubCard.getByRole('button', {name: 'Save private link'}).click();
-  await expect(gitHubCard.getByRole('status')).toContainText('No provider sync or ownership verification');
+  await expect(gitHubCard.getByRole('status').filter({hasText:'Private link stored.'})).toContainText('No provider sync or ownership verification');
   await expect(gitHubCard.getByText('https://github.com/ci-browser-owner')).toBeVisible();
   await capture('40_CONNECTIONS_BROWSER');
   await page.reload();
