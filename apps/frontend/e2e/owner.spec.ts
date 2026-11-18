@@ -4057,6 +4057,64 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
 
+test('B16 WF-012 uncertain paged match requires exact owner readback after closing and reopening',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(85000);
+  const owner=await localUser('R7 uncertain exact readback');
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  let writes=0,committedId:string|null=null,exactFailures=0,exactReads=0;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/projects',async route=>{
+    const method=route.request().method();
+    if(method==='POST'){
+      writes++;
+      const response=await route.fetch();
+      try{
+        expect(response.ok()).toBe(true);
+        const rows=await response.json();
+        if(!Array.isArray(rows)||rows.length!==1||typeof rows[0]?.id!=='string')throw new Error('Local insert receipt absent.');
+        committedId=rows[0].id;
+        return await route.abort('failed');
+      }finally{await response.dispose();}
+    }
+    if(method==='GET'&&committedId&&new URL(route.request().url()).searchParams.get('id')==='eq.'+committedId){
+      exactReads++;
+      if(exactFailures===0){
+        exactFailures++;
+        return route.fulfill({status:503,json:{message:'Disposable current-record read outage'}});
+      }
+    }
+    await route.continue();
+  });
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R7 exact uncertain record');
+  await drawer.getByLabel('Summary (optional)').fill('Durable record must actually be checked');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  const check=drawer.getByRole('button',{name:'Check saved project before retry'});
+  await expect(check).toBeEnabled();
+  expect(writes).toBe(1);expect(committedId).not.toBeNull();
+  await check.click();
+  await expect(drawer.getByRole('alert')).toContainText('current record could not be verified');
+  expect(exactReads).toBe(1);expect(exactFailures).toBe(1);
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await drawer.getByRole('button',{name:'Close and keep recovery pending',exact:true}).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText(/A project creation is unresolved\. Open Add project/)).toBeVisible();
+  await page.getByRole('button',{name:'Add project',exact:true}).click();
+  await expect(drawer.getByLabel('Project title')).toHaveValue('R7 exact uncertain record');
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await check.click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText('The requested private project matches a saved record. No additional write was made.',{exact:true})).toBeVisible();
+  expect(writes).toBe(1);expect(exactReads).toBe(2);
+  await page.reload();
+  await expect(page.getByRole('link',{name:'R7 exact uncertain record',exact:true})).toHaveCount(1);
+  expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug='r7-exact-uncertain-record';",owner.id)).toBe('1');
+  expect(writes).toBe(1);
+});
+
 
 test('C13 mounted analytics uses actual owner consent and persisted local aggregate lifecycle',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase CI.');
