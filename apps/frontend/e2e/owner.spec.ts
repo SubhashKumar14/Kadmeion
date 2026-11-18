@@ -2570,7 +2570,10 @@ test('B16 WF-012 real uncertain quick-add checks durable insert and acknowledged
   const check=drawer.getByRole('button',{name:'Check saved project before retry'});
   async function open(label:string,privateSlug:string,first=false){
     await page.getByRole('button',{name:first?'Add first project':'Add project',exact:true}).click();
-    await title.fill(label);await drawer.getByText('Edit private URL slug',{exact:true}).click();
+    await title.fill(label);
+    // The native details disclosure survives closing and reopening the drawer.
+    if(!await slug.isVisible())await drawer.getByText('Edit private URL slug',{exact:true}).click();
+    await expect(slug).toBeVisible();
     await slug.fill(privateSlug);await summary.fill('Durable recovery fixture');
     await repository.fill('https://example.com/repo');await live.fill('https://example.com/live');
   }
