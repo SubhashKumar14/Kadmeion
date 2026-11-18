@@ -162,7 +162,11 @@ function uploadPaths(raw:unknown):string[] {
   return raw;
 }
 /** Bounded lifecycle transport: never wait for a producer's cancellation. */
-async function boundedLifecycleJson(response:Response,max:number,signal:AbortSignal):Promise<unknown>{
+function checkStreamDeadline(signal:AbortSignal,deadline:number):void {
+  signal.throwIfAborted();
+  if(performance.now()>=deadline)throw new DOMException('Response deadline exceeded','TimeoutError');
+}
+async function boundedLifecycleJson(response:Response,max:number,signal:AbortSignal,deadline=performance.now()+15_000):Promise<unknown>{
   const length=response.headers.get('content-length');
   if(length!==null&&(!/^\d+$/.test(length)||Number(length)>max)){
     void response.body?.cancel().catch(()=>{});throw new Error('Invalid lifecycle body');
@@ -173,7 +177,7 @@ async function boundedLifecycleJson(response:Response,max:number,signal:AbortSig
   let bytes=0,chunks=0,body='',complete=false;
   try{
     for(;;){
-      signal.throwIfAborted();
+      checkStreamDeadline(signal,deadline);
       let onAbort=()=>{};
       const aborted=new Promise<never>((_,reject)=>{
         onAbort=()=>reject(signal.reason);signal.addEventListener('abort',onAbort,{once:true});
@@ -181,7 +185,7 @@ async function boundedLifecycleJson(response:Response,max:number,signal:AbortSig
       let chunk:ReadableStreamReadResult<Uint8Array>;
       try{chunk=await Promise.race([reader.read(),aborted]);}
       finally{signal.removeEventListener('abort',onAbort);}
-      signal.throwIfAborted();
+      checkStreamDeadline(signal,deadline);
       if(chunk.done)break;
       if(++chunks>65_536)throw new Error('Lifecycle chunk limit exceeded');
       if(!(chunk.value instanceof Uint8Array))throw new Error('Invalid lifecycle bytes');
@@ -198,9 +202,9 @@ async function boundedLifecycleJson(response:Response,max:number,signal:AbortSig
     reader.releaseLock();
   }
 }
-async function confirmedRemoval(response:Response,paths:readonly string[],signal:AbortSignal):Promise<boolean>{
+async function confirmedRemoval(response:Response,paths:readonly string[],signal:AbortSignal,deadline:number):Promise<boolean>{
   try{
-    const raw=await boundedLifecycleJson(response,256*1024,signal);
+    const raw=await boundedLifecycleJson(response,256*1024,signal,deadline);
     if(!Array.isArray(raw)||raw.length!==paths.length)return false;
     const remaining=new Set(paths);
     return raw.every(entry=>record(entry)&&typeof entry.name==='string'&&remaining.delete(entry.name));
@@ -323,6 +327,7 @@ export class SupabasePrivateAccountErasureService {
     const jwt=session??await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in to review account exit.');
     let response:Response;
+    const deadline=performance.now()+15_000;
     const signal=AbortSignal.timeout(15_000);
     try{
       response=await this.http(this.origin+'/rest/v1/'+path,{
@@ -342,7 +347,7 @@ export class SupabasePrivateAccountErasureService {
         void response.body?.cancel().catch(()=>{});
         throw new PrivateAccountErasureError('RATE_LIMITED','Too many account requests. Try again later.');
       }
-      const error=await boundedLifecycleJson(response,16*1024,signal).catch(()=>null);
+      const error=await boundedLifecycleJson(response,16*1024,signal,deadline).catch(()=>null);
       const message=record(error)?error.message:null;
       if(record(error)&&error.code==='55000'&&message==='PROFILE_ASSET_EXPORT_VERSION_REQUIRED')
         throw new PrivateAccountErasureError('VERSION_REQUIRED','Use the profile-inclusive version 2 export; legacy scope cannot cover this account.');
@@ -374,8 +379,8 @@ export class SupabasePrivateAccountErasureService {
         throw new PrivateAccountErasureError('CONFLICT','Account exit request conflicts with existing state.');
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit operation failed.');
     }
-    return boundedLifecycleJson(response,256*1024,signal).catch(()=>{
-      throw new PrivateAccountErasureError(signal.aborted?'PROVIDER_UNAVAILABLE':'INVALID_ACK',
+    return boundedLifecycleJson(response,256*1024,signal,deadline).catch(()=>{
+      throw new PrivateAccountErasureError(signal.aborted||performance.now()>=deadline?'PROVIDER_UNAVAILABLE':'INVALID_ACK',
         'Invalid or incomplete account exit response.');
     });
   }
@@ -564,6 +569,7 @@ export class SupabasePrivateAccountErasureService {
     if(await this.token()!==jwt)
       throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed before upload removal.');
     let response:Response;
+    const deadline=performance.now()+15_000;
     const signal=AbortSignal.timeout(15_000);
     try{
       response=await this.http(this.origin+'/storage/v1/object/kadmeion-private-assets',{
@@ -584,7 +590,7 @@ export class SupabasePrivateAccountErasureService {
       if(await this.token()!==jwt)
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during upload removal.');
       // A full first page could hide an undeleted path after a concurrent upload.
-      if(remaining.length===100&&!(await confirmedRemoval(response,paths,signal)))
+      if(remaining.length===100&&!(await confirmedRemoval(response,paths,signal,deadline)))
         throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Storage could not confirm this batch. Retry cleanup.');
       if(await this.token()!==jwt)
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during upload confirmation.');
