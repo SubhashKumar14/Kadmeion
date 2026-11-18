@@ -729,6 +729,48 @@ test('account erasure removes active account data only after fresh owner confirm
   const post = (actor, rpc, body) => send('/rest/v1/rpc/' + rpc, {
     ...json(actor), method: 'POST', body
   });
+  // Register and attach a real standalone C05 avatar before account exit.
+  // Test-only trusted attestation uses the actual object bytes, not a fake digest.
+  const reservation = successful(await post(owner, 'reserve_private_profile_asset', {
+    p_operation_id: randomUUID(), p_mime_type: 'image/png',
+    p_byte_size: png.byteLength, p_alt_text: 'Local account exit avatar'
+  }), 'Reserve private avatar before erasure');
+  assert.equal(reservation.state, 'PENDING_UPLOAD');
+  const avatarObject = '/storage/v1/object/' + bucket + '/' + reservation.objectPath;
+  const avatarRead = '/storage/v1/object/authenticated/' + bucket + '/' + reservation.objectPath;
+  successful(await send(avatarObject, {
+    ...bearer(owner), method: 'POST', body: png, headers: {'Content-Type': 'image/png'}
+  }), 'Upload real private avatar');
+  successful(await post(owner, 'register_private_profile_asset', {
+    p_asset_id: reservation.assetId
+  }), 'Register private avatar');
+  const pinArgs = {p_scope: 'PROFILE', p_asset_id: reservation.assetId, p_project_id: null};
+  const pin = successful(await post(owner, 'read_owner_private_asset_pin', pinArgs), 'Read avatar storage pin');
+  const avatarBytes = await send(avatarRead, bearer(owner));
+  assert.equal(avatarBytes.ok, true); assert.deepEqual(avatarBytes.bytes, png);
+  assert.equal((await send(avatarRead, bearer(outsider))).ok, false);
+  const hash = createHash('sha256').update(avatarBytes.bytes).digest('hex');
+  successful(await send('/rest/v1/rpc/record_private_profile_asset_content_attestation', {
+    method: 'POST', key: cfg.service, bearer: cfg.service,
+    headers: {'Content-Type': 'application/json'}, body: {
+      p_asset_id: reservation.assetId, p_owner_user_id: owner.id,
+      p_storage_object_id: pin.objectId, p_storage_version: pin.version,
+      p_expected_sha256: hash
+    }
+  }), 'Trusted local avatar attestation');
+  const attached = successful(await post(owner, 'set_private_profile_avatar', {
+    p_base_revision: 0, p_asset_id: reservation.assetId, p_operation_id: randomUUID()
+  }), 'Attach attested avatar');
+  assert.equal(attached.asset.id, reservation.assetId);
+  assert.equal(attached.revision, 1);
+  // The outsider must retain real bytes when the disposable owner is erased.
+  const outsiderName = outsider.id + '/exit/retained.png';
+  const outsiderObject = '/storage/v1/object/' + bucket + '/' + outsiderName;
+  const outsiderRead = '/storage/v1/object/authenticated/' + bucket + '/' + outsiderName;
+  successful(await send(outsiderObject, {
+    ...bearer(outsider), method: 'POST', body: png, headers: {'Content-Type': 'image/png'}
+  }), 'Create outsider control bytes');
+  assert.deepEqual((await send(outsiderRead, bearer(outsider))).bytes, png);
   const request = successful(await post(owner, 'request_private_account_erasure', {
     p_operation_id: randomUUID(), p_confirmation: 'DELETE MY ACCOUNT'
   }), 'Request account erasure');
@@ -781,8 +823,21 @@ test('account erasure removes active account data only after fresh owner confirm
   assert.equal((await send(privateObject,bearer(fresh))).ok,true,'Withdrawal removed private uploads');
   assert.deepEqual(await service.withdrawPublicContent(request.requestId,challenge.challengeId,operationId,
     'WITHDRAW PUBLIC CONTENT'),withdrawn);
-  assert.equal(await service.removeUploadBatch(), 1);
+  // Both registered PROFILE media and an ordinary owner object must be physically
+  // removed by the deliberate exit cleanup. A denied JWT alone is not erasure.
+  assert.equal((await send(avatarRead, bearer(fresh))).ok, true);
+  const trustedStorage = {key: cfg.service, bearer: cfg.service};
+  const beforeCleanup = await send(avatarRead, trustedStorage);
+  assert.equal(beforeCleanup.ok, true, 'Trusted local Storage can observe avatar bytes before cleanup');
+  assert.deepEqual(beforeCleanup.bytes, png);
+  assert.equal(await service.removeUploadBatch(), 2);
   assert.equal(await service.removeUploadBatch(), 0);
+  for (const path of [avatarRead, privateObject]) {
+    const absent = await send(path, trustedStorage);
+    assert.ok(!absent.ok, 'Trusted local Storage must not serve deleted owner bytes');
+  }
+  const retained = await send(outsiderRead, bearer(outsider));
+  assert.equal(retained.ok, true); assert.deepEqual(retained.bytes, png);
   const receipt = await service.execute(request.requestId, challenge.challengeId, 'DELETE MY ACCOUNT');
   assert.equal(receipt.status, 'ACTIVE_ACCOUNT_ERASED');
   assert.equal(receipt.accessTerminated, false, 'Deletion removes Auth rows but cannot revoke existing JWT signatures immediately');
@@ -792,6 +847,34 @@ test('account erasure removes active account data only after fresh owner confirm
   assert.equal((await execute(fresh)).ok, false);
   assert.equal((await send('/auth/v1/user', bearer(fresh))).ok, false);
   assert.equal((await send('/auth/v1/user', bearer(outsider))).ok, true);
+  // Read physical metadata from the disposable local Postgres, independent of RLS/JWT denial.
+  const raw = execFileSync('supabase', ['status','-o','env'], {encoding:'utf8', timeout:20000});
+  const dbMatch = raw.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(dbMatch, 'Local SQL fixture URL required');
+  const db = new URL(dbMatch[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322'); assert.equal(db.username,'postgres');
+  assert.equal(db.pathname,'/postgres');
+  const pg = new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false,
+    connectionTimeoutMillis:3000,query_timeout:10000});
+  try {
+    await pg.connect();
+    const counts = (await pg.query(`
+      select
+        (select count(*)::int from auth.users where id=$1::uuid) as owner_users,
+        (select count(*)::int from auth.sessions where user_id=$1::uuid) as owner_sessions,
+        (select count(*)::int from public.profiles where user_id=$1::uuid) as owner_profiles,
+        (select count(*)::int from public.profile_assets where owner_user_id=$1::uuid) as owner_avatars,
+        (select count(*)::int from kadmeion_private.private_profile_asset_content_attestations where owner_user_id=$1::uuid) as owner_pins,
+        (select count(*)::int from storage.objects where bucket_id=$3 and split_part(name,'/',1)=$1::text) as owner_objects,
+        (select count(*)::int from auth.users where id=$2::uuid) as foreign_users,
+        (select count(*)::int from storage.objects where bucket_id=$3 and name=$4) as foreign_objects
+      `, [owner.id,outsider.id,bucket,outsiderName])).rows[0];
+    assert.deepEqual(counts,{owner_users:0,owner_sessions:0,owner_profiles:0,owner_avatars:0,
+      owner_pins:0,owner_objects:0,foreign_users:1,foreign_objects:1});
+  } finally { await pg.end().catch(()=>{}); }
 });
 
 test('B4: future private host denial RPC is not exposed on the Data API',
