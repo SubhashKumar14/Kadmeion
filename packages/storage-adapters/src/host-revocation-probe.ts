@@ -85,7 +85,7 @@ function validatedOrigin(input:HostRevocationProbeInput):URL {
   if(!input||!Array.isArray(input.candidateDirectPaths)||
      input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
      !canonicalPathValid(input.canonicalPath)||
-     input.candidateDirectPaths.some(path=>!pathValid(path,input.canonicalPath)||path===input.canonicalPath)||
+     [...input.candidateDirectPaths].some(path=>!pathValid(path,input.canonicalPath)||path===input.canonicalPath)||
      new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
     throw new HostRevocationProbeError('INVALID_INPUT');
   return trustedOrigin(input.origin,input.allowLocal===true);
@@ -198,8 +198,10 @@ export async function probeHostRevocation(
   input:HostRevocationProbeInput,http:typeof fetch=fetch
 ):Promise<HostRevocationObservation>{
   const origin=validatedOrigin(input);
+  const canonicalPath=input.canonicalPath;
+  const directPaths=[...input.candidateDirectPaths];
   let count=0;
-  for(const path of [input.canonicalPath,...input.candidateDirectPaths]){
+  for(const path of [canonicalPath,...directPaths]){
     for(const method of ['GET','HEAD'] as const){
       const response=await fetchPath(new URL(path,origin),method,http);
       await verifyDenied(response,method);
@@ -208,9 +210,9 @@ export async function probeHostRevocation(
   }
   return Object.freeze({
     status:'OBSERVED_REVOKED_ON_SCOPED_PATHS' as const,
-    canonicalPath:input.canonicalPath,
+    canonicalPath,
     observedHttpRequests:count,
-    directPathsChecked:input.candidateDirectPaths.length,
+    directPathsChecked:directPaths.length,
     universalCacheErasureVerified:false as const,
     thirdPartyArchiveErasureVerified:false as const
   });
@@ -308,7 +310,7 @@ async function observeReleaseWithdrawal(
 
 export function validWithdrawalManifest(manifest:unknown,hashes:unknown):boolean {
   return Array.isArray(hashes)&&hashes.length<=8&&
-    hashes.every(sha=>typeof sha==='string'&&SHA256.test(sha))&&
+    [...hashes].every(sha=>typeof sha==='string'&&SHA256.test(sha))&&
     new Set(hashes).size===hashes.length&&
     (hashes.length===0?manifest===null:typeof manifest==='string'&&SHA256.test(manifest));
 }
