@@ -25,7 +25,7 @@ jobs:
       - run: npm ci
       - name: Report B16 counted files and enforce exact authorized paths
         run: npm run check:file-budget
-      - name: Verify DECISION-B16-002 with isolated Git index and test-only reservations
+      - name: Verify R7 conditional ceiling and exact reservations with isolated Git index
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync, spawnSync } from 'node:child_process';
@@ -56,22 +56,28 @@ jobs:
           try{
             git(['read-tree','HEAD']);
             const baseline=git(['ls-files','--cached']).split('\n').filter(counted);
-            const extras=Array.from({length:Math.max(16,281-baseline.length)},(_,i)=>`tests/__b16_budget_fixture__/case-${i}.test.ts`);
+            const ceiling=282;
+            assert.ok(baseline.length<=ceiling);
+            const extras=Array.from({length:ceiling-baseline.length},(_,i)=>`tests/__b16_budget_fixture__/case-${i}.test.ts`);
+            const over='tests/__b16_budget_fixture__/over-limit.test.ts';
             const excluded='project-docs/__b16_budget_fixture__/excluded.txt';
             const blob=git(['hash-object','-w','--stdin'],{input:''});
             const add=p=>git(['update-index','--add','--cacheinfo','100644,'+blob+','+p]);
-            run(gate,true,/Numerical thresholds are informational/);
+            run(gate,true,/R7 conditional ceiling: 282/);
             add(excluded);
             run(gate,true,new RegExp('files: '+baseline.length+' /'));
             for(const p of extras)add(p);
             const total=baseline.length+extras.length;
-            assert.ok(total>280);
-            run(gate,false,/Unreserved counted additions/);
-            // Only the scratch copy has synthetic authorization; never change the real allowlist.
-            run(fixture('authorized-over-former-ceiling',extras),true,new RegExp('files: '+total+' /'));
-            run(fixture('duplicate-authorization',[...extras,extras[0]]),false,/Colliding counted-path authorizations/);
+            assert.equal(total,ceiling);
+            // Only scratch copies have synthetic authorization; never change the real allowlist.
+            run(fixture('authorized-at-ceiling',extras),true,new RegExp('files: '+total+' /'));
+            add(over);
+            run(fixture('unregistered-over',extras),false,/Unreserved counted additions/);
+            run(fixture('authorized-over-ceiling',[...extras,over]),false,/R7 conditional file ceiling exceeded/);
+            git(['update-index','--force-remove',over]);
+            run(fixture('duplicate-authorization',[...extras,over,over]),false,/Colliding counted-path authorizations/);
             run(fixture('baseline-collision',[...extras,gate]),false,/Colliding counted-path authorizations/);
-            console.log('DECISION-B16-002: 6/6 isolated index checks passed, real allowlist unchanged.');
+            console.log('R7: 7/7 isolated index checks passed; real allowlist unchanged.');
           }finally{rmSync(temp,{recursive:true,force:true});}
           NODE
       - name: Mandatory C03 method-aware delivery and bounded cancellation regressions
