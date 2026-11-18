@@ -130,17 +130,15 @@ test('direct recovery status never implies a verified session', async ({ page })
   await expect(page.locator('.auth-page')).toHaveAttribute('data-panel', 'left');
 });
 
-test('recovery is gated by mail delivery and signup explains missing Auth configuration', async ({ page }) => {
+test('unconfigured Auth disables recovery and signup without claiming email delivery', async ({ page }) => {
   await page.goto('/signin');
   await page.getByRole('link',{name:/Forgot password/}).click();
   await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
   const recoveryButton = page.getByRole('button',{name:/Request recovery link/});
   await expect(recoveryButton).toBeDisabled();
-  const recoveryBounds = await recoveryButton.boundingBox();
-  const recoveryNotice = await page.getByText(/Email recovery is not available/).boundingBox();
-  expect(recoveryBounds).not.toBeNull();
-  expect(recoveryNotice).not.toBeNull();
-  expect(recoveryNotice!.y).toBeGreaterThanOrEqual(recoveryBounds!.y + recoveryBounds!.height);
+  await expect(recoveryButton).toBeVisible();
+  await expect(page.getByText(/Email recovery is not available until provider delivery is verified/)).toHaveCount(0);
+  await expect(page.getByText(/provider accepted a recovery request/)).toHaveCount(0);
   await page.goto('/signup');
   await expect(page.getByRole('button',{name:/Create account/})).toBeDisabled();
   await expect(page.getByText('Account creation is unavailable in this environment.')).toBeVisible();

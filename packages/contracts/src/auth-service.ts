@@ -135,14 +135,17 @@ export class AuthService {
   }
 
   async requestPasswordReset(emailInput: unknown): Promise<void> {
-    if (!this.config.emailDeliveryVerified)
-      throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Password recovery is unavailable until email delivery is verified.');
+    // Delivery verification is not a prerequisite to submitting a recovery request.
+    // The provider still enforces abuse controls and the recovery session is verified separately.
     const email = validateAuthEmail(emailInput);
-    const { error } = await authProviderCall(
+    const outcome = await authProviderCall(
       ()=>this.auth.resetPasswordForEmail(email, {
         redirectTo: this.config.siteOrigin + '/reset-password'
       }), 'Unable to submit the recovery request.');
-    if (error) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to submit the recovery request.');
+    if (!outcome || outcome.error !== null || !outcome.data ||
+        typeof outcome.data !== 'object' || Array.isArray(outcome.data) ||
+        Object.keys(outcome.data).length !== 0)
+      throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to submit the recovery request.');
     // Do not claim a message was delivered or an account exists.
   }
 
@@ -154,7 +157,11 @@ export class AuthService {
     const outcome=await authProviderCall(()=>resend.call(this.auth,{
       type:'signup',email,options:{emailRedirectTo:this.config.siteOrigin+'/auth/callback'}
     }),'Unable to submit the confirmation request.');
-    if(!outcome||outcome.error)
+    // A successful email resend acknowledges a request, not an identity or delivery.
+    // Reject malformed envelopes and unexpected session/user payloads.
+    if(!outcome || outcome.error !== null || !outcome.data ||
+       typeof outcome.data !== 'object' || Array.isArray(outcome.data) ||
+       Object.keys(outcome.data).length !== 0)
       throw new AuthFlowError('PROVIDER_UNAVAILABLE','Unable to submit the confirmation request.');
   }
 
