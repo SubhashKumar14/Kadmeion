@@ -161,16 +161,26 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const operation=useRef<string|null>(null);
   const grantOperation=useRef<string|null>(null);
   const blockOperation=useRef<BlockAttempt|null>(null);
-  const blockFlight=useRef<object|null>(null);
+  const actionFlight=useRef<object|null>(null);
   const historySelectionEpoch=useRef(0);
   const routeEpoch=useRef(0);
   useLayoutEffect(()=>{
     routeEpoch.current+=1;
-    return ()=>{routeEpoch.current+=1;historySelectionEpoch.current+=1;};
+    return ()=>{routeEpoch.current+=1;historySelectionEpoch.current+=1;actionFlight.current=null;};
   },[port,id,mode]);
   const base='/app/portfolios/'+id;
   const readsBusy=busy||historySelectionPending||readPhase!==null;
-  const retryPrivateReads=()=>setRetry(value=>value+1);
+  const retryPrivateReads=()=>{if(!readsBusy&&actionFlight.current===null)setRetry(value=>value+1);};
+  // React's busy state is rendered asynchronously; a second event can
+  // otherwise enter a mutation or download before that state is committed.
+  function beginReleaseAction(){
+    if(readsBusy||actionFlight.current!==null)return null;
+    const ticket={},epoch=routeEpoch.current;
+    actionFlight.current=ticket;
+    const current=()=>routeEpoch.current===epoch&&actionFlight.current===ticket;
+    const finish=()=>{if(current()){actionFlight.current=null;setBusy(false);}};
+    return {current,finish};
+  }
 
   // Reset only when the owner/route identity changes, not on Retry. A retry
   // must preserve the frozen request and its idempotency key after an
@@ -186,7 +196,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setGrants(null);setRevokedGrantIds(new Set());setGrantListError('');
     setConfirmRevoke(false);setConfirmBlock(null);setNotice('');setError('');setBusy(false);
-    operation.current=null;grantOperation.current=null;blockOperation.current=null;blockFlight.current=null;
+    operation.current=null;grantOperation.current=null;blockOperation.current=null;actionFlight.current=null;
   },[port,id,mode]);
 
   useEffect(()=>{
@@ -262,8 +272,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   async function downloadStaticPreview(){
     if (readsBusy || !frozen || historySelection!==null || ackSelection!==null || result?.status!=='PREVIEW_ONLY' || !result.previewHtml) return;
     const reviewedHtml=result.previewHtml;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');setStaticArchiveSha(null);
     try {
       const {exportStandaloneStaticPreview}=await import('../../../packages/storage-adapters/src/static-preview-export.ts');
@@ -278,14 +288,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       setNotice('Offline static preview download prepared. ZIP structure and HTML digest checked.');
     } catch {
       if (current()) {setResult(null);setError('The frozen revision could not be exported. Run preflight again to check eligibility.');}
-    } finally {if (current()) setBusy(false);}
+    } finally {finish();}
   }
 
   /** Compare authenticated saved snapshots, not a live site or unsaved buffer. */
   async function compareFrozenWithSaved(){
     if(!frozen||readsBusy||historySelection!==null||ackSelection!==null)return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setComparison(null);setError('');setNotice('');
     try{
       const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
@@ -305,14 +315,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         frozenSnapshot:before,draftSnapshot:after,title:draft.data.title});
     }catch{
       if(current())setError('The frozen revision and current saved draft could not both be verified. No comparison was produced.');
-    }finally{if(current())setBusy(false);}
+    }finally{finish();}
   }
 
   /** Bounded, importable private source format, not static rendered HTML. */
   async function downloadFrozenEditable(){
     if(!frozen||readsBusy||historySelection!==null||ackSelection!==null||editableConsent!==frozen.requestId)return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');setSourceArchiveSha(null);
     try{
       const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
@@ -333,13 +343,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       setNotice('Private editable source archive prepared and round-trip checked. It has not been published.');
     }catch{
       if(current())setError('The exact private source archive could not be verified or exported. No download was prepared.');
-    }finally{if(current())setBusy(false);}
+    }finally{finish();}
   }
 
   async function inspect(){
     if (!record?.revision || selectedRevision===null || readsBusy || historySelection!==null || ackSelection!==null) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');setResult(null);setStaticArchiveSha(null);
     try {
       let request=frozen;
@@ -377,7 +387,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       setResult(prepareSafeStaticPreview({...evidence.data,plan:buildPlan(evidence.data.snapshot)}));
     } catch {
       if (current()) setError('The frozen revision could not be checked. Nothing was published.');
-    } finally {if (current()) setBusy(false);}
+    } finally {finish();}
   }
 
   /** Registration is a real owner-scoped RPC, not a published reviewer URL.
@@ -388,8 +398,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     // frozen revision. The draft or an unverifiable pin is not a substitute.
     if (!frozen || grant || readsBusy || mode!=='staging' || historySelection!==null ||
         pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');
     try {
       // Recheck owner pin immediately before registering, not merely the old canvas.
@@ -429,13 +439,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if(current())setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
       }
     } catch {if (current()) setError('Reviewer registration failed. Retry the same request.');}
-    finally {if (current()) setBusy(false);}
+    finally {finish();}
   }
 
   async function revokeReviewer(){
     if (!grant || grant.status==='REVOKED' || revokedGrantIds.has(grant.grantId) || readsBusy || !confirmRevoke) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');
     try {
       const response=await port.revokeOwnerReviewerGrant(grant.grantId);
@@ -459,16 +469,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if(current())setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
       }
     } catch {if (current()) setError('Reviewer revocation could not be checked. Retry safely.');}
-    finally {if (current()) setBusy(false);}
+    finally {finish();}
   }
 
   async function blockCandidate(){
     const target=confirmBlock;
-    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||readsBusy||blockFlight.current) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
-    const flight={};
-    blockFlight.current=flight;
+    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||readsBusy) return;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');
     try {
       let attempt=blockOperation.current;
@@ -532,14 +540,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     } catch {
       if (current()) setError('The private block or its readback could not be confirmed. Review the retained operation before retrying.');
     } finally {
-      if(blockFlight.current===flight){blockFlight.current=null;if(current())setBusy(false);}
+      finish();
     }
   }
 
   /** A latest-50 catalogue omission is not an authorization failure.
    * Reuse an older request only after checking the exact owner-RPC frozen pin. */
   async function selectFrozenRequest(request:OwnerFrozenRequest){
-    if (readsBusy) return;
+    if (readsBusy||actionFlight.current!==null) return;
     setAckSelection(null);
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     const visible=revisions?.find(item=>item.revision===request.revision);
@@ -590,7 +598,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
    * the bounded frozen-request catalogue. The loader checks exact request ID.
    */
   async function selectAcknowledgedRequest(row:PrivateReleaseAcknowledgement){
-    if(mode!=='releases'||readsBusy||row.portfolioId!==id)return;
+    if(mode!=='releases'||readsBusy||actionFlight.current!==null||row.portfolioId!==id)return;
     const epoch=++historySelectionEpoch.current;
     setHistorySelection(null);setAckSelection(row);setHistorySelectionPending(true);setHistorySelectionError('');
     setFrozen(null);setPinnedPreviewReceipt(null);setPinnedPreviewError('');setResult(null);
@@ -685,7 +693,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {notice && <p role="status" className="ws-field-hint">{notice}</p>}
     {!record && !error && readPhase==='portfolio' && <ReleasePending label="Loading private release details…" detail />}
-    {error && <button type="button" className="ws-secondary" disabled={readsBusy} onClick={()=>{setError('');setRetry(value=>value+1);}}>
+    {error && <button type="button" className="ws-secondary" disabled={readsBusy} onClick={()=>{if(actionFlight.current===null&&!readsBusy){setError('');retryPrivateReads();}}}>
       Retry private release check</button>}
     {record && <div className="ws-project-detail ws-owner-columns">
       {mode==='staging' && <aside className="ws-project-aside ws-release-visual" aria-labelledby="staging-visual-title">
