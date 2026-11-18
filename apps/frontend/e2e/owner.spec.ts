@@ -4056,3 +4056,132 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
+
+test('B16 S4 R10 mounted PUBLIC stage, publish A/B, durable intent recovery, rollback and withdrawal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase + real scoped server writer only.');
+  test.setTimeout(240_000);
+  if(process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal release test.');
+  const apiKey=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,serviceKey=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if(!apiKey||!serviceKey)throw Error('Local auth fixture unavailable.');
+  const owner=await localUser('R10 mounted release owner');
+  const {createServer}=await import('node:http'),{once}=await import('node:events');
+  const {openPrivateArtifactPgWorker}=await import('../../../packages/storage-adapters/src/private-artifact-pg-worker.ts');
+  const {handleOwnerPublishRelease}=await import('../../../supabase/functions/publish/index.ts');
+  const {handlePublicPortfolio}=await import('../../../api/public-portfolio.mjs');
+  const {handleUnlistedRequest}=await import('../../../api/unlisted.mjs');
+  const role='kd_ci_r10_'+randomUUID().replaceAll('-','').slice(0,12),password=randomUUID().replaceAll('-','')+randomUUID().replaceAll('-','');
+  const oldLocal=process.env.KADMEION_LOCAL_INTEGRATION;
+  let worker:Awaited<ReturnType<typeof openPrivateArtifactPgWorker>>|null=null,created=false;
+  const hostEnv={KADMEION_UNLISTED_DELIVERY_ENABLED:'true',KADMEION_PUBLIC_PORTFOLIO_ENABLED:'true',
+    KADMEION_LOCAL_INTEGRATION:'1',KADMEION_SUPABASE_URL:origin,KADMEION_SUPABASE_SERVICE_ROLE_KEY:serviceKey};
+  const server=createServer((request,response)=>{
+    const handler=request.url?.startsWith('/api/unlisted')?handleUnlistedRequest:handlePublicPortfolio;
+    void handler(request,response,{env:hostEnv});
+  });
+  try{
+    runLocalFixtureSql('CREATE ROLE "'+role+'" LOGIN PASSWORD \''+password+'\' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT; GRANT USAGE ON SCHEMA kadmeion_private TO "'+role+'"; GRANT EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(uuid,bigint,text,text) TO "'+role+'";',owner.id);
+    created=true;process.env.KADMEION_LOCAL_INTEGRATION='1';
+    worker=await openPrivateArtifactPgWorker({host:'127.0.0.1',port:54322,database:'postgres',user:role,password,localOnly:true});
+    server.listen(0,'127.0.0.1');await once(server,'listening');
+    const address=server.address();if(!address||typeof address==='string')throw Error('Local host unavailable.');
+    const deliveryOrigin='http://127.0.0.1:'+address.port;
+    await signIn(page,owner);
+    const env={KADMEION_RELEASE_WORKER_ENABLED:'true',KADMEION_RELEASE_HOST_APPROVED:'true',
+      KADMEION_RELEASE_HOST_REVOCATION_VERIFIED:'true',KADMEION_RELEASE_HOST_ORIGIN:deliveryOrigin,
+      KADMEION_RELEASE_HOSTNAME:'127.0.0.1',KADMEION_ALLOWED_PUBLISH_ORIGINS:new URL(page.url()).origin,
+      SUPABASE_URL:origin,SUPABASE_ANON_KEY:apiKey,SUPABASE_SERVICE_ROLE_KEY:serviceKey,KADMEION_LOCAL_INTEGRATION:'1'};
+    // Forward the browser's actual bearer and request body into the real local
+    // server entry. No mocked success, receipt, SQL, auth or host bytes.
+    await page.route('**/functions/v1/publish',async route=>{
+      const source=route.request(),body=source.postDataBuffer();
+      const req=new Request(source.url(),{method:source.method(),headers:await source.allHeaders(),
+        ...(body?{body:new Uint8Array(body)}:{})});
+      const response=await handleOwnerPublishRelease(req,{env,stageWriter:worker!.writer,http:fetch});
+      await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),
+        body:Buffer.from(await response.arrayBuffer())});
+    });
+    const session=await page.request.post(origin+'/auth/v1/token?grant_type=password',{
+      headers:{apikey:apiKey},data:{email:owner.email,password:owner.password}});
+    expect(session.ok()).toBe(true);
+    const {access_token:token}=await session.json();await session.dispose();
+    const headers={apikey:apiKey,Authorization:'Bearer '+token};
+    const handle='r10_'+randomUUID().replaceAll('-','').slice(0,12),slug='r10-mounted-'+randomUUID().slice(0,8);
+    const claim=await page.request.patch(origin+'/rest/v1/profiles?user_id=eq.'+owner.id,{headers,data:{handle}});
+    expect(claim.ok()).toBe(true);await claim.dispose();
+    const create=await page.request.post(origin+'/rest/v1/portfolios?select=id',{
+      headers:{...headers,Prefer:'return=representation'},data:{owner_user_id:owner.id,slug,title:'R10 mounted lifecycle',template_id:'starter'}});
+    expect(create.ok()).toBe(true);const [{id}]=await create.json();await create.dispose();
+    const path='/app/portfolios/'+id+'/publish',canonical=deliveryOrigin+'/'+handle+'/'+slug;
+    const commit=async(title:string,base:number)=>{
+      const snapshot={formatVersion:1,files:{
+        'kadmeion.json':JSON.stringify({formatVersion:1,preset:'blank',seo:{title,description:'R10 mounted release content'}}),
+        'pages/home.page.json':JSON.stringify({header:null,sections:[{id:'release-hero',layout:'stepped-hero@1',slotKeys:['title','cta']}]})
+      },slots:{'release-hero-title':{state:'S0',componentId:'title-stacked@1',content:{title}},
+        'release-hero-cta':{state:'EMPTY',content:{}}},stashes:{}};
+      const response=await page.request.post(origin+'/rest/v1/rpc/commit_portfolio_revision',{
+        headers,data:{p_portfolio_id:id,p_operation_id:randomUUID(),p_base_revision:base,p_snapshot:snapshot}});
+      expect(response.ok()).toBe(true);const value=await response.json();await response.dispose();return value.revision as number;
+    };
+    const confirm=async(button:ReturnType<Page['getByRole']>)=>{
+      await expect(button).toBeEnabled({timeout:20_000});
+      await Promise.all([page.waitForEvent('dialog',{timeout:10_000}).then(dialog=>dialog.accept()),button.click()]);
+    };
+    const panel=()=>page.getByRole('region',{name:'Authoritative public delivery'});
+    const stage=async()=>{
+      await page.goto(path);
+      await page.getByLabel('Future visibility intent').selectOption('PUBLIC');
+      await page.getByRole('button',{name:'Run private preflight',exact:true}).click();
+      await expect(page.getByRole('heading',{name:'Preflight results',exact:true})).toBeVisible();
+      await confirm(panel().getByRole('button',{name:'Prepare trusted private artifact',exact:true}));
+      await expect(panel().getByText('Trusted private stage acknowledged and pointer rechecked. Publishing needs separate explicit consent.',{exact:true})).toBeVisible({timeout:45_000});
+    };
+    const publish=async()=>{
+      await confirm(panel().getByRole('button',{name:/^Publish (public candidate|another verified candidate)$/}));
+      await expect(panel().getByText('Public delivery acknowledged by the authority and host observation contract.',{exact:true})).toBeVisible({timeout:90_000});
+      await expect(panel().getByText(canonical,{exact:true})).toBeVisible();
+    };
+    const live=async(value:string)=>{
+      const response=await page.request.get(canonical);expect(response.status()).toBe(200);
+      expect(await response.text()).toContain(value);await response.dispose();
+    };
+    const list=async()=>{
+      const response=await page.request.get(origin+'/rest/v1/private_unlisted_publication_intents?select=id,request_id,status,operation_id&portfolio_id=eq.'+id+'&order=created_at.desc',{headers});
+      expect(response.ok()).toBe(true);const rows=await response.json();await response.dispose();return rows;
+    };
+    const alpha=await commit('R10 mounted Alpha',0);
+    await stage();
+    const denied=await page.request.get(canonical);expect(denied.status()).toBe(404);await denied.dispose();
+    await publish();await live('R10 mounted Alpha');
+    const a=(await list())[0];expect(a.status).toBe('USED');
+    await commit('R10 mounted Beta',alpha);
+    await stage();await live('R10 mounted Alpha');
+    await publish();await live('R10 mounted Beta');
+    const b=(await list())[0];expect(b.id).not.toBe(a.id);expect(b.status).toBe('USED');
+    // Real page reload destroys component receipt state; recover solely from
+    // persisted owner-RLS intent + exact live server receipt, not local mocks.
+    await page.reload();
+    await panel().getByRole('button',{name:'Load saved publication intents',exact:true}).click();
+    await panel().getByLabel('Saved publication intent').selectOption(b.id);
+    await panel().getByRole('button',{name:'Verify current delivery of saved intent',exact:true}).click();
+    await expect(panel().getByText('Exact current public receipt recovered from the saved consent identity.',{exact:true})).toBeVisible({timeout:90_000});
+    await panel().getByLabel('Previously acknowledged release').selectOption(a.id);
+    await confirm(panel().getByRole('button',{name:'Roll back public release',exact:true}));
+    await expect(panel().getByText('Public delivery acknowledged by the authority and host observation contract.',{exact:true})).toBeVisible({timeout:90_000});
+    await live('R10 mounted Alpha');
+    await confirm(panel().getByRole('button',{name:'Withdraw portfolio delivery',exact:true}));
+    await expect(panel().getByText(/Database delivery withdrawn and blocked pointer rechecked/)).toBeVisible({timeout:30_000});
+    for(const url of [canonical,deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+slug,
+      deliveryOrigin+'/api/unlisted?portfolioId='+id,canonical+'/assets/never-public.png']){
+      for(const method of ['GET','HEAD']){
+        const response=await page.request.fetch(url,{method});expect(response.status()).toBe(404);await response.dispose();
+      }
+    }
+    await expect(panel().getByText(canonical,{exact:true})).toHaveCount(0);
+  }finally{
+    await page.unroute('**/functions/v1/publish').catch(()=>undefined);
+    if(server.listening)await new Promise<void>(resolve=>server.close(()=>resolve()));
+    await worker?.close().catch(()=>undefined);
+    if(created)runLocalFixtureSql('REVOKE EXECUTE ON FUNCTION kadmeion_private.bind_private_artifact_candidate(uuid,bigint,text,text) FROM "'+role+'"; REVOKE USAGE ON SCHEMA kadmeion_private FROM "'+role+'"; DROP ROLE "'+role+'";',owner.id);
+    if(oldLocal===undefined)delete process.env.KADMEION_LOCAL_INTEGRATION;else process.env.KADMEION_LOCAL_INTEGRATION=oldLocal;
+  }
+});
