@@ -111,21 +111,41 @@ function frozenSections(page:unknown,plan:readonly SafeSlotPlan[],snapshot:Portf
       return assignment!==undefined&&assignment!==null&&(!record(assignment)||assignment.use!==slot.componentId);
     }))return null;
     const names=section.slotKeys;
-    // Modern slotKeys manifests represent the pinned layout, not a second
-    // independently reorderable list. The static renderer, media slots and
-    // editable canvas must agree on canonical slot order. Reject the caller's
-    // conflicting plan rather than silently permute the frozen projection.
-    if(Array.isArray(names)){
-      const canonical=layout.slots.map(name=>slotPrefix+name.toLowerCase());
-      if(names.length!==layout.slots.length||
-         layout.slots.some(name=>!names.includes(name))||
-         slots.length!==canonical.length||slots.some((slot,index)=>slot.slotKey!==canonical[index])||
-         layout.required.some(name=>!slots.some(slot=>slot.required===true&&
-           slot.slotKey===section.id+'-'+name.toLowerCase())))return null;
-    }
+    if(Array.isArray(names)&&(
+      names.length!==layout.slots.length||
+      layout.slots.some(name=>!names.includes(name))||
+      layout.required.some(name=>!slots.some(slot=>slot.required===true&&
+        slot.slotKey===section.id+'-'+name.toLowerCase()))))return null;
     groups.push({id:section.id,layout:layout.renderId,slotKeys:slots.map(slot=>slot.slotKey)});
   }
   return groupedSections(groups,plan.map(slot=>slot.slotKey));
+}
+
+/** Presentation order is a separate concern from trusted plan enumeration.
+ * Keep the verified plan's membership and contiguous section order, but use
+ * the same pinned semantic groups as the author canvas for modern layouts.
+ * A title-first server plan and a catalog-order plan must project the same
+ * frozen slots; legacy map/layoutless contracts remain untouched. */
+function orderModernSections(page:Record<string,unknown>,groups:SafeRenderSection[]):SafeRenderSection[]{
+  const declarations=Array.isArray(page.sections)?page.sections:[];
+  return groups.map((group,index)=>{
+    const declaration=declarations[index];
+    if(!record(declaration)||!Array.isArray(declaration.slotKeys)||typeof declaration.layout!=='string')
+      return group;
+    const layout=portfolioLayout(declaration.layout);
+    if(!layout)return group; // Already rejected by frozenSections if invalid.
+    const names=layout.slots,hero=['L1','L2','L5'].includes(layout.renderId);
+    const headline=names.includes('title')?['title']:[];
+    const text=names.includes('text')?['text']:names.includes('text1')?['text1']:[];
+    const actions=names.filter(name=>['cta','cta1','cta2','btn1','btn2'].includes(name));
+    const media=hero?names.filter(name=>/^(avatar|image|imageA|imageB|media|thumbs)$/i.test(name)):[];
+    const note=hero&&names.includes('note')?['note']:[];
+    const reserved=new Set([...headline,...text,...actions,...media,...note]);
+    const others=names.filter(name=>!reserved.has(name));
+    const presentation=hero?[...headline,...text,...actions,...note,...others,...media]:
+      [...headline,...text,...others,...actions];
+    return {...group,slotKeys:presentation.map(name=>group.id+'-'+name.toLowerCase())};
+  });
 }
 
 function groupedSections(input:unknown,slotOrder:readonly string[]):SafeRenderSection[]|null {
@@ -177,6 +197,8 @@ export function prepareSafeStaticPreview(
     block('INVALID_RENDER_PLAN','plan','A bounded, trusted render plan is required.');
   const seen=new Set<string>(),body:string[]=[];
   const rendered=new Map<string,string>();
+  const mediaPins=new Map<string,string>();
+  const mediaProjection=new Map<string,SafeStaticImage>();
   let headings=0,images=0;
   if(valid&&Array.isArray(input.plan)&&input.plan.length>0&&input.plan.length<=32){
     for(const spec of input.plan){
@@ -209,6 +231,13 @@ export function prepareSafeStaticPreview(
           block('INVALID_IMAGE_REFERENCE',slotKey,'Select a pinned image and provide a description or mark it decorative.');
           continue;
         }
+        const assetId=source.assetId.toLowerCase();
+        const previous=mediaPins.get(assetId);
+        if(previous!==undefined&&previous!==source.expectedSourceSha256){
+          block('CONFLICTING_IMAGE_PIN',slotKey,'Repeated references to one frozen image disagree on the source digest.');
+          continue;
+        }
+        mediaPins.set(assetId,source.expectedSourceSha256);
         const image=verifiedImages?.get(slotKey);
         if(!image||!SAFE_PNG_PATH.test(image.path)||
            !Number.isSafeInteger(image.width)||image.width<1||image.width>4096||
@@ -216,6 +245,12 @@ export function prepareSafeStaticPreview(
           block('IMAGE_BYTES_UNVERIFIED',slotKey,'Pinned image bytes must be verified before rendering.');
           continue;
         }
+        const projected=mediaProjection.get(assetId);
+        if(projected&&(projected.path!==image.path||projected.width!==image.width||projected.height!==image.height)){
+          block('CONFLICTING_IMAGE_PROJECTION',slotKey,'Repeated frozen image slots disagree on verified output bytes or dimensions.');
+          continue;
+        }
+        mediaProjection.set(assetId,{path:image.path,width:image.width,height:image.height});
         images++;
         emit('<figure class="k-image"><img loading="lazy" decoding="async" src="./'+image.path+
           '" alt="'+escapeHtml(source.altText)+'" width="'+image.width+'" height="'+image.height+'"></figure>');
@@ -325,6 +360,7 @@ export function prepareSafeStaticPreview(
         const override=groupedSections(input.renderSections,[...seen]);
         if(JSON.stringify(sections)!==JSON.stringify(override))sections=null;
       }
+      if(sections)sections=orderModernSections(page,sections);
     }
   }
   if(sections===undefined&&input.renderSections!==undefined)
