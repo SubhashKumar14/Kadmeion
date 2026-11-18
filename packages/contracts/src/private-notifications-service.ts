@@ -137,19 +137,27 @@ function parseCursor(value:string|null):{createdAt:string;id:string}|null {
     throw new PrivateNotificationsError('VALIDATION');
   return {createdAt:parts[0],id:parts[1].toLowerCase()};
 }
-async function boundedJson(response:Response):Promise<unknown> {
+async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown> {
   const type=response.headers.get('content-type');
   if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
-    throw new PrivateNotificationsError('INVALID_ACK');
+    {void response.body?.cancel().catch(()=>{});throw new PrivateNotificationsError('INVALID_ACK');}
   const length=response.headers.get('content-length');
   if(length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_RESPONSE))
-    throw new PrivateNotificationsError('LIMIT_EXCEEDED');
+    {void response.body?.cancel().catch(()=>{});throw new PrivateNotificationsError('LIMIT_EXCEEDED');}
   if(!response.body)throw new PrivateNotificationsError('INVALID_ACK');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];
   let count=0;
   try{
     for(;;){
-      const {done,value}=await reader.read();
+      signal.throwIfAborted();
+      let onAbort:()=>void=()=>{};
+      const aborted=new Promise<never>((_,reject)=>{
+        onAbort=()=>reject(signal.reason);signal.addEventListener('abort',onAbort,{once:true});
+      });
+      let chunk:ReadableStreamReadResult<Uint8Array>;
+      try{chunk=await Promise.race([reader.read(),aborted]);}
+      finally{signal.removeEventListener('abort',onAbort);}
+      signal.throwIfAborted();const {done,value}=chunk;
       if(done)break;
       if(!(value instanceof Uint8Array))throw new PrivateNotificationsError('INVALID_ACK');
       count+=value.byteLength;
@@ -157,7 +165,7 @@ async function boundedJson(response:Response):Promise<unknown> {
       parts.push(value);
     }
   }catch(error){
-    await reader.cancel().catch(()=>{});
+    void reader.cancel().catch(()=>{});
     if(error instanceof PrivateNotificationsError)throw error;
     throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
   }finally{reader.releaseLock();}
@@ -196,37 +204,53 @@ export class SupabasePrivateNotificationsService {
   }
   private async request(path:string,method:'GET'|'POST',
     body?:Record<string,unknown>,cas=false):Promise<unknown>{
-    const guard=()=>{if(cas&&!this.isCurrentOwner?.())throw new PrivateNotificationsError('AUTH_EXPIRED');};
-    guard();const jwt=await this.token();guard();
-    if(typeof jwt!=='string'||!jwt.trim())throw new PrivateNotificationsError('AUTH_EXPIRED');
-    let response:Response;
-    try{
-      response=await this.http(this.origin+'/rest/v1/'+path,{
+    const guard=()=>{
+      if(!cas&&!this.isCurrentOwner)return;
+      let current=false;
+      try{current=this.isCurrentOwner?.()===true;}catch{/* fail closed */}
+      if(!current)throw new PrivateNotificationsError('AUTH_EXPIRED');
+    };
+    guard();
+    const signal=AbortSignal.timeout(10000);
+    let abort:()=>void=()=>{};
+    const deadline=new Promise<never>((_,reject)=>{
+      abort=()=>reject(new PrivateNotificationsError('PROVIDER_UNAVAILABLE'));
+      signal.addEventListener('abort',abort,{once:true});
+    });
+    const work=async()=>{
+      const jwt=await this.token();guard();
+      if(typeof jwt!=='string'||!jwt.trim())throw new PrivateNotificationsError('AUTH_EXPIRED');
+      signal.throwIfAborted();
+      const response=await this.http(this.origin+'/rest/v1/'+path,{
         method,headers:{apikey:this.key,Authorization:'Bearer '+jwt,
           Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
         body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error',
-        signal:AbortSignal.timeout(10000)
+        credentials:'omit',cache:'no-store',redirect:'error',signal
       });
-    }catch{throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');}
-    if(cas&&!this.isCurrentOwner?.()){
-      void response.body?.cancel().catch(()=>{});guard();
-    }
-    if(!response.ok){
-      if(cas&&response.status===409){
-        let detail:unknown;
-        try{detail=await boundedJson(response);}catch{void response.body?.cancel().catch(()=>{});}
-        guard();
-        if(object(detail)&&detail.code==='40001')throw new PrivateNotificationsError('CONFLICT');
-        throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
-      }
-      await response.body?.cancel().catch(()=>{});
-      if(response.status===401)throw new PrivateNotificationsError('AUTH_EXPIRED');
-      if(response.status===403)throw new PrivateNotificationsError('FORBIDDEN');
-      if(response.status===429)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
+      try{
+        guard();signal.throwIfAborted();
+        if(!response.ok){
+          if(cas&&response.status===409){
+            let detail:unknown;
+            try{detail=await boundedJson(response,signal);}catch{/* invalid body remains unavailable */}
+            guard();signal.throwIfAborted();
+            if(object(detail)&&detail.code==='40001')throw new PrivateNotificationsError('CONFLICT');
+          }
+          if(response.status===401)throw new PrivateNotificationsError('AUTH_EXPIRED');
+          if(response.status===403)throw new PrivateNotificationsError('FORBIDDEN');
+          if(response.status===429)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
+          throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
+        }
+        const data=await boundedJson(response,signal);guard();signal.throwIfAborted();return data;
+      }finally{if(!response.bodyUsed)void response.body?.cancel().catch(()=>{});}
+    };
+    try{
+      const data=await Promise.race([deadline,work()]);guard();return data;
+    }catch(error){
+      guard();
+      if(error instanceof PrivateNotificationsError)throw error;
       throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
-    }
-    const data=await boundedJson(response);guard();return data;
+    }finally{signal.removeEventListener('abort',abort);}
   }
   /**
    * Stable timestamp+UUID keyset ordering. Neither an empty page nor a
@@ -298,7 +322,9 @@ export class SupabasePrivateNotificationsService {
     const receipt=raw as NotificationPreferenceReceipt;
     const same=equalTuple(expected.preferences,desired);
     if(receipt.status==='NO_CHANGE'&&same&&receipt.version===expected.version)return receipt;
-    if((receipt.status==='APPLIED'||receipt.status==='REPLAYED')&&!same&&expected.version<M&&receipt.version===expected.version+1)return receipt;
+    const next=expected.version+1;
+    if(!same&&expected.version<M&&receipt.version===next&&
+      (receipt.status==='APPLIED'||(receipt.status==='REPLAYED'&&next<M)))return receipt;
     throw new PrivateNotificationsError('INVALID_ACK');
   }
   async acknowledge(notificationId:string,dismiss=false):Promise<PrivateNotificationReceipt>{
