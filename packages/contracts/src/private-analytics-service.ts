@@ -2,8 +2,9 @@ import { isSafeSupabaseClientKey } from './project.ts';
 
 export type AnalyticsErrorCode = 'INVALID'|'NOT_FOUND_OR_FORBIDDEN'|'CONFLICT'|'INELIGIBLE'|'RATE_LIMITED'|'UNAVAILABLE'|'TRANSPORT'|'INVALID_RESPONSE';
 export class PrivateAnalyticsError extends Error {
-  constructor(readonly code: AnalyticsErrorCode) {
-    super('Private analytics: '+code); this.name='PrivateAnalyticsError';
+  readonly code: AnalyticsErrorCode;
+  constructor(code: AnalyticsErrorCode) {
+    super('Private analytics: '+code); this.name='PrivateAnalyticsError'; this.code=code;
   }
 }
 export type AnalyticsAction='ENABLE'|'CLEAR'|'DISABLE';
@@ -105,6 +106,30 @@ function comparison(v:unknown,ids:readonly string[],window:7|30):OwnerAnalytics{
 function discard(body:ReadableStream<Uint8Array>|null):void {
   try{void body?.cancel().catch(()=>{})}catch{/* already locked */}
 }
+/** JSON.parse is last-key-wins; reject ambiguous wire receipts before use.
+ * The first parse validates grammar, then a bounded lexical walk detects
+ * duplicate decoded object keys without recursively traversing untrusted data.
+ */
+function parseReceipt(text:string):unknown {
+  const value:unknown=JSON.parse(text);
+  const tokens=/"(?:[^"\\]|\\[\s\S])*"|[{}\[\]:]/g;
+  const stack:Array<Set<string>|null>=[];
+  for(let match=tokens.exec(text);match;match=tokens.exec(text)){
+    const token=match[0];
+    if(token==='{')stack.push(new Set<string>());
+    else if(token==='[')stack.push(null);
+    else if(token==='}'||token===']')stack.pop();
+    else if(token[0]==='"'){
+      let next=tokens.lastIndex;
+      while(next<text.length&&/[\x20\t\r\n]/.test(text[next]))next++;
+      if(text[next]!==':')continue;
+      const keys=stack[stack.length-1],key=JSON.parse(token) as string;
+      if(!keys||keys.has(key))return fail('INVALID_RESPONSE');
+      keys.add(key);
+    }
+  }
+  return value;
+}
 async function boundedJson(response:Response,limit:number,signal:AbortSignal):Promise<unknown>{
   const type=response.headers.get('content-type')??'',length=response.headers.get('content-length');
   if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type)||
@@ -117,7 +142,8 @@ async function boundedJson(response:Response,limit:number,signal:AbortSignal):Pr
   try{
     if(signal.aborted){cancel();return fail('TRANSPORT')}
     for(;;){
-      const item=await reader.read();
+      let item:ReadableStreamReadResult<Uint8Array>;
+      try{item=await reader.read()}catch{return fail('TRANSPORT')}
       if(signal.aborted)return fail('TRANSPORT');
       if(item.done){complete=true;break}
       if(!(item.value instanceof Uint8Array)||item.value.byteLength>limit-size)return fail('INVALID_RESPONSE');
@@ -125,7 +151,7 @@ async function boundedJson(response:Response,limit:number,signal:AbortSignal):Pr
     }
     const encoding=response.headers.get('content-encoding');
     if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&size!==Number(length))return fail('INVALID_RESPONSE');
-    try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size))) as unknown}
+    try{return parseReceipt(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)))}
     catch{return fail('INVALID_RESPONSE')}
   }finally{
     signal.removeEventListener('abort',cancel);
@@ -153,17 +179,21 @@ function remoteError(status:number,raw:unknown):AnalyticsErrorCode{
  */
 export class SupabasePrivateAnalyticsService {
   private readonly origin:string;
+  private readonly publishableKey:string;
+  private readonly token:()=>Promise<string|null>;
+  private readonly isCurrentOwner:()=>boolean;
+  private readonly http:typeof fetch|undefined;
   private retired=false;
-  constructor(endpoint:string,private readonly publishableKey:string,ownerId:string,
-    private readonly token:()=>Promise<string|null>,private readonly isCurrentOwner:()=>boolean,
-    private readonly http?:typeof fetch){
+  constructor(endpoint:string,publishableKey:string,ownerId:string,
+    token:()=>Promise<string|null>,isCurrentOwner:()=>boolean,http?:typeof fetch){
     let url:URL;
-    try{url=new URL(endpoint)}catch{return fail('INVALID')}
+    try{url=new URL(endpoint)}catch{throw new PrivateAnalyticsError('INVALID')}
     if((url.protocol!=='https:'&&!(url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname)))||
        url.username||url.password||url.pathname!=='/'||url.search||url.hash||
        !uuid(ownerId)||typeof publishableKey!=='string'||!isSafeSupabaseClientKey(publishableKey)||
-       typeof token!=='function'||typeof isCurrentOwner!=='function')return fail('INVALID');
-    this.origin=url.origin;
+       typeof token!=='function'||typeof isCurrentOwner!=='function')throw new PrivateAnalyticsError('INVALID');
+    this.origin=url.origin; this.publishableKey=publishableKey; this.token=token;
+    this.isCurrentOwner=isCurrentOwner; this.http=http;
   }
   private current():void{
     if(!this.retired){try{if(this.isCurrentOwner()===true)return}catch{/* fail closed */}}
@@ -182,21 +212,25 @@ export class SupabasePrivateAnalyticsService {
       timer=setTimeout(()=>{expired=true;controller.abort();discard(response?.body??null);reject(new PrivateAnalyticsError('TRANSPORT'))},DEADLINE);
     });
     const work=async():Promise<unknown>=>{
-      const jwt=await this.token();
+      let jwt:string|null;
+      try{jwt=await this.token()}catch{return fail('TRANSPORT')}
       this.current();
       if(expired)return fail('TRANSPORT');
       if(typeof jwt!=='string'||!jwt.trim()||/[\r\n]/.test(jwt))return fail('NOT_FOUND_OR_FORBIDDEN');
-      response=await http(this.origin+'/rest/v1/rpc/'+rpc,{
+      try{response=await http(this.origin+'/rest/v1/rpc/'+rpc,{
         method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,Accept:'application/json','Content-Type':'application/json'},
         body:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
-      });
+      })}catch{return fail('TRANSPORT')}
       if(expired){discard(response.body);return fail('TRANSPORT')}
       try{this.current()}catch(e){discard(response.body);throw e}
       if(!response.ok){
         const status=response.status;
         if(status===401||status===403||status===429){discard(response.body);return fail(remoteError(status,null))}
         let raw:unknown;
-        try{raw=await boundedJson(response,SMALL,controller.signal)}catch{raw=null}
+        try{raw=await boundedJson(response,SMALL,controller.signal)}catch(e){
+          if(e instanceof PrivateAnalyticsError&&e.code==='TRANSPORT')throw e;
+          raw=null;
+        }
         this.current();return fail(remoteError(status,raw));
       }
       const raw=await boundedJson(response,limit,controller.signal);
