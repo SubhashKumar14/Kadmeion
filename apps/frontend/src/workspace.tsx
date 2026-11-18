@@ -372,9 +372,9 @@ export function WorkspaceApp() {
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
   const portGenerationRef = useRef(0);
   const retryRecordsRef = useRef<(() => void) | null>(null);
-  const retryFocusRef = useRef(false);
+  const transitionFocusRef = useRef(false);
   function retryVerification() {
-    retryFocusRef.current = true;
+    transitionFocusRef.current = true;
     setVerificationAttempt(value=>value+1);
   }
   const route = window.location.pathname.replace(/\/$/, '') || '/';
@@ -387,17 +387,20 @@ export function WorkspaceApp() {
       gate.status === 'checking' ? 'Verifying owner session' :
       gate.status === 'unavailable' ? 'Owner verification unavailable' : 'Sign in required') + ' · Kadmeion';
   }, [route, gate.status]);
+  const focusGateKey = gate.status === 'verified'
+    ? `${gate.status}:${gate.owner.id}:${gate.portGeneration}:${gate.epoch}` : gate.status;
   useEffect(() => {
     const content = document.getElementById('ws-content');
-    if (retryFocusRef.current) {
-      // Restore focus after the clicked Retry control is replaced; do not
-      // move it away from a control the owner intentionally focused meanwhile.
-      if (document.activeElement === document.body || document.activeElement === content) content?.focus();
-      if (gate.status !== 'checking') retryFocusRef.current = false;
-    } else if ((gate.status === 'locked' || gate.status === 'unavailable') && document.activeElement === document.body) {
+    if (transitionFocusRef.current) {
+      // A Retry or owner invalidation can remove the focused private control.
+      // Restore only the replacement landmark, never a previous owner's control.
+      // A batched verified-to-verified owner change also changes focusGateKey.
+      if (document.hasFocus() && (document.activeElement === document.body || document.activeElement === content)) content?.focus();
+      if (gate.status !== 'checking') transitionFocusRef.current = false;
+    } else if ((gate.status === 'locked' || gate.status === 'unavailable') && document.activeElement === document.body && document.hasFocus()) {
       content?.focus();
     }
-  }, [gate.status]);
+  }, [focusGateKey, gate.status]);
   useEffect(() => {
     let cancelled = false;
     let attempt = 0;
@@ -484,6 +487,10 @@ export function WorkspaceApp() {
       // signal only: the live provider /user response supplies owner authority.
       unsubscribe = port.subscribeOwnerSessionEpoch(() => {
         if (cancelled || authRef.current !== port) return;
+        const active = document.activeElement;
+        if (document.hasFocus() && active && active !== document.body && active.closest('.ws-shell, #ws-content')) {
+          transitionFocusRef.current = true;
+        }
         ++attempt;
         setGate({status:'checking'});
         setSnapshot({status:'loading'});
