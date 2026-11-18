@@ -63,6 +63,27 @@ export function parseProviderState(raw:unknown,owner:string,link:string):Provide
   if(state.status==='READY'&&(state.facts!==null||state.candidate!==null)||state.status==='SYNCED'&&(state.facts===null||state.candidate!==null)||state.status==='AWAITING_CONFIRMATION'&&state.candidate===null)return fail('INVALID_RESPONSE');
   return state;
 }
+/** Separately versioned, bounded current-state annex. It never upgrades the
+ * C05 inventory/export receipt or claims external provider authenticity. */
+export type ProviderExportAnnex={status:'PROVIDER_FACTS_ANNEX';schemaVersion:1;ownerId:string;snapshotId:string;requestId:string|null;capturedAt:string;sourceMode:'ISOLATED_LOCAL';states:ProviderState[];providerAuthenticityVerified:false;completeAccountExport:false;crossTableAtomicSnapshot:false;deletionAllowed:false};
+export function parseProviderExportAnnex(raw:unknown,owner:string,snapshotId:string,requestId:string|null):ProviderExportAnnex{
+  if(!uuid(owner)||!uuid(snapshotId)||requestId!==null&&!uuid(requestId))return fail('INVALID');
+  if(!exact(raw,['status','schemaVersion','ownerId','snapshotId','requestId','capturedAt','sourceMode','states','providerAuthenticityVerified','completeAccountExport','crossTableAtomicSnapshot','deletionAllowed'])||
+    raw.status!=='PROVIDER_FACTS_ANNEX'||raw.schemaVersion!==1||raw.ownerId!==owner||raw.snapshotId!==snapshotId||raw.requestId!==requestId||
+    typeof raw.capturedAt!=='string'||raw.sourceMode!=='ISOLATED_LOCAL'||!Array.isArray(raw.states)||raw.states.length>1||
+    raw.providerAuthenticityVerified!==false||raw.completeAccountExport!==false||raw.crossTableAtomicSnapshot!==false||raw.deletionAllowed!==false)return fail('INVALID_RESPONSE');
+  const captured=instant(raw.capturedAt);if(captured===null)return fail('INVALID_RESPONSE');
+  const states:ProviderState[]=[];
+  for(const value of raw.states){
+    if(!obj(value)||!uuid(value.linkId))return fail('INVALID_RESPONSE');
+    const state=parseProviderState(value,owner,value.linkId);
+    if((state.facts!==null&&instant(state.facts.fetchedAt)!>captured)||
+      (state.candidate!==null&&(instant(state.candidate.fetchedAt)!>captured||instant(state.candidateExpiresAt)!<=captured)))return fail('INVALID_RESPONSE');
+    states.push(state);
+  }
+  return {status:'PROVIDER_FACTS_ANNEX',schemaVersion:1,ownerId:owner,snapshotId,requestId,capturedAt:raw.capturedAt,
+    sourceMode:'ISOLATED_LOCAL',states,providerAuthenticityVerified:false,completeAccountExport:false,crossTableAtomicSnapshot:false,deletionAllowed:false};
+}
 function validateOperation(input:unknown,action?:readonly string[]):ProviderOperation{
   if(!exact(input,['linkId','expectedVersion','operationId','policyVersion',...(action?['action']:[])])||!uuid(input.linkId)||!uuid(input.operationId)||!integer(input.expectedVersion)||input.policyVersion!==1||action&&(typeof input.action!=='string'||!action.includes(input.action)))return fail('INVALID');
   return input as unknown as ProviderOperation;
@@ -142,6 +163,12 @@ export class SupabasePrivateProviderFactsService {
       this.current();
       return exact(schema,['schemaVersion','ownerId'])&&schema.schemaVersion===1&&schema.ownerId===this.owner;
     }catch{return false;}
+  }
+  /** Read a local application annex without a provider call or consent write. */
+  async readExportAnnex(snapshotId:string,requestId:string|null):Promise<ProviderExportAnnex>{
+    if(!uuid(snapshotId)||requestId!==null&&!uuid(requestId))return fail('INVALID');
+    const value=await this.request('/rest/v1/rpc/owner_export_github_provider_annex_v1',{p_snapshot_id:snapshotId,p_expected_request_id:requestId});
+    return parseProviderExportAnnex(value,this.owner,snapshotId,requestId);
   }
   async readState(linkId:string):Promise<ProviderState>{if(!uuid(linkId))return fail('INVALID');return parseProviderState(await this.request('/rest/v1/rpc/read_owner_github_provider_state',{p_link_id:linkId}),this.owner,linkId)}
   private receipt(raw:unknown,input:ProviderOperation,action:'ENABLE'|'DISABLE'|'CONFIRM'|'LOOKUP'|'SYNC'):ProviderReceipt{
