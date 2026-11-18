@@ -2324,7 +2324,10 @@ test('B16 WF-049/052 real moderation case and appeal lost acknowledgement replay
   expect(open.committed()).toBe(true);
   await expect(page.getByLabel('Case summary')).toHaveValue(rationale);
   await expect(page.getByLabel('I confirm the serious-abuse scope and understand this is audit-only.')).toBeChecked();
-  await page.getByRole('button',{name:'Record private case'}).click();
+  await expect(page.getByLabel('Exact target user ID')).toBeDisabled();
+  await expect(page.getByLabel('Case summary')).toBeDisabled();
+  await expect(page.getByRole('button',{name:'Record private case',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'Retry exact case',exact:true}).click();
   await expect(page.getByRole('status')).toContainText('Private audit case recorded.');
   expect(open.operations.length===2&&open.operations[0]===open.operations[1]).toBe(true);
   await expect(page.getByText('Owner ID '+subject.id,{exact:true})).toHaveCount(1);
