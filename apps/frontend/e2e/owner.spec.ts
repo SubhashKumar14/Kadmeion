@@ -4056,3 +4056,165 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
+
+test('B16 C05 WF-047 R7 actual avatar V2 ZIP and JSON reopen verify exact bytes, tamper and owner isolation',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable loopback GoTrue, database and Storage only.');
+  test.setTimeout(145_000);
+  if(process.env.VITE_SUPABASE_URL!==origin)throw new Error('Refusing nonlocal export test.');
+  const owner=await localUser('R7 profile media archive'),foreign=await localUser('R7 foreign archive');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const digest=createHash('sha256').update(png).digest('hex');
+  await signIn(page,owner);await page.goto('/app/profile');
+  const avatar=page.getByRole('region',{name:'Private profile avatar'});
+  await avatar.getByLabel(/Avatar image/).setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:png});
+  await avatar.getByLabel('Avatar alt text').fill('R7 archived avatar');
+  await avatar.getByRole('button',{name:'Save private avatar'}).click();
+  await expect(avatar.getByText('Private avatar selection saved. Not published.',{exact:true})).toBeVisible();
+  const image=avatar.getByRole('img',{name:'R7 archived avatar',exact:true});
+  await expect.poll(()=>image.evaluate(async node=>{
+    const img=node as HTMLImageElement;
+    if(!img.naturalWidth||!img.src.startsWith('blob:'))return '';
+    const res=await fetch(img.src);
+    if(!res.ok)return '';
+    return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await res.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('');
+  })).toBe(digest);
+  await page.goto('/app/export');
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download profile-inclusive recovery ZIP',exact:true}).click()]);
+  expect(download.suggestedFilename()).toBe('kadmeion-private-account-partial-v2.zip');
+  const downloaded=await download.path();if(!downloaded)throw new Error('No archive download.');
+  const zip=await readFile(downloaded);
+  const archive=readStrictStoredZip(new Uint8Array(zip),{maxEntries:12,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024});
+  const media=archive.get('assets/'+digest+'.png');expect(media!==undefined&&Buffer.from(media).equals(png)).toBe(true);
+  const manifest=JSON.parse(new TextDecoder().decode(archive.get('kadmeion-partial-bundle.json')!));
+  expect(manifest).toMatchObject({formatVersion:2,schemaVersion:2,ownerId:owner.id,requestId:null,completeAccountExport:false,deletionAllowed:false});
+  expect(manifest.assetReferences).toHaveLength(1);
+  expect(manifest.assetReferences[0]).toMatchObject({scope:'PROFILE',sha256:digest,archivePath:'assets/'+digest+'.png'});
+  const reopen=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Reopen a private recovery file',exact:true})});
+  const select=async(bytes:Buffer,name:string,mimeType:string)=>{
+    await reopen.getByLabel('Recovery ZIP or JSON').setInputFiles({name,mimeType,buffer:bytes});
+    await reopen.getByRole('button',{name:'Verify and reopen recovery file'}).click();
+  };
+  let writes=0;
+  const listener=(req:import('@playwright/test').Request)=>{
+    const u=new URL(req.url());
+    if(u.origin===origin&&['POST','PATCH','PUT','DELETE'].includes(req.method())&&
+      (u.pathname.startsWith('/rest/v1/')||u.pathname.startsWith('/storage/v1/')))writes++;
+  };
+  page.on('request',listener);
+  await select(zip,'recovery.zip','application/zip');
+  await expect(reopen.getByText('Recovery file passed local structure, ownership and media-digest checks.',{exact:true})).toBeVisible();
+  await expect(reopen.locator('code')).toHaveText(manifest.sourceExportSha256);
+  const [jsonDownload]=await Promise.all([page.waitForEvent('download'),reopen.getByRole('button',{name:'Download reopened private recovery JSON'}).click()]);
+  const file=await jsonDownload.path();if(!file)throw new Error('No reopened JSON.');
+  const json=await readFile(file);
+  expect(createHash('sha256').update(json).digest('hex')).toBe(manifest.sourceExportSha256);
+  const restored=JSON.parse(json.toString('utf8'));
+  expect(restored.schemaVersion).toBe(2);
+  expect(restored.assets).toHaveLength(1);
+  expect(Buffer.from(restored.assets[0].base64,'base64').equals(png)).toBe(true);
+  await select(json,'recovery.json','application/json');
+  await expect(reopen.getByText('Recovery file passed local structure, ownership and media-digest checks.',{exact:true})).toBeVisible();
+  await expect(reopen.getByRole('button',{name:'Download reopened private recovery JSON'})).toHaveCount(0);
+  const damaged=structuredClone(restored);damaged.assets[0].base64=Buffer.from('tampered').toString('base64');
+  await select(Buffer.from(JSON.stringify(damaged)),'tampered.json','application/json');
+  await expect(reopen.getByRole('alert')).toBeVisible();
+  await expect(reopen.getByRole('button',{name:'Download reopened private recovery JSON'})).toHaveCount(0);
+  expect(writes).toBe(0);page.off('request',listener);
+  const other=await browser.newPage({baseURL:'http://127.0.0.1:5173'});
+  try{
+    await signIn(other,foreign);await other.goto('/app/export');
+    const panel=other.locator('section.ws-setting-card').filter({has:other.getByRole('heading',{name:'Reopen a private recovery file',exact:true})});
+    await panel.getByLabel('Recovery ZIP or JSON').setInputFiles({name:'foreign.zip',mimeType:'application/zip',buffer:zip});
+    await panel.getByRole('button',{name:'Verify and reopen recovery file'}).click();
+    await expect(panel.getByRole('alert')).toHaveText('This recovery file does not match the current account.');
+    await expect(panel.getByRole('button',{name:'Download reopened private recovery JSON'})).toHaveCount(0);
+  }finally{await other.close();}
+  await page.goto('/app/profile');
+  await expect(page.getByRole('img',{name:'R7 archived avatar',exact:true})).toBeVisible();
+});
+
+test('B16 S3 R7 mounted editable ZIP review, tamper rejection and committed cold history',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Isolated local GoTrue and real persistent Chromium only.');
+  test.setTimeout(150_000);
+  const owner=await localUser('R7 archive owner');
+  const profile=await mkdtemp(join(tmpdir(),'kadmeion-r7-archive-'));
+  const start=()=>chromium.launchPersistentContext(profile,{
+    executablePath:process.env.KADMEION_CHROME_PATH||'/usr/bin/google-chrome',
+    headless:true,baseURL:'http://127.0.0.1:5173',viewport:{width:1600,height:1000}
+  });
+  let context:BrowserContext|null=null;
+  const title='R7 archive recovery',first='R7 first saved Unicode 日本語 ☃',second='R7 second saved';
+  try{
+    context=await start();
+    let page=context.pages()[0]??await context.newPage();
+    await signIn(page,owner);
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:'Arc',exact:true}).check();
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    const editorPath=new URL(page.url()).pathname;
+    const field=()=>page.getByLabel('Text content');
+    const save=async()=>{
+      await page.getByRole('button',{name:'Save draft',exact:true}).click();
+      await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    };
+    const apply=async(value:string)=>{
+      await field().fill(value);
+      await page.getByRole('button',{name:'Apply text',exact:true}).click();
+      await expect(field()).toHaveValue(value);
+    };
+    const undo=()=>page.getByRole('button',{name:'Undo',exact:true});
+    const redo=()=>page.getByRole('button',{name:'Redo',exact:true});
+    const details=()=>page.locator('details.ws-editor-safety').filter({hasText:'Private project JSON import & export'});
+    const expand=async()=>{
+      await expect(details()).toBeVisible();
+      if(await details().getAttribute('open')===null)await details().locator('summary').click();
+    };
+    const downloadZip=async()=>{
+      const [download]=await Promise.all([page.waitForEvent('download'),details().getByRole('button',{name:'Export editable source ZIP',exact:true}).click()]);
+      const path=await download.path();if(!path)throw Error('Editable ZIP missing.');
+      return readFile(path);
+    };
+    await apply(first);await save();await expand();
+    const original=await downloadZip();
+    const originalSnapshot=importPortfolioSourceZip(new Uint8Array(original));
+    expect(originalSnapshot.slots['arc-hero-title'].content.title).toBe(first);
+    await apply(second);await save();
+    // Clean committed history must survive a real process exit without a
+    // recovery-copy action or any storage injection.
+    await context.close();context=null;
+    context=await start();page=context.pages()[0]??await context.newPage();
+    await page.goto(editorPath);
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    await expect(undo()).toBeEnabled();
+    await undo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    await save();await expand();
+    const input=details().getByLabel('Compare editable source ZIP');
+    const bad=Buffer.from(original);bad[50]^=1;
+    await expect(input).toBeEnabled();
+    await input.setInputFiles({name:'tampered.zip',mimeType:'application/zip',buffer:bad});
+    await expect(details().getByText(/Snapshot operation rejected or not confirmed/)).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    await input.setInputFiles({name:'original.zip',mimeType:'application/zip',buffer:original});
+    const comparison=details().locator('[aria-label="Portable snapshot comparison"]');
+    await expect(comparison).toBeVisible();
+    await expect(comparison.getByLabel('Reviewed file SHA-256')).toHaveText(createHash('sha256').update(original).digest('hex'));
+    await expect(field()).toHaveValue(second);
+    await Promise.all([
+      page.waitForEvent('dialog',{timeout:10000}).then(dialog=>dialog.accept()),
+      comparison.getByRole('button',{name:'Restore compared ZIP as unsaved draft',exact:true}).click()
+    ]);
+    await expect(field()).toHaveValue(first);
+    await undo().click();await expect(field()).toHaveValue(second);
+    await redo().click();await expect(field()).toHaveValue(first);
+    await save();
+    const reopened=await downloadZip();
+    expect(importPortfolioSourceZip(new Uint8Array(reopened))).toEqual(originalSnapshot);
+  }finally{
+    await context?.close().catch(()=>undefined);
+    await rm(profile,{recursive:true,force:true});
+  }
+});
