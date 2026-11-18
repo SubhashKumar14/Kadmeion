@@ -537,7 +537,17 @@ function LinkedMethods({port}: {port:SupabaseBrowserAuthPort}){
   </SettingsCard>;
 }
 
+function acquireSecurityAction(lock:{current:boolean},isCurrent:()=>boolean):boolean{
+  if(lock.current||!isCurrent())return false;
+  lock.current=true;
+  return true;
+}
 function Security({port}: {port: SupabaseBrowserAuthPort}) {
+  const [scope]=useState(()=>({port,epoch:port.getOwnerSessionEpoch()}));
+  const mounted=useRef(false);
+  const action=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  const isCurrent=()=>mounted.current&&scope.port===port&&port.reconcileOwnerSessionEpoch()===scope.epoch;
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -549,7 +559,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   useEffect(() => {
     if (!confirmOthers || busy) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape'&&!action.current&&isCurrent()) {
         event.preventDefault();
         setConfirmOthers(false);
         otherSessionsTrigger.current?.focus();
@@ -560,35 +570,41 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   }, [confirmOthers, busy]);
   async function change(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy) return;
+    if (busy||action.current||!isCurrent()) return;
     if (next !== confirm) {setMessage({error: true, text: 'Passwords do not match.'}); return;}
-    setBusy(true); setMessage(null);
+    if(!acquireSecurityAction(action,isCurrent))return;
+    const payload={currentPassword:current,newPassword:next};
+    setCurrent('');setNext('');setConfirm('');setShowPasswords(false);
+    setBusy(true);setMessage(null);
     try {
-      const outcome = await port.changePasswordWithCurrentPassword({ currentPassword: current, newPassword: next });
+      const outcome = await port.changePasswordWithCurrentPassword(payload);
+      // A successful password change may deliberately rotate the owner epoch.
+      // The verified new shell must not inherit this older component's state.
+      if(!isCurrent())return;
       if (outcome.error) throw new Error(outcome.error.message);
-      setCurrent(''); setNext(''); setConfirm(''); setShowPasswords(false);
       setMessage({error: false, text: 'Password updated.'});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    } catch (error) {if(isCurrent())setMessage(failure(error));}
+    finally {action.current=false;if(isCurrent())setBusy(false);}
   }
   async function revoke() {
-    if (busy || !confirmOthers) return;
-    setBusy(true); setMessage(null);
+    if (busy||!confirmOthers||!acquireSecurityAction(action,isCurrent))return;
+    setBusy(true);setMessage(null);
     try {
       const result = await port.signOut({scope: 'others'});
+      if(!isCurrent())return;
       if (result.error) throw new Error('Sign-out for other sessions could not be confirmed.');
       setConfirmOthers(false);
       otherSessionsTrigger.current?.focus();
-      setMessage({error: false, text: 'Other sessions were signed out.'});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+      setMessage({error: false, text: 'Other-session revocation acknowledged. Previously issued access tokens may remain valid until expiry.'});
+    } catch (error) {if(isCurrent())setMessage(failure(error));}
+    finally {action.current=false;if(isCurrent())setBusy(false);}
   }
 
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Change password"><form className="ws-settings-form" onSubmit={event => void change(event)}>
-      <label>Current password<input type={showPasswords?'text':'password'} required maxLength={128} autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)}/></label>
-      <label>New password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)}/></label>
-      <label>Confirm new password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
+      <label>Current password<input type={showPasswords?'text':'password'} required maxLength={128} autoComplete="current-password" disabled={busy} value={current} onChange={event => setCurrent(event.target.value)}/></label>
+      <label>New password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" disabled={busy} value={next} onChange={event => setNext(event.target.value)}/></label>
+      <label>Confirm new password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" disabled={busy} value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
       <button type="button" className="ws-secondary" aria-pressed={showPasswords} disabled={busy}
         onClick={() => setShowPasswords(value => !value)}>{showPasswords?'Hide password entries':'Show password entries'}</button>
       <button className="ws-primary" type="submit" disabled={busy}>Update password</button>
@@ -597,7 +613,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
       This does not erase their browser storage or claim every already-issued access token has expired.</p>
       <button ref={otherSessionsTrigger} type="button" className="ws-secondary"
         disabled={busy} aria-expanded={confirmOthers} aria-controls="other-session-confirmation"
-        onClick={() => setConfirmOthers(value => !value)}>Sign out other sessions</button>
+        onClick={() => {if(isCurrent()&&!action.current)setConfirmOthers(value => !value);}}>Sign out other sessions</button>
       {confirmOthers && <div id="other-session-confirmation" role="group"
         aria-label="Confirm other-session sign-out" className="ws-release-confirm">
         <p>Sign out other sessions? This asks the authentication provider to revoke other sessions;
