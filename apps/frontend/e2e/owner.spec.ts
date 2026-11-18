@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
+import { PrivateServerAssetByteAttestor } from '../../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
 import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
@@ -149,6 +150,27 @@ test('real owner onboarding and project revision are private across browser sess
     await page.screenshot({path: captureDir + '/' + name + '.png', animations: 'disabled'});
   }
 
+  // A transient provider transport failure must never reveal the owner shell.
+  // Exercise the existing explicit retry once; do not re-sign in or bypass
+  // server /user verification. Persistent denial remains a test failure.
+  async function navigateVerified(target:string,heading:string){
+    await page.goto(target);
+    const expected=page.getByRole('heading',{name:heading,level:1});
+    const locked=page.getByRole('heading',{name:'Sign in required.',level:1});
+    await expect.poll(async()=>{
+      if(await expected.isVisible())return 'VERIFIED';
+      if(await locked.isVisible())return 'LOCKED';
+      return 'CHECKING';
+    },{timeout:12_000}).not.toBe('CHECKING');
+    if(await locked.isVisible()){
+      await expect(page.locator('.ws-shell')).toHaveCount(0);
+      const retry=page.getByRole('button',{name:'Retry verification'});
+      await expect(retry).toBeVisible();
+      await retry.click();
+      await expect(expected).toBeVisible({timeout:10_000});
+    }
+    await expect(expected).toBeVisible();
+  }
   await page.setViewportSize({width: 1600, height: 1000});
   await signIn(page, owner);
   await page.getByRole('link', {name: 'Open private workspace'}).click();
@@ -660,8 +682,7 @@ test('real owner onboarding and project revision are private across browser sess
   for(const width of [390,320]){
     await page.setViewportSize({width,height:844});
     for(const [stage,heading,label] of releaseStages){
-      await page.goto(editorPath.replace('/edit','/'+stage));
-      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await navigateVerified(editorPath.replace('/edit','/'+stage),heading);
       await expect(page.getByRole('navigation',{name:'Release steps'})).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
       const sizes=await page.evaluate(()=>({
@@ -676,8 +697,7 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:'Switch to light theme'}).click();
   await page.setViewportSize({width:390,height:844});
   for(const [stage,heading,label] of releaseStages){
-    await page.goto(editorPath.replace('/edit','/'+stage));
-    await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+    await navigateVerified(editorPath.replace('/edit','/'+stage),heading);
     await expect(page.locator('html')).toHaveAttribute('data-theme','light');
     const sizes=await page.evaluate(()=>({
       viewport:document.documentElement.clientWidth,
@@ -714,11 +734,14 @@ test('real owner onboarding and project revision are private across browser sess
     baseURL: testInfo.project.use.baseURL,
     viewport: {width:960, height:540},
     isMobile:true, hasTouch:true,
-    storageState: await page.context().storageState(),
+    // Authenticate the same owner independently. Cloning storageState copies
+    // the desktop refresh credential into a non-coordinating browser context.
+    // Token rotation could otherwise invalidate the desktop session mid-journey.
     permissions:['clipboard-read','clipboard-write']
   });
   try {
     const phone=await touch.newPage();
+    await signIn(phone,owner);
     await phone.goto(editorPath);
     await expect(phone.getByRole('heading',{name:'Continue on a larger screen.'})).toBeVisible();
     await expect(phone.getByRole('button',{name:'Save draft'})).toHaveCount(0);
@@ -740,8 +763,7 @@ test('real owner onboarding and project revision are private across browser sess
     await touch.close();
   }
   await page.setViewportSize({width: 1600, height: 1000});
-  await page.goto('/app/settings');
-  await expect(page.getByRole('heading', {name: 'Settings', exact: true})).toBeVisible();
+  await navigateVerified('/app/settings','Settings');
   await capture('41_SETTINGS_BROWSER');
 
   await page.getByRole('link', {name: 'Open privacy & sharing'}).click();
@@ -836,7 +858,6 @@ test('real owner onboarding and project revision are private across browser sess
     await foreign.close();
   }
 });
-
 
 test('verified local operator can read case-scoped views without impersonation or public release',async({page,browser},testInfo)=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1',
@@ -2540,7 +2561,7 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
   test.setTimeout(60_000);
   const owner=await localUser('S6 confirmation boundary');
   let tokenCalls=0, resendCalls=0;
-  let mode:'deny'|'rate'|'outage'|'transport'|'accepted'='deny';
+  let mode:'deny'|'rate'|'outage'|'transport'|'nonjson'|'null'|'unexpected'|'empty204'|'accepted'='deny';
   await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/token'&&url.searchParams.get('grant_type')==='password',async route=>{
     if(route.request().method()!=='POST')return route.continue();
     tokenCalls++;
@@ -2553,6 +2574,10 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
     expect(body.type==='signup'&&body.email===owner.email).toBe(true);
     expect(new URL(route.request().url()).searchParams.get('redirect_to')).toBe(new URL('/auth/callback',page.url()).href);
     if(mode==='transport')return route.abort('failed');
+    if(mode==='nonjson')return route.fulfill({status:200,contentType:'text/html',body:'S6_RAW_PROVIDER_MARKER'});
+    if(mode==='null')return route.fulfill({status:200,contentType:'application/json',body:'null'});
+    if(mode==='unexpected')return route.fulfill({status:200,json:{access_token:'S6_RAW_PROVIDER_MARKER'}});
+    if(mode==='empty204')return route.fulfill({status:204});
     if(mode==='accepted')return route.fulfill({status:200,json:{}});
     await route.fulfill({status:mode==='deny'?403:mode==='rate'?429:503,json:{message:'S6_RAW_PROVIDER_MARKER'}});
   });
@@ -2567,7 +2592,7 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
     await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
     await expect(page.getByText('S6_RAW_PROVIDER_MARKER',{exact:false})).toHaveCount(0);
   };
-  for(const failure of ['deny','rate','outage','transport'] as const){
+  for(const failure of ['deny','rate','outage','transport','nonjson','null','unexpected','empty204'] as const){
     mode=failure;
     await resend.click();
     await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
@@ -2576,18 +2601,17 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
     await expect(resend).toBeEnabled();
     await noWorkspace();
   }
-  expect(resendCalls).toBe(4);
+  expect(resendCalls).toBe(8);
   mode='accepted';
   await resend.click();
   await expect(page.getByRole('status')).toContainText('Email delivery is not confirmed.');
-  expect(resendCalls).toBe(5);
+  expect(resendCalls).toBe(9);
   await noWorkspace();
   await page.goto('/app');
   await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
   await expect(page.getByRole('link',{name:'Go to sign in'})).toBeVisible();
   await expect(page.locator('.ws-shell')).toHaveCount(0);
 });
-
 
 test('B16 real invalid and absent recovery grants cannot open reset form or mutate password',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
@@ -2822,6 +2846,309 @@ test('B16 C06 committed autosave with lost acknowledgement reconciles without se
   await page.reload();
   await expect(headline).toHaveValue('Committed but acknowledgement lost');
   await expect(auto).not.toBeChecked();
+});
+
+test('B16 C04 real browser thumbnail bytes and independent server pin with owner denial',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated local C04 migration and trusted writer.');
+  test.setTimeout(90_000);
+  const owner=await localUser('S6 C04 owner'),foreign=await localUser('S6 C04 foreign');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,service=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if(!key||!service||process.env.VITE_SUPABASE_URL!==origin)throw new Error('C04 requires disposable loopback credentials.');
+  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const expected=createHash('sha256').update(bytes).digest('hex');
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project'}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('C04 pin browser fixture');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  await page.getByRole('link',{name:'C04 pin browser fixture'}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const projectId=new URL(page.url()).pathname.split('/').at(-1)!;
+  const cover=page.getByRole('region',{name:'Project thumbnail'});
+  const file=cover.getByLabel(/Image file/),alt=cover.getByLabel('Image alt text');
+  await expect(file).toBeEnabled();
+  await expect(alt).toBeEnabled();
+  await file.setInputFiles({name:'c04.png',mimeType:'image/png',buffer:bytes});
+  await alt.fill('C04 synthetic preview');
+  const attach=cover.getByRole('button',{name:'Upload and attach thumbnail'});
+  await expect(attach).toBeEnabled();
+  await attach.click();
+  const image=cover.getByRole('img',{name:'C04 synthetic preview',exact:true});
+  const checkPreview=async()=>{
+    await expect(image).toBeVisible();
+    await expect.poll(()=>image.evaluate(async(element,expectedBytes)=>{
+      const img=element as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const actual=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&response.headers.get('content-type')==='image/png'&&
+        actual.length===expectedBytes.length&&actual.every((byte,i)=>byte===expectedBytes[i]);
+    },Array.from(bytes))).toBe(true);
+  };
+  await checkPreview();
+  function makePort(){
+    const data=new Map<string,string>();
+    return new SupabaseBrowserAuthPort({supabaseUrl:origin,publishableKey:key!,appOrigin:new URL(page.url()).origin,
+      storage:{getItem:k=>data.get(k)??null,setItem:(k,v)=>{data.set(k,v);},removeItem:k=>{data.delete(k);}}});
+  }
+  const port=makePort();
+  const session=await port.signInWithPassword({email:owner.email,password:owner.password});
+  if(session.error||!session.data?.session?.access_token)throw new Error('Local owner session not verified.');
+  const assets=await port.listOwnerAssets();
+  const item=assets.data?.find(asset=>asset.projectId===projectId&&asset.altText==='C04 synthetic preview');
+  if(assets.error||!item)throw new Error('Browser-uploaded asset not registered.');
+  const read=()=>port.readOwnerPrivateAsset(projectId,item.id,port.getOwnerSessionEpoch());
+  const unpinned=await read();
+  expect(unpinned.error).toBeNull();
+  expect(unpinned.data?.serverAttestation).toBe('NOT_VERIFIED');
+  expect(unpinned.data?.integrity.computedSha256).toBe(expected);
+  expect(unpinned.data?.publicDeliveryAllowed).toBe(false);
+  // Real trusted worker hashes Storage bytes independently; service credentials
+  // remain in the Playwright runner, never the browser or test artifacts.
+  const attestor=new PrivateServerAssetByteAttestor(origin,key,service);
+  const attested=await attestor.attest(item.id,session.data.session.access_token);
+  expect(attested.status).toBe('WRITE_ONCE_ATTESTED');
+  const pinned=await read();
+  expect(pinned.error).toBeNull();
+  expect(pinned.data?.serverAttestation).toBe('SERVER_HASH_PINNED');
+  expect(pinned.data?.integrity.computedSha256).toBe(expected);
+  expect(pinned.data?.publicDeliveryAllowed).toBe(false);
+  expect(Buffer.from(await pinned.data!.bytes.arrayBuffer()).equals(bytes)).toBe(true);
+  await page.reload();
+  await checkPreview();
+  const other=makePort();
+  const signed=await other.signInWithPassword({email:foreign.email,password:foreign.password});
+  expect(!signed.error&&!!signed.data?.session).toBe(true);
+  const denied=await other.readOwnerPrivateAsset(projectId,item.id,other.getOwnerSessionEpoch());
+  expect(denied.data).toBeNull();
+  expect(!!denied.error).toBe(true);
+});
+
+test('B16 ordinary recovery rejects malformed provider acknowledgement and retries real GoTrue',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase and strict OWNER-AUTH policy.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 recovery receipt');
+  let mode:'rate'|'outage'|'transport'|'nonjson'|'null'|'unexpected'|'empty204'|'real'='rate';
+  let calls=0,realReceipt=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/recover',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    calls++;
+    expect(route.request().postDataJSON().email===owner.email).toBe(true);
+    expect(new URL(route.request().url()).searchParams.get('redirect_to')).toBe(new URL('/reset-password',page.url()).href);
+    if(mode==='real'){
+      const response=await route.fetch();
+      try{realReceipt=response.status()===200&&JSON.stringify(await response.json())==='{}';
+        await route.fulfill({response});
+      }finally{await response.dispose();}
+      return;
+    }
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='nonjson')return route.fulfill({status:200,contentType:'text/html',body:'S6_RAW_PROVIDER_MARKER'});
+    if(mode==='null')return route.fulfill({status:200,contentType:'application/json',body:'null'});
+    if(mode==='unexpected')return route.fulfill({status:200,json:{access_token:'S6_RAW_PROVIDER_MARKER'}});
+    if(mode==='empty204')return route.fulfill({status:204});
+    await route.fulfill({status:mode==='rate'?429:503,json:{message:'S6_RAW_PROVIDER_MARKER'}});
+  });
+  await page.goto('/forgot-password');
+  await page.getByRole('textbox',{name:'Email address'}).fill(owner.email);
+  const request=page.getByRole('button',{name:'Request recovery link'});
+  for(const failure of ['rate','outage','transport','nonjson','null','unexpected','empty204'] as const){
+    mode=failure;
+    await request.click();
+    await expect(page.getByRole('alert')).toContainText('Unable to submit the recovery request.');
+    await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'Check your inbox'})).toHaveCount(0);
+    await expect(page.getByText('S6_RAW_PROVIDER_MARKER',{exact:false})).toHaveCount(0);
+    await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+    await expect(request).toBeEnabled();
+  }
+  expect(calls).toBe(7);
+  mode='real';
+  await request.click();
+  await expect(page.getByRole('heading',{name:'Check your inbox'})).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('Delivery is not confirmed.');
+  expect(realReceipt).toBe(true);
+  expect(calls).toBe(8);
+  await page.goto('/app');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+});
+
+test('B16 WF-043/047 Settings fail-closed gate retries actual session before privacy and inventory',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(70_000);
+  const owner=await localUser('S6 Settings verification');
+  await signIn(page,owner);
+  let blocked=true,denials=0,verified=0,privateReadsWhileLocked=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(blocked&&url.origin===origin&&url.pathname.startsWith('/rest/v1/'))privateReadsWhileLocked++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(blocked){denials++;return route.abort('failed');}
+    const response=await route.fetch();
+    try{
+      if(response.ok()){
+        const user=await response.json().catch(()=>null);
+        if(user?.id===owner.id)verified++;
+      }
+      await route.fulfill({response});
+    }finally{await response.dispose();}
+  });
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
+  expect(denials).toBeGreaterThan(0);
+  expect(privateReadsWhileLocked).toBe(0);
+  blocked=false;
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  expect(verified).toBeGreaterThan(0);
+  await page.getByRole('link',{name:'Open privacy & sharing'}).click();
+  await expect(page.getByRole('heading',{name:'Privacy & sharing',level:1})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeVisible();
+  await expect(page.getByText('Loading sharing preferences…')).toHaveCount(0);
+  await page.goto('/app/settings/account/delete');
+  await expect(page.getByRole('heading',{name:'Account exit',level:1})).toBeVisible();
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:/Delete account/i})).toHaveCount(0);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await page.goto('/app/settings/account/delete');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Private inventory',exact:true})).toHaveCount(0);
+});
+
+test('B16 C06 real profile autosave cannot silently withdraw existing projection',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated local Supabase only.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 withdrawal fixture');
+  // Seed only a disposable trusted publication row, matching existing
+  // consented-public-delivery SQL fixtures. This is not a hosted publish.
+  const handle=runLocalFixtureSql(
+    "update public.profiles set handle='s6_'||substr(replace(:'actor_id','-',''),1,12),headline='Old public headline' where user_id=:'actor_id'::uuid;"+
+    "insert into kadmeion_private.profile_publications(user_id,handle,display_name,headline,bio) "+
+    "select user_id,handle,display_name,headline,bio from public.profiles where user_id=:'actor_id'::uuid;"+
+    "select handle from public.profiles where user_id=:'actor_id'::uuid;",owner.id);
+  expect(/^s6_[0-9a-f]{12}$/.test(handle)).toBe(true);
+  const projected=()=>runLocalFixtureSql(
+    "select coalesce(public.service_read_published_profile_projection((select handle from public.profiles where user_id=:'actor_id'::uuid))->>'headline','ABSENT');",owner.id);
+  expect(projected()).toBe('Old public headline');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toHaveValue('Old public headline');
+  const writes:boolean[]=[];
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    writes.push(route.request().postDataJSON().p_confirm_projection_withdrawal);
+    await route.continue();
+  });
+  await auto.check();
+  await headline.fill('New private headline');
+  const confirm=page.getByRole('checkbox',{name:'Withdraw my current public profile when I save this draft'});
+  await expect(confirm).toBeVisible();
+  await expect(confirm).not.toBeChecked();
+  await expect(auto).not.toBeChecked();
+  expect(writes).toEqual([false]);
+  expect(projected()).toBe('Old public headline');
+  await expect(headline).toHaveValue('New private headline');
+  await confirm.check();
+  await page.getByRole('button',{name:'Save profile draft'}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([false,true]);
+  expect(projected()).toBe('ABSENT');
+  await page.reload();
+  await expect(headline).toHaveValue('New private headline');
+  await expect(auto).not.toBeChecked();
+});
+
+
+test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP persistence',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires real mounted R4 editor and disposable local Supabase.');
+  test.setTimeout(95_000);
+  const owner=await localUser('S6 mounted scoped theme');
+  await page.setViewportSize({width:2200,height:1100});
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 mounted scoped fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 mounted scoped fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:'Theme',exact:true}).click();
+  // Fresh preset snapshots intentionally contain no persisted theme file.
+  // The visible palette defaults are not proof of an initialized theme.
+  const initialize=page.getByRole('button',{name:'Initialize global palette',exact:true});
+  await expect(initialize).toBeEnabled();
+  await initialize.click();
+  await expect(initialize).toHaveCount(0);
+  await page.getByLabel('Portfolio theme').selectOption('light');
+  const scope=page.getByRole('region',{name:'Scoped theme overrides'});
+  const token=scope.getByLabel('Theme token'),layer=scope.getByLabel('Override layer');
+  const value=scope.getByLabel('Override value');
+  async function set(scopeId:string,bucket:string,color:string){
+    // Implicit label includes the option text in Playwright's exact label query.
+    // Scope by the named panel and the visible label wrapper, then assert the
+    // actual select's accessibility and selected value. No skipped UI action.
+    const scopeSelect=scope.locator('label').filter({hasText:/^Scope/}).getByRole('combobox');
+    await expect(scopeSelect).toHaveCount(1);
+    await expect(scopeSelect).toHaveAccessibleName(/Scope/);
+    await scopeSelect.selectOption(scopeId,{timeout:10_000});
+    await expect(scopeSelect).toHaveValue(scopeId);
+    await layer.selectOption(bucket);
+    await token.selectOption('text');
+    await expect(value).toBeEnabled({timeout:10_000});
+    await value.fill(color,{timeout:10_000});
+    await scope.getByRole('button',{name:'Apply override',exact:true}).click();
+    await expect(scope.getByText('Override applied to the working draft. Save to persist, or use Undo.',{exact:true})).toBeVisible();
+    await expect(value).toHaveValue(color);
+  }
+  await set('global','base','#112233');
+  await set('section:arc-hero','base','#334455');
+  await set('component:arc-hero-title','phone','#224466');
+  await set('component:arc-hero-title','desktop','#663344');
+  const canvas=page.locator('.ws-studio-editor .k-theme-container');
+  const title=canvas.getByRole('button',{name:/^Edit L1 title slot in preview/});
+  const measure=()=>canvas.evaluate(node=>node.getBoundingClientRect().width);
+  await page.getByLabel('Preview width').selectOption('390');
+  await expect.poll(measure).toBeLessThanOrEqual(600);
+  await expect(title).toHaveCSS('color','rgb(34, 68, 102)');
+  await page.getByLabel('Preview width').selectOption('1440');
+  await expect.poll(measure).toBeGreaterThan(950);
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await scope.getByRole('button',{name:'Reset selected override'}).click();
+  await expect(title).toHaveCSS('color','rgb(51, 68, 85)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(51, 68, 85)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'Theme',exact:true}).click();
+  await page.getByLabel('Preview width').selectOption('390');
+  await expect(title).toHaveCSS('color','rgb(34, 68, 102)');
+  await page.getByLabel('Preview width').selectOption('1440');
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const downloadedPath=await download.path();if(!downloadedPath)throw new Error('Private source export absent.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(downloadedPath)));
+  const {resolveScopedTheme}=await import('../../../packages/editor-core/src/index.ts');
+  for(const [widthPx,text] of [[390,'#224466'],[768,'#334455'],[1440,'#663344']] as const){
+    const resolved=resolveScopedTheme(snapshot,{mode:'light',sectionId:'arc-hero',slotKey:'arc-hero-title',widthPx});
+    expect(resolved.status).toBe('resolved');expect(resolved.tokens.text).toBe(text);
+  }
 });
 
 
