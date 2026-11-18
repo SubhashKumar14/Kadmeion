@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ActionLink, Brand, Icon, useTheme, getAuthHref } from './landing.tsx';
+import { normalizeHandle } from '../../../packages/contracts/src/project.ts';
 import { filterShowcaseConcepts } from './behavior.ts';
 
 type ConceptCategory = 'All'|'Full-Stack'|'Frontend'|'AI / ML'|'Product';
@@ -17,6 +18,58 @@ function ConceptCover({item}:{item:Concept}){
     <div className="cover-geometry"/>
   </div>;
 }
+type PublicAddressKind='identity'|'case-study'|'portfolio';
+export function knownPublicAddress(kind:PublicAddressKind,rawHandle:string,rawSlug:string,normalize:(s:string)=>string):string|null {
+  if(typeof rawHandle!=='string'||typeof rawSlug!=='string'||/[\x00-\x1f\x7f]/.test(rawHandle+rawSlug))return null;
+  const handle=rawHandle.trim();
+  if(!/^[A-Za-z][A-Za-z0-9_]{2,29}$/.test(handle))return null;
+  let canonicalHandle:string;
+  try{canonicalHandle=normalize(handle);}catch{return null;}
+  if(!/^[a-z][a-z0-9_]{2,29}$/.test(canonicalHandle))return null;
+  if(kind==='identity')return rawSlug.trim()===''?'/u/'+canonicalHandle:null;
+  const slug=rawSlug.trim();
+  if(!/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))return null;
+  if(kind==='case-study')return '/u/'+canonicalHandle+'/projects/'+slug;
+  if(kind==='portfolio')return '/'+canonicalHandle+'/'+slug;
+  return null;
+}
+
+/** Open a known address, not an account search or a discovery listing.
+ * The server, not the address builder, decides whether anything is public. */
+function KnownPublicAddress(){
+  const [kind,setKind]=useState<PublicAddressKind>('identity');
+  const [handle,setHandle]=useState('');
+  const [slug,setSlug]=useState('');
+  const [error,setError]=useState('');
+  return <section className="explore-browse" aria-labelledby="known-public-title">
+    <h2 id="known-public-title">Open a known public address</h2>
+    <p id="known-public-help" className="explore-disclosure">Enter an address shared with you. This does not search accounts, reveal private records or certify publication. The destination server checks access.</p>
+    <form aria-describedby="known-public-help" onSubmit={event=>{
+      event.preventDefault();
+      const address=knownPublicAddress(kind,handle,slug,normalizeHandle);
+      if(address===null){setError('Enter a valid handle and, when required, the exact lowercase slug. Reserved names and URLs are not accepted.');return;}
+      window.location.assign(address);
+    }}>
+      <div className="explore-filters">
+        <div><label htmlFor="known-public-handle">Developer handle</label>
+          <div className="template-query"><input id="known-public-handle" value={handle}
+            required maxLength={64} autoComplete="off" autoCapitalize="none" spellCheck={false}
+            onChange={event=>{setHandle(event.target.value);setError('');}} placeholder="developer_handle"/></div></div>
+        <div><label htmlFor="known-public-kind">Address type</label>
+          <select id="known-public-kind" value={kind} onChange={event=>{setKind(event.target.value as PublicAddressKind);setSlug('');setError('');}}>
+            <option value="identity">Developer identity</option><option value="case-study">Project case study</option><option value="portfolio">Portfolio</option>
+          </select></div>
+        {kind!=='identity'&&<div><label htmlFor="known-public-slug">Exact page slug</label>
+          <div className="template-query"><input id="known-public-slug" value={slug} required maxLength={64}
+            autoComplete="off" autoCapitalize="none" spellCheck={false}
+            onChange={event=>{setSlug(event.target.value);setError('');}} placeholder="project-slug"/></div></div>}
+      </div>
+      {error&&<p role="alert">{error}</p>}
+      <button type="submit" className="outline-small">Open public address</button>
+    </form>
+  </section>;
+}
+
 export function ExplorePortfolios(){
   const [theme,toggleTheme]=useTheme();
   const [query,setQuery]=useState('');
@@ -59,6 +112,7 @@ export function ExplorePortfolios(){
             </div>
           </div>
         </section>
+        <KnownPublicAddress/>
         <section aria-labelledby="browse-title" className="explore-browse">
           <h2 id="browse-title" className="sr-only">Browse layout examples</h2>
           <p className="explore-disclosure">The verified public directory is not connected to this gallery. Its availability and listing count are unconfirmed. The search and filters below apply only to illustrative layouts—not live published accounts or verified project ownership.</p>
