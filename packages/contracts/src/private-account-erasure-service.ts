@@ -561,13 +561,23 @@ export class SupabasePrivateAccountErasureService {
       throw new PrivateAccountErasureError('INVALID_ACK','Application content withdrawal was not confirmed.');
     return raw as unknown as AccountContentWithdrawalReceipt;
   }
+  /** Read-only, server-gated count of the next eligible removal batch.
+   * A zero count is not a claim of account-wide Storage emptiness. */
+  async reviewUploadBatch():Promise<number>{
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
+    const paths=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
+    if(await this.token()!==jwt)
+      throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during cleanup review.');
+    return paths.length;
+  }
   async removeUploadBatch():Promise<number>{
     const jwt=await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
     const paths=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
-    if(paths.length===0)return 0;
     if(await this.token()!==jwt)
       throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed before upload removal.');
+    if(paths.length===0)return 0;
     let response:Response;
     const deadline=performance.now()+15_000;
     const signal=AbortSignal.timeout(15_000);
