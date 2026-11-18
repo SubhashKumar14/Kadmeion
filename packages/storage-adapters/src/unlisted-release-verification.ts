@@ -460,6 +460,41 @@ export function matchFrozenPublicationConsent(consent:FrozenPublicationConsent,p
     throw Error('Prepared publication does not match frozen consent.');
 }
 
+/**
+ * Read-only owner worker verification for a previously used PUBLIC consent.
+ * No prepare, activate, acknowledge or compensation can be invoked here.
+ * A historical acknowledgement is not current publication authority.
+ */
+export async function checkCurrentPublicDelivery(intentId:string,ports:{
+  origin:string;http?:typeof fetch;expectedConsent:FrozenPublicationConsent;
+  publicAuthority:PublicAuthorityRpc;
+}):Promise<DeliveryVerification>{
+  const consent=Object.freeze({...ports.expectedConsent});
+  if(typeof intentId!=='string'||!UUID.test(intentId)||consent.visibility!=='PUBLIC')
+    throw Error('Invalid current public delivery request.');
+  validateFrozenPublicationConsent(consent,typeof ports.publicAuthority==='function');
+  const readOnly:PublicAuthorityRpc=async(operation,payload)=>{
+    if(operation!=='service_read_current_public_delivery_receipt')
+      throw Error('Read-only public delivery verification.');
+    return ports.publicAuthority(operation,payload);
+  };
+  const raw=await readOnly('service_read_current_public_delivery_receipt',{
+    p_portfolio_id:consent.portfolioId,p_intent_id:intentId
+  });
+  if(!record(raw)||typeof raw.handle!=='string'||typeof raw.slug!=='string'||
+     !validPortfolioRoute(raw.handle,raw.slug)||!gen(raw.releaseGeneration)||!digest(raw.storedHtmlSha256))
+    throw Error('Current public delivery is not available.');
+  const publicPath='/'+raw.handle+'/'+raw.slug;
+  const expected={portfolioId:consent.portfolioId,intentId,requestId:consent.requestId,
+    releaseGeneration:raw.releaseGeneration,htmlSha256:raw.storedHtmlSha256,publicPath};
+  const initial=parseAuthority(raw,expected,validPortfolioRoute);
+  if(initial.verifiedAt===null)throw Error('Current public delivery is not acknowledged.');
+  return verifyActivatedUnlistedRelease(expected,{
+    origin:ports.origin,http:ports.http,requirePublicAliasProof:true,
+    publicAuthority:readOnly,rpc:async()=>{throw Error('Read-only public delivery verification.');}
+  },'CHECK_ACKNOWLEDGED_ONLY');
+}
+
 /** Run for an owner consent ID already recorded by Supabase. Retry with the same ID. */
 export async function publishConsentedUnlistedRelease(
   intentId: string,
