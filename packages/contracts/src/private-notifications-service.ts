@@ -137,7 +137,22 @@ function parseCursor(value:string|null):{createdAt:string;id:string}|null {
     throw new PrivateNotificationsError('VALIDATION');
   return {createdAt:parts[0],id:parts[1].toLowerCase()};
 }
-async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown> {
+// PostgreSQL timestamps carry up to six fractional digits; Date.parse only
+// preserves three. Compare the remaining digits before the UUID tie-break.
+function compareNoticeKey(aTime:string,aId:string,bTime:string,bId:string):number {
+  const millis=Date.parse(aTime)-Date.parse(bTime);
+  if(millis!==0)return Math.sign(millis);
+  const submillis=(time:string)=>Number((/\.(\d{1,6})(?:Z|[+-]\d{2}:\d{2})$/.exec(time)?.[1]??'').padEnd(6,'0').slice(3));
+  const micros=submillis(aTime)-submillis(bTime);
+  if(micros!==0)return Math.sign(micros);
+  const a=aId.toLowerCase(),b=bId.toLowerCase();
+  return a===b?0:a<b?-1:1;
+}
+function ensureNotificationDeadline(signal:AbortSignal,deadlineAt:number):void {
+  if(signal.aborted||!Number.isFinite(deadlineAt)||performance.now()>=deadlineAt)
+    throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
+}
+async function boundedJson(response:Response,signal:AbortSignal,deadlineAt:number):Promise<unknown> {
   const type=response.headers.get('content-type');
   if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
     {void response.body?.cancel().catch(()=>{});throw new PrivateNotificationsError('INVALID_ACK');}
@@ -149,7 +164,7 @@ async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown
   let count=0,chunks=0;
   try{
     for(;;){
-      signal.throwIfAborted();
+      ensureNotificationDeadline(signal,deadlineAt);
       let onAbort:()=>void=()=>{};
       const aborted=new Promise<never>((_,reject)=>{
         onAbort=()=>reject(signal.reason);signal.addEventListener('abort',onAbort,{once:true});
@@ -157,7 +172,7 @@ async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown
       let chunk:ReadableStreamReadResult<Uint8Array>;
       try{chunk=await Promise.race([reader.read(),aborted]);}
       finally{signal.removeEventListener('abort',onAbort);}
-      signal.throwIfAborted();const {done,value}=chunk;
+      ensureNotificationDeadline(signal,deadlineAt);const {done,value}=chunk;
       if(done)break;
       if(++chunks>65_536)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
       if(!(value instanceof Uint8Array))throw new PrivateNotificationsError('INVALID_ACK');
@@ -176,8 +191,11 @@ async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown
     count!==Number(length))throw new PrivateNotificationsError('INVALID_ACK');
   const bytes=new Uint8Array(count);let offset=0;
   for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
-  try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown;}
+  let result:unknown;
+  try{result=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown;}
   catch{throw new PrivateNotificationsError('INVALID_ACK');}
+  ensureNotificationDeadline(signal,deadlineAt);
+  return result;
 }
 
 /** Never accept an owner ID in a query or mutation; Postgres derives it from JWT. */
@@ -213,6 +231,7 @@ export class SupabasePrivateNotificationsService {
       if(!current)throw new PrivateNotificationsError('AUTH_EXPIRED');
     };
     guard();
+    const deadlineAt=performance.now()+10_000;
     const signal=AbortSignal.timeout(10000);
     let abort:()=>void=()=>{};
     const deadline=new Promise<never>((_,reject)=>{
@@ -222,20 +241,22 @@ export class SupabasePrivateNotificationsService {
     const work=async()=>{
       const jwt=await this.token();guard();
       if(typeof jwt!=='string'||!jwt.trim())throw new PrivateNotificationsError('AUTH_EXPIRED');
-      signal.throwIfAborted();
-      const response=await this.http(this.origin+'/rest/v1/'+path,{
+      ensureNotificationDeadline(signal,deadlineAt);
+      const requestUrl=this.origin+'/rest/v1/'+path;
+      const response=await this.http(requestUrl,{
         method,headers:{apikey:this.key,Authorization:'Bearer '+jwt,
           Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
         body:body===undefined?undefined:JSON.stringify(body),
         credentials:'omit',cache:'no-store',redirect:'error',signal
       });
       try{
-        guard();signal.throwIfAborted();
+        guard();ensureNotificationDeadline(signal,deadlineAt);
+        if(response.redirected||(response.url&&response.url!==new URL(requestUrl).href))throw new PrivateNotificationsError('INVALID_ACK');
         if(!response.ok){
           if(cas&&(response.status===400||response.status===409||response.status===500)){
             let detail:unknown;
-            try{detail=await boundedJson(response,signal);}catch{/* invalid body remains unavailable */}
-            guard();signal.throwIfAborted();
+            try{detail=await boundedJson(response,signal,deadlineAt);}catch{/* invalid body remains unavailable */}
+            guard();ensureNotificationDeadline(signal,deadlineAt);
             if(object(detail)){
               if((response.status===409||response.status===500)&&detail.code==='40001')
                 throw new PrivateNotificationsError('CONFLICT');
@@ -247,11 +268,11 @@ export class SupabasePrivateNotificationsService {
           if(response.status===429)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
           throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
         }
-        const data=await boundedJson(response,signal);guard();signal.throwIfAborted();return data;
+        const data=await boundedJson(response,signal,deadlineAt);if(await this.token()!==jwt)throw new PrivateNotificationsError('AUTH_EXPIRED');guard();ensureNotificationDeadline(signal,deadlineAt);return data;
       }finally{if(!response.bodyUsed)void response.body?.cancel().catch(()=>{});}
     };
     try{
-      const data=await Promise.race([deadline,work()]);guard();return data;
+      const data=await Promise.race([deadline,work()]);guard();ensureNotificationDeadline(signal,deadlineAt);return data;
     }catch(error){
       guard();
       if(error instanceof PrivateNotificationsError)throw error;
@@ -281,14 +302,12 @@ export class SupabasePrivateNotificationsService {
     const rows=raw as PrivateNotification[],seen=new Set<string>();
     for(let i=0;i<rows.length;i++){
       const row=rows[i];
-      if(!row||seen.has(row.id))throw new PrivateNotificationsError('INVALID_ACK');
-      seen.add(row.id);
+      if(!row||seen.has(row.id.toLowerCase()))throw new PrivateNotificationsError('INVALID_ACK');
+      seen.add(row.id.toLowerCase());
       const previous=i?rows[i-1]:null;
-      if(previous&&(Date.parse(row.created_at)>Date.parse(previous.created_at)||
-        (row.created_at===previous.created_at&&row.id>=previous.id)))
+      if(previous&&compareNoticeKey(row.created_at,row.id,previous.created_at,previous.id)>=0)
         throw new PrivateNotificationsError('INVALID_ACK');
-      if(cursor&&(Date.parse(row.created_at)>Date.parse(cursor.createdAt)||
-        (row.created_at===cursor.createdAt&&row.id>=cursor.id)))
+      if(cursor&&compareNoticeKey(row.created_at,row.id,cursor.createdAt,cursor.id)>=0)
         throw new PrivateNotificationsError('INVALID_ACK');
     }
     const items=rows.slice(0,limit);
