@@ -95,25 +95,55 @@ function validSharingState(value:unknown,owner:string,receipt=false):value is Pr
   if(value.version===M&&value.preferences!==null&&value.preferences.publicationRequested)return false;
   return !receipt||value.status==='APPLIED'||value.status==='REPLAYED'||value.status==='NO_CHANGE';
 }
-async function readSharingJson(response:Response):Promise<unknown>{
+// JSON.parse silently accepts repeated keys; reject ambiguous acknowledgement
+// fields even when differently escaped. Parse syntax first, then walk tokens.
+function parseUniqueSharingJson(raw:string):unknown {
+  const parsed:unknown=JSON.parse(raw);
+  const tokens=raw.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]/g)??[];
+  const stack:(Set<string>|null)[]=[];
+  for(let i=0;i<tokens.length;i++){
+    const token=tokens[i];
+    if(token==='{')stack.push(new Set<string>());
+    else if(token==='[')stack.push(null);
+    else if(token==='}'||token===']')stack.pop();
+    else if(token?.startsWith('"')&&tokens[i+1]===':'){
+      const keys=stack[stack.length-1];
+      const key=JSON.parse(token) as string;
+      if(!keys||keys.has(key))throw new Error('Duplicate response key');
+      keys.add(key);
+    }
+  }
+  return parsed;
+}
+async function readSharingJson(response:Response,signal:AbortSignal):Promise<unknown>{
   const reader=response.body?.getReader();
   if(!reader)throw new PrivateIdentityError('INVALID_ACK','Missing sharing response.');
   const decoder=new TextDecoder('utf-8',{fatal:true});
+  const cancel=()=>{void reader.cancel().catch(()=>{});};
+  signal.addEventListener('abort',cancel,{once:true});
   let bytes=0,raw='';
   try{
-    while(true){
+    const type=response.headers.get('content-type');
+    if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
+      throw new Error('Invalid response type');
+    for(;;){
+      if(signal.aborted)throw new Error('Request expired');
       const next=await reader.read();
+      if(signal.aborted)throw new Error('Request expired');
       if(next.done)break;
       bytes+=next.value.byteLength;
       if(bytes>16*1024)throw new Error('Response too large');
       raw+=decoder.decode(next.value,{stream:true});
     }
     raw+=decoder.decode();
-    return JSON.parse(raw) as unknown;
+    return parseUniqueSharingJson(raw);
   }catch{
-    void reader.cancel().catch(()=>{});
+    cancel();
     throw new PrivateIdentityError('INVALID_ACK','Sharing response could not be verified.');
-  }finally{reader.releaseLock();}
+  }finally{
+    signal.removeEventListener('abort',cancel);
+    reader.releaseLock();
+  }
 }
 
 export class PrivateIdentityError extends Error {
@@ -231,11 +261,17 @@ export class SupabasePrivateIdentityService {
         method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+token,'Content-Type':'application/json'},
         body:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal
       });
-      this.requireSharingOwner();
-      if(response.status===401||response.status===403)
-        throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+      try{
+        this.requireSharingOwner();
+        if(signal.aborted)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
+        if(response.status===401||response.status===403)
+          throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+      }catch(error){
+        void response.body?.cancel().catch(()=>{});
+        throw error;
+      }
       let raw:unknown;
-      try{raw=await readSharingJson(response);}
+      try{raw=await readSharingJson(response,signal);}
       catch(error){
         this.requireSharingOwner();
         if(!response.ok)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
