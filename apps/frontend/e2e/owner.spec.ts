@@ -4114,3 +4114,78 @@ test('B16 WF-012 uncertain paged match requires exact owner readback after closi
   expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug='r7-exact-uncertain-record';",owner.id)).toBe('1');
   expect(writes).toBe(1);
 });
+
+test('B16 R10 real committed recovery password lost acknowledgement is never retried or reported as verified',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable isolated GoTrue and local Mailpit only.');
+  test.setTimeout(90000);
+  if(process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal password recovery test.');
+  const owner=await localUser('R10 ambiguous password receipt');
+  const password='LocalR10Changed!'+randomUUID();
+  await page.goto('/forgot-password');
+  await page.getByRole('textbox',{name:'Email address'}).fill(owner.email);
+  await page.getByRole('button',{name:'Request recovery link',exact:false}).click();
+  await expect(page.getByRole('heading',{name:'Check your inbox'})).toBeVisible();
+  const mailpit='http://127.0.0.1:54324';
+  let messageId:string|undefined;
+  await expect.poll(async()=>{
+    const response=await fetch(mailpit+'/api/v1/messages?limit=100',{redirect:'error',signal:AbortSignal.timeout(10000)});
+    if(!response.ok)return false;
+    const inbox=await response.json() as {messages?:{ID:string;To?:{Address:string}[]}[]};
+    messageId=inbox.messages?.find(message=>message.To?.some(to=>to.Address===owner.email))?.ID;
+    return !!messageId;
+  },{timeout:15000}).toBe(true);
+  const mail=await fetch(mailpit+'/api/v1/message/'+encodeURIComponent(messageId!),{redirect:'error',signal:AbortSignal.timeout(10000)});
+  if(!mail.ok)throw Error('Local recovery message unavailable.');
+  const message=await mail.json() as {Text?:string;HTML?:string};
+  const links=((message.Text??'')+'\n'+(message.HTML??'')).match(/https?:\/\/[^\s"'<>]+/g)??[];
+  const verification=links.map(link=>URL.parse(link.replaceAll('&amp;','&').replace(/[).,;]+$/,'')))
+    .find(link=>link?.origin===origin&&link.pathname==='/auth/v1/verify'&&link.searchParams.get('type')==='recovery'&&link.searchParams.has('token'));
+  if(!verification)throw Error('No local recovery verification link.');
+  const redeemed=await fetch(verification,{redirect:'manual',signal:AbortSignal.timeout(10000)});
+  const redirect=URL.parse(redeemed.headers.get('location')??'');
+  if(![302,303].includes(redeemed.status)||redirect?.origin!=='http://127.0.0.1:5173'||redirect.pathname!=='/reset-password'||
+    !new URLSearchParams(redirect.hash.slice(1)).has('access_token'))throw Error('Local recovery redirect unavailable.');
+  await page.evaluate(hash=>window.location.assign('/reset-password'+hash),redirect.hash);
+  await expect(page.getByRole('heading',{name:'Choose a new password.'})).toBeVisible();
+  expect(new URL(page.url()).hash).toBe('');
+  let requests=0,committed=false;
+  await page.route(origin+'/auth/v1/user',async route=>{
+    if(route.request().method()!=='PUT')return route.continue();
+    requests++;
+    if(requests!==1)return route.abort('failed');
+    const response=await route.fetch();
+    try{const result=await response.json().catch(()=>null);committed=response.ok()&&result?.id===owner.id;
+      // Actual GoTrue commit is observed; only the acknowledgement is lost.
+      await route.abort('failed');
+    }finally{await response.dispose();}
+  });
+  await page.getByLabel('New password',{exact:true}).fill(password);
+  await page.getByLabel('Confirm new password',{exact:true}).fill(password);
+  await page.getByRole('button',{name:'Save new password',exact:false}).click();
+  await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('The password update could not be confirmed.');
+  expect(committed).toBe(true);
+  expect(requests).toBe(1);
+  await expect(page.getByRole('button',{name:'Save new password'})).toHaveCount(0);
+  await expect(page.getByRole('heading',{name:'Password updated'})).toHaveCount(0);
+  await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+  await page.goto('/reset-password');
+  await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save new password'})).toHaveCount(0);
+  expect(requests).toBe(1);
+  const fresh=await browser.newPage({baseURL:'http://127.0.0.1:5173'});
+  try{
+    await fresh.goto('/signin');
+    await fresh.getByLabel('Email address').fill(owner.email);
+    await fresh.locator('#signin-password').fill(owner.password);
+    await fresh.getByRole('button',{name:'Sign in',exact:true}).click();
+    await expect(fresh.getByRole('alert')).toContainText('Incorrect credentials or sign-in unavailable.');
+    await signIn(fresh,{email:owner.email,password});
+    await fresh.getByRole('link',{name:'Open private workspace'}).click();
+    await expect(fresh.locator('.ws-shell')).toBeVisible();
+  }finally{await fresh.close();}
+  const replay=await fetch(verification,{redirect:'manual',signal:AbortSignal.timeout(10000)});
+  const replayTarget=URL.parse(replay.headers.get('location')??'');
+  expect(replay.status>=400||([302,303].includes(replay.status)&&!!replayTarget&&!new URLSearchParams(replayTarget.hash.slice(1)).has('access_token'))).toBe(true);
+  expect(requests).toBe(1);
+});
