@@ -11,12 +11,17 @@ type VerificationOperation = 'service_acknowledge_unlisted_release' |
 type PublicationOperation = VerificationOperation | 'service_prepare_unlisted_release' |
   'service_probe_unlisted_release' | 'service_activate_unlisted_release';
 
+type PublicAuthorityOperation = 'service_read_current_public_delivery_receipt' |
+  'service_acknowledge_public_delivery' | 'service_recover_failed_public_delivery';
+export type PublicAuthorityRpc = (operation:PublicAuthorityOperation,input:Record<string,unknown>)=>Promise<unknown>;
 type VerificationPorts = {
   origin: string;
   rpc: (operation: VerificationOperation, input: Record<string, string>) => Promise<unknown>;
   http?: typeof fetch;
   /** Production server requires independent canonical and public API samples. */
   requirePublicAliasProof?: boolean;
+  /** Trusted-only paired SQL authority. Do not supply until migration, ACL and legacy PUBLIC cutover are verified. */
+  publicAuthority?: PublicAuthorityRpc;
 };
 
 type Activation = {
@@ -39,7 +44,8 @@ type DeliverySample = {
 };
 export type DeliveryVerification =
   | {status: 'DELIVERY_ACKNOWLEDGED'; htmlSha256: string;
-      observedPublicDelivery?: PublicDeliveryObservation}
+      observedPublicDelivery?: PublicDeliveryObservation;
+      authoritativePublicReceipt?: AuthorityReceipt}
   | {status: 'DELIVERY_REVOKED'}
   | {status: 'PRIOR_RELEASE_RESTORED'; releaseGeneration: number};
 
@@ -310,7 +316,7 @@ async function digestHtml(indexable:boolean,route:URL,
 /** Trusted worker only. The configured origin must come from server configuration. */
 export async function verifyActivatedUnlistedRelease(
   activation: Activation,
-  {origin, rpc, http = fetch, requirePublicAliasProof=false}: VerificationPorts,
+  {origin, rpc, http = fetch, requirePublicAliasProof=false,publicAuthority}: VerificationPorts,
   policy: 'RECOVER_UNVERIFIED_ACTIVATION' | 'CHECK_ACKNOWLEDGED_ONLY' = 'RECOVER_UNVERIFIED_ACTIVATION'
 ): Promise<DeliveryVerification> {
   const {portfolioId, intentId, htmlSha256, publicPath} = activation;
@@ -326,6 +332,28 @@ export async function verifyActivatedUnlistedRelease(
   }
   const route = new URL(publicPath ?? '/api/unlisted', host);
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
+  if(publicPath!==undefined&&publicAuthority!==undefined){
+    const releaseGeneration=activation.releaseGeneration;
+    if(typeof releaseGeneration!=='number'||!Number.isSafeInteger(releaseGeneration)||releaseGeneration<1)
+      throw new Error('Invalid authoritative release generation.');
+    // An explicit server authority port is a hard cutover: never fall back to
+    // the legacy acknowledgement or recovery functions on missing/failed RPCs.
+    const result=await verifyAuthority({portfolioId,intentId,releaseGeneration,publicPath,htmlSha256},{
+      read:(p,i)=>publicAuthority('service_read_current_public_delivery_receipt',{p_portfolio_id:p,p_intent_id:i}),
+      ack:expected=>publicAuthority('service_acknowledge_public_delivery',{p_expected_receipt:expected}),
+      recover:expected=>publicAuthority('service_recover_failed_public_delivery',{p_expected_receipt:expected}),
+      validRoute:validPortfolioRoute,
+      sample:(_path,sha,indexable)=>digestHtml(indexable,route,host,http,sha,true)
+    },policy==='CHECK_ACKNOWLEDGED_ONLY');
+    if(result.status!=='DELIVERY_ACKNOWLEDGED')return result;
+    const {sample,receipt}=result;
+    if(!sample.apiPath)throw new Error('Incomplete authoritative public alias observation.');
+    return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256,authoritativePublicReceipt:receipt,
+      observedPublicDelivery:{portfolioId,intentId,preparedReleaseGeneration:releaseGeneration,
+        canonicalPath:publicPath,apiPath:sample.apiPath,servedHtmlSha256:sample.servedHtmlSha256,
+        observedMediaManifest:sample.mediaManifest,observedAssetHashes:sample.assetHashes,
+        observedHttpRequests:sample.observedHttpRequests}};
+  }
   const strictPublic=requirePublicAliasProof&&publicPath!==undefined;
   if(strictPublic&&(typeof activation.releaseGeneration!=='number'||
       !Number.isSafeInteger(activation.releaseGeneration)||activation.releaseGeneration<1))
@@ -469,4 +497,65 @@ export async function publishConsentedUnlistedRelease(
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** C11 server-side authority consumer; production wiring requires the paired SQL cutover. */
+const SHA=SHA256;
+const MAX=Number.MAX_SAFE_INTEGER;
+const keys=['portfolioId','intentId','requestId','operationId','releaseGeneration','stageGeneration','pointerGeneration','revocationGeneration','deliveryEpoch','visibility','handle','slug','storedHtmlSha256','mediaManifest','assetHashes','verifiedAt'] as const;
+export type AuthorityReceipt={portfolioId:string;intentId:string;requestId:string;operationId:string;releaseGeneration:number;stageGeneration:number;pointerGeneration:number;revocationGeneration:number;deliveryEpoch:number;visibility:'PUBLIC';handle:string;slug:string;storedHtmlSha256:string;mediaManifest:string|null;assetHashes:readonly string[];verifiedAt:string|null};
+export type AuthorityIdentity={portfolioId:string;intentId:string;releaseGeneration:number;publicPath:string;htmlSha256:string};
+export type AuthoritySample={htmlSha256:string;servedHtmlSha256:string;apiPath:string|null;mediaManifest:string|null;assetHashes:readonly string[];observedHttpRequests:number};
+export type AuthorityPorts={read:(portfolioId:string,intentId:string)=>Promise<unknown>;ack:(expected:AuthorityReceipt)=>Promise<unknown>;recover:(expected:AuthorityReceipt)=>Promise<unknown>;sample:(path:string,sha:string,indexable:boolean)=>Promise<AuthoritySample|null>;validRoute:(handle:string,slug:string)=>boolean};
+function fail():never{throw Error('Authoritative public delivery was not verified.');}
+const obj=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
+const uuid=(x:unknown):x is string=>typeof x==='string'&&x===x.toLowerCase()&&UUID.test(x);
+const digest=(x:unknown):x is string=>typeof x==='string'&&SHA.test(x);
+const gen=(x:unknown,min=1):x is number=>typeof x==='number'&&Number.isSafeInteger(x)&&x>=min;
+function exact(x:Record<string,unknown>,wanted:readonly string[]):boolean{return Object.keys(x).length===wanted.length&&wanted.every(k=>Object.hasOwn(x,k));}
+const ts=(x:unknown):x is string=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(x)&&Number.isFinite(Date.parse(x));
+export function parseAuthority(raw:unknown,expected:AuthorityIdentity,validRoute:AuthorityPorts['validRoute']):AuthorityReceipt{
+  if(!obj(raw)||!exact(raw,keys)||!uuid(raw.portfolioId)||!uuid(raw.intentId)||!uuid(raw.requestId)||!uuid(raw.operationId)||raw.visibility!=='PUBLIC'||
+     raw.portfolioId!==expected.portfolioId||raw.intentId!==expected.intentId||raw.releaseGeneration!==expected.releaseGeneration||raw.storedHtmlSha256!==expected.htmlSha256||
+     !gen(raw.releaseGeneration)||!gen(raw.stageGeneration)||!gen(raw.pointerGeneration)||!gen(raw.revocationGeneration,0)||!gen(raw.deliveryEpoch)||raw.deliveryEpoch>=MAX||
+     raw.stageGeneration>raw.releaseGeneration||raw.releaseGeneration>raw.pointerGeneration||raw.stageGeneration<=raw.revocationGeneration||
+     typeof raw.handle!=='string'||typeof raw.slug!=='string'||!validRoute(raw.handle,raw.slug)||'/'+raw.handle+'/'+raw.slug!==expected.publicPath||!digest(raw.storedHtmlSha256)||
+     !Array.isArray(raw.assetHashes)||raw.assetHashes.length>8||!raw.assetHashes.every(digest)||new Set(raw.assetHashes).size!==raw.assetHashes.length||
+     (raw.assetHashes.length===0?raw.mediaManifest!==null:!digest(raw.mediaManifest))||(raw.verifiedAt!==null&&!ts(raw.verifiedAt)))fail();
+  return Object.freeze({...raw,assetHashes:Object.freeze([...raw.assetHashes])}) as AuthorityReceipt;
+}
+function same(a:AuthorityReceipt,b:AuthorityReceipt):boolean{return keys.every(k=>k==='assetHashes'?a.assetHashes.length===b.assetHashes.length&&a.assetHashes.every((sha,i)=>sha===b.assetHashes[i]):a[k]===b[k]);}
+function sampleMatches(s:AuthoritySample|null,a:AuthorityReceipt):s is AuthoritySample{
+  if(!s)return false;
+  const alias='/api/public-portfolio?'+new URLSearchParams({handle:a.handle,slug:a.slug});
+  return s.htmlSha256===a.storedHtmlSha256&&digest(s.servedHtmlSha256)&&s.apiPath===alias&&s.mediaManifest===a.mediaManifest&&
+    Array.isArray(s.assetHashes)&&s.assetHashes.length===a.assetHashes.length&&new Set(s.assetHashes).size===s.assetHashes.length&&s.assetHashes.every(sha=>a.assetHashes.includes(sha))&&s.observedHttpRequests===4+2*a.assetHashes.length;
+}
+export async function verifyAuthority(expected:AuthorityIdentity,ports:AuthorityPorts,checkOnly=false){
+  const read=async()=>parseAuthority(await ports.read(expected.portfolioId,expected.intentId),expected,ports.validRoute);
+  const first=await read();
+  const acknowledged=first.verifiedAt!==null;
+  if(checkOnly&&!acknowledged)fail();
+  const probe=async(indexable:boolean)=>{try{return await ports.sample(expected.publicPath,expected.htmlSha256,indexable);}catch{return null;}};
+  const sampled=await probe(acknowledged);
+  // An authority failure is never a compensating-write trigger.
+  const after=await read();
+  if(!same(first,after))fail();
+  if(!sampleMatches(sampled,first)){
+    if(acknowledged||checkOnly)fail();
+    const raw=await ports.recover(first);
+    if(!obj(raw)||!exact(raw,['portfolioId','status','releaseGeneration','deliveryEpoch','hostRevocationVerified','publicUrl'])||raw.portfolioId!==first.portfolioId||!gen(raw.deliveryEpoch)||raw.deliveryEpoch<=first.deliveryEpoch||raw.hostRevocationVerified!==false||raw.publicUrl!==null)fail();
+    if(raw.status==='REVOKED'&&raw.releaseGeneration===null)return {status:'DELIVERY_REVOKED' as const};
+    if(raw.status==='RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION'&&raw.deliveryEpoch<MAX&&gen(raw.releaseGeneration))return {status:'PRIOR_RELEASE_RESTORED' as const,releaseGeneration:raw.releaseGeneration};
+    return fail();
+  }
+  if(acknowledged)return {status:'DELIVERY_ACKNOWLEDGED' as const,receipt:first,sample:sampled};
+  if(first.deliveryEpoch>=MAX-1)fail();
+  // A lost ACK is an unknown result: propagate, never recover or retry here.
+  const ack= parseAuthority(await ports.ack(first),expected,ports.validRoute);
+  if(ack.verifiedAt===null||ack.deliveryEpoch!==first.deliveryEpoch+1||!same(first,{...ack,deliveryEpoch:first.deliveryEpoch,verifiedAt:null}))fail();
+  const finalSample=await probe(true);
+  const finalReceipt=await read();
+  if(!same(ack,finalReceipt)||!sampleMatches(finalSample,ack))fail();
+  return {status:'DELIVERY_ACKNOWLEDGED' as const,receipt:finalReceipt,sample:finalSample};
 }
