@@ -288,6 +288,10 @@ function notificationDestination(item: PrivateNotification): string {
   return '/app/portfolios';
 }
 
+function optionalPreferenceBlocked(busy:boolean,reading:boolean,stale:boolean,retrying:boolean,version:number|undefined):boolean {
+  return busy||reading||stale||retrying||version===undefined||version===Number.MAX_SAFE_INTEGER;
+}
+
 function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Services['notifications']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const mounted=useRef(false);
@@ -379,12 +383,13 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const effective=(state:NotificationPreferenceState|undefined):PreferenceInput=>
     state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
   const displayedPrefs=pendingPrefs??effective(prefs);
+  const controlsBlocked=optionalPreferenceBlocked(busy,preferencesLoading,preferencesStale,!!prefRetry,prefs?.version);
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
     preferencesReading.current=true;setPreferencesLoading(true);setPreferencesStale(true);setPrefRetry(null);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(busy||pendingAction.current||preferencesReading.current||preferencesStale||!prefs||prefRetry||prefs.version===Number.MAX_SAFE_INTEGER||!current())return;
+    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
     const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
     await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
   }
@@ -455,8 +460,9 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} disabled={busy||preferencesLoading||preferencesStale||!!prefRetry||prefs?.version===Number.MAX_SAFE_INTEGER}
-          onChange={event=>void savePreference(key,event.target.checked)}/> {label}
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={controlsBlocked}
+          onClick={event=>{if(controlsBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
+          onChange={event=>{if(!controlsBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
