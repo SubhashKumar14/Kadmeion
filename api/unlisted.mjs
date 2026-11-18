@@ -1,4 +1,4 @@
-import {cancelRpcBody, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
+import {cancelRpcBody, withDeliveryRpc, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 /**
  * Disabled-by-default UNLISTED scriptless text-only release HTTP candidate.
  * Business state remains in Supabase; this Vercel/Node adapter only serves
@@ -78,22 +78,21 @@ export async function handleUnlistedRequest(req,res,{env=process.env,http=global
   }
   let upstream;
   try{
-    upstream=await http(cfg.api+'/rest/v1/rpc/'+(media?'service_read_frozen_release_png':'service_read_unlisted_release'),{
+    upstream=await withDeliveryRpc(http,cfg.api+'/rest/v1/rpc/'+(media?'service_read_frozen_release_png':'service_read_unlisted_release'),{
       method:'POST',headers:{apikey:cfg.key,Authorization:'Bearer '+cfg.key,
         Accept:'application/json','Content-Type':'application/json',
         'Cache-Control':'no-store'},
       body:JSON.stringify({p_portfolio_id:id,...media}),
       credentials:'omit',cache:'no-store',redirect:'error',
-      signal:AbortSignal.timeout(5000)
+    },async response=>{
+      if(!response.ok){cancelRpcBody(response.body);return {ok:false,body:null};}
+      return {ok:true,body:media?await readFrozenPng(response,media.p_sha):await readBoundedRpcJson(response)};
     });
   }catch{reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
   if(!upstream.ok){
-    cancelRpcBody(upstream.body);
     reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
-  let raw;
-  try{raw=media?await readFrozenPng(upstream,media.p_sha):await readBoundedRpcJson(upstream);}
-  catch{reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
+  const raw=upstream.body;
   if(raw===null){reply(res,404,'Not found','text/plain; charset=utf-8',method);return;}
   if(media){
     reply(res,200,raw,'image/png',method);return;
