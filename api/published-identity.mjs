@@ -89,6 +89,19 @@ function render(projection, slug) {
     content + '</main></body></html>';
 }
 
+// Route grammar is evaluated on literal bytes, not a decoded or normalized URL.
+function parseIdentityRoute(raw) {
+  if (typeof raw !== 'string' || raw.length > 2048 ||
+      /[\x00-\x20\x7f\\#]/.test(raw)) return null;
+  const direct = /^\/u\/([^/?]+)(?:\/projects\/([^/?]+))?$/.exec(raw);
+  const alias = /^\/api\/published-identity\?handle=([^&]+)(?:&slug=([^&]+))?$/.exec(raw);
+  const reversed = /^\/api\/published-identity\?slug=([^&]+)&handle=([^&]+)$/.exec(raw);
+  const handle = direct?.[1] ?? alias?.[1] ?? reversed?.[2];
+  const slug = direct?.[2] ?? alias?.[2] ?? reversed?.[1] ?? null;
+  if (!handlePattern.test(handle ?? '') || (slug !== null && !slugPattern.test(slug))) return null;
+  return {handle, slug};
+}
+
 export async function handlePublishedIdentity(req, res, {env = process.env, http = fetch} = {}) {
   function reply(status, body) {
     res.statusCode = status;
@@ -104,6 +117,8 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', status===200 ? projectionCsp : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     res.setHeader('Content-Type', status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8');
+    // GET and HEAD attest the same representation; HEAD never sends its body.
+    res.setHeader('Content-Length', String(Buffer.byteLength(body, 'utf8')));
     res.end(req.method === 'HEAD' ? '' : body);
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -111,38 +126,13 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     return reply(405, 'Method not allowed');
   }
   if (env.KADMEION_PUBLIC_IDENTITY_ENABLED !== 'true') return reply(404, 'Not found');
-  let target;
+  const route = parseIdentityRoute(req.url);
+  // An invalid target is always unavailable, even during a configuration outage.
+  if (!route) return reply(404, 'Not found');
+  const {handle, slug} = route;
   let supabase;
-  // Keep this B-based patch standalone. Align the S9 shared
-  // parseDeliveryTarget helper when the two owned deltas are composed.
-  const raw = req.url;
-  if (typeof raw !== 'string' || raw.length > 2048 || !raw.startsWith('/') ||
-      raw.startsWith('//') || /[\x00-\x20\x7f\\#]/.test(raw)) return reply(404, 'Not found');
-  try {
-    target = new URL(raw, 'https://kadmeion.invalid');
-    if (target.origin !== 'https://kadmeion.invalid' || target.pathname !== raw.split('?')[0])
-      return reply(404, 'Not found');
-  } catch {
-    return reply(404, 'Not found');
-  }
   try { supabase = new URL(env.KADMEION_SUPABASE_URL); }
   catch { return reply(503, 'Temporarily unavailable'); }
-  const path = target.pathname.match(/^\/u\/([^/]+)(?:\/projects\/([^/]+))?$/);
-  const handle = path?.[1] ?? target.searchParams.get('handle');
-  const slug = path?.[2] ?? (path ? null : target.searchParams.get('slug'));
-  // Never accept a second, untrusted identity in the query string.
-  // Rewritten API URLs must carry exactly the named route parameters once.
-  // The allowed handle and slug alphabets are already URL-safe. Reject
-  // alternate encodings, empty separators, and query parameters on /u routes.
-  const alias = '/api/published-identity?handle=' + handle;
-  const uniqueRoute = path
-    ? !raw.includes('?')
-    : raw === (slug === null ? alias : alias + '&slug=' + slug) ||
-      (slug !== null && raw === '/api/published-identity?slug=' + slug + '&handle=' + handle);
-  if (!uniqueRoute || !handlePattern.test(handle ?? '') ||
-      (slug !== null && !slugPattern.test(slug))) {
-    return reply(404, 'Not found');
-  }
 
   const local = env.KADMEION_LOCAL_INTEGRATION === '1' &&
     ['http://127.0.0.1:54321', 'http://localhost:54321'].includes(supabase.origin);
