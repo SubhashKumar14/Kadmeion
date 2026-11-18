@@ -130,9 +130,11 @@ export class SupabasePrivateIdentityService {
   private readonly publishableKey: string;
   private readonly tokenSupplier: TokenSupplier;
   private readonly fetcher: typeof fetch;
+  private readonly sharingOwnerId: string|undefined;
+  private readonly isCurrentOwner: (()=>boolean)|undefined;
 
   constructor(baseUrl:string,publishableKey:string,tokenSupplier:TokenSupplier,fetcher:typeof fetch=fetch,
-    private readonly sharingOwnerId?:string,private readonly isCurrentOwner?:()=>boolean) {
+    sharingOwnerId?:string,isCurrentOwner?:()=>boolean) {
     const u=new URL(baseUrl);
     if ((u.protocol!=='https:' && !(u.protocol==='http:' &&
          ['localhost','127.0.0.1'].includes(u.hostname)))||
@@ -146,6 +148,8 @@ export class SupabasePrivateIdentityService {
     this.publishableKey=publishableKey;
     this.tokenSupplier=tokenSupplier;
     this.fetcher=fetcher;
+    this.sharingOwnerId=sharingOwnerId;
+    this.isCurrentOwner=isCurrentOwner;
   }
 
   private async request(path:string,method:string,body?:unknown,upsert=false):Promise<unknown> {
