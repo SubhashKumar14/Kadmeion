@@ -2506,7 +2506,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    * matching forward migration and real withdrawal-race acceptance. */
   async saveOwnerProjectDraft(projectId:string,baseRevision:number,input:PrivateProjectDraft,
     confirmProjectionWithdrawal:boolean,expectedEpoch:number):Promise<OwnerProjectDraftSaveOutcome>{
-    const fail=(code:OwnerProjectDraftSaveCode,message:string):never=>{throw new OwnerProjectDraftSaveError(code,message);};
+    const fail:(code:OwnerProjectDraftSaveCode,message:string)=>never=(code,message)=>{throw new OwnerProjectDraftSaveError(code,message);};
     const guard=()=>{if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
       fail('AUTH_CHANGED','Owner session changed while saving the private project.');};
     try{
