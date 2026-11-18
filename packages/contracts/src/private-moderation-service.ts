@@ -25,6 +25,28 @@ export interface OperatorPrivateHoldLiftReceipt {
   status:'RELEASED_PRIVATE';alreadyRecorded:boolean;
   publicServingEnabled:false;publicUrl:null;hostRevocationVerified:false;
 }
+export type AccountSharingAction='RESTRICT'|'UPHOLD'|'RESTORE';
+export type AccountSharingStatus='CLEAR'|'ACTIVE';
+export interface OperatorAccountSharingState {
+  caseId:string;ownerUserId:string;status:AccountSharingStatus;version:number;
+  currentCaseId:string|null;scope:'ACCOUNT_PUBLIC_SHARING';updatedAt:string|null;
+  allowedActions:AccountSharingAction[];
+}
+export interface AccountSharingIntent {
+  caseId:string;ownerUserId:string;action:AccountSharingAction;expectedVersion:number;
+  operationId:string;rationale:string;confirmation:string;
+}
+export interface AccountSharingReceipt {
+  caseId:string;ownerUserId:string;action:AccountSharingAction;status:AccountSharingStatus;
+  version:number;currentCaseId:string|null;scope:'ACCOUNT_PUBLIC_SHARING';alreadyRecorded:boolean;
+  applicationSharingRestricted:boolean;providerBanApplied:false;authAccessTerminated:false;
+  hostRevocationVerified:false;publicRepublished:false;
+}
+export const accountSharingConfirmations:Readonly<Record<AccountSharingAction,string>>=Object.freeze({
+  RESTRICT:'RESTRICT PUBLIC SHARING',
+  UPHOLD:'UPHOLD PUBLIC SHARING RESTRICTION',
+  RESTORE:'RESTORE PUBLIC SHARING'
+});
 export interface ModerationAppealReceipt {
   caseId: string;
   status: 'APPEAL_RECORDED';
@@ -65,7 +87,8 @@ export interface OwnerModerationEvent {
   id: string;
   case_id: string;
   actor_user_id: string | null;
-  event_type: 'OPENED' | 'OWNER_APPEAL' | 'OPERATOR_DECISION' | 'OPERATOR_HOLD_LIFT';
+  event_type: 'OPENED' | 'OWNER_APPEAL' | 'OPERATOR_DECISION' | 'OPERATOR_HOLD_LIFT' |
+    'ACCOUNT_SHARING_RESTRICTED' | 'ACCOUNT_SHARING_UPHELD' | 'ACCOUNT_SHARING_RESTORED';
   detail: string;
   created_at: string;
 }
@@ -93,7 +116,9 @@ function isPublicPortfolioPath(value:unknown):value is string {
   const [,handle,slug]=value.split('/');
   return !!handle && !!slug && !RESERVED_PUBLIC_HANDLES.has(handle)&&slug.length>=3&&slug.length<=64;
 }
-const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION','OPERATOR_HOLD_LIFT'] as const;
+const EVENTS = ['OPENED','OWNER_APPEAL','OPERATOR_DECISION','OPERATOR_HOLD_LIFT',
+  'ACCOUNT_SHARING_RESTRICTED','ACCOUNT_SHARING_UPHELD','ACCOUNT_SHARING_RESTORED'] as const;
+const SHARING_ACTIONS=['RESTRICT','UPHOLD','RESTORE'] as const;
 const isRecord = (value: unknown): value is Record<string,unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const isUUID = (value: unknown): value is string => typeof value === 'string' && UUID.test(value);
@@ -197,7 +222,7 @@ async function readModerationJson(response:Response,signal:AbortSignal):Promise<
   catch{throw new PrivateModerationError('INVALID_ACK','Malformed moderation response JSON.');}
 }
 
-/** Only private, role-checked case/audit APIs; no account or public-route enforcement. */
+/** Role-checked case APIs, including case-bound outward-sharing authority through C14 RPCs. */
 export class SupabasePrivateModerationService {
   private readonly origin: string;
   private readonly key: string;
@@ -250,7 +275,7 @@ export class SupabasePrivateModerationService {
       if (typeof message === 'string' &&
           ['INVALID_MODERATION_CASE','INVALID_APPEAL','INVALID_MODERATION_DECISION',
            'INVALID_MODERATION_LIMIT','INVALID_OPERATOR_BLOCK','INVALID_HOLD_LIFT',
-           'INVALID_ABUSE_REPORT_LIMIT','INVALID_ABUSE_REVIEW'].includes(message))
+           'INVALID_ABUSE_REPORT_LIMIT','INVALID_ABUSE_REVIEW','INVALID_ACCOUNT_SHARING_DECISION'].includes(message))
         throw new PrivateModerationError('VALIDATION','Moderation request rejected.');
       if (response.status === 409 || (typeof message === 'string' &&
           ['MODERATION_OPERATION_ID_REUSED','APPEAL_OPERATION_ID_REUSED',
@@ -259,12 +284,67 @@ export class SupabasePrivateModerationService {
            'MODERATION_CASE_NOT_OPEN','MODERATION_HOLD_STATE_CONFLICT',
            'MODERATION_CASE_NOT_RESOLVED','HOLD_CASE_SCOPE_MISMATCH',
            'HOLD_LIFT_OPERATION_REUSED','HOLD_LIFT_STATE_CHANGED',
-           'HOLD_LIFT_POINTER_CONFLICT','ABUSE_REPORT_ALREADY_REVIEWED'].includes(message)))
+           'HOLD_LIFT_POINTER_CONFLICT','ABUSE_REPORT_ALREADY_REVIEWED','ACCOUNT_SHARING_OPERATION_REUSED',
+           'ACCOUNT_SHARING_CONFLICT','ACCOUNT_SHARING_APPEAL_REQUIRED','ACCOUNT_SHARING_DECISION_REQUIRED',
+           'ACCOUNT_SHARING_WITHDRAWAL_UNCONFIRMED','ACCOUNT_SHARING_VERSION_EXHAUSTED'].includes(message)))
         throw new PrivateModerationError('CONFLICT','Operation ID or case state conflicts.');
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation operation was not acknowledged.');
     }
     return readModerationJson(response,signal);
   }
+  /** Exact SQL #117 case state; never infer operator permissions from role labels. */
+  async readAccountSharingRestriction(caseId:string,ownerUserId:string):Promise<OperatorAccountSharingState>{
+    const expectedCase=requireUUID(caseId).toLowerCase(),owner=requireUUID(ownerUserId).toLowerCase();
+    const raw=await this.request('rpc/operator_read_account_sharing_restriction',{p_case_id:expectedCase});
+    if(!isRecord(raw)||Object.keys(raw).sort().join(',')!=='allowedActions,caseId,currentCaseId,ownerUserId,scope,status,updatedAt,version'||
+      raw.caseId!==expectedCase||raw.ownerUserId!==owner||raw.scope!=='ACCOUNT_PUBLIC_SHARING'||
+      (raw.status!=='CLEAR'&&raw.status!=='ACTIVE')||typeof raw.version!=='number'||!Number.isSafeInteger(raw.version)||raw.version<0||
+      (raw.updatedAt!==null&&!isDate(raw.updatedAt))||
+      (raw.status==='CLEAR'?raw.currentCaseId!==null:(!isUUID(raw.currentCaseId)||raw.currentCaseId!==raw.currentCaseId.toLowerCase()||raw.version===0||raw.updatedAt===null))||
+      !Array.isArray(raw.allowedActions)||raw.allowedActions.length>2||
+      !raw.allowedActions.every(action=>isEnum(action,SHARING_ACTIONS))||new Set(raw.allowedActions).size!==raw.allowedActions.length)
+      throw new PrivateModerationError('INVALID_ACK','Account sharing case state was not verified.');
+    const allowed=raw.allowedActions as AccountSharingAction[];
+    if(allowed.some(action=>action==='RESTRICT'?
+      raw.status!=='CLEAR'||(raw.version as number)>=Number.MAX_SAFE_INTEGER-1:
+      raw.status!=='ACTIVE'||raw.currentCaseId!==expectedCase||
+      (raw.version as number)>=(action==='UPHOLD'?Number.MAX_SAFE_INTEGER-1:Number.MAX_SAFE_INTEGER)))
+      throw new PrivateModerationError('INVALID_ACK','Account sharing actions do not match the verified case.');
+    return {caseId:expectedCase,ownerUserId:owner,status:raw.status,version:raw.version,
+      currentCaseId:raw.currentCaseId as string|null,scope:'ACCOUNT_PUBLIC_SHARING',
+      updatedAt:raw.updatedAt as string|null,allowedActions:[...allowed]};
+  }
+
+  /** Immutable exact operation, with optimistic version and explicit confirmation.
+   * On ambiguous delivery callers may retry only this identical tuple. */
+  async changeAccountSharingRestriction(input:AccountSharingIntent):Promise<AccountSharingReceipt>{
+    const caseId=requireUUID(input.caseId).toLowerCase(),owner=requireUUID(input.ownerUserId).toLowerCase();
+    const operation=requireUUID(input.operationId).toLowerCase(),action=input.action,version=input.expectedVersion;
+    if(!isEnum(action,SHARING_ACTIONS)||!Number.isSafeInteger(version)||version<0||
+      version>=(action==='RESTORE'?Number.MAX_SAFE_INTEGER:Number.MAX_SAFE_INTEGER-1)||
+      input.confirmation!==accountSharingConfirmations[action])
+      throw new ContractError('VALIDATION','Invalid account sharing decision.');
+    const rationale=boundedText(input.rationale,20,500);
+    if(encoder.encode(rationale).byteLength>2000)
+      throw new ContractError('VALIDATION','Account sharing rationale exceeds byte limit.');
+    const raw=await this.request('rpc/operator_change_account_sharing_restriction',{
+      p_case_id:caseId,p_action:action,p_expected_version:version,p_operation_id:operation,
+      p_rationale:rationale,p_confirmation:input.confirmation
+    });
+    const status=action==='RESTORE'?'CLEAR':'ACTIVE',currentCaseId=status==='ACTIVE'?caseId:null;
+    if(!isRecord(raw)||Object.keys(raw).sort().join(',')!=='action,alreadyRecorded,applicationSharingRestricted,authAccessTerminated,caseId,currentCaseId,hostRevocationVerified,ownerUserId,providerBanApplied,publicRepublished,scope,status,version'||
+      raw.caseId!==caseId||raw.ownerUserId!==owner||raw.action!==action||raw.status!==status||
+      raw.version!==version+1||raw.currentCaseId!==currentCaseId||raw.scope!=='ACCOUNT_PUBLIC_SHARING'||
+      typeof raw.alreadyRecorded!=='boolean'||raw.applicationSharingRestricted!==(status==='ACTIVE')||
+      raw.providerBanApplied!==false||raw.authAccessTerminated!==false||raw.hostRevocationVerified!==false||
+      raw.publicRepublished!==false)
+      throw new PrivateModerationError('INVALID_ACK','Account sharing decision was not verified.');
+    return {caseId,ownerUserId:owner,action,status,version:version+1,currentCaseId,
+      scope:'ACCOUNT_PUBLIC_SHARING',alreadyRecorded:raw.alreadyRecorded,
+      applicationSharingRestricted:status==='ACTIVE',providerBanApplied:false,authAccessTerminated:false,
+      hostRevocationVerified:false,publicRepublished:false};
+  }
+
   async openCase(targetUserId: string, operationId: string, reason: ModerationReason,
       summary: string): Promise<ModerationCaseReceipt> {
     requireUUID(targetUserId); requireUUID(operationId);
@@ -408,24 +488,71 @@ export class SupabasePrivateModerationService {
   }
   async listOwnerCases(): Promise<OwnerModerationCase[]> {
     const raw = await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at&order=created_at.desc&limit=50');
-    if (!Array.isArray(raw) || raw.length > 50)
+    return this.ownerCaseRows(raw,50);
+  }
+  /** Bounded owner-only keyset page over existing RLS-protected records.
+   * UUID ordering is stable across identical timestamps; never infer that a
+   * short page includes cases written after the read. */
+  async listOwnerCasePage(after:string|null=null,max=25):Promise<OwnerModerationCase[]>{
+    if(after!==null)requireUUID(after);
+    if(!Number.isSafeInteger(max)||max<1||max>50)
+      throw new ContractError('VALIDATION','Invalid owner case page size.');
+    const cursor=after?.toLowerCase()??null;
+    const raw=await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at'+
+      (cursor===null?'':'&id=gt.'+cursor)+'&order=id.asc&limit='+max);
+    const rows=this.ownerCaseRows(raw,max);
+    let previous=cursor;
+    for(const row of rows){
+      const id=row.id.toLowerCase();
+      if(previous!==null&&id<=previous)
+        throw new PrivateModerationError('INVALID_ACK','Invalid owner case cursor ordering.');
+      previous=id;
+    }
+    return rows;
+  }
+  /** Resolve a case referenced by an in-app moderation notice. RLS returns
+   * the same empty result for a missing case and a different owner's case. */
+  async readOwnerCase(caseId:string):Promise<OwnerModerationCase|null>{
+    const id=requireUUID(caseId).toLowerCase();
+    const raw=await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at&id=eq.'+id+'&limit=1');
+    const rows=this.ownerCaseRows(raw,1);
+    const row=rows[0];
+    if(!row)return null;
+    if(row.id.toLowerCase()!==id)
+      throw new PrivateModerationError('INVALID_ACK','Case response did not match the requested case.');
+    return row;
+  }
+  private ownerCaseRows(raw:unknown,max:number):OwnerModerationCase[]{
+    if (!Array.isArray(raw) || raw.length > max)
       throw new PrivateModerationError('INVALID_ACK','Invalid private case list.');
+    const seen=new Set<string>();
     return raw.map((entry: unknown): OwnerModerationCase => {
       if (!isRecord(entry) || !isUUID(entry.id) || !isEnum(entry.reason_code,REASONS) ||
           !isEnum(entry.status,STATUSES) || !isDate(entry.created_at) ||
           !isDate(entry.updated_at) || typeof entry.summary !== 'string' ||
           entry.summary.length > 500 || entry.summary.trim().length < 20)
         throw new PrivateModerationError('INVALID_ACK','Invalid private case metadata.');
+      const key=entry.id.toLowerCase();
+      if(seen.has(key))throw new PrivateModerationError('INVALID_ACK','Duplicate private case metadata.');
+      seen.add(key);
       return {id:entry.id,reason_code:entry.reason_code,summary:entry.summary,
         status:entry.status,created_at:entry.created_at,updated_at:entry.updated_at};
     });
   }
-  async listOwnerEvents(): Promise<OwnerModerationEvent[]> {
-    const raw = await this.request('private_moderation_events?select=id,case_id,actor_user_id,event_type,detail,created_at&order=created_at.desc&limit=100');
+  async listOwnerEvents(caseId?:string): Promise<OwnerModerationEvent[]> {
+    // The existing owner-role/RLS read remains authoritative. A selected case
+    // receives its own bounded event history instead of filtering a global
+    // 100-event page that may contain no events for older cases.
+    if(caseId!==undefined)requireUUID(caseId);
+    const query='private_moderation_events?select=id,case_id,actor_user_id,event_type,detail,created_at'+
+      (caseId===undefined?'&order=created_at.desc':'&case_id=eq.'+caseId+'&order=created_at.desc,id.desc')+
+      '&limit=100';
+    const raw = await this.request(query);
     if (!Array.isArray(raw) || raw.length > 100)
       throw new PrivateModerationError('INVALID_ACK','Invalid private event list.');
     return raw.map((entry: unknown): OwnerModerationEvent => {
       if (!isRecord(entry) || !isUUID(entry.id) || !isUUID(entry.case_id) ||
+          (caseId!==undefined && entry.case_id!==caseId) ||
           (entry.actor_user_id !== null && !isUUID(entry.actor_user_id)) ||
           !isEnum(entry.event_type,EVENTS) || !isDate(entry.created_at) ||
           typeof entry.detail !== 'string' || entry.detail.length > 2000 ||
