@@ -279,4 +279,50 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
     assert.equal(detached.revision,2);assert.equal(detached.asset,null);
     wantDenied(await rpc('set_private_profile_avatar',change),'40001');
     assert.deepEqual(success(await rpc('read_owner_private_asset_pin',pin),'Detach preserves private bytes'),pinned);
+
+    // Race a second real pending avatar upload against recovery. The first
+    // object is still immutable; matching its digest alone cannot certify a
+    // changing owner inventory. No provider response is mocked.
+    let pending=null;
+    let racingReads=0;
+    const racingTransport=async(url,init)=>{
+      const dest=new URL(String(url));assert.equal(dest.origin,api.origin);
+      if(dest.pathname.includes('/storage/v1/object/authenticated/')){
+        racingReads++;
+        if(pending===null){
+          pending=success(await rpc('reserve_private_profile_asset',{
+            ...reserve,p_operation_id:randomUUID(),p_alt_text:'Concurrent pending avatar'
+          }),'Reserve during recovery');
+          assert.equal(pending.state,'PENDING_UPLOAD');
+          success(await upload(pending.objectPath),'Upload pending bytes during recovery');
+        }
+      }
+      return fetch(url,init);
+    };
+    const racingExporter=new SupabasePrivateAccountDataExporter(api.origin,anon,async()=>owner.token,racingTransport);
+    await assert.rejects(racingExporter.exportV2(snapshot.snapshotId,null),{code:'UNVERIFIED'});
+    assert.equal(racingReads,1,'Recovery must reject an actual inventory race after the first asset read');
+    assert.ok(pending);
+    const drift=success(await rpc('reconcile_private_account_exit_storage_v2',scope),'Read actual inventory drift');
+    assert.equal(drift.status,'DISCREPANCY');assert.equal(drift.inventoryDrift,true);
+    assert.equal(drift.profileRegistered,1);assert.equal(drift.profilePending,1);
+    assert.equal(drift.profilePendingWithBytes,1);assert.equal(drift.storageObjects,2);
+    assert.equal(drift.downloadableExportReady,false);assert.equal(drift.deletionAllowed,false);
+    const withheld=success(await rpc('read_private_asset_content_attestations_v2',scope),'Withhold incomplete inventory pins');
+    assert.equal(withheld.status,'UNVERIFIED');assert.equal(withheld.attestedAssets,0);
+    assert.deepEqual(withheld.attestations,[]);assert.equal(withheld.deletionAllowed,false);
+    const fresh=success(await rpc('create_private_account_exit_inventory_v2',{
+      p_operation_id:randomUUID(),p_request_id:null
+    }),'Recapture changing inventory');
+    const freshScope={p_snapshot_id:fresh.snapshotId,p_expected_request_id:null};
+    const stillPending=success(await rpc('reconcile_private_account_exit_storage_v2',freshScope),'Fresh inventory still contains pending bytes');
+    assert.equal(stillPending.inventoryDrift,false);assert.equal(stillPending.status,'DISCREPANCY');
+    assert.equal(stillPending.profilePendingWithBytes,1);
+    const start=requests.length;
+    await assert.rejects(exporter.exportV2(fresh.snapshotId,null),{code:'UNVERIFIED'});
+    assert.ok(!requests.slice(start).some(p=>p.includes('/storage/v1/object/')),
+      'Recapturing an inventory must not make an unfinished upload exportable');
+    const pendingRead=storage.replace('/object/','/object/authenticated/')+pending.objectPath;
+    wantDenied(await call(pendingRead,{method:'GET',token:foreign.token}));
+    wantDenied(await call(storage.replace('/object/','/object/public/')+pending.objectPath,{method:'GET'}));
   });
