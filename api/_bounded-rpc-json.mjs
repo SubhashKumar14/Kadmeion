@@ -23,8 +23,9 @@ export function parseDeliveryTarget(raw) {
  * Transport JSON can be roughly twice the served HTML size when quotes and
  * backslashes are escaped. The HTML envelope retains its own 750 KB cap.
  */
-export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
+export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024, signal) {
   let reader, timer, finished=false, expired=false;
+  const abortRead = () => { expired=true; cancelRpcBody(reader ?? response?.body); };
   try {
     if(!Number.isSafeInteger(limit)||limit<1||limit>5_350_000)throw Error('Invalid RPC limit');
     const type=response?.headers?.get('content-type');
@@ -35,6 +36,8 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
       throw Error('RPC length limit');
     if(!response.body?.getReader)throw Error('Missing RPC body');
     reader=response.body.getReader();
+    if (signal?.aborted) throw Error('RPC read aborted');
+    signal?.addEventListener('abort', abortRead, {once:true});
     const chunks=[];
     let size=0, count=0;
     const drain=async()=>{
@@ -68,6 +71,7 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
     return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abortRead);
     if(!finished)cancelRpcBody(reader??response?.body);
     try{reader?.releaseLock();}catch{}
   }
