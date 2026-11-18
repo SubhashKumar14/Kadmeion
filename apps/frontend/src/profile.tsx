@@ -133,7 +133,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       // Keep the current saved baseline, draft and unadded skill on failure.
     };
     if(!current())return;
-    void port.readOwnerProfile().then(({data, error}) => {
+    void port.readOwnerProfile(profileEpoch.current).then(({data, error}) => {
       if (!current()) return;
       if (!data || error) { failRead(error?.message ?? 'Private profile is unavailable.'); return; }
       setSaved(data);
@@ -217,7 +217,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     try{
       // SQL rejects a public-field write with a live projection unless an
       // explicit manual confirmation is passed. Autosave always sends false.
-      const result=await port.saveOwnerProfile(expected,desired,mode==='manual'&&withdrawal);
+      const result=await port.saveOwnerProfile(expected,desired,mode==='manual'&&withdrawal,profileEpoch.current);
       if(!current())return;
       if(result.error||!result.data){
         const message=result.error?.message??'Profile save could not be confirmed.';
@@ -252,7 +252,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     operationPending.current=true;setCheckingLatest(true);setLatestProfile(null);setConfirmRebase(false);setNotice('');
     const lifetime=profileLifetime.current,current=()=>lifetime===profileLifetime.current&&validEpoch();
     try{
-      const result=await port.readOwnerProfile();
+      const result=await port.readOwnerProfile(profileEpoch.current);
       if(!current())return;
       if(result.error||!result.data){
         setError('Latest private profile could not be verified. Your unsaved draft is retained.');return;

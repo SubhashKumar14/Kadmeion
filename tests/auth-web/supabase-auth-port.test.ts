@@ -1330,6 +1330,17 @@ test('C06 owner link save submits exact expected/desired and refuses stale or fo
     assert.equal(calls,1);
   }
 });
+test('profile draft read and save reject an obsolete initiating owner epoch before private requests',async()=>{
+  let requests=0;
+  const {port,epoch}=await c01Port(async()=>{requests++;return json({});});
+  const draft={displayName:'Private owner',headline:'Draft',bio:'Private',skills:['Java']};
+  const read=await port.readOwnerProfile(epoch+1);
+  const save=await port.saveOwnerProfile(draft,draft,false,epoch+1);
+  assert.equal(read.data,null);assert.ok(read.error);
+  assert.equal(save.data,null);assert.ok(save.error);
+  assert.equal(requests,0);
+});
+
 test('C06 owner link read rejects cross-owner result, extra evidence claims and noncanonical link records',async()=>{
   const desired=[{label:'Work',url:'https://example.com/work'}];
   for(const variant of ['valid','foreign','extra','noncanonical'] as const){

@@ -2341,7 +2341,12 @@ test('B16 private folder journal and portable JSON compare restore, undo and sav
   const portable=page.locator('details.ws-editor-safety').filter({has:page.getByText('Private project JSON import & export',{exact:true})});
   const expand=async(panel:typeof folder)=>{await expect(panel).toBeVisible();if(await panel.getAttribute('open')===null)await panel.locator('summary').click();};
   const confirm=async(button:ReturnType<typeof folder.getByRole>,accept=true)=>{
-    page.once('dialog',dialog=>accept?dialog.accept():dialog.dismiss());await button.click();
+    // Observe and finish this specific dialog before another action can
+    // install a handler. A missing confirmation must fail this action.
+    await Promise.all([
+      page.waitForEvent('dialog',{timeout:10_000}).then(dialog=>accept?dialog.accept():dialog.dismiss()),
+      button.click()
+    ]);
   };
   await expand(folder);await expand(portable);
   await field.fill('Unapplied test buffer');
@@ -2411,6 +2416,60 @@ test('B16 private folder journal and portable JSON compare restore, undo and sav
   await expect(revision).toContainText('revision '+(base+2)+' · Saved privately');
 });
 
+test('B16 C10 mounted layout mapping preserves assignments through one Undo, save and source export',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await localUser('C10 mounted layout owner');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('C10 layout preservation fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'C10 layout preservation fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:/arc hero title/i}).click();
+  await page.getByLabel('Text content').fill('C10 preserved title');
+  await page.getByRole('button',{name:'Apply text',exact:true}).click();
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Components',exact:true}).click();
+  const layout=page.getByRole('region',{name:'Change section layout',exact:true});
+  await layout.getByLabel('Target layout').selectOption('stepped-hero@1');
+  // Every filled source receives an explicit decision, including full stashes.
+  const fields=layout.locator('label').filter({hasText:'Destination for '});
+  const count=await fields.count();expect(count).toBe(5);
+  for(let index=0;index<count;index++){
+    const field=fields.nth(index),label=await field.innerText();
+    const select=field.locator('select');
+    if(label.startsWith('Destination for arc-hero-title'))await select.selectOption('arc-hero-title');
+    else if(label.startsWith('Destination for arc-hero-cta1'))await select.selectOption('arc-hero-cta');
+    else await select.selectOption({label:'Unplaced — stash complete assignment'});
+  }
+  await layout.getByRole('button',{name:'Review layout impact',exact:true}).click();
+  const confirmation=layout.getByRole('region',{name:'Layout change confirmation'});
+  await expect(confirmation.getByRole('heading',{name:'Confirm layout transformation'})).toBeFocused();
+  await expect(confirmation.getByRole('button',{name:'Confirm layout change'})).toBeDisabled();
+  await confirmation.getByRole('checkbox',{name:'Confirm preservation of outgoing assignments in Unplaced'}).check();
+  await confirmation.getByRole('button',{name:'Confirm layout change'}).click();
+  await expect(layout.getByText(/Current: L5 · stepped hero\./)).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(layout.getByLabel('Target layout').getByRole('option',{name:/stepped hero/})).toHaveCount(1);
+  await expect(layout.getByText(/Current: L1 · arc hero\./)).toBeVisible();
+  await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await expect(layout.getByText(/Current: L5 · stepped hero\./)).toBeVisible();
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const path=await download.path();if(!path)throw new Error('Private source export absent.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(path)));
+  expect(JSON.parse(snapshot.files['pages/home.page.json']).sections[0].layout).toBe('stepped-hero@1');
+  expect(snapshot.slots['arc-hero-title'].content.title).toBe('C10 preserved title');
+  expect(snapshot.stashes['arc-hero-text']?.length).toBeGreaterThan(0);
+  expect(snapshot.slots['arc-hero-cta']?.componentId).toBe('external-link@1');
+});
+
 test('B16 verified owner and workspace glyph pending states are real, decorative and reduced-motion safe',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
   test.setTimeout(100_000);
@@ -2424,7 +2483,7 @@ test('B16 verified owner and workspace glyph pending states are real, decorative
   // nor an artificial delay added to the production source.
   await page.route('**/auth/v1/user',async route=>{
     const response=await route.fetch();try{await authHold;await route.fulfill({response});}finally{await response.dispose();}
-  },{times:1});
+  }); // Hold every StrictMode verification read until explicitly released.
   await page.route('**/rest/v1/projects?*',async route=>{
     const url=new URL(route.request().url());
     if(url.origin===origin&&url.searchParams.get('limit')==='5'){
