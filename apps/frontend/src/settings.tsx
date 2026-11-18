@@ -617,6 +617,19 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   </>;
 }
 
+// Distinguish confirmed expiry from a stale generation without issuing an
+// ID-only restore against a changed or ambiguous Trash journal.
+function classifyTrashReadback(rows:PrivateTrashEntry[],item:PrivateTrashEntry,now:number):'CURRENT'|'EXPIRED'|'CHANGED' {
+  if(rows.length>100||!Number.isFinite(now))return 'CHANGED';
+  const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
+  const match=same[0];
+  if(same.length!==1||!match)return 'CHANGED';
+  const deadline=Date.parse(match.restore_until);
+  if(!Number.isFinite(deadline)||!Number.isFinite(Date.parse(match.trashed_at)))return 'CHANGED';
+  if(deadline<=now)return 'EXPIRED';
+  return match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until?'CURRENT':'CHANGED';
+}
+
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -679,24 +692,37 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
       !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.trashed_at===item.trashed_at))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
-      setMessage({error:true,text:'The restore deadline has passed.'});
+      setMessage({error:true,text:'The 15-day restoration window has ended.'});
       return;
     }
     inFlight.current=true;setBusy(true);setMessage(null);
+    let dispatched=false;
     try{
+      const latest=await service.list();
+      if(!current())return;
+      const checkedAt=Date.now(),state=classifyTrashReadback(latest,item,checkedAt);
+      if(state==='EXPIRED'){
+        setItems(latest);setNow(checkedAt);
+        setMessage({error:true,text:'The 15-day restoration window has ended.'});
+        return;
+      }
+      if(state!=='CURRENT')
+        throw new PrivateTrashError('INVALID_STATE','The Trash generation changed before restoration.');
+      dispatched=true;
       const receipt=await service.restore(item.item_type,item.item_id);
       if(!current())return;
-      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+      if(receipt.item_type!==item.item_type||receipt.item_id!==item.item_id||receipt.status!=='restored'||receipt.public_visibility!=='private')
         throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
       setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
       setMessage({error:false,text:'Item restored as private.'});
     }catch(error){
       if(!current())return;
-      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+      if(dispatched&&error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+        readbackRequired.current=true;uncertainRestore.current=dispatched;setNeedsReadback(true);
+        setMessage({error:true,text:dispatched?'Restore was not confirmed. Refresh Trash and review your private library before retrying.':
+          'The current Trash record could not be verified. No restore request was sent. Refresh Trash before retrying.'});
       }
     }finally{
       inFlight.current=false;if(current())setBusy(false);
