@@ -4056,3 +4056,103 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
+
+test('B16 C12 R9 real provider consent, physical claim/finish, cooldown and late sync deletion',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Isolated loopback GoTrue/PostgREST only; external provider source is explicitly synthetic.');
+  test.setTimeout(110_000);
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,service=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if(!key||!service||process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal provider lifecycle.');
+  const {createLocalProviderHandler}=await import('../../../supabase/functions/sync-provider-facts/index.ts');
+  const {SupabasePrivateProviderFactsService,availableProviderActions}=await import('../../../packages/contracts/src/private-provider-facts-service.ts');
+  const owner=await localUser('R9 C12 provider owner'),foreign=await localUser('R9 C12 other owner');
+  const handle='ci-r9-'+randomUUID().slice(0,8);
+  await signIn(page,owner);
+  await page.goto('/app/integrations');
+  const card=page.getByRole('article',{name:'GitHub',exact:true});
+  await card.getByLabel('Public handle').fill(handle);
+  await card.getByRole('button',{name:'Save private link'}).click();
+  await expect(card.getByText('Private link stored. No provider sync or ownership verification occurred.',{exact:true})).toBeVisible();
+  const token=async(user:{id:string;email:string;password:string})=>{
+    const response=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:key,'Content-Type':'application/json'},
+      body:JSON.stringify({email:user.email,password:user.password}),redirect:'error',signal:AbortSignal.timeout(10000)});
+    if(!response.ok)throw Error('Local GoTrue password HTTP '+response.status);
+    const value=await response.json();
+    if(value.user?.id!==user.id||typeof value.access_token!=='string')throw Error('Actual owner identity receipt missing.');
+    return value.access_token as string;
+  };
+  const ownerJwt=await token(owner),otherJwt=await token(foreign);
+  const link=runLocalFixtureSql("select id from public.private_platform_links where owner_user_id=:'actor_id'::uuid and provider='GITHUB';",owner.id);
+  expect(link).toMatch(/^[a-f0-9-]{36}$/i);
+  let sourceCalls=0,holdSource=false;
+  let enter!:()=>void,release!:()=>void;
+  const entered=new Promise<void>(resolve=>{enter=resolve;});
+  const released=new Promise<void>(resolve=>{release=resolve;});
+  const transport:typeof fetch=async(input,init)=>{
+    const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);
+    if(url.origin!==origin)throw Error('No external network permitted.');
+    return fetch(input,init);
+  };
+  // Only the upstream GitHub payload is synthetic. The Edge handler, live JWT
+  // check, service claim and finish RPCs, SQL state, ACL, quota and UI link are real.
+  const handler=createLocalProviderHandler({origin,publishable:key,serviceRole:service,http:transport,now:Date.now,
+    allowedOrigins:['http://127.0.0.1:5173'],
+    provider:async(saved)=>{
+      sourceCalls++;expect(saved).toBe(handle);
+      if(holdSource){enter();await released;}
+      return Response.json({login:saved,id:18001234,html_url:'https://github.com/'+saved,public_repos:3,public_gists:1});
+    }});
+  const direct:typeof fetch=(input,init)=>{
+    const request=new Request(input,init);
+    const u=new URL(request.url);
+    if(u.origin!==origin)throw Error('Nonlocal request denied.');
+    return u.pathname==='/functions/v1/sync-provider-facts'?handler(request):transport(request);
+  };
+  const client=new SupabasePrivateProviderFactsService(origin,key,owner.id,async()=>ownerJwt,()=>true,direct);
+  const outside=new SupabasePrivateProviderFactsService(origin,key,foreign.id,async()=>otherJwt,()=>true,direct);
+  const op=(version:number)=>({linkId:link,expectedVersion:version,operationId:randomUUID(),policyVersion:1 as const});
+  const off=await client.readState(link);expect(off).toMatchObject({consent:false,facts:null,candidate:null,status:'OFF',version:0});
+  expect(sourceCalls).toBe(0);
+  await expect(outside.readState(link)).rejects.toThrow();
+  await expect(client.sync({...op(0),action:'LOOKUP'})).rejects.toThrow();
+  expect(sourceCalls).toBe(0);
+  const enabled=await client.changeConsent({...op(0),action:'ENABLE'});
+  expect(enabled.state).toMatchObject({consent:true,status:'READY',version:1});
+  const lookup={...op(enabled.state.version),action:'LOOKUP' as const};
+  const found=await client.sync(lookup);
+  expect(found.state).toMatchObject({status:'AWAITING_CONFIRMATION',facts:null,candidate:{login:handle,id:18001234,publicRepos:3,publicGists:1}});
+  expect(sourceCalls).toBe(1);
+  const replay=await client.sync(lookup);expect(replay.status).toBe('REPLAYED');expect(sourceCalls).toBe(1);
+  const confirmed=await client.confirmCandidate(op(found.state.version));
+  expect(confirmed.state).toMatchObject({consent:true,status:'SYNCED',candidate:null,facts:{id:18001234,publicRepos:3,publicGists:1}});
+  expect(await client.readState(link)).toMatchObject({status:'SYNCED',version:confirmed.state.version,facts:{id:18001234}});
+  expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state s join public.private_platform_links l on l.id=s.link_id where l.owner_user_id=:'actor_id'::uuid and (s.facts).provider_id=18001234;",owner.id)).toBe('1');
+  expect(availableProviderActions(confirmed.state,Date.now())).not.toContain('SYNC');
+  await expect(client.sync({...op(confirmed.state.version),action:'SYNC'})).rejects.toMatchObject({code:'RATE_LIMITED'});
+  expect(sourceCalls).toBe(1);
+  // Age only this disposable owner's quota after asserting the real denial.
+  // Never alter the shared global lease or provider/runtime configuration.
+  runLocalFixtureSql("update kadmeion_private.github_owner_quota set next_allowed_at=clock_timestamp()-interval '1 second' where owner_id=:'actor_id'::uuid;",owner.id);
+  await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:10000}).toBe('1');
+  holdSource=true;
+  const pending=client.sync({...op(confirmed.state.version),action:'SYNC'}).then(value=>({value,error:null}),error=>({value:null,error}));
+  try{
+    await Promise.race([entered,pending.then(()=>{throw Error('Actual provider claim did not enter source.');})]);
+    const current=await client.readState(link);
+    expect(current.status).toBe('PENDING');
+    const disabled=await client.changeConsent({...op(current.version),action:'DISABLE'});
+    expect(disabled.state).toMatchObject({status:'OFF',consent:false,facts:null,candidate:null});
+    release();
+    const late=await pending;expect(late.value).toBeNull();expect(late.error).toMatchObject({code:'CONFLICT'});
+    const after=await client.readState(link);
+    expect(after).toMatchObject({version:disabled.state.version,consent:false,status:'OFF',facts:null,candidate:null});
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state s join public.private_platform_links l on l.id=s.link_id where l.owner_user_id=:'actor_id'::uuid and ((s.facts).provider_id is not null or (s.candidate).provider_id is not null or s.attempt_id is not null);",owner.id)).toBe('0');
+  }finally{release();await pending;}
+  expect(sourceCalls).toBe(2);
+  await page.reload();
+  await expect(card.getByRole('link',{name:'https://github.com/'+handle})).toBeVisible();
+  await card.getByRole('checkbox',{name:/Confirm disconnect of this stored link/}).check();
+  await card.getByRole('button',{name:'Disconnect link',exact:true}).click();
+  await expect(card.getByText('Private link disconnected.',{exact:true})).toBeVisible();
+  expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state where link_id=:'item_id'::uuid;",owner.id,link)).toBe('0');
+  await expect(client.readState(link)).rejects.toThrow();
+});
