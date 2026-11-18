@@ -4206,12 +4206,31 @@ test('C13 mounted analytics uses actual owner consent and persisted local aggreg
     await page.getByRole('button',{name:'Load analytics',exact:true}).click();
     await expect(page.getByText('Consent: Off · Eligible release')).toBeVisible();
     expect(count()).toBe(0);
+    // Prove physical cascade from a NONEMPTY opted-in disposable account,
+    // not merely deletion after CLEAR/DISABLE left no rows.
+    await page.getByRole('button',{name:'Enable portfolio analytics',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm enable',exact:true}).click();
+    await expect(page.getByText('Consent: On · Eligible release')).toBeVisible();
+    const fresh=(await rpc('service_read_public_portfolio_with_analytics',{p_handle:handle,p_slug:'analytics-fixture'})).analytics;
+    expect(fresh.consentVersion).toBe(4);
+    expect((await rpc('collect_portfolio_analytics_view',{
+      p_portfolio_id:fresh.portfolioId,p_intent_id:fresh.intentId,
+      p_release_generation:fresh.releaseGeneration,p_stage_generation:fresh.stageGeneration,
+      p_delivery_epoch:fresh.deliveryEpoch,p_html_sha256:fresh.htmlSha256,
+      p_consent_version:fresh.consentVersion,p_bucket:'DIRECT_OR_UNKNOWN'
+    })).status).toBe('COUNTED');
+    expect(count()).toBe(1);
   }finally{
     const response=await fetch(origin+'/auth/v1/admin/users/'+owner.id,{
       method:'DELETE',headers:{apikey:serviceKey,Authorization:'Bearer '+serviceKey},redirect:'error',
       signal:AbortSignal.timeout(10_000)});
     if(!response.ok)throw new Error('Disposable analytics fixture cleanup failed: '+response.status);
   }
-  // No hosted user/database operation; all source data must cascade locally.
+  // No hosted user/database operation; all portfolio-scoped source and
+  // operational data must cascade locally, despite the final nonempty count.
   expect(count()).toBe(0);
+  const residue=runLocalFixtureSql(
+    "select (select count(*) from kadmeion_private.analytics_opt_in where portfolio_id=:'item_id'::uuid)+(select count(*) from kadmeion_private.aggregate_daily where portfolio_id=:'item_id'::uuid)+(select count(*) from kadmeion_private.analytics_rate_window where portfolio_id=:'item_id'::uuid);",
+    owner.id,portfolioId);
+  expect(residue).toBe('0');
 });
