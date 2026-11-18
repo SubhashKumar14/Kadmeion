@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { normalizeOwnerProfileLinks } from '../../auth-web/src/supabase-auth-port.ts';
-import type { OwnerProfile, OwnerProfileLink, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import type { OwnerProfile, OwnerProfileLink, OwnerPortfolio, OwnerPrivateCursorV1, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 
 import { Icon } from './landing.tsx';
 import type { PrivatePlatformLink, PlatformProvider } from '../../../packages/contracts/src/private-platform-links-service.ts';
@@ -47,6 +47,31 @@ function renameApi(identity:unknown):RenameApi|null{
 }
 const validRenameHandle=(value:string)=>/^[a-z][a-z0-9_]{2,29}$/.test(value)&&value!=='onboarding';
 const sameRenameState=(a:RenameState,b:RenameState)=>a.ownerUserId===b.ownerUserId&&a.handle===b.handle&&a.version===b.version;
+type DirectoryProof={proofId:string;handle:string;slug:string;releaseGeneration:number;stageGeneration:number;
+  pointerGeneration:number;deliveryEpoch:number;revocationGeneration:number;verifiedAt:string};
+type DirectoryState={portfolioId:string;consentVersion:number;enabled:boolean;currentProof:DirectoryProof|null;consentedProofId:string|null};
+type DirectoryAction='ENABLE'|'DISABLE';
+type DirectoryChange={expected:DirectoryState;action:DirectoryAction;operationId:string};
+type DirectoryApi={readPortfolioDiscovery(id:string):Promise<DirectoryState>;setPortfolioDiscovery(change:DirectoryChange):Promise<{state:DirectoryState;alreadyRecorded:boolean}>};
+function directoryApi(identity:unknown):DirectoryApi|null{
+  if(!identity||typeof identity!=='object')return null;
+  const api=identity as Partial<DirectoryApi>;
+  return typeof api.readPortfolioDiscovery==='function'&&typeof api.setPortfolioDiscovery==='function'?api as DirectoryApi:null;
+}
+function equalDirectoryProof(a:DirectoryProof|null,b:DirectoryProof|null):boolean{
+  return a===null||b===null?a===b:a.proofId===b.proofId&&a.handle===b.handle&&a.slug===b.slug&&
+    a.releaseGeneration===b.releaseGeneration&&a.stageGeneration===b.stageGeneration&&
+    a.pointerGeneration===b.pointerGeneration&&a.deliveryEpoch===b.deliveryEpoch&&
+    a.revocationGeneration===b.revocationGeneration&&a.verifiedAt===b.verifiedAt;
+}
+function equalDirectoryState(a:DirectoryState,b:DirectoryState):boolean{
+  return a.portfolioId===b.portfolioId&&a.consentVersion===b.consentVersion&&a.enabled===b.enabled&&
+    a.consentedProofId===b.consentedProofId&&equalDirectoryProof(a.currentProof,b.currentProof);
+}
+function directoryChoiceAllowed(state:DirectoryState,action:DirectoryAction):boolean{
+  return action==='ENABLE'?!state.enabled&&!!state.currentProof&&state.consentVersion<Number.MAX_SAFE_INTEGER-1:
+    state.consentedProofId!==null;
+}
 type PreviewField = 'displayName' | 'headline' | 'bio';
 const previewFields: {key: PreviewField; label: string}[] = [
   {key: 'displayName', label: 'Display name'}, {key: 'headline', label: 'Headline'}, {key: 'bio', label: 'About you'}
@@ -143,7 +168,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     if(operationPending.current||projectionPending.current||!projectionState||!sharingDraft||
       pendingSharing.current||!sharingConfirmed||sharingReviewRequired||dirty||pendingSkill.current||needsReload||!validEpoch()||
       !canSavePrivateSharing(projectionState,sharingDraft))return;
-    stopAutosave();operationPending.current=true;projectionPending.current=true;
+    stopAutosave();invalidateDirectory();operationPending.current=true;projectionPending.current=true;
     setSharingWriting(true);setProjectionLoading(true);setSharingConfirmed(false);
     setProjectionError('');setSharingNotice('');
     const epoch=profileEpoch.current,lifetime=profileLifetime.current,attempt=++projectionAttempt.current;
@@ -187,6 +212,21 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [renameError,setRenameError]=useState('');
   const [renameNotice,setRenameNotice]=useState('');
   const pendingRename=useRef<RenameChange|null>(null);
+  const [directoryItems,setDirectoryItems]=useState<OwnerPortfolio[]|null>(null);
+  const [directoryCursor,setDirectoryCursor]=useState<OwnerPrivateCursorV1|null>(null);
+  const [directoryId,setDirectoryId]=useState('');
+  const [directoryState,setDirectoryState]=useState<DirectoryState|null>(null);
+  const [directoryAction,setDirectoryAction]=useState<DirectoryAction|null>(null);
+  const [directoryConfirmed,setDirectoryConfirmed]=useState(false);
+  const [directoryBusy,setDirectoryBusy]=useState(false);
+  const [directoryError,setDirectoryError]=useState('');
+  const [directoryNotice,setDirectoryNotice]=useState('');
+  const pendingDirectory=useRef<DirectoryChange|null>(null);
+  function invalidateDirectory(){
+    pendingDirectory.current=null;setDirectoryItems(null);setDirectoryCursor(null);setDirectoryId('');
+    setDirectoryState(null);setDirectoryAction(null);setDirectoryConfirmed(false);setDirectoryBusy(false);
+    setDirectoryError('');setDirectoryNotice('');
+  }
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
   const [visible, setVisible] = useState<PreviewField[]>(['displayName', 'headline']);
@@ -218,6 +258,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   function expireProfile(){
     stopAutosave();invalidateProjection();pendingSharing.current=null;setSharingWriting(false);pendingSkill.current=false;setSaved(null);setDraft(null);setSkill('');setSkillError('');
     pendingRename.current=null;setRenameState(null);setRenameDraft('');setRenameConfirm(false);setRenameBusy(false);setRenameError('');setRenameNotice('');
+    invalidateDirectory();
     setLatestProfile(null);setUncertainSave(null);setConfirmRebase(false);setWithdrawal(false);
     setBusy(false);setActiveSaveMode(null);setLoadingProfile(false);setCheckingLatest(false);
     setNeedsReload(true);setSessionExpired(true);setNotice('');setError('Your owner session changed. Reopen your profile.');
@@ -228,6 +269,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   useEffect(()=>{
     profileEpoch.current=port.getOwnerSessionEpoch();
     profileLifetime.current++;
+    pendingRename.current=null;setRenameState(null);setRenameDraft('');setRenameConfirm(false);setRenameBusy(false);setRenameError('');setRenameNotice('');
+    invalidateDirectory();
     const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
       if(next!==profileEpoch.current){profileLifetime.current++;operationPending.current=true;expireProfile();}
     });
@@ -235,7 +278,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   },[port]);
   // A ref closes the synchronous gap before React commits disabled controls.
   const operationPending = useRef(true);
-  const locked = busy || loadingProfile || checkingLatest || sharingWriting || renameBusy || sessionExpired;
+  const locked = busy || loadingProfile || checkingLatest || sharingWriting || renameBusy || directoryBusy || sessionExpired;
 
   useEffect(() => {
     let active = true;
@@ -281,7 +324,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     operationPending.current = true;
     invalidateProjection();
     setLoadingProfile(true);
-    setRenameState(null);setRenameConfirm(false);setRenameNotice('');
+    setRenameState(null);setRenameConfirm(false);setRenameNotice('');invalidateDirectory();
     setError('');
     setNotice('');
     setWithdrawal(false);
@@ -338,7 +381,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     }
     const lifetime=profileLifetime.current,current=()=>lifetime===profileLifetime.current&&validEpoch();
     operationPending.current=true;
-    invalidateProjection();setBusy(true);setActiveSaveMode(mode);setError('');setNotice('');
+    invalidateProjection();invalidateDirectory();setBusy(true);setActiveSaveMode(mode);setError('');setNotice('');
     try{
       // SQL rejects a public-field write with a live projection unless an
       // explicit manual confirmation is passed. Autosave always sends false.
@@ -428,7 +471,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       expected:{...expected},newHandle:renameDraft,
       operationId:prior&&sameRenameState(prior.expected,expected)&&prior.newHandle===renameDraft
         ?prior.operationId:crypto.randomUUID(),confirmation:'RENAME HANDLE'}:null;
-    stopAutosave();invalidateProjection();operationPending.current=true;
+    stopAutosave();invalidateProjection();invalidateDirectory();operationPending.current=true;
     setRenameBusy(true);setRenameConfirm(false);setRenameError('');setRenameNotice('');
     const epoch=profileEpoch.current,lifetime=profileLifetime.current;
     const current=()=>lifetime===profileLifetime.current&&epoch===profileEpoch.current&&validEpoch();
@@ -481,6 +524,99 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       if(current()){operationPending.current=false;setRenameBusy(false);}
     }
   }
+  // Only portfolio IDs from the authenticated paged library can be selected.
+  // The server verifies the live owner, exact consent version and delivery
+  // proof again. Consent never stages or publishes a release.
+  async function loadDirectoryPortfolios(append:boolean){
+    if(operationPending.current||projectionPending.current||dirty||needsReload||pendingSkill.current||
+      !validEpoch()||(append&&!directoryCursor))return;
+    const cursor=append?directoryCursor:null;
+    if(!append)invalidateDirectory();
+    stopAutosave();operationPending.current=true;setDirectoryBusy(true);setDirectoryError('');
+    const epoch=profileEpoch.current,lifetime=profileLifetime.current;
+    const current=()=>lifetime===profileLifetime.current&&epoch===profileEpoch.current&&validEpoch();
+    try{
+      const owner=await port.getUser();if(!current())return;
+      const id=owner.data?.user?.id;
+      if(owner.error||!id||(cursor&&cursor.ownerUserId!==id))throw new Error('Owner unavailable');
+      const [result,after]=await Promise.all([port.listOwnerPortfoliosPage(50,cursor),port.getUser()]);
+      if(!current())return;
+      if(result.error||!result.data||after.error||after.data?.user?.id!==id||
+        (result.data.nextCursor&&result.data.nextCursor.ownerUserId!==id))throw new Error('Portfolio list unverified');
+      const page=result.data;
+      setDirectoryItems(old=>{
+        const items=append?(old??[]):[];
+        const seen=new Set(items.map(item=>item.id));
+        return [...items,...page.items.filter(item=>!seen.has(item.id))];
+      });
+      setDirectoryCursor(page.nextCursor);
+    }catch{if(current())setDirectoryError('Could not verify your private portfolio library. Retry loading it.');}
+    finally{if(current()){operationPending.current=false;setDirectoryBusy(false);}}
+  }
+  async function runDirectoryConsent(write:boolean){
+    if(operationPending.current||projectionPending.current||!validEpoch()||dirty||needsReload||
+      pendingSkill.current||!directoryItems?.some(p=>p.id===directoryId))return;
+    if(write&&(!directoryState||directoryState.portfolioId!==directoryId||!directoryAction||
+      !directoryConfirmed||!directoryChoiceAllowed(directoryState,directoryAction)))return;
+    const prior=pendingDirectory.current;
+    const change:DirectoryChange|null=write&&directoryAction&&directoryState?{
+      expected:{...directoryState,currentProof:directoryState.currentProof?{...directoryState.currentProof}:null},
+      action:directoryAction,operationId:prior&&prior.action===directoryAction&&equalDirectoryState(prior.expected,directoryState)
+        ?prior.operationId:crypto.randomUUID()}:null;
+    stopAutosave();operationPending.current=true;setDirectoryBusy(true);setDirectoryConfirmed(false);
+    setDirectoryError('');setDirectoryNotice('');
+    const epoch=profileEpoch.current,lifetime=profileLifetime.current,selected=directoryId;
+    const current=()=>lifetime===profileLifetime.current&&epoch===profileEpoch.current&&validEpoch();
+    try{
+      const services=await port.ownerSettings();if(!current())return;
+      const api=!services.error&&services.data?directoryApi(services.data.identity):null;
+      if(!api){setDirectoryState(null);setDirectoryError('Verified directory consent service is unavailable. No consent change was sent.');return;}
+      const owner=await port.getUser();if(!current())return;
+      const id=owner.data?.user?.id;
+      if(owner.error||!id)throw new Error('Owner unavailable');
+      let receipt:DirectoryState|null=null;
+      if(change){
+        pendingDirectory.current=change;
+        receipt=(await api.setPortfolioDiscovery(change)).state;if(!current())return;
+        const wanted=change.action==='ENABLE',target=Math.min(Number.MAX_SAFE_INTEGER,change.expected.consentVersion+1);
+        if(receipt.portfolioId!==selected||receipt.consentVersion!==target||receipt.enabled!==wanted||
+          (wanted?(!equalDirectoryProof(receipt.currentProof,change.expected.currentProof)||
+            receipt.consentedProofId!==change.expected.currentProof?.proofId):receipt.consentedProofId!==null))
+          throw new Error('Invalid directory receipt');
+      }
+      const [state,after]=await Promise.all([api.readPortfolioDiscovery(selected),port.getUser()]);
+      if(!current())return;
+      if(after.error||after.data?.user?.id!==id||state.portfolioId!==selected||
+        !Number.isSafeInteger(state.consentVersion)||state.consentVersion<0||
+        (state.enabled&&(!state.currentProof||state.consentedProofId!==state.currentProof.proofId))||
+        (receipt&&state.consentVersion<receipt.consentVersion))throw new Error('Directory readback unavailable');
+      setDirectoryState(state);setDirectoryAction(null);
+      const attempted=pendingDirectory.current;
+      if(attempted){
+        const wanted=attempted.action==='ENABLE',target=Math.min(Number.MAX_SAFE_INTEGER,attempted.expected.consentVersion+1);
+        const matches=state.consentVersion===target&&state.enabled===wanted&&
+          (wanted?equalDirectoryProof(state.currentProof,attempted.expected.currentProof)&&state.consentedProofId===attempted.expected.currentProof?.proofId:
+            state.consentedProofId===null);
+        if(matches){
+          pendingDirectory.current=null;
+          setDirectoryNotice(receipt?'Directory consent change saved and read back. This is not a new publication or a live index check.':
+            'The saved consent state matches your requested change. No additional write was made.');
+        }else if(equalDirectoryState(state,attempted.expected)){
+          setDirectoryAction(attempted.action);
+          setDirectoryNotice('The saved consent is unchanged. Review and explicitly confirm to retry the same request.');
+        }else{
+          pendingDirectory.current=null;
+          setDirectoryNotice('The delivery proof or saved consent changed. Review the latest state before any new request.');
+        }
+      }else setDirectoryNotice('Saved consent checked. Only the exact verified release can be listed.');
+    }catch{
+      if(current()){
+        setDirectoryState(null);setDirectoryAction(null);
+        setDirectoryError(write?'Consent change could not be confirmed. Check saved consent before retrying; no automatic write will occur.':
+          'Saved consent could not be verified. Retry securely.');
+      }
+    }finally{if(current()){operationPending.current=false;setDirectoryBusy(false);}}
+  }
   // Opt-in is scoped to the mounted verified workspace. Never schedule a
   // request on a stale owner, a failed/ambiguous save, or confirmed withdrawal.
   useEffect(()=>{
@@ -491,11 +627,11 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     return cancelScheduledSave;
   },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port,skill]);
   useEffect(()=>{
-    if(!dirty&&!skill.trim()&&!busy&&!checkingLatest&&!sharingWriting&&!renameBusy)return;
+    if(!dirty&&!skill.trim()&&!busy&&!checkingLatest&&!sharingWriting&&!renameBusy&&!directoryBusy)return;
     const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
-  },[dirty,skill,busy,checkingLatest,sharingWriting,renameBusy]);
+  },[dirty,skill,busy,checkingLatest,sharingWriting,renameBusy,directoryBusy]);
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
   const preview=projectionMode==='preferences'?projectionSnapshot:previewSaved?saved:draft;
   const previewSelection=projectionMode==='preferences'?(projectionFields??[]):visible;
@@ -627,6 +763,48 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             {renameNotice&&<p role="status">{renameNotice}</p>}
             {renameError&&<p role="alert" className="ws-inline-alert">{renameError}</p>}
             {(dirty||needsReload||!!skill.trim())&&<p>Finish or reload unsaved profile edits before changing the handle.</p>}
+            <fieldset className="ws-project-fields" disabled={locked||dirty||needsReload||!!skill.trim()||projectionLoading}>
+              <legend>Portfolio directory consent</legend>
+              <p>Optional discovery is separate from publication. Only a currently verified public release may be listed. Private or unlisted drafts never qualify.</p>
+              <button type="button" className="ws-secondary" onClick={()=>void loadDirectoryPortfolios(false)}>
+                {directoryItems?'Refresh owned portfolios':'Load owned portfolios'}
+              </button>
+              {directoryItems&&<>
+                {directoryItems.length===0?<p>No portfolios in this verified page.</p>:<label>Portfolio
+                  <select value={directoryId} onChange={e=>{
+                    if(operationPending.current||!validEpoch())return;
+                    pendingDirectory.current=null;setDirectoryId(e.target.value);setDirectoryState(null);
+                    setDirectoryAction(null);setDirectoryConfirmed(false);setDirectoryNotice('');setDirectoryError('');
+                  }}>
+                    <option value="">Choose a saved portfolio</option>
+                    {directoryItems.map(item=><option key={item.id} value={item.id}>{item.title} ({item.slug})</option>)}
+                  </select>
+                </label>}
+                {directoryCursor&&<button type="button" className="ws-secondary" onClick={()=>void loadDirectoryPortfolios(true)}>Load more owned portfolios</button>}
+                {directoryId&&<button type="button" className="ws-secondary" onClick={()=>void runDirectoryConsent(false)}>
+                  {directoryState?'Refresh directory consent':'Check saved directory consent'}
+                </button>}
+              </>}
+              {directoryState&&<>
+                <p>Saved directory consent: {directoryState.enabled?'Enabled for verified release':directoryState.consentedProofId?'Inactive; old consent remains recorded':'Off'} · Version {directoryState.consentVersion}</p>
+                {directoryState.currentProof?<p>Verified release: {directoryState.currentProof.handle} / {directoryState.currentProof.slug}, generation {directoryState.currentProof.releaseGeneration}. Verified at {directoryState.currentProof.verifiedAt}.</p>:
+                  <p>No eligible current delivery proof. Publish and verify separately before opting in.</p>}
+                {(['ENABLE','DISABLE'] as const).filter(action=>directoryChoiceAllowed(directoryState,action)).map(action=>
+                  <label className="ws-profile-check" key={action}><input type="radio" name="directory-consent-action"
+                    checked={directoryAction===action} onChange={()=>{if(!operationPending.current&&validEpoch()){
+                      setDirectoryAction(action);setDirectoryConfirmed(false);
+                    }}}/>{action==='ENABLE'?'Opt in this verified release to discovery':'Remove directory consent'}</label>)}
+                {directoryAction&&directoryChoiceAllowed(directoryState,directoryAction)&&<>
+                  <label className="ws-profile-check"><input type="checkbox" checked={directoryConfirmed}
+                    onChange={e=>{if(!operationPending.current&&validEpoch())setDirectoryConfirmed(e.target.checked);}}/>
+                    I confirm this exact portfolio and saved consent version{directoryAction==='ENABLE'?' and its current verified delivery proof':''}.</label>
+                  <button type="button" className="ws-primary" disabled={!directoryConfirmed} onClick={()=>void runDirectoryConsent(true)}>Save directory consent</button>
+                </>}
+              </>}
+            </fieldset>
+            {directoryBusy&&<p role="status">Checking authenticated directory state…</p>}
+            {directoryNotice&&<p role="status">{directoryNotice}</p>}
+            {directoryError&&<p role="alert" className="ws-inline-alert">{directoryError}</p>}
           </>}
           {panel === 'Public preview' && <p>Compare the selected draft or last saved fields. This is an owner-only approximation, not a live visitor route.</p>}
         </fieldset>
