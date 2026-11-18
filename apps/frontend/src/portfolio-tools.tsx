@@ -579,6 +579,14 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
         {media.ready+media.failed+media.deferred<media.total&&<span>Verifying private image bytes…</span>}
         {media.failed>0&&<p role="alert">{media.failed} image slots could not be verified or decoded.</p>}
         {media.frozenMatched>0&&<span>{media.frozenMatched} snapshot digest and server pin matches · Not a publication receipt</span>}
+        {media.ready>0&&<details><summary>Verified image receipts</summary>
+          <ul className="ws-editor-slots">{Array.from(media.images.entries()).flatMap(([slotKey,image])=>image.status==='ready'?[<li key={slotKey} style={{overflowWrap:'anywhere'}}>
+            <strong>{slotKey}</strong><span> · {image.dimensions.width} × {image.dimensions.height}</span>
+            <small style={{display:'block'}}>Observed SHA-256: {image.digest}</small>
+            <small style={{display:'block'}}>{image.pinned?'Server pin matched':'No verified server pin'} · {image.frozenDigestMatched?'Snapshot digest matched':'No matching snapshot digest recorded'}</small>
+          </li>]:[])}</ul>
+          <small>Local preview evidence only. These receipts never authorize publication or write a source digest.</small>
+        </details>}
         {media.deferred>0&&<p>{media.deferred} slots exceed this view’s 50 MiB compressed or 48 megapixel decoded image budget. Select a slot and retry to prioritize it.</p>}
         {(media.failed>0||media.deferred>0)&&<button type="button" className="ws-secondary" onClick={media.show}>Retry private canvas images</button>}
         <button type="button" className="ws-secondary" onClick={media.hide}>Hide private canvas images</button></>:
@@ -2011,7 +2019,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
  * Storage identity, pin and bytes. This UI never promotes a local digest to a publication pin. */
 type AssetPreviewRecord={id:string;projectId:string;mime:string;size:number;altText:string};
 function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort;asset:AssetPreviewRecord;epoch:number}){
-  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean}>({status:'idle'});
+  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean;dimensions:RasterDimensions;digest:string}>({status:'idle'});
   const mounted=useRef(false);
   const activeUrl=useRef<string|null>(null);
   const flight=useRef(false);
@@ -2042,17 +2050,21 @@ function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort
       if(!live())return;
       if(!verified){setState({status:'failed'});return;}
       const url=URL.createObjectURL(data.bytes);
-      activeUrl.current=url;setState({status:'ready',url,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
+      activeUrl.current=url;
+      const dimensions=await decodePrivateRaster(url);
+      if(!live()||activeUrl.current!==url)return;
+      setState({status:'ready',url,dimensions,digest:data.integrity.computedSha256,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
     }catch{
-      if(live())setState({status:'failed'});
+      if(live()){release();setState({status:'failed'});}
     }finally{if(generation.current===started)flight.current=false;}
   }
   return <section aria-label="Owner-private image byte preview">
     {state.status==='ready'?<>
-      <img src={state.url} alt={asset.altText} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
-        onError={()=>{release();setState({status:'failed'});}}/>
+      <img src={state.url} alt={asset.altText} width={state.dimensions.width} height={state.dimensions.height} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
+        onError={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'failed'});}}/>
       <p>Owner-private bytes verified. {state.pinned?'Independent server hash pin matched.':'No independent server hash pin verified.'} Public delivery is not authorized.</p>
-      <button type="button" className="ws-secondary" onClick={()=>{release();setState({status:'idle'});}}>Close private preview</button>
+      <details><summary>Verified raster receipt</summary><dl className="ws-asset-metadata"><div><dt>Decoded dimensions</dt><dd>{state.dimensions.width} × {state.dimensions.height}</dd></div><div><dt>Observed SHA-256</dt><dd style={{overflowWrap:'anywhere'}}>{state.digest}</dd></div></dl></details>
+      <button type="button" className="ws-secondary" onClick={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'idle'});}}>Close private preview</button>
     </>:state.status==='pending'?<>
       <p role="status">Verifying private image bytes…</p>
       <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div>
