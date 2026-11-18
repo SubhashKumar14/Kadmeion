@@ -76,23 +76,32 @@ const demoPalettes:Readonly<Record<DemoTheme,{surface:string;text:string;accent:
 function withDemoPalette(snapshot:PortfolioSnapshot,mode:DemoTheme):PortfolioSnapshot {
   return {...snapshot,files:{...snapshot.files,'theme/tokens.json':JSON.stringify({mode,...demoPalettes[mode]})}};
 }
+// Bound actual module loading, including a transport that never settles.
+function startPresetLoad<T>(load:()=>Promise<T>,onReady:(value:T)=>void,onFailure:()=>void,timeoutMs=12000):()=>void {
+  let active=true;
+  const stop=()=>{active=false;clearTimeout(timer);};
+  const fail=()=>{if(active){stop();onFailure();}};
+  const timer=setTimeout(fail,timeoutMs);
+  try{
+    void load().then(value=>{if(active){stop();onReady(value);}},fail);
+  }catch{fail();}
+  return stop;
+}
 function ActualPresetPreview({preset}:{preset:Preset}){
   const [mode,setMode]=useState<DemoTheme>('light');
-  const snapshot=useMemo(()=>withDemoPalette(createPublicPresetDemo(preset.presetId),mode),[preset.presetId,mode]);
+  const baseSnapshot=useMemo(()=>createPublicPresetDemo(preset.presetId),[preset.presetId]);
+  const snapshot=useMemo(()=>withDemoPalette(baseSnapshot,mode),[baseSnapshot,mode]);
   const [Canvas,setCanvas]=useState<DemoCanvas|null>(null);
   const [failed,setFailed]=useState(false);
   const [width,setWidth]=useState<number|undefined>(undefined);
   const [measuredWidth,setMeasuredWidth]=useState<number|null>(null);
-  useEffect(()=>{
-    let active=true;
-    // Reuse the actual escaped React canvas and its layout styles; do not load
-    // the authenticated workspace or instantiate an auth/service client.
-    void Promise.all([import('./portfolio-tools.tsx'),import('./workspace.css')]).then(
-      ([module])=>{if(active)setCanvas(()=>module.PortfolioCanvas);},
-      ()=>{if(active)setFailed(true);}
-    );
-    return ()=>{active=false;};
-  },[]);
+  // Keep the same demo draft while switching presentation-only palettes.
+  useEffect(()=>startPresetLoad(
+    ()=>Promise.all([import('./portfolio-tools.tsx'),import('./workspace.css')]),
+    ([module])=>setCanvas(()=>module.PortfolioCanvas),
+    ()=>setFailed(true)
+  ),[]);
+  const reloadPreview=()=>window.location.reload();
   const page=JSON.parse(snapshot.files['pages/home.page.json']!) as {header:{layout:string}|null;sections:{id:string;layout:string}[]};
   return <section aria-label={'Demo of '+preset.title+' preset'}>
     <p>Demo content only. The shared editor canvas uses the real preset section order. Its author-preview labels do not indicate a saved or published portfolio. Media and example actions are inactive.</p>
@@ -113,7 +122,7 @@ function ActualPresetPreview({preset}:{preset:Preset}){
       <button type="button" className="outline-small" aria-pressed={mode==='light'} onClick={()=>setMode('light')}>Light</button>{' '}
       <button type="button" className="outline-small" aria-pressed={mode==='dark'} onClick={()=>setMode('dark')}>Dark</button>
     </fieldset>
-    {failed?<p role="alert">The preset renderer could not load. Close the preview and reload this page to try again.</p>:
+    {failed?<div><p role="alert">The preset renderer could not load or did not respond in time. No portfolio was created or changed.</p><button type="button" className="outline-small" onClick={reloadPreview}>Reload templates to retry</button></div>:
       Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll onContentWidth={setMeasuredWidth}/></div>:
       <div>
         <p role="status">Loading preset layout…</p>
