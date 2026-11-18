@@ -1028,7 +1028,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       {visibleVersions.length===0&&<><p>No saved versions match these filters.</p>
         <button type="button" className="ws-secondary" onClick={()=>{setQuery('');setCategory('');setCompatibleOnly(false);searchInput.current?.focus();}}>Clear filters</button></>}
     </>}
-    {visibleVersions.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,alignItems:'start'}} aria-label="Private component placement workspace">
+    {visibleVersions.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,alignItems:'start'}} role="group" aria-label="Private component placement workspace">
       <div style={{minWidth:0}}><h3>Saved versions</h3>
     <ul className="ws-editor-slots" aria-label="Private component drag sources" style={reuseListStyle}>{visibleVersions.map(version=>{
       const compatible=!!state&&version.compatible_slot_kinds.includes(slotKind);
@@ -1056,7 +1056,6 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       </div>
     <section aria-label="Compatible empty private component targets" style={{minWidth:0}}>
       <h3>Empty slots</h3>
-      <p>{selectedVersion?'Place saved version · '+selectedVersion.display_name:'Choose or drag a saved version to a declared empty slot.'}</p>
       {!reuseTargets.length?<p>No compatible empty slot exists.</p>:<ul className="ws-editor-slots" style={reuseListStyle}>{reuseTargets.map(item=>{
         const fits=!!selectedVersion&&canReuseEmpty(selectedVersion,item.key);
         return <li key={item.key} data-drop-fit={fits?'compatible':undefined}
@@ -1072,6 +1071,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       })}</ul>}
     </section>
     </div>}
+    {visibleVersions.length>0&&<p role="status">{selectedVersion?'Place saved version · '+selectedVersion.display_name:'Choose or drag a saved version to a declared empty slot.'}</p>}
     {inspected&&<section aria-label="Verified private saved component source">
       <h3>{inspected.display_name} · v{inspected.version}</h3>
       <p>Exact private source text from the verified owner catalogue. Displayed as text only, never compiled, executed, or treated as trusted public source.</p>
@@ -1450,7 +1450,7 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
         onChange={event=>setCompatibleOnly(event.target.checked)}/> Compatible with selected placement target only</label>
       {compatibleOnly&&!chosen&&<p role="status">Choose a placement target or clear the filters.</p>}
       <p>Favorites contain only public pinned component IDs on this device; they are not account-synced.{storageAvailable===false?' Device storage is unavailable; changes may last only for this visit.':''}</p>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,alignItems:'start'}} aria-label="Component placement drag workspace">
+      <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,alignItems:'start'}} role="group" aria-label="Component placement drag workspace">
         <div style={{minWidth:0}}><h4>Components</h4>
       <ul className="ws-editor-slots" aria-label="Pinned component drag sources" style={pairedListStyle}>{visible.map(item=><li key={item.pin}>
         <button type="button" aria-pressed={pin===item.pin} draggable={!blocked&&!review}
