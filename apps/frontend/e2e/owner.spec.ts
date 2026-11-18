@@ -3867,7 +3867,7 @@ test('B16 C08 profile field selection CAS conflicts across tabs and withdraws th
     "select coalesce(public.service_read_published_profile_projection((select handle from public.profiles where user_id=:'actor_id'::uuid))::text,'ABSENT');",owner.id);
   expect(JSON.parse(projection())).toMatchObject({headline:'R6 public headline',handle});
   expect(projection()).not.toContain('R6 private biography');
-  const other=await browser.newPage();
+  const other=await browser.newPage({baseURL:'http://127.0.0.1:5173'});
   try{
     await signIn(page,owner);await signIn(other,owner);
     for(const tab of [page,other]){
