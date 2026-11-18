@@ -997,6 +997,7 @@ function GitHubFactsPanel({service,link,blocked,beginWrite,endWrite,onInvalidate
   const disabled=busy||blocked;
   return <section aria-label="Private GitHub provider facts" className="ws-growth-form">
     <h3>GitHub public facts</h3>
+    <p role="note">Local verification only — imported values use a configured local test source, not live GitHub data.</p>
     <p>Optional, owner-private source data. Only the public account name, source ID, repository and gist counts are imported. A matching profile is not ownership verification.</p>
     {busy&&<p role="status">Checking private provider state…</p>}
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}
@@ -1106,6 +1107,23 @@ function Connections({service,providerFacts}:{service:SupabasePrivatePlatformLin
   const [links,setLinks]=useState<PrivatePlatformLink[]|null>(null);
   const [error,setError]=useState('');
   const [attempt,setAttempt]=useState(0);
+  // The owner factory supplies an epoch-bound candidate, not permission to
+  // activate an unconfigured Edge. Verify both local proofs before exposing UI.
+  const [capAttempt,setCapAttempt]=useState(0);
+  const [capability,setCapability]=useState<{service:SupabasePrivateProviderFactsService;attempt:number;ready:boolean}|null>(null);
+  const capabilityRequest=useRef<{service:SupabasePrivateProviderFactsService;attempt:number;promise:Promise<boolean>}|null>(null);
+  useEffect(()=>{
+    if(!providerFacts)return;
+    let active=true;
+    if(capabilityRequest.current?.service!==providerFacts||capabilityRequest.current.attempt!==capAttempt)
+      capabilityRequest.current={service:providerFacts,attempt:capAttempt,promise:providerFacts.probeLocalCapability()};
+    void capabilityRequest.current.promise.then(ready=>{
+      if(active)setCapability({service:providerFacts,attempt:capAttempt,ready});
+    }).catch(()=>{if(active)setCapability({service:providerFacts,attempt:capAttempt,ready:false});});
+    return()=>{active=false;};
+  },[providerFacts,capAttempt]);
+  const checked=capability?.service===providerFacts&&capability?.attempt===capAttempt;
+  const verifiedProvider=checked&&capability?.ready===true?providerFacts:undefined;
   const generation=useRef(0);
   const initial=useRef<{service:SupabasePrivatePlatformLinksService;attempt:number;promise:Promise<PrivatePlatformLink[]>}|null>(null);
   function refresh(){
@@ -1131,11 +1149,13 @@ function Connections({service,providerFacts}:{service:SupabasePrivatePlatformLin
     generation.current++;setLinks(null);setError('The owner session or access was not confirmed. Private links have been hidden.');
   }
   return <section>
-    <p>Optional public-handle links are stored privately. {providerFacts?'GitHub facts require separate consent and explicit actions; other providers remain link-only.':'Provider synchronization is unavailable. Links remain manual.'} No OAuth, ownership verification or public profile sharing is implied.</p>
+    <p>Optional public-handle links are stored privately. {verifiedProvider?'GitHub facts require separate consent and explicit actions; other providers remain link-only.':'Provider synchronization is unavailable. Links remain manual.'} No OAuth, ownership verification or public profile sharing is implied.</p>
+    {providerFacts&&!checked&&<p role="status">Checking local provider availability…</p>}
+    {providerFacts&&checked&&!verifiedProvider&&<button className="ws-secondary" type="button" onClick={()=>setCapAttempt(n=>n+1)}>Check local provider availability</button>}
     {error&&<p role="alert">{error} <button className="ws-secondary" type="button" onClick={refresh}>Retry links</button></p>}
     {!links&&!error&&<EvidencePending label="Loading your private platform links…"/>}
     {links&&<div className="ws-growth-provider-grid">{providers.map(provider=>
-      <ProviderCard key={viewGeneration+':'+provider.id} provider={provider} service={service} providerFacts={providerFacts}
+      <ProviderCard key={viewGeneration+':'+provider.id} provider={provider} service={service} providerFacts={verifiedProvider}
         existing={links.find(item=>item.provider===provider.id)}
         onUpdate={record=>updated(provider.id,record)} onRefresh={refresh} onInvalidate={invalidate}/>)}</div>}
   </section>;
