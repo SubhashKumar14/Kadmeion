@@ -3151,6 +3151,51 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
   }
 });
 
+
+test('B16 release pending glyph reflects real owner read, failure and explicit recovery',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S4 release pending UI and disposable local Supabase.');
+  test.setTimeout(75_000);
+  const owner=await localUser('S6 release pending');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 release pending fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 release pending fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const portfolioId=editorPath.split('/').find(segment=>/^[0-9a-f-]{36}$/i.test(segment));
+  if(!portfolioId)throw new Error('Local portfolio ID missing.');
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  let failure=true,heldReads=0;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/portfolios'&&url.searchParams.get('id')==='eq.'+portfolioId,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(failure){heldReads++;await held;return route.fulfill({status:503,json:{message:'S6 simulated release read outage'}});}
+    await route.continue();
+  });
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const section=page.locator('.ws-release-page');
+  try{
+    await page.goto(editorPath.replace('/edit','/staging'),{waitUntil:'domcontentloaded'});
+    await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toBeVisible();
+    expect(heldReads>0).toBe(true);
+    const glyph=section.locator('.glyph-skeleton[aria-hidden="true"]');
+    await expect(glyph).toHaveCount(1);
+    await expect(glyph.locator('a,button,input,select,textarea,[tabindex="0"]')).toHaveCount(0);
+    await expect(section.locator('.ws-release-visual-canvas')).toHaveCount(0);
+    await expect(section.getByRole('button',{name:'Freeze private revision'})).toHaveCount(0);
+  }finally{release();}
+  await expect(section.getByRole('alert')).toBeVisible();
+  await expect(section.locator('.glyph-skeleton')).toHaveCount(0);
+  await expect(section.locator('.ws-release-visual-canvas')).toHaveCount(0);
+  failure=false;
+  await section.getByRole('button',{name:'Retry private release check'}).click();
+  await expect(section.locator('.ws-release-visual-canvas')).toBeVisible();
+  await expect(section.getByRole('button',{name:'Freeze private revision'})).toBeEnabled();
+  await expect(section.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+  await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toHaveCount(0);
+});
+
 test('B16 WF-018 all five curated presets and genuine Blank persist exact authored skeletons',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and mounted private editor only.');
   test.setTimeout(140_000);
