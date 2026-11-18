@@ -1041,7 +1041,7 @@ test('F6 restricted operations 48–50 reflow without leaking account directory'
   }
 });
 
-test('F1 recovery request and password reset use isolated GoTrue and Mailpit', async ({ page }) => {
+test('F1 recovery request and password reset use isolated GoTrue and Mailpit', async ({ page, browser }) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1', 'Requires the isolated Supabase CI job.');
   test.setTimeout(60_000);
   const user = await localUser('CI Recovery');
@@ -1114,6 +1114,23 @@ test('F1 recovery request and password reset use isolated GoTrue and Mailpit', a
   await page.getByRole('button', { name: 'Save new password' }).click();
   await expect(page.getByRole('heading', { name: 'Password updated' })).toBeFocused();
   await signIn(page, {email: user.email, password: newPassword});
+  // Replay only the original one-time provider link, not an issued session JWT.
+  const replay=await fetch(verification,{redirect:'manual'});
+  const replayTarget=URL.parse(replay.headers.get('location')??'');
+  expect(replay.status>=400||([302,303].includes(replay.status)&&!!replayTarget&&
+    !new URLSearchParams(replayTarget.hash.slice(1)).has('access_token'))).toBe(true);
+  const fresh=await browser.newPage();
+  try{
+    await fresh.goto(new URL('/signin',page.url()).href);
+    await fresh.getByLabel('Email address').fill(user.email);
+    await fresh.locator('#signin-password').fill(user.password);
+    await fresh.getByRole('button',{name:'Sign in',exact:true}).click();
+    await expect(fresh.getByRole('alert')).toContainText('Incorrect credentials or sign-in unavailable.');
+    await expect(fresh.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+    await fresh.goto(new URL('/app',page.url()).href);
+    await expect(fresh.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+    await expect(fresh.locator('.ws-shell')).toHaveCount(0);
+  }finally{await fresh.close();}
 });
 
 test('new email/password account can open the workspace immediately', async ({page}) => {
@@ -2666,4 +2683,34 @@ test('B16 C06 pending skill pauses scheduled autosave until add or clear',async(
   await page.getByRole('button',{name:'Skills & links',exact:true}).click();
   await expect(page.getByRole('button',{name:'Remove Rust'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Remove Unadded skill'})).toHaveCount(0);
+});
+
+test('B16 real invalid and absent recovery grants cannot open reset form or mutate password',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(45_000);
+  let writes=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin===origin&&url.pathname==='/auth/v1/user'&&request.method()==='PUT')writes++;
+  });
+  await page.goto('/reset-password');
+  await expect(page.getByRole('alert')).toContainText('does not contain an active recovery grant');
+  await expect(page.getByRole('button',{name:'Save new password'})).toHaveCount(0);
+  const invalid=randomUUID().replaceAll('-','')+randomUUID().replaceAll('-','');
+  const provider=page.waitForResponse(response=>{
+    const url=new URL(response.url());
+    return url.origin===origin&&url.pathname==='/auth/v1/verify'&&response.request().method()==='POST';
+  });
+  await page.goto('/reset-password?type=recovery&token_hash='+invalid);
+  const receipt=await provider;
+  expect(receipt.ok()).toBe(false);
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save new password'})).toHaveCount(0);
+  await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+  expect(new URL(page.url()).search).toBe('');
+  expect(new URL(page.url()).hash).toBe('');
+  await page.goto('/app');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(writes).toBe(0);
 });
