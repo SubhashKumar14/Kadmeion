@@ -43,8 +43,9 @@ function isUncacheable(headers:Headers):boolean {
     if(value===null)return name!=='cache-control';
     const directives=value.toLowerCase().split(',').map(directive=>directive.trim());
     return directives.includes('no-store')&&!directives.includes('public')&&
-      directives.every(directive=>!/^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=/.test(directive)||
-        /^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*(?:0|"0")$/.test(directive));
+      !directives.includes('immutable')&&
+      directives.every(directive=>!/^(?:max-age|s-maxage|s-max-age|stale-while-revalidate|stale-if-error)\b/.test(directive)||
+        /^(?:max-age|s-maxage|s-max-age|stale-while-revalidate|stale-if-error)\s*=\s*(?:0+|"0+")$/.test(directive));
   });
 }
 
@@ -104,7 +105,9 @@ async function fetchPath(url:URL,method:'GET'|'HEAD',http:typeof fetch):Promise<
   try{
     const pending=Promise.resolve().then(()=>http(url,{method,credentials:'omit',cache:'no-store',
       redirect:'error',signal:controller.signal})).then(response=>{
-        if(expired){cancelProbeBody(response.body);throw new HostRevocationProbeError('HOST_UNAVAILABLE');}
+        if(expired||response.redirected||(response.url!==''&&response.url!==url.href)){
+          cancelProbeBody(response.body);throw new HostRevocationProbeError('HOST_UNAVAILABLE');
+        }
         return response;
       });
     const deadline=new Promise<never>((_,reject)=>{
