@@ -373,10 +373,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }
   }
 
-  private async request(path: string, method: string, body?: Json, token?: string): Promise<Json> {
+  private async request(path: string, method: string, body?: Json, token?: string, boundedOwnerGet=false): Promise<Json> {
     const headers: Record<string, string> = { apikey: this.publishableKey, 'Content-Type': 'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
-    const ownerVerification=method==='GET'&&path==='/user'&&typeof token==='string';
+    const ownerVerification=boundedOwnerGet&&method==='GET'&&path==='/user'&&typeof token==='string';
     const requestUrl=this.origin+'/auth/v1'+path;
     let response: Response;
     try {
@@ -536,7 +536,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       for(let attempt=0;attempt<2;attempt++){
         if(!current())throw new Error('Owner session changed during verification.');
         let data:Json;
-        try{data=await this.request('/user','GET',undefined,session.access_token);}
+        try{data=await this.request('/user','GET',undefined,session.access_token,true);}
         catch(error){
           if(error instanceof AuthTransientUserReadError&&attempt===0&&current())continue;
           throw error;
