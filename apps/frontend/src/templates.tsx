@@ -94,7 +94,14 @@ function ActualPresetPreview({preset}:{preset:Preset}){
     </fieldset>
     {failed?<p role="alert">The preset renderer could not load. Close the preview and reload this page to try again.</p>:
       Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll/></div>:
-      <p role="status">Loading preset layout…</p>}
+      <div>
+        <p role="status">Loading preset layout…</p>
+        <div className="glyph-skeleton" aria-hidden="true">
+          <span className="glyph-skeleton-line is-title"/>
+          <span className="glyph-skeleton-line is-medium"/>
+          <span className="glyph-skeleton-line is-short"/>
+        </div>
+      </div>}
   </section>;
 }
 
