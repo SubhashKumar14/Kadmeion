@@ -217,3 +217,38 @@ test('C13 deadline covers a stalled token and a stalled response stream without 
   assert.ok(Date.now()-readStart<7500);assert.equal(stuck.calls(),1);
   assert.equal(canceled,1);
 });
+
+test('C13 exact response provenance rejects redirects, wrong RPC paths and changed origins',async()=>{
+  const expected='https://local.example/rest/v1/rpc/read_owner_analytics_state';
+  for(const patch of [{redirected:true,url:expected},{url:'https://foreign.invalid/rest/v1/rpc/read_owner_analytics_state'},
+    {url:expected+'?unexpected=true'},{url:'https://local.example/rest/v1/rpc/change_owner_analytics'}]){
+    const raw=response(state);
+    for(const [name,value] of Object.entries(patch))Object.defineProperty(raw,name,{value});
+    const f=fixture(()=>raw);
+    await assert.rejects(f.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+    assert.equal(f.calls(),1);
+  }
+  const raw=response(state);
+  Object.defineProperty(raw,'url',{value:expected});
+  assert.deepEqual(await fixture(()=>raw).service.getOwnerAnalyticsState(portfolio),state);
+});
+test('C13 zero-byte flood cannot yield a successful analytics receipt',{timeout:8000},async()=>{
+  const payload=new TextEncoder().encode(JSON.stringify(state));let pulls=0,canceled=false;
+  const f=fixture(()=>new Response(new ReadableStream<Uint8Array>({pull(c){
+    if(++pulls<=8193)c.enqueue(new Uint8Array());
+    else{c.enqueue(payload);c.close();}
+  },cancel(){canceled=true}}),{headers:{'content-type':'application/json'}}));
+  await assert.rejects(f.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+  assert.equal(f.calls(),1);assert.ok(pulls<8193);assert.equal(canceled,true);
+});
+test('C13 multi-chunk bytes enforce exact declared identity length and preserve legitimate counts',async()=>{
+  const raw=JSON.stringify(comparison),payload=new TextEncoder().encode(raw);
+  for(const delta of [-1,0,1]){
+    const f=fixture(()=>new Response(new ReadableStream<Uint8Array>({start(c){
+      c.enqueue(payload.subarray(0,20));c.enqueue(payload.subarray(20));c.close();
+    }}),{headers:{'content-type':'application/json','content-encoding':'identity','content-length':String(payload.length+delta)}}));
+    if(delta===0)assert.deepEqual(await f.service.getOwnerAnalytics(query),comparison);
+    else await assert.rejects(f.service.getOwnerAnalytics(query),{code:'INVALID_RESPONSE'});
+    assert.equal(f.calls(),1);
+  }
+});

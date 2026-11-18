@@ -1366,39 +1366,6 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  /** Historical DB acknowledgements, not current public delivery or rollback authority. */
-  async listOwnerReleaseAcknowledgements(portfolioId:string,limit=25,
-    after:PrivateReleaseAcknowledgementCursor|null=null):Promise<AuthOutcome<PrivateReleaseAcknowledgementPage>> {
-    return this.outcome(async()=>{
-      if(!PROJECT_ID_PATTERN.test(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50)
-        throw new Error('Invalid release history request.');
-      const id=portfolioId.toLowerCase();
-      const cursor=after===null?null:{...after};
-      const {session,userId,epoch}=await this.ownerSession();
-      const current=()=>this.reconcileOwnerSessionEpoch()===epoch &&
-        this.isCurrentSession(session) && session.user.id===userId;
-      const requireOwned=async()=>{
-        if(!current())throw new Error('Account changed while loading release history.');
-        const params=new URLSearchParams({select:'id,owner_user_id',id:'eq.'+id,
-          owner_user_id:'eq.'+userId,trashed_at:'is.null',limit:'2'});
-        const rows=await this.ownerRest('portfolios?'+params,session.access_token);
-        const row=Array.isArray(rows)&&rows.length===1?rows[0]:null;
-        if(!current()||!row||typeof row!=='object'||Array.isArray(row)||
-          Object.keys(row).length!==2||row.id!==id||row.owner_user_id!==userId)
-          throw new Error('Portfolio release history is unavailable.');
-      };
-      await requireOwned();
-      const {SupabasePrivateReleaseService}=await import('../../../packages/contracts/src/private-release-service.ts');
-      if(!current())throw new Error('Account changed while loading release history.');
-      const service=new SupabasePrivateReleaseService(this.origin,this.publishableKey,
-        async()=>current()?session.access_token:null,this.fetcher);
-      const page=await service.listAcknowledgements(id,limit,cursor);
-      await requireOwned();
-      if(!current())throw new Error('Account changed while loading release history.');
-      return page;
-    });
-  }
-
   async freezeOwnerRelease(id: string, operation: string, revision: number, visibility: FrozenVisibilityIntent):
     Promise<AuthOutcome<PrivateFrozenRequest>> {
     return this.outcome(async () => {

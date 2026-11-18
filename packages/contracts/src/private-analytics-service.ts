@@ -133,7 +133,7 @@ function parseReceipt(text:string,strictNumbers:boolean):unknown {
   }
   return value;
 }
-async function boundedJson(response:Response,limit:number,signal:AbortSignal):Promise<unknown>{
+async function boundedJson(response:Response,limit:number,signal:AbortSignal,deadline:number):Promise<unknown>{
   const type=response.headers.get('content-type')??'',length=response.headers.get('content-length');
   if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type)||
     (length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))||!response.body){
@@ -143,13 +143,13 @@ async function boundedJson(response:Response,limit:number,signal:AbortSignal):Pr
   const cancel=()=>{try{void reader.cancel().catch(()=>{})}catch{/* best effort */}};
   signal.addEventListener('abort',cancel,{once:true});
   try{
-    if(signal.aborted){cancel();return fail('TRANSPORT')}
+    if(signal.aborted||performance.now()>=deadline){cancel();return fail('TRANSPORT')}
     for(;;){
       let item:ReadableStreamReadResult<Uint8Array>;
       try{item=await reader.read()}catch{return fail('TRANSPORT')}
-      if(signal.aborted)return fail('TRANSPORT');
+      if(signal.aborted||performance.now()>=deadline)return fail('TRANSPORT');
       if(item.done){complete=true;break}
-      if(!(item.value instanceof Uint8Array)||item.value.byteLength>limit-size)return fail('INVALID_RESPONSE');
+      if(!(item.value instanceof Uint8Array)||item.value.byteLength===0||item.value.byteLength>limit-size)return fail('INVALID_RESPONSE');
       bytes.set(item.value,size);size+=item.value.byteLength;
     }
     const encoding=response.headers.get('content-encoding');
@@ -208,6 +208,7 @@ export class SupabasePrivateAnalyticsService {
     const http=this.http;
     if(!http)return fail('UNAVAILABLE');
     const controller=new AbortController();
+    const endpoint=this.origin+'/rest/v1/rpc/'+rpc,deadline=performance.now()+DEADLINE;
     let timer:ReturnType<typeof setTimeout>|undefined;
     let response:Response|undefined;
     let expired=false;
@@ -218,28 +219,30 @@ export class SupabasePrivateAnalyticsService {
       let jwt:string|null;
       try{jwt=await this.token()}catch{return fail('TRANSPORT')}
       this.current();
-      if(expired)return fail('TRANSPORT');
+      if(expired||performance.now()>=deadline)return fail('TRANSPORT');
       if(typeof jwt!=='string'||!jwt.trim()||/[\r\n]/.test(jwt))return fail('NOT_FOUND_OR_FORBIDDEN');
-      try{response=await http(this.origin+'/rest/v1/rpc/'+rpc,{
+      try{response=await http(endpoint,{
         method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,Accept:'application/json','Content-Type':'application/json'},
         body:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
       })}catch{return fail('TRANSPORT')}
-      if(expired){discard(response.body);return fail('TRANSPORT')}
+      if(expired||performance.now()>=deadline){discard(response.body);return fail('TRANSPORT')}
+      // Injected Response fixtures have no URL; real fetch responses must bind to this RPC.
+      if(response.redirected||(response.url!==''&&response.url!==endpoint)){discard(response.body);return fail('INVALID_RESPONSE')}
       try{this.current()}catch(e){discard(response.body);throw e}
       if(!response.ok){
         const status=response.status;
         if(status===401||status===403||status===429){discard(response.body);return fail(remoteError(status,null))}
         let raw:unknown;
-        try{raw=await boundedJson(response,SMALL,controller.signal)}catch(e){
+        try{raw=await boundedJson(response,SMALL,controller.signal,deadline)}catch(e){
           if(e instanceof PrivateAnalyticsError&&e.code==='TRANSPORT')throw e;
           raw=null;
         }
         this.current();return fail(remoteError(status,raw));
       }
-      const raw=await boundedJson(response,limit,controller.signal);
+      const raw=await boundedJson(response,limit,controller.signal,deadline);
       this.current();return raw;
     };
-    try{const raw=await Promise.race([work(),timeout]);this.current();return raw}
+    try{const raw=await Promise.race([work(),timeout]);this.current();if(performance.now()>=deadline)return fail('TRANSPORT');return raw}
     catch(e){this.current();if(e instanceof PrivateAnalyticsError)throw e;return fail('TRANSPORT')}
     finally{if(timer!==undefined)clearTimeout(timer);controller.abort()}
   }
