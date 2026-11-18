@@ -463,7 +463,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
   },[port,key,enabled,attempt]);
   const images=enabled&&view.key===key?view.images:new Map<string,CanvasImageView>();
   const count=(status:CanvasImageView['status'])=>refs.filter(ref=>images.get(ref.slotKey)?.status===status).length;
-  return {available:!!key,enabled,images,total:refs.length,ready:count('ready'),failed:count('failed'),deferred:count('deferred'),
+  return {available:!!key,enabled,requireFrozenPin,images,total:refs.length,ready:count('ready'),failed:count('failed'),deferred:count('deferred'),
     pinned:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned;}).length,
     frozenMatched:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned&&image.frozenDigestMatched;}).length,
     show:()=>{setEnabled(true);setAttempt(value=>value+1);},hide:()=>setEnabled(false)};
@@ -588,7 +588,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
     {media.available&&<div className="pv-editor-caption" role="group" aria-label="Private canvas image previews">
       {media.enabled?<><span role="status">{media.ready} of {media.total} owner-private image slots verified · {media.pinned} server pin matches · Not public</span>
         {media.ready+media.failed+media.deferred<media.total&&<span>Verifying private image bytes…</span>}
-        {media.failed>0&&<p role="alert">{media.failed} image slots could not be verified or decoded.</p>}
+        {media.failed>0&&<p role="alert">{media.failed} image slots could not be verified or decoded.{media.requireFrozenPin?' Frozen images require the exact saved digest and a matching independent server pin; current draft bytes are not substituted.':''}</p>}
         {media.frozenMatched>0&&<span>{media.frozenMatched} snapshot digest and server pin matches · Not a publication receipt</span>}
         {media.ready>0&&<details><summary>Verified image receipts</summary>
           <ul className="ws-editor-slots">{Array.from(media.images.entries()).flatMap(([slotKey,image])=>image.status==='ready'?[<li key={slotKey} style={{overflowWrap:'anywhere'}}>
@@ -2045,6 +2045,11 @@ function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort
     });
     return()=>{mounted.current=false;++generation.current;flight.current=false;unsubscribe();release();};
   },[port,epoch]);
+  function cancel(){
+    if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    // Stop this view, not the transport: a late response must never install a URL.
+    ++generation.current;flight.current=false;release();setState({status:'idle'});
+  }
   async function load(){
     if(flight.current||!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
     const started=++generation.current;
@@ -2075,10 +2080,11 @@ function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort
         onError={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'failed'});}}/>
       <p>Owner-private bytes verified. {state.pinned?'Independent server hash pin matched.':'No independent server hash pin verified.'} Public delivery is not authorized.</p>
       <details><summary>Verified raster receipt</summary><dl className="ws-asset-metadata"><div><dt>Decoded dimensions</dt><dd>{state.dimensions.width} × {state.dimensions.height}</dd></div><div><dt>Observed SHA-256</dt><dd style={{overflowWrap:'anywhere'}}>{state.digest}</dd></div></dl></details>
-      <button type="button" className="ws-secondary" onClick={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'idle'});}}>Close private preview</button>
+      <button type="button" className="ws-secondary" onClick={cancel}>Close private preview</button>
     </>:state.status==='pending'?<>
       <p role="status">Verifying private image bytes…</p>
       <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div>
+      <button type="button" className="ws-secondary" onClick={cancel}>Cancel private image preview</button>
     </>:<>
       {state.status==='failed'&&<p role="alert">Private image bytes could not be verified or displayed.</p>}
       <button type="button" className="ws-secondary" onClick={()=>void load()}>{state.status==='failed'?'Retry private image preview':'Preview verified private image'}</button>
