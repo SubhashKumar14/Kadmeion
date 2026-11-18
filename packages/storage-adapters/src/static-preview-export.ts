@@ -86,3 +86,29 @@ export async function exportStandaloneStaticPreview(input:SafePreviewInput,expec
   const archiveSha256=await sha256(zip);
   return {zip,htmlSha256,archiveSha256,previewOnly:true,publicUrl:null};
 }
+
+/**
+ * Reopen previously downloaded format-1 preview bytes against a freshly
+ * attested owner pin. Never render or execute archive-provided HTML. The
+ * current trusted renderer must reproduce the exact deterministic archive;
+ * an older renderer version may legitimately require a new export.
+ */
+export async function verifyStandaloneStaticPreview(
+  input:SafePreviewInput, archive:Uint8Array
+):Promise<Omit<StaticPreviewArchive,'zip'>>{
+  if(!(archive instanceof Uint8Array)||archive.byteLength<22||archive.byteLength>limits.maxBytes)
+    throw new ContractError('VALIDATION','Invalid static preview archive size.');
+  // Snapshot immutable local bytes before any asynchronous digest or render.
+  const supplied=Uint8Array.from(archive);
+  const stored=readStrictStoredZip(supplied,limits);
+  if(stored.size!==3||!stored.has('index.html')||!stored.has('kadmeion-static-preview.json')||!stored.has('README.txt'))
+    throw new ContractError('VALIDATION','Unexpected static preview archive entries.');
+  const expected=await exportStandaloneStaticPreview(input);
+  if(expected.zip.byteLength!==supplied.byteLength||expected.zip.some((byte,index)=>byte!==supplied[index]))
+    throw new ContractError('VALIDATION','Static preview archive does not match the current frozen renderer.');
+  const archiveSha256=await sha256(supplied);
+  const htmlSha256=await sha256(stored.get('index.html')!);
+  if(archiveSha256!==expected.archiveSha256||htmlSha256!==expected.htmlSha256)
+    throw new ContractError('VALIDATION','Static preview archive digest mismatch.');
+  return {archiveSha256,htmlSha256,previewOnly:true,publicUrl:null};
+}
