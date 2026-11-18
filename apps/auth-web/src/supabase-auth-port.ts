@@ -3,7 +3,7 @@ import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packa
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage } from '../../../packages/contracts/src/private-release-service.ts';
+import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage, OwnerPublicationIntentPage } from '../../../packages/contracts/src/private-release-service.ts';
 import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
@@ -1371,6 +1371,37 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const page=await service.listAcknowledgements(id,limit,cursor);
       await requireOwned();
       if(!current())throw new Error('Account changed while loading release history.');
+      return page;
+    });
+  }
+
+  /** Proposed S1 companion: C11 persisted consent IDs; never returns current public state. */
+  async listOwnerPublicationIntents(portfolioId:string,limit=50):Promise<AuthOutcome<OwnerPublicationIntentPage>>{
+    return this.outcome(async()=>{
+      if(!PROJECT_ID_PATTERN.test(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50)
+        throw new Error('Invalid publication history request.');
+      const id=portfolioId.toLowerCase();
+      const {session,userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const requireOwned=async()=>{
+        if(!current())throw new Error('Account changed during publication recovery.');
+        const params=new URLSearchParams({select:'id,owner_user_id',id:'eq.'+id,
+          owner_user_id:'eq.'+userId,trashed_at:'is.null',limit:'2'});
+        const rows=await this.ownerRest('portfolios?'+params,session.access_token);
+        const row=Array.isArray(rows)&&rows.length===1?rows[0]:null;
+        if(!current()||!row||typeof row!=='object'||Array.isArray(row)||
+          Object.keys(row).length!==2||row.id!==id||row.owner_user_id!==userId)
+          throw new Error('Portfolio publication history is unavailable.');
+      };
+      await requireOwned();
+      const {SupabasePrivateReleaseService}=await import('../../../packages/contracts/src/private-release-service.ts');
+      if(!current())throw new Error('Account changed during publication recovery.');
+      const service=new SupabasePrivateReleaseService(this.origin,this.publishableKey,
+        async()=>current()?session.access_token:null,this.fetcher);
+      const page=await service.listPublicationIntents(id,limit);
+      await requireOwned();
+      if(!current())throw new Error('Account changed during publication recovery.');
       return page;
     });
   }
