@@ -11,7 +11,7 @@ import {
 import { canonicalLibraryComponentSource, portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import { ContractError } from '../../../packages/contracts/src/project.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import type { OwnerPortfolio, OwnerFrozenRequest, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
 import { MoveToTrash } from './settings.tsx';
@@ -2316,19 +2316,78 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
   const [attempt,setAttempt]=useState(0);
   const [shareOpen,setShareOpen]=useState(false);
   const {record,error,privateMedia}=useSavedPrivatePreview(port,id,attempt);
-  useLayoutEffect(()=>{setView('visitor');setShareOpen(false);},[port,id,attempt,privateMedia?.ownerKey]);
+  const ownerKey=privateMedia?.ownerKey;
+  const [catalogue,setCatalogue]=useState<{ownerKey:string;rows:OwnerFrozenRequest[]}|null>(null);
+  const [catalogueAttempt,setCatalogueAttempt]=useState(0);
+  const [catalogueError,setCatalogueError]=useState('');
+  const [catalogueBusy,setCatalogueBusy]=useState(false);
+  const [selectedFrozen,setSelectedFrozen]=useState('');
+  const [frozenAttempt,setFrozenAttempt]=useState(0);
+  const [frozenReceipt,setFrozenReceipt]=useState<{ownerKey:string;request:OwnerFrozenRequest;snapshot:PortfolioSnapshot}|null>(null);
+  const [frozenError,setFrozenError]=useState('');
+  useLayoutEffect(()=>{
+    setView('visitor');setShareOpen(false);setCatalogue(null);setCatalogueAttempt(0);
+    setCatalogueError('');setCatalogueBusy(false);setSelectedFrozen('');setFrozenAttempt(0);
+    setFrozenReceipt(null);setFrozenError('');
+  },[port,id,attempt,ownerKey]);
+  useEffect(()=>{
+    if(!ownerKey||catalogueAttempt===0)return;
+    const epoch=port.getOwnerSessionEpoch();
+    let active=true;
+    setCatalogueBusy(true);setCatalogueError('');
+    void port.listOwnerFrozenRequests(id).then(reply=>{
+      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(reply.error||!reply.data){setCatalogueError(reply.error?.message??'Frozen revisions could not be loaded.');return;}
+      setCatalogue({ownerKey,rows:reply.data});
+    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)setCatalogueError('Frozen revisions could not be loaded.');})
+      .finally(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)setCatalogueBusy(false);});
+    return ()=>{active=false;};
+  },[port,id,ownerKey,catalogueAttempt]);
+  useEffect(()=>{
+    setFrozenReceipt(null);setFrozenError('');
+    if(!ownerKey||!selectedFrozen)return;
+    const choice=catalogue?.ownerKey===ownerKey?catalogue.rows.find(row=>row.requestId===selectedFrozen):undefined;
+    if(!choice){setFrozenError('Selected frozen request is unavailable. Choose a verified request again.');return;}
+    const epoch=port.getOwnerSessionEpoch();
+    let active=true;
+    const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
+    void (async()=>{
+      try{
+        const reply=await port.loadOwnerFrozenRelease(choice.requestId);
+        if(!current())return;
+        const pin=reply.data;
+        if(reply.error||!pin||choice.portfolioId!==id||pin.loadedPortfolioId!==id||
+           pin.loadedRevision!==choice.revision||pin.loadedSnapshotSha256!==choice.snapshotSha256||
+           pin.frozen.portfolioId!==id||pin.frozen.revision!==choice.revision||
+           pin.frozen.snapshotSha256!==choice.snapshotSha256||
+           pin.frozen.visibilityIntent!==choice.visibilityIntent||pin.frozen.status!=='FROZEN'||
+           pin.frozen.publicUrl!==null)throw new Error('Frozen revision did not match its request.');
+        const {assertAttestedPrivateFrozenRevision}=await import('../../../packages/storage-adapters/src/private-frozen-revision-loader.ts');
+        if(!current())return;
+        assertAttestedPrivateFrozenRevision({...pin,plan:[]});
+        if(current())setFrozenReceipt({ownerKey,request:choice,snapshot:pin.snapshot});
+      }catch{if(current())setFrozenError('The exact frozen revision could not be verified. The latest saved draft has not been substituted.');}
+    })();
+    return ()=>{active=false;};
+  },[port,id,ownerKey,selectedFrozen,catalogue,frozenAttempt]);
+  const frozen=frozenReceipt?.ownerKey===ownerKey&&frozenReceipt?.request.requestId===selectedFrozen?frozenReceipt:null;
+  const previewSnapshot=selectedFrozen?frozen?.snapshot??null:record?.snapshot??null;
+  const previewTitle=frozen?(readSeoFields(frozen.snapshot).title||'Frozen private portfolio'):record?.title??'Portfolio preview';
+  const reviewMedia=privateMedia&&(!selectedFrozen||frozen)?
+    {port,ownerKey:frozen?JSON.stringify([ownerKey,frozen.request.requestId,frozen.request.snapshotSha256]):privateMedia.ownerKey}:undefined;
   return <section className="ws-portfolio-preview" aria-labelledby="ws-preview-title">
     <header className="ws-project-head ws-preview-header">
       <div className="ws-heading">
         <a href={STUDIO+'/'+id+'/edit'}>Back to portfolio editor</a>
         <p className="ws-kicker">PORTFOLIO STUDIO / PREVIEW</p>
         <h1 id="ws-preview-title">{record?.title??'Portfolio preview'}</h1>
-        <p>{record?'Saved owner-private revision '+record.revision:'Checking private draft'}</p>
+        <p>{selectedFrozen?(frozen?'Frozen owner-private revision '+frozen.request.revision:'Checking exact frozen revision'):
+          record?'Saved owner-private revision '+record.revision:'Checking private draft'}</p>
       </div>
       {record&&<div className="ws-preview-header-status">
         <span>Private preview</span>
         <span>{device===390?'Phone':device===768?'Tablet':'Desktop'}</span>
-        <button type="button" className="ws-secondary" onClick={()=>setShareOpen(true)}>Share portfolio</button>
+        {!selectedFrozen&&<button type="button" className="ws-secondary" onClick={()=>setShareOpen(true)}>Share portfolio</button>}
       </div>}
     </header>
     {error&&<div className="ws-inline-alert" role="alert">
@@ -2341,6 +2400,23 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         <p className="ws-kicker">REVIEW BEFORE PUBLISHING</p>
         <h2>Preview modes</h2>
         <p>Switch between the author view and a simulation of visitor appearance.</p>
+        <div className="ws-preview-device-group">
+          <label htmlFor="preview-revision">Preview revision</label>
+          <select id="preview-revision" value={selectedFrozen} disabled={catalogueBusy}
+            onChange={event=>{
+              setFrozenReceipt(null);setFrozenError('');setShareOpen(false);
+              setSelectedFrozen(event.currentTarget.value);
+            }}>
+            <option value="">Latest saved draft · revision {record.revision}</option>
+            {catalogue?.ownerKey===ownerKey&&catalogue.rows.map(row=>
+              <option key={row.requestId} value={row.requestId}>Frozen revision {row.revision} · {row.visibilityIntent} · {row.snapshotSha256.slice(0,10)}</option>)}
+          </select>
+          <button type="button" className="ws-secondary" disabled={catalogueBusy}
+            onClick={()=>setCatalogueAttempt(n=>n+1)}>{catalogueBusy?'Checking frozen revisions…':catalogue?'Refresh frozen revisions':'Load frozen revisions'}</button>
+          {catalogueError&&<p role="alert">{catalogueError}</p>}
+          {catalogue?.ownerKey===ownerKey&&catalogue.rows.length===0&&<p>No private frozen revisions are available.</p>}
+          {frozen&&<p>Verified frozen snapshot SHA-256: <code style={{overflowWrap:'anywhere'}}>{frozen.request.snapshotSha256}</code></p>}
+        </div>
         <div className="ws-preview-mode-set" role="group" aria-label="Appearance mode">
           <button type="button" className="ws-secondary" aria-pressed={view==='author'}
             onClick={()=>setView('author')}>Author preview
@@ -2366,15 +2442,18 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
       <div className="ws-preview-center">
         <div className="ws-preview-canvas-heading">
           <span>CANVAS / {device===390?'PHONE':device===768?'TABLET':'DESKTOP'}</span>
-          <span>Saved revision · No public delivery</span>
+          <span>{selectedFrozen?'Frozen revision':'Saved revision'} · No public delivery</span>
         </div>
         <div className="ws-preview-stage">
-          <PortfolioCanvas snapshot={record.snapshot} title={record.title}
-            simulation={view==='visitor'} privateMedia={view==='author'?privateMedia:undefined} width={device||undefined}/>
+          {previewSnapshot?<PortfolioCanvas snapshot={previewSnapshot} title={previewTitle}
+            simulation={view==='visitor'} privateMedia={view==='author'?reviewMedia:undefined} width={device||undefined}/>:
+            frozenError?<div role="alert" className="ws-inline-alert">{frozenError}
+              <button type="button" className="ws-secondary" onClick={()=>setFrozenAttempt(n=>n+1)}>Retry frozen revision</button></div>:
+              <p role="status">Verifying the selected frozen snapshot…</p>}
         </div>
         <p className="ws-preview-caution" role="status">{view==='visitor'
           ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
-          : 'Private author preview of the saved revision. Verified owner-private images may be shown; empty slots may be indicated. No draft is published from this page.'}</p>
+          : 'Private author preview of the '+(selectedFrozen?'selected frozen revision':'saved revision')+'. Verified owner-private images may be shown. A frozen image requires a matching server pin and independent static artifact verification; no draft is published here.'}</p>
       </div>
       <aside className="ws-preview-checklist" aria-label="Private release checklist">
         <p className="ws-kicker">PREVIEW CHECKLIST</p>
@@ -2394,7 +2473,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         </div>
       </aside>
     </div>}
-    {record&&shareOpen&&<PrivateShareScene record={record} onClose={()=>setShareOpen(false)}/>} 
+    {record&&!selectedFrozen&&shareOpen&&<PrivateShareScene record={record} onClose={()=>setShareOpen(false)}/>} 
   </section>;
 }
 
