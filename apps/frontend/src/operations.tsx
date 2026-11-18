@@ -564,7 +564,7 @@ function AccountSharingPanel({service,cases,committed,recheck,isCurrent}:Props){
   return <section className="ws-project-aside" aria-label="Account public-sharing authority">
     <h2>Case-bound public-sharing restriction</h2>
     <p>Only an administrator can apply or resolve a verified restriction. Private authoring, account access and appeals are not revoked. Restoring eligibility never republishes old releases.</p>
-    <label className="ws-ops-field">Account restriction case
+    <label className="ws-ops-field ws-ops-form">Account restriction case
       <select value={chosen} disabled={busy||!!retry} onChange={event=>{
         if(busy||retry||!gate.invalidate())return;clearDecision();setLoaded(null);setChosen(event.target.value);
       }}><option value="">Choose a documented case</option>
