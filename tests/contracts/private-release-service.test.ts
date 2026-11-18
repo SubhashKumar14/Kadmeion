@@ -90,3 +90,59 @@ test('release receipts with mismatched frozen content are rejected',async()=>{
       portfolioId,operationId,1,'PUBLIC'),{code:'INVALID_ACK'});
   }
 });
+
+test('C11 historical owner acknowledgement cursor preserves microseconds, tie order and private scope',async()=>{
+  const ids=['40000000-0000-4000-8000-000000000004','50000000-0000-4000-8000-000000000005','60000000-0000-4000-8000-000000000006'];
+  const rows=ids.map((intent_id,i)=>({intent_id,portfolio_id:portfolioId,request_id:requestId,
+    verified_at:i===2?'2026-11-18T12:00:00.000001Z':'2026-11-18T12:00:00.000002Z'}));
+  let calls=0;
+  const service=client(async(input,init)=>{
+    const url=new URL(String(input));calls++;
+    assert.equal(url.pathname,'/rest/v1/verified_unlisted_releases');
+    assert.equal(url.searchParams.get('select'),'intent_id,portfolio_id,request_id,verified_at');
+    assert.equal(url.searchParams.get('portfolio_id'),'eq.'+portfolioId);
+    assert.equal(url.searchParams.get('order'),'verified_at.desc,intent_id.asc');
+    assert.equal(url.searchParams.get('limit'),'3');
+    assert.equal(init?.method,'GET');assert.equal(init?.cache,'no-store');assert.equal(init?.redirect,'error');
+    if(calls===1){assert.equal(url.searchParams.get('or'),null);return Response.json(rows)}
+    assert.match(url.searchParams.get('or')??'',/000002Z/);
+    assert.ok(url.searchParams.get('or')?.includes(ids[1]));
+    return Response.json(rows.slice(2));
+  });
+  const first=await service.listAcknowledgements(portfolioId,2);
+  assert.deepEqual(first.items,rows.slice(0,2).map(x=>({intentId:x.intent_id,portfolioId,requestId,verifiedAt:x.verified_at})));
+  assert.deepEqual(first.nextCursor,{version:1,portfolioId,verifiedAt:rows[1].verified_at,intentId:ids[1]});
+  assert.deepEqual(await service.listAcknowledgements(portfolioId,2,first.nextCursor),
+    {items:[{intentId:ids[2],portfolioId,requestId,verifiedAt:rows[2].verified_at}],nextCursor:null});
+  assert.equal(calls,2);
+});
+test('C11 history denies foreign rows, cursor replay, duplicate IDs, unverified flags and changed token',async()=>{
+  const row={intent_id:operationId,portfolio_id:portfolioId,request_id:requestId,verified_at:'2026-11-18T12:00:00.000002Z'};
+  const cursor={version:1 as const,portfolioId,verifiedAt:row.verified_at,intentId:operationId};
+  for(const rows of [[{...row,portfolio_id:requestId}],[row,row],
+    [{...row,publicServingEnabled:true}],[{...row,verified_at:'2026-02-30T00:00:00Z'}]]){
+    await assert.rejects(client(async()=>Response.json(rows)).listAcknowledgements(portfolioId),{code:'INVALID_ACK'});
+  }
+  await assert.rejects(client(async()=>Response.json([row])).listAcknowledgements(portfolioId,1,cursor),{code:'INVALID_ACK'});
+  let token='owner-token';const service=new SupabasePrivateReleaseService(base,'publishable-key',async()=>token,
+    async()=>{token='different-owner-token';return Response.json([row])});
+  await assert.rejects(service.listAcknowledgements(portfolioId),{code:'AUTH_EXPIRED'});
+  let calls=0;const invalid=client(async()=>{calls++;return Response.json([])});
+  await assert.rejects(invalid.listAcknowledgements(portfolioId,51),{code:'VALIDATION'});
+  await assert.rejects(invalid.listAcknowledgements(portfolioId,1,{...cursor,portfolioId:requestId}),{code:'VALIDATION'});
+  assert.equal(calls,0);
+});
+test('C11 bounded freeze transport never admits misdirected or malformed success acknowledgements',async()=>{
+  const target=base+'/rest/v1/rpc/freeze_private_release_request';
+  for(const patch of [{redirected:true,url:target},{url:'https://foreign.invalid/freeze'}]){
+    const response=Response.json(receipt);
+    for(const [name,value] of Object.entries(patch))Object.defineProperty(response,name,{value});
+    let calls=0;
+    await assert.rejects(client(async()=>{calls++;return response}).freeze(portfolioId,operationId,1,'PUBLIC'),{code:'PROVIDER_UNAVAILABLE'});
+    assert.equal(calls,1);
+  }
+  let token='owner-token';
+  const changed=new SupabasePrivateReleaseService(base,'publishable-key',async()=>token,
+    async()=>{token='other-token';return Response.json(receipt)});
+  await assert.rejects(changed.freeze(portfolioId,operationId,1,'PUBLIC'),{code:'AUTH_EXPIRED'});
+});
