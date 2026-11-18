@@ -447,7 +447,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
 
   async function blockCandidate(){
     const target=confirmBlock;
-    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||busy||blockFlight.current) return;
+    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||readsBusy||blockFlight.current) return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
     const flight={};
@@ -522,7 +522,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   /** A latest-50 catalogue omission is not an authorization failure.
    * Reuse an older request only after checking the exact owner-RPC frozen pin. */
   async function selectFrozenRequest(request:OwnerFrozenRequest){
-    if (busy||historySelectionPending) return;
+    if (readsBusy) return;
     setAckSelection(null);
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     const visible=revisions?.find(item=>item.revision===request.revision);
@@ -668,7 +668,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {notice && <p role="status" className="ws-field-hint">{notice}</p>}
     {!record && !error && readPhase==='portfolio' && <ReleasePending label="Loading private release details…" detail />}
-    {error && <button type="button" className="ws-secondary" disabled={busy||historySelectionPending} onClick={()=>{setError('');setRetry(value=>value+1);}}>
+    {error && <button type="button" className="ws-secondary" disabled={readsBusy} onClick={()=>{setError('');setRetry(value=>value+1);}}>
       Retry private release check</button>}
     {record && <div className="ws-project-detail ws-owner-columns">
       {mode==='staging' && <aside className="ws-project-aside ws-release-visual" aria-labelledby="staging-visual-title">
@@ -750,13 +750,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {(pointer.status==='PREPARED_PRIVATE'||confirmBlock||blockOperation.current) && <div className="ws-release-action">
               <h3>Withdraw private candidate</h3>
               <p>Blocking the pointer withdraws its database delivery route and pending delivery state while preserving the saved draft. External HTTP and CDN revocation still require independent verification.</p>
-              {!confirmBlock ? <button type="button" className="ws-secondary" disabled={busy||historySelectionPending}
+              {!confirmBlock ? <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>setConfirmBlock(blockOperation.current?.target??pointer)}>
                 {blockOperation.current?'Review pending private block':'Review private block'}</button> : <div className="ws-release-confirm">
                 <p>Block this private candidate reviewed at generation {confirmBlock.generation}?</p>
                 <p className="ws-field-hint">The current pointer is rechecked before submission. The service blocks the current pointer without an atomic expected-generation condition; a concurrent update can still change the target. A recorded block is not proof of public revocation.</p>
                 {blockOperation.current?.receipt&&<p role="status">A database receipt was recorded. Retry checks current state without submitting another block.</p>}
-                <button type="button" className="ws-primary" disabled={busy||historySelectionPending} onClick={()=>void blockCandidate()}>
+                <button type="button" className="ws-primary" disabled={readsBusy} onClick={()=>void blockCandidate()}>
                   {busy?'Checking…':blockOperation.current?.receipt?'Recheck private pointer':'Confirm private block'}</button>
                 <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setConfirmBlock(null)}>
                   {blockOperation.current?'Close review (keep operation)':'Cancel'}</button>
@@ -776,14 +776,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
             onRetry={retryPrivateReads} retryDisabled={readsBusy}
             onSelect={request=>void selectFrozenRequest(request)}
-            selectionDisabled={busy||historySelectionPending}
+            selectionDisabled={readsBusy}
             activeRequestId={frozen?.requestId}
             candidateRequestId={pointer?.candidateRequestId??undefined} />
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
             {historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the exact private frozen revision…" />}
             {historySelectionError&&<p role="alert">{historySelectionError}</p>}
             {historySelectionError&&!historySelectionPending&&
-              <button type="button" className="ws-secondary" disabled={busy}
+              <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={cancelHistoricalSelection}>Cancel frozen pin selection</button>
@@ -805,7 +805,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             onClick={retryPrivateReads}>Retry saved revisions</button></>}
           {revisions===null&&!revisionError&&readPhase==='revisions'&&<ReleasePending label="Loading saved revisions…" />}
           <label>Saved revision
-            <select aria-label="Saved revision" value={selectedRevision??''} disabled={busy||historySelection!==null||!!frozen||!revisions?.length}
+            <select aria-label="Saved revision" value={selectedRevision??''} disabled={readsBusy||historySelection!==null||!!frozen||!revisions?.length}
               onChange={event=>{
                 const next=Number(event.target.value);
                 setSelectedRevision(revisions?.some(row=>row.revision===next)?next:null);
@@ -822,7 +822,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           </label>
           {revisions?.length===50 && <p className="ws-field-hint">Showing the latest 50 saved revisions.</p>}
           <label>Future visibility intent
-            <select value={visibility} disabled={busy||historySelection!==null||!!frozen} onChange={event=>{
+            <select value={visibility} disabled={readsBusy||historySelection!==null||!!frozen} onChange={event=>{
               setVisibility(event.target.value==='PUBLIC'?'PUBLIC':'UNLISTED');
               operation.current=null;
             }}><option value="UNLISTED">Unlisted (not activated)</option>
@@ -855,7 +855,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
             onRetry={retryPrivateReads} retryDisabled={readsBusy}
             onSelect={request=>void selectFrozenRequest(request)}
-            selectionDisabled={busy||historySelectionPending}
+            selectionDisabled={readsBusy}
             activeRequestId={frozen?.requestId} />
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
             {mode==='publish'&&historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the exact private frozen revision…" />}
@@ -864,7 +864,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               historySelection.portfolioId===id&&historySelection.status==='FROZEN'&&
               !revisions?.some(row=>row.revision===historySelection.revision&&
                 row.snapshotSha256!==historySelection.snapshotSha256) &&
-              <button type="button" className="ws-secondary" disabled={busy}
+              <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={cancelHistoricalSelection}>Cancel frozen pin selection</button>
@@ -890,7 +890,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <h3 id="reviewer-grant-title">Reviewer access</h3>
             <p>Register a time-limited owner-private grant. No reviewer URL can be shared until host authorization, expiry and revocation are proven.</p>
             {!grant ? <>
-              <label>Grant lifetime<select disabled={busy||!!grantOperation.current} value={validMinutes}
+              <label>Grant lifetime<select disabled={readsBusy||!!grantOperation.current} value={validMinutes}
                 onChange={event=>{setValidMinutes(Number(event.target.value));grantOperation.current=null;}}>
                 <option value={30}>30 minutes</option><option value={60}>1 hour</option>
                 <option value={1440}>24 hours</option></select></label>
