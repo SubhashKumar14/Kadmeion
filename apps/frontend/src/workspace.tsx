@@ -11,6 +11,7 @@ import { PortfolioRelease, releaseRoute } from './release.tsx';
 import { OwnerSettings, isSettingsRoute } from './settings.tsx';
 import { OperatorConsole, isOperatorRoute } from './operations.tsx';
 import { GrowthApp, isGrowthRoute } from './growth.tsx';
+import { VerifiedOwnerAnalytics } from './portfolio-analytics.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
@@ -350,6 +351,25 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
   </section>;
 }
 
+/** C13 owner route. This import and route are admitted only with the actual
+ * owner-private producer and bridge. No collection or count request here. */
+function OwnerAnalyticsRoute({port, verifiedOwner}: {
+  port: SupabaseBrowserAuthPort; verifiedOwner: {id:string;epoch:number};
+}) {
+  const sections = [["/app/growth","Growth overview"],["/app/growth/activity","Developer activity"],["/app/growth/devscore","Private DevScore"],["/app/growth/goals","Your goals"],["/app/analytics","Portfolio analytics"],["/app/integrations","Platform connections"]] as const;
+  return <section className="ws-growth ws-analytics-route" aria-labelledby="growth-title">
+    <div className="ws-heading">
+      <p className="ws-kicker">BUILD · SHOWCASE · EVOLVE</p>
+      <h1 id="growth-title">Portfolio analytics</h1>
+      <p>Private by default. Review verified consent and approximate recorded requests, not unique visitors.</p>
+    </div>
+    <nav className="ws-growth-nav" aria-label="Growth sections">
+      {sections.map(([href,title])=><a key={href} href={href} aria-current={href==='/app/analytics'?'page':undefined}>{title}</a>)}
+    </nav>
+    <VerifiedOwnerAnalytics port={port} verifiedOwner={verifiedOwner}/>
+  </section>;
+}
+
 export function WorkspaceApp() {
   // Connection hints are not authorization. Share one browser subscription across
   // the gate, workspace and onboarding; reconnect never initiates verification.
@@ -599,6 +619,7 @@ export function WorkspaceApp() {
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
       isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
       isOperatorRoute(route) && authRef.current ? <OperatorConsole port={authRef.current} path={route}/> :
+      route === '/app/analytics' && authRef.current ? <OwnerAnalyticsRoute port={authRef.current} verifiedOwner={{id:gate.owner.id,epoch:gate.epoch}}/> :
       isGrowthRoute(route) && authRef.current ? <GrowthApp port={authRef.current} path={route}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
