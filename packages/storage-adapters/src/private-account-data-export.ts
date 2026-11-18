@@ -328,6 +328,77 @@ function assertExportResponseScope(response:Response,requestUrl:string):void {
 function exportJsonContentType(headers:Headers):boolean {
   return /^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(headers.get('content-type')??'');
 }
+export interface PrivateOwnerAnnexArtifact {
+  filename:'kadmeion-portfolio-analytics-annex.json'|'kadmeion-github-facts-annex.json';
+  mime:'application/json';
+  bytes:Uint8Array;
+  sha256:string;
+  records:number;
+  status:'BOUNDED_OWNER_ANNEX';
+  completeAccountExport:false;
+  deletionAllowed:false;
+}
+const ANNEX_BUCKETS=['DIRECT_OR_UNKNOWN','SEARCH','SOCIAL','OTHER_EXTERNAL','INTERNAL'] as const;
+function annexDay(v:unknown):number|null{
+  if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(v))return null;
+  const n=Date.parse(v+'T00:00:00Z');
+  return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===v?n:null;
+}
+function annexInstant(v:unknown):number|null{
+  if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(v)||annexDay(v.slice(0,10))===null)return null;
+  const n=Date.parse(v);return Number.isFinite(n)?n:null;
+}
+function boundedOwnedIds(raw:unknown,ownerId:string):Set<string>{
+  requireCondition(Array.isArray(raw)&&raw.length<=100,'LIMIT_EXCEEDED','Owner annex portfolio inventory exceeds its limit.');
+  const ids=new Set<string>();
+  for(const row of raw){
+    requireCondition(object(row)&&exactFields(row,['id','owner_user_id'])&&row.owner_user_id===ownerId&&isUuid(row.id)&&!ids.has(row.id),
+      'INTEGRITY','Owner annex inventory is invalid.');
+    ids.add(row.id);
+  }
+  return ids;
+}
+export function verifyOwnerAnalyticsAnnex(raw:unknown,ownerId:string,ids:ReadonlySet<string>):JsonObject{
+  requireCondition(object(raw)&&exactFields(raw,['kind','schemaVersion','scope','ownerUserId','asOfUtc','fromDay','toDay','retentionDays','consents','aggregates','quality','limitations'])&&
+    raw.kind==='KADMEION_PORTFOLIO_ANALYTICS_ANNEX'&&raw.schemaVersion===1&&raw.scope==='OWNER_PORTFOLIO_ANALYTICS'&&
+    raw.ownerUserId===ownerId&&raw.retentionDays===30&&object(raw.limitations)&&
+    exactFields(raw.limitations,['completeVisitorCoverage','operationalQuotaValuesIncluded','sameDayOperationalCounterRetained','backupErasureVerified'])&&
+    raw.limitations.completeVisitorCoverage===false&&raw.limitations.operationalQuotaValuesIncluded===false&&
+    raw.limitations.sameDayOperationalCounterRetained===true&&raw.limitations.backupErasureVerified===false&&
+    Array.isArray(raw.consents)&&raw.consents.length===ids.size&&ids.size<=100&&Array.isArray(raw.aggregates)&&raw.aggregates.length<=15000,
+    'INTEGRITY','Invalid owner analytics annex receipt.');
+  const asOf=annexInstant(raw.asOfUtc),lo=annexDay(raw.fromDay),hi=annexDay(raw.toDay);
+  requireCondition(asOf!==null&&lo!==null&&hi!==null&&lo===hi-29*86400000&&
+    hi===Math.floor(asOf/86400000)*86400000,'INTEGRITY','Invalid analytics retention window.');
+  const consent=new Map<string,{enabled:boolean;coverage:number|null}>();
+  for(const row of raw.consents){
+    requireCondition(object(row)&&exactFields(row,['portfolioId','enabled','version','policyVersion','enabledAt','coverageStartedAt','updatedAt'])&&
+      typeof row.portfolioId==='string'&&ids.has(row.portfolioId)&&!consent.has(row.portfolioId)&&typeof row.enabled==='boolean'&&
+      typeof row.version==='number'&&Number.isSafeInteger(row.version)&&row.version>=0&&row.policyVersion===1,
+      'INTEGRITY','Invalid or foreign analytics consent.');
+    const enabledAt=annexInstant(row.enabledAt),coverage=annexInstant(row.coverageStartedAt),updated=annexInstant(row.updatedAt);
+    requireCondition(row.enabled?(row.version>0&&row.version<Number.MAX_SAFE_INTEGER&&enabledAt!==null&&coverage!==null&&updated!==null&&enabledAt<=coverage&&coverage<=updated&&updated<=asOf):
+      (row.enabledAt===null&&row.coverageStartedAt===null&&(row.version===0?row.updatedAt===null:updated!==null&&updated<=asOf)),
+      'INTEGRITY','Invalid analytics consent chronology.');
+    consent.set(row.portfolioId,{enabled:row.enabled,coverage});
+  }
+  const seen=new Set<string>(),totals=new Map<string,number>();
+  for(const row of raw.aggregates){
+    requireCondition(object(row)&&exactFields(row,['portfolioId','utcDay','referrerBucket','views'])&&typeof row.portfolioId==='string'&&
+      typeof row.referrerBucket==='string'&&ANNEX_BUCKETS.some(v=>v===row.referrerBucket)&&typeof row.views==='number'&&
+      Number.isSafeInteger(row.views)&&row.views>=1&&row.views<=250,'INTEGRITY','Invalid analytics aggregate.');
+    const c=consent.get(row.portfolioId),day=annexDay(row.utcDay),key=row.portfolioId+':'+row.utcDay+':'+row.referrerBucket;
+    requireCondition(c?.enabled===true&&c.coverage!==null&&day!==null&&day>=lo&&day<=hi&&
+      day>=Math.floor(c.coverage/86400000)*86400000&&!seen.has(key),'INTEGRITY','Unconsented, duplicate or out-of-window analytics aggregate.');
+    seen.add(key);
+    const dayKey=row.portfolioId+':'+row.utcDay,total=(totals.get(dayKey)??0)+row.views;
+    requireCondition(total<=250,'INTEGRITY','Analytics daily aggregate exceeds its bound.');
+    totals.set(dayKey,total);
+  }
+  requireCondition(raw.quality===(raw.aggregates.length?'PARTIAL':'UNAVAILABLE'),'INTEGRITY','Analytics quality must match the retained records.');
+  return raw;
+}
+
 export class SupabasePrivateAccountDataExporter {
   private readonly origin:string;
   private readonly publishableKey:string;
@@ -415,6 +486,31 @@ export class SupabasePrivateAccountDataExporter {
     const raw=await this.json('/auth/v1/user',65536);
     requireCondition(object(raw)&&isUuid(raw.id),'UNVERIFIED','Owner identity was not verified.');
     return {id:raw.id,email:typeof raw.email==='string'?raw.email:null};
+  }
+  /** Separate exported data annex, not a snapshot-bound or complete account archive. */
+  async exportAnalyticsAnnex():Promise<PrivateOwnerAnnexArtifact>{
+    const jwt=await this.accessToken();
+    requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===jwt,'AUTH_EXPIRED','The account session changed.');
+      return jwt;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const owner=await scoped.owner();
+    const list=async()=>boundedOwnedIds(await scoped.json('/rest/v1/portfolios?select=id,owner_user_id&owner_user_id=eq.'+
+      encodeURIComponent(owner.id)+'&order=id.asc&limit=101',65536),owner.id);
+    const before=await list();
+    const raw=await scoped.json('/rest/v1/rpc/owner_export_portfolio_analytics_annex',12*1024*1024,{});
+    const verified=verifyOwnerAnalyticsAnnex(raw,owner.id,before);
+    const after=await list();
+    requireCondition(after.size===before.size&&[...before].every(id=>after.has(id)),'UNVERIFIED','Portfolio inventory changed during analytics export.');
+    requireCondition((await scoped.owner()).id===owner.id,'AUTH_EXPIRED','The account changed during analytics export.');
+    const bytes=encoder.encode(JSON.stringify(verified));
+    enforceExportBudget(0,bytes.byteLength,12*1024*1024);
+    const digest=await sha256(bytes);
+    await sameSession();
+    return {filename:'kadmeion-portfolio-analytics-annex.json',mime:'application/json',bytes,sha256:digest,
+      records:(verified.aggregates as unknown[]).length,status:'BOUNDED_OWNER_ANNEX',completeAccountExport:false,deletionAllowed:false};
   }
   private async reconcile(snapshotId:string):Promise<number> {
     const raw=await this.json('/rest/v1/rpc/reconcile_private_account_exit_storage',
