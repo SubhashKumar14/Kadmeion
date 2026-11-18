@@ -6,7 +6,8 @@ const app = paths.filter((path) => path !== 'README.md' && !path.startsWith('pro
   !path.startsWith('node_modules/') && !path.startsWith('dist/') &&
   !path.startsWith('coverage/'));
 const planned = 200;
-const formerCeiling = 280; // DECISION-B16-002: historical reporting only, not a failure threshold.
+const formerCeiling = 280; // Historical comparison only.
+const conditionalCeiling = 282; // R7 owner decision; exact reservations remain mandatory.
 // Fail closed if the pinned historical baseline is unavailable.
 const baselineRef = '7d03713fbbef4f02215d38b28932ad3952adefad';
 const baselinePaths = new Set(execFileSync('git', ['ls-tree', '-r', '--name-only', baselineRef], { encoding: 'utf8' }).trim().split('\n').filter(Boolean));
@@ -18,6 +19,16 @@ const authorizedAdditionPaths = [
   // EVENT-020: exact individually reserved C05 and C08 migrations; no blanket grant.
   'supabase/migrations/20261117160000_owner_profile_assets.sql',
   'supabase/migrations/20261117160400_owner_preference_cas.sql',
+  // R7 owner decision / S15-R7-001: exact C11, C14, and project guard reservations.
+  'supabase/migrations/20261117160500_authoritative_public_delivery_receipts.sql',
+  'supabase/migrations/20261117160600_case_bound_account_sharing_restriction.sql',
+  'supabase/migrations/20261117160700_owner_project_autosave_guard.sql',
+  // R7 forward-only replacements of uncreated 160100/160200; technical admission gates remain.
+  'supabase/migrations/20261117160800_private_provider_facts.sql',
+  'supabase/migrations/20261117160900_consented_portfolio_analytics.sql',
+  'supabase/functions/sync-provider-facts/index.ts',
+  'apps/frontend/src/portfolio-analytics.tsx',
+  'api/portfolio-analytics.mjs',
   // S15-013 / S00-016: isolated C13 S12/S13 service and test only.
   'packages/contracts/src/private-analytics-service.ts',
   'tests/contracts/private-analytics.test.ts',
@@ -148,8 +159,13 @@ console.log(`Kadmeion authored application/config/test files: ${app.length} / or
 if (app.length > planned) {
   console.warn(`File-budget variance: +${app.length - planned} actual files; ${extras.length} separately justified historical/reserved files; former ceiling ${formerCeiling} (reporting only).`);
 }
-console.log(`Nonexception files: ${nonexceptionCount}; separately justified/reserved: ${extras.length}; variance vs former 280: ${app.length - formerCeiling}. Numerical thresholds are informational under DECISION-B16-002.`);
+console.log(`Nonexception files: ${nonexceptionCount}; separately justified/reserved: ${extras.length}; variance vs former 280: ${app.length - formerCeiling}. R7 conditional ceiling: ${conditionalCeiling}.`);
 
+
+if (app.length > conditionalCeiling) {
+  console.error(`R7 conditional file ceiling exceeded: ${app.length} > ${conditionalCeiling}.`);
+  process.exitCode = 1;
+}
 
 const unreserved = app.filter(path => !baselinePaths.has(path) && !reservedAdditions.has(path));
 if (unreserved.length) {

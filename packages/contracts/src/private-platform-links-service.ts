@@ -52,30 +52,6 @@ function isLink(v:unknown,owner:string):v is PrivatePlatformLink {
     typeof v.updated_at!=='string'||!Number.isFinite(Date.parse(v.updated_at)))return false;
   return true;
 }
-async function boundedJson(response:Response):Promise<unknown> {
-  const type=response.headers.get('content-type');
-  if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
-    throw new PrivatePlatformLinkError('INVALID_ACK');
-  const length=response.headers.get('content-length');
-  const limit=64*1024;
-  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
-    throw new PrivatePlatformLinkError('INVALID_ACK');
-  if(!response.body)throw new PrivatePlatformLinkError('INVALID_ACK');
-  const reader=response.body.getReader();let size=0;const parts:Uint8Array[]=[];
-  try{
-    for(;;){
-      const chunk=await reader.read();
-      if(chunk.done)break;
-      if(!(chunk.value instanceof Uint8Array)||((size+=chunk.value.length)>limit))
-        throw new PrivatePlatformLinkError('INVALID_ACK');
-      parts.push(chunk.value);
-    }
-  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-  const bytes=new Uint8Array(size);let offset=0;
-  for(const part of parts){bytes.set(part,offset);offset+=part.length;}
-  try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as unknown;}
-  catch{throw new PrivatePlatformLinkError('INVALID_ACK');}
-}
 export class SupabasePrivatePlatformLinksService {
   private readonly origin:string;
   private readonly key:string;
@@ -96,30 +72,57 @@ export class SupabasePrivatePlatformLinksService {
     this.origin=url.origin;this.key=key;this.ownerId=ownerId;this.token=token;this.http=http;
   }
   private async request(method:'GET'|'POST'|'PATCH'|'DELETE',query:string,body?:Record<string,unknown>) {
-    const jwt=await this.token();
-    if(!jwt)throw new PrivatePlatformLinkError('AUTH_EXPIRED');
-    let response:Response;
-    try{
-      response=await this.http(this.origin+'/rest/v1/private_platform_links?'+query,{
+    const url=new URL(this.origin+'/rest/v1/private_platform_links?'+query).href;
+    const limit=64*1024,timeout=10000,deadline=performance.now()+timeout,controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>|undefined,reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+    const unavailable=()=>new PrivatePlatformLinkError('PROVIDER_UNAVAILABLE');
+    const invalid=()=>new PrivatePlatformLinkError('INVALID_ACK');
+    const check=()=>{if(controller.signal.aborted||performance.now()>=deadline)throw unavailable()};
+    const cancelBody=(r:Response)=>{try{void r.body?.cancel().catch(()=>{})}catch{}};
+    const cancelReader=()=>{const held=reader;reader=undefined;if(held){try{void held.cancel().catch(()=>{})}catch{}try{held.releaseLock()}catch{}}};
+    const timed=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(unavailable())},timeout)});
+    const work=async()=>{
+      let jwt:string|null;try{jwt=await this.token()}catch{throw unavailable()}
+      check();if(typeof jwt!=='string'||!jwt||jwt.length>8192||/\s/.test(jwt))throw new PrivatePlatformLinkError('AUTH_EXPIRED');
+      let response:Response;
+      try{response=await this.http(url,{
         method,headers:{apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
           ...(body===undefined?{}:{'Content-Type':'application/json'}),
           ...(method==='GET'?{}:{Prefer:'return=representation'})},
         body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10000)
-      });
-    }catch{throw new PrivatePlatformLinkError('PROVIDER_UNAVAILABLE');}
-    if(!response.ok){
-      await response.body?.cancel().catch(()=>{});
-      if(response.status===401)throw new PrivatePlatformLinkError('AUTH_EXPIRED');
-      if(response.status===403)throw new PrivatePlatformLinkError('FORBIDDEN');
-      if(response.status===409)throw new PrivatePlatformLinkError('CONFLICT');
-      throw new PrivatePlatformLinkError('PROVIDER_UNAVAILABLE');
-    }
-    const raw=await boundedJson(response);
-    if(!Array.isArray(raw)||raw.length>6||raw.some(v=>!isLink(v,this.ownerId))||
-      new Set(raw.map(v=>v.provider)).size!==raw.length)
-      throw new PrivatePlatformLinkError('INVALID_ACK');
-    return raw as PrivatePlatformLink[];
+        credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
+      })}catch{throw unavailable()}
+      if(!(response instanceof Response))throw invalid();
+      try{check()}catch(e){cancelBody(response);throw e}
+      if(response.redirected||(response.url!==url&&!(response.url===''&&response.type==='default'))){cancelBody(response);throw invalid()}
+      if(!response.ok){
+        cancelBody(response);
+        if(response.status===401)throw new PrivatePlatformLinkError('AUTH_EXPIRED');
+        if(response.status===403)throw new PrivatePlatformLinkError('FORBIDDEN');
+        if(response.status===409)throw new PrivatePlatformLinkError('CONFLICT');
+        throw unavailable();
+      }
+      const length=response.headers.get('content-length'),encoding=response.headers.get('content-encoding');
+      if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(response.headers.get('content-type')??'')||
+        length!==null&&(!/^(?:0|[1-9]\d*)$/.test(length)||Number(length)>limit)||!response.body){cancelBody(response);throw invalid()}
+      let held:ReadableStreamDefaultReader<Uint8Array>;try{held=response.body.getReader()}catch{cancelBody(response);throw invalid()}
+      reader=held;const bytes=new Uint8Array(limit);let size=0;
+      try{
+        for(;;){check();let chunk:ReadableStreamReadResult<Uint8Array>;try{chunk=await held.read()}catch{throw unavailable()}
+          check();if(chunk.done)break;
+          if(!(chunk.value instanceof Uint8Array)||chunk.value.length===0||chunk.value.length>limit-size)throw invalid();
+          bytes.set(chunk.value,size);size+=chunk.value.length;
+        }
+        if(length!==null&&(!encoding||encoding.trim().toLowerCase()==='identity')&&size!==Number(length))throw invalid();
+        let raw:unknown;try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)))}catch{throw invalid()}
+        check();
+        if(!Array.isArray(raw)||raw.length>6||raw.some(v=>!isLink(v,this.ownerId))||
+          new Set(raw.map(v=>v.provider)).size!==raw.length||new Set(raw.map(v=>v.id)).size!==raw.length)throw invalid();
+        return raw as PrivatePlatformLink[];
+      }finally{cancelReader()}
+    };
+    try{const result=await Promise.race([work(),timed]);check();return result}
+    finally{clearTimeout(timer);controller.abort();cancelReader()}
   }
   async list():Promise<PrivatePlatformLink[]> {
     const query='select='+SELECT+'&owner_user_id=eq.'+this.ownerId+'&order=created_at.desc&limit=6';
@@ -131,10 +134,12 @@ export class SupabasePrivatePlatformLinksService {
       throw new PrivatePlatformLinkError('VALIDATION');
     const method=existing?'PATCH':'POST';
     const query=existing
-      ? 'select='+SELECT+'&id=eq.'+existing.id+'&owner_user_id=eq.'+this.ownerId
+      ? 'select='+SELECT+'&id=eq.'+existing.id+'&owner_user_id=eq.'+this.ownerId+
+        '&handle=eq.'+encodeURIComponent(existing.handle)+'&updated_at=eq.'+encodeURIComponent(existing.updated_at)
       : 'select='+SELECT;
     const rows=await this.request(method,query,existing?{handle}:{provider,handle});
     const row=rows[0];
+    if(existing&&rows.length===0)throw new PrivatePlatformLinkError('CONFLICT');
     if(rows.length!==1||!row||row.provider!==provider||row.handle!==handle||
       (existing&&row.id!==existing.id))
       throw new PrivatePlatformLinkError('INVALID_ACK');
@@ -143,8 +148,10 @@ export class SupabasePrivatePlatformLinksService {
   async remove(existing:PrivatePlatformLink):Promise<string> {
     if(!isLink(existing,this.ownerId))throw new PrivatePlatformLinkError('VALIDATION');
     const rows=await this.request('DELETE',
-      'select='+SELECT+'&id=eq.'+existing.id+'&owner_user_id=eq.'+this.ownerId);
-    if(rows.length!==1||rows[0]?.id!==existing.id)
+      'select='+SELECT+'&id=eq.'+existing.id+'&owner_user_id=eq.'+this.ownerId+
+        '&handle=eq.'+encodeURIComponent(existing.handle)+'&updated_at=eq.'+encodeURIComponent(existing.updated_at));
+    if(rows.length===0)throw new PrivatePlatformLinkError('CONFLICT');
+    if(rows.length!==1||rows[0]?.id!==existing.id||rows[0].provider!==existing.provider||rows[0].handle!==existing.handle||rows[0].updated_at!==existing.updated_at)
       throw new PrivatePlatformLinkError('INVALID_ACK');
     return existing.id;
   }
