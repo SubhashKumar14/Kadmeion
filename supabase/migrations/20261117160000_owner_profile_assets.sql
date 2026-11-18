@@ -1021,7 +1021,7 @@ returns jsonb language plpgsql stable security definer set search_path='' as $$
 declare
  r public.private_account_exit_inventory_snapshots%rowtype;
  o uuid; n bigint; p bigint; pr bigint; pp bigint; pb bigint; objects bigint;
- missing bigint; orphans bigint; mismatch bigint; limited boolean; drift boolean; state text;
+ missing bigint; orphans bigint; mismatch bigint; limited boolean; drift boolean; v_result_state text;
 begin
  r:=kadmeion_private.require_inventory_v2(p_snapshot_id,p_expected_request_id);
  o:=r.owner_user_id;
@@ -1075,11 +1075,11 @@ begin
  limited:=n>100 or objects>100;
  drift:=limited or (r.inventory->'counts'->>'projectAssetMetadata')::bigint is distinct from p
    or (r.inventory->'counts'->>'profileAssetMetadata')::bigint is distinct from (pr+pp);
- state:=case when limited then 'LIMIT_EXCEEDED'
+ v_result_state:=case when limited then 'LIMIT_EXCEEDED'
    when drift or pp>0 or missing>0 or orphans>0 or mismatch>0 then 'DISCREPANCY'
    else 'METADATA_MATCH_ONLY' end;
  return jsonb_build_object('snapshotId',r.id,'schemaVersion',2,'requestId',r.request_id,
-  'inventoryCapturedAt',r.captured_at,'status',state,'maxObjectsPerSide',100,'limitExceeded',limited,
+  'inventoryCapturedAt',r.captured_at,'status',v_result_state,'maxObjectsPerSide',100,'limitExceeded',limited,
   'registeredAssets',least(p+pr,100),'projectRegistered',least(p,100),'profileRegistered',least(pr,100),
   'profilePending',least(pp,100),'profilePendingWithBytes',least(pb,100),'storageObjects',least(objects,100),
   'missingObjects',least(missing,100),'orphanObjects',least(orphans,100),'metadataMismatches',least(mismatch,100),
