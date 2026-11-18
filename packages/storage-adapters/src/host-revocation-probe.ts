@@ -352,6 +352,62 @@ export async function probeCanonicalPublicTakedown(
 }
 
 /**
+ * Post-hold/rename denial for a complete trusted history supplied by the
+ * authority transaction. Multiple old manifests may share one canonical path.
+ * This proof does not discover historical addresses, create a hold, certify
+ * plan completeness, erase caches, or write a case receipt.
+ */
+export type PublicTakedownScope=Readonly<{
+  canonicalPath:string;manifestSha256:string|null;assetHashes:readonly string[];
+}>;
+export type PublicTakedownPlanObservation=Readonly<{
+  status:'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS';canonicalPaths:readonly string[];
+  observedHttpRequests:number;observedPathsSha256:string;
+  directPathsChecked:number;universalCacheErasureVerified:false;
+  thirdPartyArchiveErasureVerified:false;
+}>;
+export async function probePublicTakedownPlan(
+  input:{origin:string;scopes:readonly PublicTakedownScope[];allowLocal?:boolean},
+  http:typeof fetch=fetch
+):Promise<PublicTakedownPlanObservation>{
+  if(!input||!Array.isArray(input.scopes)||input.scopes.length<1||input.scopes.length>32)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const canonical=new Set<string>(),paths=new Set<string>(),releases=new Set<string>();
+  // Validate and snapshot every path before making even the first request.
+  for(const scope of input.scopes){
+    if(!scope||typeof scope!=='object'||Object.keys(scope).length!==3||
+       !Object.hasOwn(scope,'canonicalPath')||!Object.hasOwn(scope,'manifestSha256')||
+       !Object.hasOwn(scope,'assetHashes')||!canonicalPathValid(scope.canonicalPath)||
+       UNLISTED.test(scope.canonicalPath)||!validWithdrawalManifest(scope.manifestSha256,scope.assetHashes))
+      throw new HostRevocationProbeError('INVALID_INPUT');
+    const releaseKey=scope.canonicalPath+'|'+scope.manifestSha256;
+    if(releases.has(releaseKey))throw new HostRevocationProbeError('INVALID_INPUT');
+    releases.add(releaseKey);
+    const alias=publicApiAlias(scope.canonicalPath)!;
+    canonical.add(scope.canonicalPath);
+    paths.add(scope.canonicalPath);
+    paths.add(alias);
+    paths.add(alias+'&report=1');
+    for(const sha of scope.assetHashes)paths.add(alias+'&manifest='+scope.manifestSha256+'&asset='+sha);
+  }
+  // Never silently truncate an over-limit authority plan.
+  if(paths.size>256)throw new HostRevocationProbeError('INVALID_INPUT');
+  const checked=[...paths].sort(),canonicalPaths=Object.freeze([...canonical].sort());
+  const observedPathsSha256=createHash('sha256').update(JSON.stringify(checked)).digest('hex');
+  for(let offset=0;offset<checked.length;offset+=4){
+    await Promise.all(checked.slice(offset,offset+4).map(async path=>{
+      for(const method of ['GET','HEAD'] as const)
+        await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
+    }));
+  }
+  return Object.freeze({status:'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS',
+    canonicalPaths,observedHttpRequests:checked.length*2,observedPathsSha256,
+    directPathsChecked:checked.length-canonicalPaths.length,
+    universalCacheErasureVerified:false,thirdPartyArchiveErasureVerified:false});
+}
+
+/**
  * Strict public withdrawal entry point for a trusted server-provided exact
  * pre-withdrawal manifest. Derives the canonical API and all scoped media
  * paths internally; caller cannot substitute another handle or omit aliases.
