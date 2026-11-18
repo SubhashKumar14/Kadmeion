@@ -1646,6 +1646,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }catch{throw mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE','Private media service is unavailable.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==this.origin+path))
+        throw mediaError('INTEGRITY','Private media response origin could not be verified.');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,attestation,path.startsWith('/storage/v1/'));
       const raw=await this.readMediaJsonBody(response,session,epoch,65536);
       this.assertOwnerImageEpoch(session,epoch);
@@ -1710,15 +1712,18 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    * Bound streamed bytes before constructing a Blob, and reject stale sessions. */
   private async readOwnerImageBytes(session:StoredSession,epoch:number,path:string,mime:OwnerPrivateImageMime,size:number):Promise<Blob> {
     this.assertOwnerImageEpoch(session,epoch);
+    const url=this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path;
     let response:Response;
     try{
-      response=await this.fetcher(this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path,{
+      response=await this.fetcher(url,{
         headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token},
         credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
       });
     }catch{throw mediaError('PROVIDER_UNAVAILABLE','Private image bytes could not be read. Retry or use the folder cover.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==url))
+        throw mediaError('INTEGRITY','Private image response origin could not be verified.');
       const declared=response.headers.get('content-length');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,false,true);
       if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
@@ -2148,9 +2153,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const assetId=reserve.assetId;
       let accepted=reserve.state==='REGISTERED',ambiguous=false;
       if(reserve.state==='PENDING_UPLOAD'){
+        const uploadUrl=this.origin+'/storage/v1/object/kadmeion-private-assets/'+path;
         let response:Response|null=null;
         try{
-          response=await this.fetcher(this.origin+'/storage/v1/object/kadmeion-private-assets/'+path,{
+          response=await this.fetcher(uploadUrl,{
             method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
               'Content-Type':format.mime,'x-upsert':'false','Cache-Control':'no-store'},
             body:file,credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
@@ -2159,6 +2165,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         let rejection:OwnerMediaError|null=null;
         try{
           this.assertOwnerImageEpoch(session,expectedEpoch);
+          if(response&&(response.redirected||(response.url&&response.url!==uploadUrl)))
+            throw mediaError('INTEGRITY','Private avatar upload response origin could not be verified.');
           accepted=response?.ok===true;
           if(response&&!accepted)rejection=await this.mediaResponseError(response,session,expectedEpoch,false,true);
           ambiguous=!response||rejection?.code==='CONFLICT'||
