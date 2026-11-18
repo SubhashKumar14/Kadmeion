@@ -148,7 +148,7 @@ async function boundedBytes(response:Response,max:number,signal:AbortSignal):Pro
   const length=response.headers.get('content-length');
   requireCondition(response.body!==null,'PROVIDER_UNAVAILABLE','Missing provider response body.');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];
-  let total=0;
+  let total=0,chunks=0;
   try {
     requireCondition(length===null||/^\d+$/.test(length),'INTEGRITY',
       'Invalid provider response length.');
@@ -157,7 +157,9 @@ async function boundedBytes(response:Response,max:number,signal:AbortSignal):Pro
     while(true){
       const {done,value}=await readExportChunk(reader,signal);
       if(done)break;
+      requireCondition(++chunks<=65_536,'LIMIT_EXCEEDED','Provider response exceeds export chunk limit.');
       requireCondition(value instanceof Uint8Array,'INTEGRITY','Invalid provider response bytes.');
+      if(value.byteLength===0)continue;
       total+=value.byteLength;
       requireCondition(total<=max,'LIMIT_EXCEEDED','Provider response exceeds export limits.');
       parts.push(value);
