@@ -93,10 +93,20 @@ export function exportPortfolioSourceZip(snapshot:PortfolioSnapshot):Uint8Array 
     kind:'kadmeion-source-archive',formatVersion:1,
     files:paths,slots:snapshot.slots,stashes:snapshot.stashes
   });
-  return writeStoredZip([
+  const limits={maxEntries:MAX_ENTRIES,maxBytes:LIMIT,maxEntryBytes:256*1024};
+  const parts=[
     {name:MANIFEST,bytes:encoder.encode(manifest)},
     ...paths.map(name=>({name,bytes:encodeOwnedFile(snapshot.files[name])}))
-  ],{maxEntries:MAX_ENTRIES,maxBytes:LIMIT,maxEntryBytes:256*1024});
+  ];
+  const archive=writeStoredZip(parts,limits);
+  // Reopen the actual bytes before returning a portable recovery artifact.
+  // Preserve format 1 and the original source, including BOM and line endings.
+  const stored=readStrictStoredZip(archive,limits);
+  check(stored.size===parts.length&&parts.every(({name,bytes})=>{
+    const entry=stored.get(name);
+    return !!entry&&entry.byteLength===bytes.byteLength&&entry.every((byte,i)=>byte===bytes[i]);
+  }),'Portable source archive integrity check failed.');
+  return archive;
 }
 
 export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
