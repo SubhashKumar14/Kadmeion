@@ -15,6 +15,9 @@ const authorizedAdditionPaths = [
   'supabase/migrations/20261117083520_owner_private_project_thumbnails.sql',
   // EVENT-B16-S00-015 / S15-013; C04/WF-021; S1 PROJECT pin-only reservation.
   'supabase/migrations/20261117155900_owner_private_asset_pin.sql',
+  // S15-013 / S00-016: isolated C13 S12/S13 service and test only.
+  'packages/contracts/src/private-analytics-service.ts',
+  'tests/contracts/private-analytics.test.ts',
 ];
 const reservedAdditions = new Set(authorizedAdditionPaths);
 // Exact reservations must not collide with the grandfathered baseline or each other.
