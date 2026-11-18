@@ -1,6 +1,6 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision, OwnerFrozenRequest} from '../../auth-web/src/supabase-auth-port.ts';
-import type {PrivateFrozenRequest, FrozenVisibilityIntent, PrivateReleaseAcknowledgement, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage} from '../../../packages/contracts/src/private-release-service.ts';
+import type {PrivateFrozenRequest, FrozenVisibilityIntent, PrivateReleaseAcknowledgement, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage, OwnerPublicationIntentRecord, OwnerPublicationIntentPage} from '../../../packages/contracts/src/private-release-service.ts';
 import type {AuthOutcome} from '../../../packages/contracts/src/auth-service.ts';
 import type {PrivatePointerReceipt, PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
@@ -67,6 +67,17 @@ const releaseUuid=(value:unknown):value is string=>typeof value==='string'&&/^[0
 function publicActionFactory(port:SupabaseBrowserAuthPort){
   const candidate=port as unknown as {ownerReleaseDelivery?:()=>Promise<AuthOutcome<OwnerDeliveryScope|null>>};
   return typeof candidate.ownerReleaseDelivery==='function'?candidate.ownerReleaseDelivery.bind(port):null;
+}
+function publicationIntentReader(port:SupabaseBrowserAuthPort){
+  const candidate=port as unknown as {listOwnerPublicationIntents?:(id:string,limit:number)=>Promise<AuthOutcome<OwnerPublicationIntentPage>>};
+  return typeof candidate.listOwnerPublicationIntents==='function'?candidate.listOwnerPublicationIntents.bind(port):null;
+}
+function samePublicationIntent(a:OwnerPublicationIntentRecord,b:OwnerPublicationIntentRecord):boolean{
+  return a.portfolioId===b.portfolioId&&a.intentId===b.intentId&&a.requestId===b.requestId&&
+    a.operationId===b.operationId&&a.createdAt===b.createdAt&&a.expiresAt===b.expiresAt;
+}
+function historicalPublicTarget(row:OwnerPublicationIntentRecord,ack:PrivateReleaseAcknowledgement):boolean{
+  return row.status==='USED'&&row.intentId===ack.intentId&&row.requestId===ack.requestId&&row.portfolioId===ack.portfolioId;
 }
 function exactDeliveryEvidence(value:PublicDeliveryEvidence,expected:PublicActionIdentity):boolean {
   return !!value&&value.visibility==='PUBLIC'&&value.portfolioId===expected.portfolioId&&
@@ -1165,6 +1176,10 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
   const [withdrawing,setWithdrawing]=useState(false);
   const [receipt,setReceipt]=useState<PublicDeliveryEvidence|null>(null);
   const [history,setHistory]=useState<PublicDeliveryEvidence[]>([]);
+  const [recovered,setRecovered]=useState<OwnerPublicationIntentPage|null>(null);
+  const [recoveryId,setRecoveryId]=useState('');
+  const [acknowledged,setAcknowledged]=useState<PrivateReleaseAcknowledgement[]>([]);
+  const reader=publicationIntentReader(port);
   const [rollbackId,setRollbackId]=useState('');
   const [notice,setNotice]=useState('');
   const [error,setError]=useState('');
@@ -1172,7 +1187,8 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
   const receiptOwner=useRef<string|null>(null);
   useLayoutEffect(()=>{
     const clear=()=>{++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;
-      setAttempt(null);setWithdrawing(false);setReceipt(null);setHistory([]);setRollbackId('');setNotice('');setError('');};
+      setAttempt(null);setWithdrawing(false);setReceipt(null);setHistory([]);setRollbackId('');setNotice('');setError('');
+      setRecovered(null);setRecoveryId('');setAcknowledged([]);};
     clear();
     const unsubscribe=port.subscribeOwnerSessionEpoch(clear);
     return()=>{unsubscribe();++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;};
@@ -1184,6 +1200,69 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       pointer.revocationGeneration>=previous.stageGeneration)?null:previous);
   },[pointer,portfolioId]);
   function retain(value:PublicAttempt|null){pending.current=value;setAttempt(value?{...value}:null);}
+  async function recover(kind:'load'|'check'|'resume'){
+    if(!factory||!reader||disabled||withdrawal.current||pending.current)return;
+    const selected=recovered?.items.find(row=>row.intentId===recoveryId);
+    if(kind!=='load'&&!selected)return;
+    if(kind==='check'&&selected?.status!=='USED')return;
+    if(kind==='resume'&&(selected?.status!=='AWAITING_HOST'||Date.parse(selected.expiresAt)<=Date.now()))return;
+    if(kind==='resume'&&!window.confirm('Resume this exact saved publication consent? This may publish the frozen revision.'))return;
+    const action=begin();if(!action)return;
+    const started=epoch.current;
+    let scope:OwnerDeliveryScope|null=null;
+    const current=()=>action.current()&&started===epoch.current&&(!scope||scope.isCurrentOwner());
+    setBusy(true);setError('');setNotice('');
+    if(kind!=='load')setReceipt(null);
+    try{
+      const opened=await factory();
+      if(!current())return;
+      if(opened.error||!opened.data||!opened.data.isCurrentOwner()||!releaseUuid(opened.data.ownerId))
+        throw Error('Owner unavailable.');
+      scope=opened.data;
+      if(receiptOwner.current!==null&&receiptOwner.current!==scope.ownerId)throw Error('Owner changed.');
+      receiptOwner.current=scope.ownerId;
+      const list=await reader(portfolioId,50);
+      if(!current())return;
+      if(list.error||!list.data)throw Error('Publication intent history unavailable.');
+      setRecovered(list.data);
+      if(kind==='load'){
+        const page=await port.listOwnerReleaseAcknowledgements(portfolioId,50,null);
+        if(!current())return;
+        setAcknowledged(page.error?[]:page.data?.items??[]);
+        if(page.error)throw Error('Historical acknowledgements unavailable.');
+        setNotice('Owner consent metadata reloaded. No public delivery inferred.');return;
+      }
+      const fresh=list.data.items.find(row=>row.intentId===selected!.intentId);
+      if(!fresh||!samePublicationIntent(fresh,selected!))throw Error('Consent identity changed.');
+      const pin=await port.loadOwnerFrozenRelease(fresh.requestId);
+      if(!current())return;
+      if(!pin.data||pin.data.loadedPortfolioId!==portfolioId||pin.data.frozen.portfolioId!==portfolioId||
+         pin.data.frozen.visibilityIntent!=='PUBLIC'||!matchesFrozenPin(pin.data,pin.data.frozen))throw Error('PUBLIC frozen pin unavailable.');
+      const expected={portfolioId,requestId:fresh.requestId,intentId:fresh.intentId,operationId:fresh.operationId};
+      let verified:PublicDeliveryEvidence;
+      if(fresh.status==='USED')verified=await scope.service.checkPublicDelivery(expected);
+      else{
+        if(kind!=='resume'||Date.parse(fresh.expiresAt)<=Date.now())throw Error('Consent not executable.');
+        verified=await scope.service.executePublicDelivery(expected);
+      }
+      if(!current())return;
+      if(!exactDeliveryEvidence(verified,expected))throw Error('Different receipt.');
+      const observed=await scope.service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+         observed.generation!==verified.pointerGeneration||observed.revocationGeneration!==verified.revocationGeneration)
+        throw Error('Pointer changed during recovery.');
+      onPointer(observed);setReceipt(verified);
+      setHistory(rows=>[verified,...rows.filter(item=>item.intentId!==verified.intentId)].slice(0,20));
+      setNotice('Exact current public receipt recovered from the saved consent identity.');
+      // Keep the persisted identity selected. If the next metadata read fails,
+      // its display never substitutes for current host verification.
+      setRecovered(previous=>previous?{...previous,items:previous.items.map(row=>row.intentId===fresh.intentId?{...row,status:'USED'}:row)}:previous);
+    }catch{
+      if(current())setError(kind==='load'?'Saved publication intents or historical acknowledgements could not be loaded.':
+        'This saved consent did not produce a current verified receipt. Reload and check the same identity; no replacement consent was created.');
+    }finally{action.finish();}
+  }
   async function run(kind:'publish'|'rollback'|'retry'|'check'|'withdraw'){
     if(!factory||disabled)return;
     if(kind==='withdraw'&&pending.current)return;
@@ -1192,7 +1271,8 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     if((kind==='publish'||kind==='rollback')&&pending.current)return;
     if(kind==='retry'&&!pending.current)return;
     if(kind==='check'&&!pending.current?.intentId&&!receipt&&!history.length)return;
-    const target=kind==='rollback'?history.find(item=>item.intentId===rollbackId):undefined;
+    const savedTarget=recovered?.items.find(item=>item.intentId===rollbackId&&acknowledged.some(ack=>historicalPublicTarget(item,ack)));
+    const target=kind==='rollback'?(history.find(item=>item.intentId===rollbackId)??savedTarget):undefined;
     if(kind==='rollback'&&(!target||!receipt||target.intentId===receipt.intentId))return;
     if(kind==='publish'&&(!frozen||frozen.portfolioId!==portfolioId||frozen.visibilityIntent!=='PUBLIC'||
       preflight?.status!=='PREVIEW_ONLY'||preflight.blockers.length!==1||preflight.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED'))return;
@@ -1277,7 +1357,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
           const checked=await service.checkPublicDelivery(previous);
           if(!current())return;
           if(!exactDeliveryEvidence(checked,previous)||checked.pointerGeneration!==pointer.generation||
-             checked.intentId===target.intentId||target.stageGeneration<=pointer.revocationGeneration)
+             checked.intentId===target.intentId||('stageGeneration' in target&&target.stageGeneration<=pointer.revocationGeneration))
             throw Error('Current public release or rollback target changed.');
           const pin=await port.loadOwnerFrozenRelease(target.requestId);
           if(!current())return;
@@ -1329,7 +1409,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     <h3>Authoritative public delivery</h3>
     <p>Publication requires an exact PUBLIC frozen revision, trusted server staging and explicit consent. Only a fresh verified delivery receipt identifies a public URL.</p>
     {error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
-    {attempt&&<p role="status">Pending {attempt.kind} operation. {attempt.intentId?'Intent recorded; delivery not confirmed.':'Consent not confirmed.'} Keep this screen open to check or retry the same operation.</p>}
+    {attempt&&<p role="status">Pending {attempt.kind} operation. {attempt.intentId?'Intent recorded; delivery not confirmed.':'Consent not confirmed.'} Check or retry the same operation. Recorded consents can also be recovered after reopening this route.</p>}
     {receipt&&<dl className="ws-release-facts"><dt>Last verified public address</dt><dd>{receipt.publicUrl}</dd>
       <dt>Verified at</dt><dd><time dateTime={receipt.verifiedAt}>{receipt.verifiedAt}</time></dd>
       <dt>Delivery epoch</dt><dd>{receipt.deliveryEpoch}</dd><dt>Release generation</dt><dd>{receipt.releaseGeneration}</dd>
@@ -1343,15 +1423,33 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
         onClick={()=>void run('check')}>Recheck authoritative delivery</button>
       {attempt&&<button type="button" className="ws-secondary" disabled={disabled} onClick={()=>void run('retry')}>Retry same consent operation</button>}
     </div>
-    <label>Previously verified release in this review
+    <div className="ws-release-action" role="group" aria-label="Saved publication consent recovery">
+      <h4>Recover saved publication consent</h4>
+      <p>Reload owner-private database identities. A used consent is not proof that its route is currently live; only the authoritative check can confirm that.</p>
+      <button type="button" className="ws-secondary" disabled={!reader||disabled||!!attempt||withdrawing} onClick={()=>void recover('load')}>Load saved publication intents</button>
+      {recovered&&<><label>Saved publication intent
+        <select value={recoveryId} disabled={disabled||!!attempt||withdrawing} onChange={event=>setRecoveryId(event.target.value)}>
+          <option value="">Select recorded intent</option>{recovered.items.map(item=><option key={item.intentId} value={item.intentId}>
+            {item.status==='USED'?'Used':'Awaiting delivery'} · {item.createdAt} · {item.intentId.slice(0,8)}</option>)}
+        </select></label>
+        {recovered.truncated&&<p>Latest 50 intents shown; older records may exist.</p>}
+        <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!recovered.items.some(item=>item.intentId===recoveryId&&item.status==='USED')}
+          onClick={()=>void recover('check')}>Verify current delivery of saved intent</button>
+        <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!recovered.items.some(item=>item.intentId===recoveryId&&item.status==='AWAITING_HOST'&&Date.parse(item.expiresAt)>Date.now())}
+          onClick={()=>void recover('resume')}>Resume saved consent</button></>}
+      {!reader&&<p>Owner intent reader unavailable until the paired C11 transport is installed.</p>}
+    </div>
+    <label>Previously acknowledged release
       <select value={rollbackId} disabled={disabled||!!attempt||withdrawing||!receipt} onChange={event=>setRollbackId(event.target.value)}>
         <option value="">Choose rollback target</option>{history.filter(item=>item.intentId!==receipt?.intentId).map(item=>
-        <option key={item.intentId} value={item.intentId}>Generation {item.releaseGeneration} · {item.verifiedAt}</option>)}</select></label>
+        <option key={item.intentId} value={item.intentId}>Generation {item.releaseGeneration} · {item.verifiedAt}</option>)}
+        {recovered?.items.filter(item=>item.intentId!==receipt?.intentId&&!history.some(local=>local.intentId===item.intentId)&&acknowledged.some(ack=>historicalPublicTarget(item,ack))).map(item=>
+          <option key={item.intentId} value={item.intentId}>Database history · {item.createdAt} · {item.intentId.slice(0,8)}</option>)}</select></label>
     <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!receipt||!rollbackId}
       onClick={()=>void run('rollback')}>Roll back public release</button>
     <button type="button" className="ws-secondary" disabled={disabled||!!attempt||(!receipt&&!withdrawing&&history.length===0)}
       onClick={()=>void run('withdraw')}>{withdrawing?'Recheck or retry same withdrawal':'Withdraw portfolio delivery'}</button>
-    <p className="ws-field-hint">Receipts here are held only for this mounted owner review. A page change clears them. Historical database acknowledgements alone are not current host evidence. Withdrawal requires independent external denial proof.</p>
+    <p className="ws-field-hint">Positive receipts here are held only for this mounted owner review. Reload saved consent after a page change and request a fresh check. Historical database acknowledgements alone are not current host evidence. Withdrawal requires independent external denial proof.</p>
   </section>;
 }
 
