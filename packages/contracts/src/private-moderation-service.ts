@@ -133,7 +133,32 @@ function appealReceipt(raw: unknown, caseId: string): ModerationAppealReceipt {
  * responses before JSON parsing: neither valid JSON nor a service JWT makes
  * an arbitrarily large server body safe to allocate in the browser.
  */
-async function readModerationJson(response:Response):Promise<unknown> {
+/** One deadline covers credential acquisition, headers and every body read.
+ * Also handles injected transports that ignore AbortSignal, without waiting for
+ * late cancellation or issuing a second mutation. */
+function awaitModerationDeadline<T>(task:Promise<T>,signal:AbortSignal,onLate?:(value:T)=>void):Promise<T>{
+  return new Promise<T>((resolve,reject)=>{
+    let done=false;
+    const cleanup=()=>signal.removeEventListener('abort',abort);
+    const abort=()=>{
+      if(done)return;
+      done=true;cleanup();
+      reject(new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation request timed out.'));
+    };
+    const discard=(value:T)=>{try{onLate?.(value);}catch{/* best effort */}};
+    signal.addEventListener('abort',abort,{once:true});
+    if(signal.aborted)abort();
+    task.then(value=>{
+      if(done||signal.aborted){abort();discard(value);return;}
+      done=true;cleanup();resolve(value);
+    },error=>{
+      if(done||signal.aborted){abort();return;}
+      done=true;cleanup();reject(error);
+    });
+  });
+}
+
+async function readModerationJson(response:Response,signal:AbortSignal):Promise<unknown> {
   const type=response.headers.get('content-type');
   if(typeof type!=='string'||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
     throw new PrivateModerationError('INVALID_ACK','Invalid moderation response media type.');
@@ -143,15 +168,19 @@ async function readModerationJson(response:Response):Promise<unknown> {
     throw new PrivateModerationError('INVALID_ACK','Moderation response exceeds size limit.');
   if(!response.body)throw new PrivateModerationError('INVALID_ACK','Missing moderation response body.');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];let total=0;
+  // Bound the number of chunks as well as bytes; zero-byte chunks are not progress.
+  let chunks=0;
   try{
     for(;;){
-      const part=await reader.read();
+      if(signal.aborted)throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation request timed out.');
+      const part=await awaitModerationDeadline(reader.read(),signal);
       if(part.done)break;
+      if(++chunks>65536)throw new PrivateModerationError('INVALID_ACK','Moderation response has too many chunks.');
       if(!(part.value instanceof Uint8Array))
         throw new PrivateModerationError('INVALID_ACK','Malformed moderation response stream.');
       total+=part.value.byteLength;
       if(total>MAX_BYTES)throw new PrivateModerationError('INVALID_ACK','Moderation response too large.');
-      parts.push(part.value);
+      if(part.value.byteLength>0)parts.push(part.value);
     }
   }catch{
     // Cancellation of a cloned/teed body can wait for an unread sibling.
@@ -193,24 +222,28 @@ export class SupabasePrivateModerationService {
     this.http = http;
   }
   private async request(path: string, body?: Record<string,unknown>): Promise<unknown> {
-    const jwt = await this.token();
+    const signal=AbortSignal.timeout(15_000);
+    let jwt:string|null;
+    try{jwt=await awaitModerationDeadline(Promise.resolve().then(()=>this.token()),signal);}
+    catch{throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation session verification is unavailable.');}
     if (!jwt) throw new PrivateModerationError('AUTH_EXPIRED','Sign in to access private moderation.');
+    if(signal.aborted)throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation request timed out.');
     let response: Response;
     try {
-      response = await this.http(this.origin + '/rest/v1/' + path, {
+      response = await awaitModerationDeadline(this.http(this.origin + '/rest/v1/' + path, {
         method: body === undefined ? 'GET' : 'POST',
         headers: {apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
           ...(body === undefined ? {} : {'Content-Type':'application/json'})},
         body:body === undefined ? undefined : JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15_000)
-      });
+        credentials:'omit',cache:'no-store',redirect:'error',signal
+      }),signal,late=>{void late.body?.cancel().catch(()=>{});});
     } catch {
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation service is unreachable.');
     }
     if (!response.ok) {
       if (response.status === 401) throw new PrivateModerationError('AUTH_EXPIRED','Session expired.');
       if (response.status === 403) throw new PrivateModerationError('FORBIDDEN','Moderation access denied.');
-      const problem:unknown=await readModerationJson(response).catch(()=>null);
+      const problem:unknown=await readModerationJson(response,signal).catch(()=>null);
       const message = isRecord(problem) ? problem.message : null;
       if (message === 'MODERATION_CASE_QUOTA_REACHED')
         throw new PrivateModerationError('QUOTA_EXCEEDED','Operator case quota reached.');
@@ -230,7 +263,7 @@ export class SupabasePrivateModerationService {
         throw new PrivateModerationError('CONFLICT','Operation ID or case state conflicts.');
       throw new PrivateModerationError('PROVIDER_UNAVAILABLE','Moderation operation was not acknowledged.');
     }
-    return readModerationJson(response);
+    return readModerationJson(response,signal);
   }
   async openCase(targetUserId: string, operationId: string, reason: ModerationReason,
       summary: string): Promise<ModerationCaseReceipt> {
