@@ -116,3 +116,62 @@ test('C13 rejects duplicate selection before transport',async()=>{
   await assert.rejects(f.service.getOwnerAnalytics({portfolioIds:[portfolio,portfolio],windowDays:7}),{code:'INVALID'});
   assert.equal(f.calls(),0);
 });
+
+test('C13 exact replay, terminal OFF and exhaustion reserve privacy reduction',async()=>{
+  const enable={...change,action:'ENABLE' as const};
+  const enabled={...receipt,status:'APPLIED',version:1,enabled:true,enabledAt:stamp,coverageStartedAt:stamp,updatedAt:stamp};
+  const f=fixture(()=>response(enabled));
+  assert.deepEqual(await f.service.changeOwnerAnalytics(enable),enabled);
+  const replay={...enabled,status:'REPLAYED'};
+  assert.deepEqual(await fixture(()=>response(replay)).service.changeOwnerAnalytics(enable),replay);
+  const exhausted=fixture(()=>{throw Error('must not contact transport')});
+  for(const action of ['ENABLE','CLEAR'] as const)
+    await assert.rejects(exhausted.service.changeOwnerAnalytics({...change,action,expectedVersion:max-1}),{code:'INELIGIBLE'});
+  assert.equal(exhausted.calls(),0);
+  const last={...receipt,status:'APPLIED',version:max,updatedAt:stamp};
+  assert.deepEqual(await fixture(()=>response(last)).service.changeOwnerAnalytics({...change,expectedVersion:max-1}),last);
+  const terminal={...last,status:'NO_CHANGE'};
+  assert.deepEqual(await fixture(()=>response(terminal)).service.changeOwnerAnalytics({...change,expectedVersion:max}),terminal);
+});
+test('C13 partial real recorded counts with gaps, exact selected order and coverage',async()=>{
+  const buckets={DIRECT_OR_UNKNOWN:248,SEARCH:1,SOCIAL:1,OTHER_EXTERNAL:0,INTERNAL:0};
+  const p={...comparison.portfolios[0]!,coverageStartedAt:'2026-11-14T12:00:00Z',quality:'PARTIAL',
+    days:[...days.slice(0,2),{...days[2],views:250,buckets,quality:'PARTIAL'},...days.slice(3)]};
+  const valid={...comparison,portfolios:[p,{...comparison.portfolios[0]!,portfolioId:other}]};
+  const input={portfolioIds:[portfolio,other],windowDays:7 as const};
+  assert.deepEqual(await fixture(()=>response(valid)).service.getOwnerAnalytics(input),valid);
+  for(const bad of [{...valid,portfolios:[...valid.portfolios].reverse()},
+    {...valid,portfolios:[{...p,coverageStartedAt:'2026-11-15T00:00:00Z'},valid.portfolios[1]]},
+    {...valid,toDay:'2026-11-19'},{...valid,fromDay:'2026-11-13'}])
+    await assert.rejects(fixture(()=>response(bad)).service.getOwnerAnalytics(input),{code:'INVALID_RESPONSE'});
+});
+test('C13 oversized and malformed byte streams fail closed without transport retry',async()=>{
+  const over=fixture(()=>new Response(new Uint8Array(8193),{headers:{'content-type':'application/json'}}));
+  await assert.rejects(over.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+  assert.equal(over.calls(),1);
+  const large=fixture(()=>new Response(new Uint8Array(131073),{headers:{'content-type':'application/json'}}));
+  await assert.rejects(large.service.getOwnerAnalytics(query),{code:'INVALID_RESPONSE'});
+  assert.equal(large.calls(),1);
+  const invalid=fixture(()=>new Response(Uint8Array.of(0xff),{headers:{'content-type':'application/json'}}));
+  await assert.rejects(invalid.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+  const badLength=fixture(()=>new Response(JSON.stringify(state),{headers:{'content-type':'application/json','content-length':'1'}}));
+  await assert.rejects(badLength.service.getOwnerAnalyticsState(portfolio),{code:'INVALID_RESPONSE'});
+});
+test('C13 explicit transport only, 55000 allowlist, rate limits and network sanitization',async()=>{
+  const inactive=new SupabasePrivateAnalyticsService('https://local.example','synthetic-publishable-key',owner,
+    async()=>{throw Error('must not get token');},()=>true);
+  await assert.rejects(inactive.getOwnerAnalyticsState(portfolio),{code:'UNAVAILABLE'});
+  for(const [status,raw,code] of [
+    [500,{code:'55000',message:'ANALYTICS_TERMINAL'},'INELIGIBLE'],
+    [500,{code:'55000',message:'ANALYTICS_INELIGIBLE'},'INELIGIBLE'],
+    [500,{code:'55000',message:'secret'},'UNAVAILABLE'],
+    [429,{message:'secret'},'RATE_LIMITED'],
+    [401,{message:'secret'},'NOT_FOUND_OR_FORBIDDEN']] as const){
+    const f=fixture(()=>response(raw,status));
+    await assert.rejects(f.service.getOwnerAnalyticsState(portfolio),{code});
+    assert.equal(f.calls(),1);
+  }
+  const network=fixture(()=>{throw Error('secret');});
+  await assert.rejects(network.service.getOwnerAnalyticsState(portfolio),{code:'TRANSPORT',message:'Private analytics: TRANSPORT'});
+  assert.equal(network.calls(),1);
+});
