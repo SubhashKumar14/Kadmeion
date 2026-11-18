@@ -505,6 +505,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
   const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;format:'json'|'zip';
+    baseSnapshot:PortfolioSnapshot;archiveSha256:string;archiveBytes:number;
     changedFiles:string[];changedSlots:string[]}|null>(null);
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
     cloudRevision:number;changedFiles:string[];changedSlots:string[]}|null>(null);
@@ -1328,7 +1329,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'){
         const bytes=await file!.arrayBuffer();
         if(!draftCurrent(view))return;
-        if(bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid snapshot byte length.');
+        if(bytes.byteLength!==file!.size||bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid or incomplete snapshot byte length.');
         let snapshot:PortfolioSnapshot;
         if(format==='zip'){
           const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
@@ -1336,12 +1337,19 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           snapshot=importPortfolioSourceZip(new Uint8Array(bytes));
         }else snapshot=importPortableSnapshot(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes));
         if(!draftCurrent(view))return;
+        // Identify the exact local file reviewed, not a regenerated ZIP or
+        // JSON serialization. No upload, execution or server pin is implied.
+        const digest=await crypto.subtle.digest('SHA-256',bytes);
+        if(!draftCurrent(view))return;
+        const archiveSha256=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
         setPortableComparison({snapshot,format,cloudRevision:fresh.data.revision,
+          baseSnapshot:fresh.data.snapshot,archiveSha256,archiveBytes:bytes.byteLength,
           ...portableDifference(fresh.data.snapshot,snapshot)});
         setPortableNotice((format==='zip'?'Private source ZIP verified and compared.':'Private project JSON parsed and compared.')+
           ' This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
       }
-      if(!previewed||previewed.cloudRevision!==fresh.data.revision){
+      if(!previewed||previewed.cloudRevision!==fresh.data.revision||
+         !sameDraftSnapshot(previewed.baseSnapshot,fresh.data.snapshot)){
         setPortableComparison(null);setPortableNotice('Cloud version changed after comparison. Compare again; no draft was replaced.');return;
       }
       if(!window.confirm('Restore the compared private snapshot as an unsaved draft in this portfolio? The original file and saved cloud revision remain unchanged until a separate Save. Review imported source and asset references.'))return;
@@ -1654,6 +1662,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       {portableNotice&&<p role="status">{portableNotice}</p>}
       {portableComparison&&<div aria-label="Portable snapshot comparison">
         <p>Compared to saved cloud revision {portableComparison.cloudRevision}: {portableComparison.changedFiles.length} different files and {portableComparison.changedSlots.length} different slot/stash keys.</p>
+        <p>Reviewed local {portableComparison.format.toUpperCase()} · {portableComparison.archiveBytes} bytes</p>
+        <p>Reviewed file SHA-256: <code aria-label="Reviewed file SHA-256" style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code></p>
+        <p>Restore uses this reviewed snapshot and rechecks the saved cloud baseline. The local file is not uploaded or executed.</p>
         <details><summary>Different file paths</summary><ul>{portableComparison.changedFiles.map(path=><li key={path}><code>{path}</code></li>)}</ul></details>
         <details><summary>Different slots or stashes</summary><ul>{portableComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
         <div className="ws-actions">
