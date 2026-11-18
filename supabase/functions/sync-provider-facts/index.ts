@@ -18,6 +18,10 @@ const integer=(v:unknown):v is number=>typeof v==='number'&&Number.isSafeInteger
 const handle=(v:unknown):v is string=>typeof v==='string'&&v.length>=2&&v.length<=39&&HANDLE.test(v);
 const headers=(origin?:string)=>({'Cache-Control':'private, no-store, max-age=0','CDN-Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Vary':'Origin',...(origin?{'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'authorization, apikey, content-type'}:{})});
 const reply=(status:number,data:unknown,origin?:string)=>Response.json(data,{status,headers:headers(origin)});
+class ProviderRpcRejection extends Error {
+  readonly status:403|409;
+  constructor(status:403|409){super('Provider operation rejected');this.status=status;}
+}
 const err=(status:number,origin?:string)=>reply(status,{error:status===401?'AUTH_EXPIRED':status===403?'FORBIDDEN':status===409?'CONFLICT':status===429?'RATE_LIMITED':status===400?'INVALID':status===404?'NOT_FOUND':'UNAVAILABLE'},origin);
 function until<T>(promise:Promise<T>,ms:number,controller:AbortController):Promise<T>{
   let timer:ReturnType<typeof setTimeout>|undefined;
@@ -105,7 +109,7 @@ export async function handleSyncProviderFacts(request:Request,deps?:LocalProvide
     if(outcome!=='SUCCESS'&&(s.status!=='UNAVAILABLE'||s.lastError!==outcome||s.candidate!==null||JSON.stringify(s.facts)!==JSON.stringify(c.state.facts)))return err(409,origin);
     return reply(200,{status:'APPLIED',state:s},origin);
   };
-  try{return await until(work(),15000,total)}catch{return err(503,origin)}finally{total.abort()}
+  try{return await until(work(),15000,total)}catch(error){return err(error instanceof ProviderRpcRejection?error.status:503,origin)}finally{total.abort()}
 }
 /** Fixed public GitHub source transport. Explicit server-owned injection only;
  * this factory never activates the default Edge entrypoint or transfers owner credentials.
@@ -134,7 +138,19 @@ export function createLocalProviderDependencies(config:{origin:string;publishabl
   const rpc=async(name:'service_claim_github_provider_sync'|'service_finish_github_provider_sync',args:Record<string,unknown>,signal:AbortSignal)=>{
     const url=endpoint.origin+'/rest/v1/rpc/'+name;
     const response=await http(url,{method:'POST',headers:{apikey:serviceRole,Authorization:'Bearer '+serviceRole,'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(args),credentials:'omit',redirect:'error',cache:'no-store',signal});
-    if(response.redirected||(response.url!==url&&!(response.url===''&&response.type==='default'))||!response.ok){void response.body?.cancel().catch(()=>{});throw Error('rpc unavailable')}
+    if(response.redirected||(response.url!==url&&!(response.url===''&&response.type==='default'))){void response.body?.cancel().catch(()=>{});throw Error('rpc unavailable')}
+    if(!response.ok){
+      // Only an exact own-RPC rejection is actionable; all other failures
+      // remain uncertain, with no forwarded database details or retry.
+      if(response.status===409||response.status===403||response.status===500){
+        const failure=await bodyJson(response,16384,performance.now()+15000,signal);
+        if(exact(failure,['code','message','details','hint'])&&failure.details===null&&failure.hint===null){
+          if((response.status===409&&failure.code==='PT409'||response.status===500&&failure.code==='40001')&&failure.message==='CONFLICT')throw new ProviderRpcRejection(409);
+          if(response.status===403&&failure.code==='42501'&&failure.message==='OWNER_DENIED')throw new ProviderRpcRejection(403);
+        }
+      }else void response.body?.cancel().catch(()=>{});
+      throw Error('rpc unavailable');
+    }
     return bodyJson(response,16384,performance.now()+15000,signal);
   };
   return {mode:'ISOLATED_LOCAL',allowedOrigins,now:now,provider:provider,
