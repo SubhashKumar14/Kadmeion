@@ -147,9 +147,9 @@ function useDropOutline(){
   },[highlighted]);
   return {highlighted,setHighlighted};
 }
-const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing,themeNode,privateImage,dropTargets}:{
+const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing,themeNode,privateImages,dropTargets}:{
     themeNode?:(section:CanvasSection,name:string)=>string|undefined;
-    privateImage?:{slotKey:string;url:string;onError:()=>void};dropTargets?:PrivateCanvasDropTargets;
+    privateImages?:CanvasImageViews;dropTargets?:PrivateCanvasDropTargets;
     section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';snapshot:PortfolioSnapshot|null|undefined;editing:boolean;selectedSlot?:string;onSelectSlot?:(key:string)=>void;showMissing:boolean;
   })=>{
     const key=section.id+'-'+name.toLowerCase();
@@ -160,12 +160,14 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     const renderedText=projection.parts.length>1?<>{projection.parts.map((part,index)=><span key={index} className="pv-slot-part" style={{display:'block'}}>{part}</span>)}</>:text;
     const imageReference=assignment?.state==='S0'&&assignment.componentId==='image@1'&&!!assignment.content.asset_id;
     const imageLabel=imageReference?'Private image reference — '+(assignment.content.alt_text||'Alt text missing'):'';
-    const localImage=editing&&imageReference&&privateImage?.slotKey===key?privateImage:undefined;
+    const candidateImage=imageReference?privateImages?.get(key):undefined;
+    const localImage=candidateImage?.status==='ready'?candidateImage:undefined;
+    const imageAlt=assignment?.content.decorative==='true'?'':assignment?.content.alt_text??'';
     const label=SLOT_TITLES[name.toLowerCase()]??name;
     const example=editing&&!text&&(!assignment||assignment.state==='EMPTY'||Object.keys(assignment.content).length===0)?layoutExample(section.renderId,name):null;
     const visibleLabel=imageLabel||text|| (kind==='media' ? '' : example??('Add '+label));
     const node=(!assignment||assignment.state==='EMPTY'||assignment.state==='S0')?themeNode?.(section,name):undefined;
-    const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
+    const className='pv-slot pv-slot-'+kind+(text||localImage?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
     if(editing)return <button className={className} data-k-theme-node={node} type="button"
       data-drop-fit={highlighted===key?'compatible':undefined} style={highlighted===key?DROP_OUTLINE:undefined}
@@ -182,7 +184,7 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       }}
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
-      {localImage?<img src={localImage.url} alt={assignment?.content.alt_text??''} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
+      {localImage?<img src={localImage.url} alt={imageAlt} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
       imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:renderedText||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
         example?<span className="pv-placeholder pv-layout-example">{example}</span>:
@@ -190,7 +192,9 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       )}
     </button>;
     // Reference labels are author-only, never fabricated visitor imagery.
-    if(imageReference)return showMissing?<span className={className} data-k-theme-node={node}>{imageLabel} · Preview bytes unavailable</span>:null;
+    if(imageReference)return localImage?<span className={className} data-k-theme-node={node}>
+      <img src={localImage.url} alt={imageAlt} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>
+    </span>:showMissing?<span className={className} data-k-theme-node={node}>{imageLabel} · Preview bytes unavailable</span>:null;
     // Nonediting previews can follow only explicitly authored, validated HTTPS links.
     // Never place a nested interactive link inside an editing slot button.
     if(text&&assignment?.state==='S0'&&assignment.componentId==='external-link@1'&&projection.href)
@@ -268,7 +272,29 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
 /** This context must come from the verified editor gate, never visitor simulation.
  * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
 export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
-type CanvasMediaView={key:string|null;status:'idle'|'pending'|'failed'}|{key:string;status:'ready';url:string;pinned:boolean};
+type CanvasImageRef={slotKey:string;assetId:string;expectedDigest?:string};
+type CanvasImageView={status:'pending'|'failed'|'deferred'}|{status:'ready';url:string;pinned:boolean;onError:()=>void};
+type CanvasImageViews=ReadonlyMap<string,CanvasImageView>;
+/** Only unique, active manifest slots may request bytes; stashes and
+ * unsupported assignments never participate. The signature is order-stable. */
+function canvasImageReferences(snapshot:PortfolioSnapshot|null|undefined,sections:CanvasSection[]):CanvasImageRef[]{
+  if(!snapshot)return [];
+  const all=sections.flatMap(section=>section.slots.map(name=>section.id+'-'+name.toLowerCase()));
+  const counts=new Map<string,number>();
+  for(const key of all)counts.set(key,(counts.get(key)??0)+1);
+  const refs:CanvasImageRef[]=[];
+  for(const key of all){
+    const assignment=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
+    if(counts.get(key)!==1||assignment?.state!=='S0'||assignment.componentId!=='image@1'||!canPlacePrivateImage(snapshot,key))continue;
+    const assetId=assignment.content.asset_id,expectedDigest=assignment.content.source_sha256;
+    if(typeof assetId!=='string'||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(assetId))continue;
+    if(expectedDigest!==undefined&&(typeof expectedDigest!=='string'||!/^[a-f0-9]{64}$/.test(expectedDigest)))continue;
+    refs.push({slotKey:key,assetId:assetId.toLowerCase(),expectedDigest});
+  }
+  return refs.sort((a,b)=>a.slotKey<b.slotKey?-1:a.slotKey>b.slotKey?1:0);
+}
+const CANVAS_MEDIA_BUDGET=50*1024*1024;
+
 /** Only bounded raster Blob receipts can reach an ephemeral image URL.
  * The owner adapter still performs byte/hash, Storage identity and pin verification. */
 function validOwnerPreview(asset:AssetPreviewRecord,data:OwnerPrivateAssetRead|null|undefined,expectedDigest?:string):data is OwnerPrivateAssetRead{
@@ -298,57 +324,110 @@ async function matchesPreviewBytes(bytes:Blob,mime:string,digest:string):Promise
     return actual===digest;
   }catch{return false;}
 }
-/** The selected slot alone may request actual private bytes. No per-slot
- * fan-out, public URLs, digest promotion, or network access in visitor mode. */
-function useSelectedCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:PortfolioSnapshot|null|undefined,
-  sections:CanvasSection[],slotKey:string|undefined,editing:boolean){
-  const assignment=editing&&slotKey&&sections.some(section=>section.slots.some(name=>section.id+'-'+name.toLowerCase()===slotKey))
-    ?snapshot?.slots[slotKey]:undefined;
-  const assetId=assignment?.state==='S0'&&assignment.componentId==='image@1'?assignment.content.asset_id:undefined;
-  const expectedDigest=assignment?.content.source_sha256;
+/** Verify each distinct referenced asset in a bounded sequential queue.
+ * Owner/project/epoch and reference signature changes revoke all old URLs.
+ * Repeated slots may share verified bytes, but each frozen digest must match.
+ * This is private preview only, never an authority or a snapshot mutation. */
+function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:PortfolioSnapshot|null|undefined,
+  sections:CanvasSection[],selectedSlot:string|undefined,ownerCanvas:boolean){
+  const refs=useMemo(()=>ownerCanvas&&context?canvasImageReferences(snapshot,sections):[],[ownerCanvas,!!context,snapshot,sections]);
   const port=context?.port;
-  const key=editing&&port&&context?.ownerKey&&slotKey&&assetId?
-    JSON.stringify([context.ownerKey,slotKey,assetId,expectedDigest??null]):null;
-  const [view,setView]=useState<CanvasMediaView>({key:null,status:'idle'});
-  const generation=useRef(0),flight=useRef(false),activeUrl=useRef<string|null>(null);
-  const boundEpoch=useRef<number|null>(null);
-  function release(){if(activeUrl.current){URL.revokeObjectURL(activeUrl.current);activeUrl.current=null;}}
+  const key=ownerCanvas&&port&&context?.ownerKey&&refs.length?JSON.stringify([context.ownerKey,refs]):null;
+  const [enabled,setEnabled]=useState(true);
+  const [attempt,setAttempt]=useState(0);
+  const [view,setView]=useState<{key:string|null;images:CanvasImageViews}>({key:null,images:new Map()});
+  const generation=useRef(0);
   useLayoutEffect(()=>{
-    ++generation.current;flight.current=false;release();setView({key,status:'idle'});
-    boundEpoch.current=port&&key?port.reconcileOwnerSessionEpoch():null;
-    const unsubscribe=port&&key?port.subscribeOwnerSessionEpoch(()=>{
-      boundEpoch.current=null;++generation.current;flight.current=false;release();setView({key,status:'failed'});
-    }):undefined;
-    return()=>{unsubscribe?.();boundEpoch.current=null;++generation.current;flight.current=false;release();};
-  },[port,key]);
-  const current=view.key===key?view:{key,status:'idle'} as const;
-  function close(){++generation.current;flight.current=false;release();setView({key,status:'idle'});}
-  function fail(){++generation.current;flight.current=false;release();setView({key,status:'failed'});}
-  async function load(){
-    if(!port||!key||!assetId||flight.current)return;
-    const epoch=port.reconcileOwnerSessionEpoch();
-    if(boundEpoch.current!==epoch)return;
     const started=++generation.current;
-    const live=()=>generation.current===started&&boundEpoch.current===epoch&&port.reconcileOwnerSessionEpoch()===epoch;
-    flight.current=true;release();setView({key,status:'pending'});
-    try{
-      const list=await port.listOwnerAssets();
-      if(!live())return;
-      const asset=list.data?.find(row=>row.id===assetId);
-      if(list.error||!asset){setView({key,status:'failed'});return;}
-      const response=await port.readOwnerPrivateAsset(asset.projectId,asset.id,epoch);
-      if(!live())return;
-      if(response.error||!validOwnerPreview(asset,response.data,expectedDigest)){setView({key,status:'failed'});return;}
-      const verified=await matchesPreviewBytes(response.data.bytes,asset.mime,response.data.integrity.computedSha256);
-      if(!live())return;
-      if(!verified){setView({key,status:'failed'});return;}
-      const url=URL.createObjectURL(response.data.bytes);
-      activeUrl.current=url;setView({key,status:'ready',url,pinned:response.data.serverAttestation==='SERVER_HASH_PINNED'});
-    }catch{if(live())setView({key,status:'failed'});}
-    finally{if(generation.current===started)flight.current=false;}
-  }
-  const image=key&&slotKey&&current.status==='ready'?{slotKey,url:current.url,onError:fail}:undefined;
-  return {available:!!key,status:current.status,pinned:current.status==='ready'&&current.pinned,image,load,close};
+    const images=new Map<string,CanvasImageView>();
+    const urls=new Set<string>();
+    let epoch:number|null=null;
+    const release=()=>{for(const url of urls)URL.revokeObjectURL(url);urls.clear();};
+    const live=()=>generation.current===started&&epoch!==null&&port?.reconcileOwnerSessionEpoch()===epoch;
+    const publish=()=>{if(live())setView({key,images:new Map(images)});};
+    setView({key,images:new Map()});
+    if(!port||!key||!enabled)return;
+    epoch=port.reconcileOwnerSessionEpoch();
+    for(const ref of refs)images.set(ref.slotKey,{status:'pending'});
+    publish();
+    const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
+      ++generation.current;epoch=null;release();setView({key,images:new Map()});
+    });
+    // Keep the explicit retry useful even when a very large document exceeds
+    // the local preview budget: prioritize the current selection, not API order.
+    const ordered=[...refs].sort((a,b)=>Number(b.slotKey===selectedSlot)-Number(a.slotKey===selectedSlot));
+    const groups=new Map<string,CanvasImageRef[]>();
+    for(const ref of ordered){const group=groups.get(ref.assetId)??[];group.push(ref);groups.set(ref.assetId,group);}
+    const setGroup=(group:CanvasImageRef[],status:'failed'|'deferred')=>{
+      for(const ref of group)images.set(ref.slotKey,{status});publish();
+    };
+    async function load(){
+      if(!port||epoch===null||!live())return;
+      const bound=epoch;
+      let used=0;
+      try{
+        const list=await port.listOwnerAssets();
+        if(!live())return;
+        if(list.error||!list.data){setGroup(refs,'failed');return;}
+        for(const [assetId,group] of groups){
+          if(!live())return;
+          const candidates=list.data.filter(row=>row.id.toLowerCase()===assetId);
+          const asset=candidates.length===1?candidates[0]:undefined;
+          if(!asset||!Number.isSafeInteger(asset.size)||asset.size<=0||asset.size>5*1024*1024||
+             !['image/png','image/jpeg','image/webp'].includes(asset.mime)){setGroup(group,'failed');continue;}
+          if(used+asset.size>CANVAS_MEDIA_BUDGET){setGroup(group,'deferred');continue;}
+          let url:string|undefined;
+          try{
+            const response=await port.readOwnerPrivateAsset(asset.projectId,asset.id,bound);
+            if(!live())return;
+            if(response.error||!validOwnerPreview(asset,response.data)){setGroup(group,'failed');continue;}
+            const digest=response.data.integrity.computedSha256;
+            const verified=await matchesPreviewBytes(response.data.bytes,asset.mime,digest);
+            if(!live())return;
+            if(!verified){setGroup(group,'failed');continue;}
+            const matches=group.filter(ref=>ref.expectedDigest===undefined||ref.expectedDigest===digest);
+            for(const ref of group)if(!matches.includes(ref))images.set(ref.slotKey,{status:'failed'});
+            if(!matches.length){publish();continue;}
+            url=URL.createObjectURL(response.data.bytes);urls.add(url);
+            const probe=new Image();
+            probe.src=url;
+            await probe.decode();
+            if(!live())return;
+            if(!probe.naturalWidth||!probe.naturalHeight)throw new Error('Image decode failed.');
+            // The image URL belongs to this run alone; a late error from an old
+            // image can neither revoke a new URL nor publish an old receipt.
+            const imageUrl=url;
+            const fail=()=>{
+              if(!live()||!urls.delete(imageUrl))return;
+              URL.revokeObjectURL(imageUrl);
+              for(const ref of matches){
+                const image=images.get(ref.slotKey);
+                if(image?.status==='ready'&&image.url===imageUrl)images.set(ref.slotKey,{status:'failed'});
+              }
+              publish();
+            };
+            used+=asset.size;
+            for(const ref of matches)images.set(ref.slotKey,{status:'ready',url:imageUrl,
+              pinned:response.data.serverAttestation==='SERVER_HASH_PINNED',onError:fail});
+            publish();
+          }catch{
+            if(url&&urls.delete(url))URL.revokeObjectURL(url);
+            if(!live())return;
+            setGroup(group,'failed');
+          }
+        }
+      }catch{if(live()){for(const ref of refs)if(images.get(ref.slotKey)?.status==='pending')images.set(ref.slotKey,{status:'failed'});publish();}}
+    }
+    void load();
+    return()=>{unsubscribe();if(generation.current===started)++generation.current;epoch=null;release();};
+    // key captures the exact owner and image-reference signature. Unrelated
+    // text edits, selection and reorder do not re-download private images.
+  },[port,key,enabled,attempt]);
+  const images=enabled&&view.key===key?view.images:new Map<string,CanvasImageView>();
+  const count=(status:CanvasImageView['status'])=>refs.filter(ref=>images.get(ref.slotKey)?.status===status).length;
+  return {available:!!key,enabled,images,total:refs.length,ready:count('ready'),failed:count('failed'),deferred:count('deferred'),
+    pinned:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned;}).length,
+    show:()=>{setEnabled(true);setAttempt(value=>value+1);},hide:()=>setEnabled(false)};
 }
 
 export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll,onContentWidth,privateMedia,onAddFirstSection,dropTargets}: {
@@ -383,7 +462,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   },[scoped,onContentWidth]);
   const themeNode=(section:CanvasSection,name:string)=>scoped?'s'+sections.indexOf(section)+'c'+section.slots.indexOf(name):undefined;
   const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
-  const media=useSelectedCanvasMedia(privateMedia,snapshot,sections,selectedSlot,editing);
+  const media=useCanvasMedia(privateMedia,snapshot,sections,selectedSlot,!standalone&&!simulation&&!!privateMedia);
   const liveDrops=editing&&privateMedia?dropTargets:undefined;
   const {highlighted:sectionHighlight,setHighlighted:setSectionHighlight}=useDropOutline();
   function sectionDragOver(event:DragEvent<HTMLElement>,before:string|null){
@@ -396,7 +475,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
     if(!liveDrops?.canDropSection(before))return;
     event.preventDefault();event.stopPropagation();liveDrops.dropSection(before);
   }
-  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation,themeNode,privateImage:media.image,dropTargets:liveDrops};
+  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation,themeNode,privateImages:media.images,dropTargets:liveDrops};
   const Tag=standalone?'main':'div';
   const content=<>
       {!blank&&<header className="pv-site-head"><strong>{title}</strong>
@@ -465,12 +544,14 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
       <span>Illustrative empty-slot copy · Never saved or published</span>
     </div>}
     {(parsed?.status==='blocked'||(parsed?.status==='valid'&&!scoped))&&!standalone&&<p role="alert">Scoped theme could not be resolved. Showing the legacy palette only; publication is blocked for unsupported active overrides.</p>}
-    {media.available&&<div className="pv-editor-caption" aria-label="Selected private image">
-      {media.status==='pending'?<p role="status">Verifying selected private image bytes…</p>:
-        media.status==='ready'?<><span>Owner-private image preview · {media.pinned?'Server pin matched':'No server pin verified'} · Not public</span>
-          <button type="button" className="ws-secondary" onClick={media.close}>Close canvas image preview</button></>:
-          <>{media.status==='failed'&&<p role="alert">Selected image bytes unavailable or no longer match this draft.</p>}
-            <button type="button" className="ws-secondary" onClick={()=>void media.load()}>{media.status==='failed'?'Retry selected canvas image':'Preview selected image in canvas'}</button></>}
+    {media.available&&<div className="pv-editor-caption" role="group" aria-label="Private canvas image previews">
+      {media.enabled?<><span role="status">{media.ready} of {media.total} owner-private image slots verified · {media.pinned} server pin matches · Not public</span>
+        {media.ready+media.failed+media.deferred<media.total&&<span>Verifying private image bytes…</span>}
+        {media.failed>0&&<p role="alert">{media.failed} image slots could not be verified or decoded.</p>}
+        {media.deferred>0&&<p>{media.deferred} slots exceed this view’s 50 MiB image preview budget. Select a slot and retry to prioritize it.</p>}
+        {(media.failed>0||media.deferred>0)&&<button type="button" className="ws-secondary" onClick={media.show}>Retry private canvas images</button>}
+        <button type="button" className="ws-secondary" onClick={media.hide}>Hide private canvas images</button></>:
+        <button type="button" className="ws-secondary" onClick={media.show}>Show private canvas images</button>}
     </div>}
     <div className="pv-site" ref={scoped?undefined:measured}>
       {scoped?<div ref={measured} data-k-theme-instance={instance} className="k-theme-container" style={{containerName:'k-portfolio-width',containerType:'inline-size',width:'100%',minWidth:0,writingMode:'horizontal-tb',padding:0,border:0}}>
