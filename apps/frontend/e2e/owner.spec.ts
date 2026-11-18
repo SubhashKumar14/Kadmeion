@@ -4056,3 +4056,305 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
+
+test('B16 WF-012 uncertain paged match requires exact owner readback after closing and reopening',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(85000);
+  const owner=await localUser('R7 uncertain exact readback');
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  let writes=0,committedId:string|null=null,exactFailures=0,exactReads=0;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/projects',async route=>{
+    const method=route.request().method();
+    if(method==='POST'){
+      writes++;
+      const response=await route.fetch();
+      try{
+        expect(response.ok()).toBe(true);
+        const rows=await response.json();
+        if(!Array.isArray(rows)||rows.length!==1||typeof rows[0]?.id!=='string')throw new Error('Local insert receipt absent.');
+        committedId=rows[0].id;
+        return await route.abort('failed');
+      }finally{await response.dispose();}
+    }
+    if(method==='GET'&&committedId&&new URL(route.request().url()).searchParams.get('id')==='eq.'+committedId){
+      exactReads++;
+      if(exactFailures===0){
+        exactFailures++;
+        return route.fulfill({status:503,json:{message:'Disposable current-record read outage'}});
+      }
+    }
+    await route.continue();
+  });
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R7 exact uncertain record');
+  await drawer.getByLabel('Summary (optional)').fill('Durable record must actually be checked');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  const check=drawer.getByRole('button',{name:'Check saved project before retry'});
+  await expect(check).toBeEnabled();
+  expect(writes).toBe(1);expect(committedId).not.toBeNull();
+  await check.click();
+  await expect(drawer.getByRole('alert')).toContainText('current record could not be verified');
+  expect(exactReads).toBe(1);expect(exactFailures).toBe(1);
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await drawer.getByRole('button',{name:'Close and keep recovery pending',exact:true}).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText(/A project creation is unresolved\. Open Add project/)).toBeVisible();
+  await page.getByRole('button',{name:'Add project',exact:true}).click();
+  await expect(drawer.getByLabel('Project title')).toHaveValue('R7 exact uncertain record');
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await check.click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText('The requested private project matches a saved record. No additional write was made.',{exact:true})).toBeVisible();
+  expect(writes).toBe(1);expect(exactReads).toBe(2);
+  await page.reload();
+  await expect(page.getByRole('link',{name:'R7 exact uncertain record',exact:true})).toHaveCount(1);
+  expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug='r7-exact-uncertain-record';",owner.id)).toBe('1');
+  expect(writes).toBe(1);
+});
+
+test('B16 R9 actual guarded project autosave coalesces, fences CAS and owner, and never silently withdraws',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(150_000);
+  const [owner,outsider]=await Promise.all([localUser('R9 guard owner'),localUser('R9 guard outsider')]);
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY||process.env.VITE_SUPABASE_ANON_KEY;
+  if(!key||process.env.VITE_SUPABASE_URL!==origin)throw new Error('Disposable local publishable key required.');
+  async function token(user:{email:string;password:string}){
+    const reply=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',redirect:'error',
+      signal:AbortSignal.timeout(15000),headers:{apikey:key!,'Content-Type':'application/json'},
+      body:JSON.stringify({email:user.email,password:user.password})});
+    expect(reply.ok).toBe(true);const result=await reply.json();
+    if(typeof result.access_token!=='string')throw new Error('Local access token missing.');return result.access_token as string;
+  }
+  const [ownerToken,foreignToken]=await Promise.all([token(owner),token(outsider)]);
+  const request=(path:string,access:string,body?:object)=>fetch(origin+path,{
+    method:body?'POST':'GET',redirect:'error',signal:AbortSignal.timeout(15000),
+    headers:{apikey:key!,Authorization:'Bearer '+access,'Content-Type':'application/json',Accept:'application/json',Prefer:'return=representation'},
+    ...(body?{body:JSON.stringify(body)}:{})});
+  const handle=runLocalFixtureSql("update public.profiles set handle='r9_'||substr(replace(:'actor_id','-',''),1,12) where user_id=:'actor_id'::uuid;select handle from public.profiles where user_id=:'actor_id'::uuid;",owner.id);
+  expect(handle).toMatch(/^r9_[0-9a-f]{12}$/);
+  await signIn(page,owner);await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R9 guarded project');
+  await drawer.getByLabel('Summary (optional)').fill('Original private summary');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await page.getByRole('link',{name:'R9 guarded project',exact:true}).click();
+  const projectPath=new URL(page.url()).pathname, id=projectPath.split('/').pop()!;
+  expect(id).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const summary=page.locator('form.ws-project-fields').getByLabel('Short description');
+  await expect(summary).toHaveCount(1);
+  const auto=page.getByRole('checkbox',{name:'Autosave private project overview'});
+  const revision=page.getByRole('complementary',{name:'Saved project preview'}).getByText(/SAVED DRAFT · REVISION \d+/);
+  const snapshot=async()=>{
+    const response=await request('/rest/v1/projects?select=id,owner_user_id,revision,title,summary,description,repository_url,live_url,slug&id=eq.'+id,ownerToken);
+    expect(response.ok).toBe(true);const rows=await response.json();expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(id);expect(rows[0].owner_user_id).toBe(owner.id);return rows[0];
+  };
+  const guardArgs=(record:any,next:string,confirm=false)=>({p_project_id:id,p_base_revision:record.revision,
+    p_title:record.title,p_summary:next,p_description:record.description,p_repository_url:record.repository_url,
+    p_live_url:record.live_url,p_confirm_projection_withdrawal:confirm});
+  const endpoint='/rest/v1/rpc/owner_save_private_project_draft';
+  const dispatches:{confirm:boolean;revision:number}[]=[];let legacy=0,drop=false,dropSettled=false;
+  await page.route(url=>url.origin===origin&&(url.pathname===endpoint||url.pathname==='/rest/v1/rpc/update_private_project'),async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    if(new URL(route.request().url()).pathname!==endpoint){legacy++;return route.continue();}
+    const body=route.request().postDataJSON();dispatches.push({confirm:body.p_confirm_projection_withdrawal,revision:body.p_base_revision});
+    if(drop){
+      drop=false;const receipt=await route.fetch();
+      try{expect(receipt.ok()).toBe(true);dropSettled=true;return await route.abort('failed');}
+      finally{await receipt.dispose();}
+    }
+    await route.continue();
+  });
+  await expect(summary).toHaveValue('Original private summary');
+  await expect(auto).not.toBeChecked();
+  await auto.check();await summary.fill('Partial edit');await summary.fill('Coalesced private edit');
+  await expect(page.getByText('Private project draft autosaved.',{exact:true})).toBeVisible({timeout:20000});
+  expect(dispatches).toEqual([{confirm:false,revision:0}]);expect(legacy).toBe(0);
+  await expect(revision).toHaveText('SAVED DRAFT · REVISION 1');
+  const first=await snapshot();expect(first.revision).toBe(1);expect(first.summary).toBe('Coalesced private edit');
+  await page.reload();await expect(summary).toHaveValue('Coalesced private edit');await expect(auto).not.toBeChecked();
+  // Another live owner may not save this owner's record, even with guessed CAS/confirmation.
+  const foreign=await request(endpoint,foreignToken,guardArgs(first,'Foreign overwrite',true));
+  expect(foreign.ok).toBe(false);await foreign.body?.cancel();
+  expect(await snapshot()).toEqual(first);
+  // Concurrent authenticated writer requests use the same actual base. Only one may commit.
+  const rival=await token(owner);
+  const contenders=await Promise.all([request(endpoint,ownerToken,guardArgs(first,'Concurrent A')),
+    request(endpoint,rival,guardArgs(first,'Concurrent B'))]);
+  expect(contenders.filter(r=>r.ok)).toHaveLength(1);
+  for(const response of contenders)await response.body?.cancel();
+  const second=await snapshot();expect(second.revision).toBe(2);
+  expect(['Concurrent A','Concurrent B']).toContain(second.summary);
+  const stale=await request(endpoint,ownerToken,guardArgs(first,'Stale overwrite',true));
+  expect(stale.ok).toBe(false);await stale.body?.cancel();expect(await snapshot()).toEqual(second);
+  // Browser remains on rev1. An attempted autosave sees server revision mismatch and stops.
+  await auto.check();await summary.fill('Stale browser draft');
+  await expect(page.getByText('This project changed while you were editing. Load the latest revision.',{exact:true})).toBeVisible({timeout:20000});
+  await expect(auto).not.toBeChecked();await expect(summary).toHaveValue('Stale browser draft');
+  await expect(page.getByRole('button',{name:'Save changes',exact:true})).toBeDisabled();
+  expect(dispatches).toHaveLength(1);expect(await snapshot()).toEqual(second);
+  await page.getByRole('button',{name:'Check latest revision',exact:true}).click();
+  await page.getByRole('button',{name:'Discard my edits and load saved draft',exact:true}).click();
+  await expect(summary).toHaveValue(second.summary);
+  await expect(revision).toHaveText('SAVED DRAFT · REVISION 2');
+  // Create authentic selected case-study exposure and projection with an owner JWT
+  // on the disposable stack (not privileged insertion or fabricated fixture receipt).
+  const exposure=await request('/rest/v1/project_exposure_intents',ownerToken,
+    {project_id:id,owner_user_id:owner.id,show_on_profile:false,show_case_study:true});
+  expect(exposure.ok).toBe(true);await exposure.body?.cancel();
+  const publish=await request('/rest/v1/rpc/owner_publish_case_study_projection',ownerToken,
+    {p_project_id:id,p_expected_revision:2,p_confirmation:'PUBLISH CASE STUDY'});
+  expect(publish.ok).toBe(true);expect(await publish.json()).toMatchObject({status:'PROJECTION_READY',slug:second.slug});
+  const projection=()=>runLocalFixtureSql("select coalesce(public.service_read_published_case_study_projection((select handle from public.profiles where user_id=:'actor_id'::uuid),(select slug from public.projects where id=:'item_id'::uuid))::text,'ABSENT');",owner.id,id);
+  expect(JSON.parse(projection())).toMatchObject({summary:second.summary});
+  const noOp=await request(endpoint,ownerToken,guardArgs(second,second.summary));
+  expect(noOp.ok).toBe(true);expect(await noOp.json()).toMatchObject({id,revision:2});expect(JSON.parse(projection())).toMatchObject({summary:second.summary});
+  await auto.check();await summary.fill('Withdrawal requires explicit consent');
+  await expect(page.getByText('A public case-study snapshot would be withdrawn. Review and explicitly confirm this exact draft to save.',{exact:true})).toBeVisible({timeout:20000});
+  await expect(auto).not.toBeChecked();await expect(page.getByRole('button',{name:'Save changes',exact:true})).toBeDisabled();
+  const confirm=page.getByRole('checkbox',{name:'I confirm withdrawal and saving this exact private overview.'});
+  await expect(confirm).not.toBeChecked();expect(dispatches.at(-1)).toEqual({confirm:false,revision:2});
+  expect(JSON.parse(projection())).toMatchObject({summary:second.summary});expect(await snapshot()).toEqual(second);
+  await confirm.check();await page.getByRole('button',{name:'Save changes',exact:true}).click();
+  await expect(page.getByText('Private draft saved.',{exact:true})).toBeVisible({timeout:20000});
+  expect(dispatches.at(-1)).toEqual({confirm:true,revision:2});
+  expect(projection()).toBe('ABSENT');const third=await snapshot();expect(third.revision).toBe(3);
+  expect(third.summary).toBe('Withdrawal requires explicit consent');
+  // Drop only the acknowledgement after the real guarded POST committed.
+  await page.reload();await expect(summary).toHaveValue(third.summary);await expect(auto).not.toBeChecked();
+  drop=true;await auto.check();await summary.fill('Guarded commit with lost acknowledgement');
+  await expect(page.getByText('Project save acknowledgement is unavailable. Reload before retrying.',{exact:true})).toBeVisible({timeout:20000});
+  expect(dropSettled).toBe(true);await expect(auto).not.toBeChecked();
+  await expect(page.getByRole('button',{name:'Save changes',exact:true})).toBeDisabled();
+  const committed=await snapshot();expect(committed.revision).toBe(4);
+  expect(committed.summary).toBe('Guarded commit with lost acknowledgement');
+  const count=dispatches.length;await page.getByRole('button',{name:'Check latest revision',exact:true}).click();
+  await expect(page.getByText('Requested overview matches the current saved revision. No additional write was made.',{exact:true})).toBeVisible();
+  expect(dispatches).toHaveLength(count);expect(legacy).toBe(0);
+  await page.reload();await expect(summary).toHaveValue(committed.summary);await expect(revision).toHaveText('SAVED DRAFT · REVISION 4');
+  await expect(auto).not.toBeChecked();expect(projection()).toBe('ABSENT');
+  const foreignPage=await browser.newPage();
+  try{await signIn(foreignPage,outsider);await foreignPage.goto(projectPath);
+    await expect(foreignPage.getByText('Project unavailable. Check your connection and session before trying again.',{exact:true})).toBeVisible();
+    await expect(foreignPage.locator('form.ws-project-fields').getByLabel('Short description')).toHaveCount(0);
+  }finally{await foreignPage.close();}
+});
+
+test('B16 R9 guarded project save versus real case study publication shares atomic project revision',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(90_000);
+  const owner=await localUser('R9 concurrent projection owner');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY||process.env.VITE_SUPABASE_ANON_KEY;
+  if(!key||process.env.VITE_SUPABASE_URL!==origin)throw Error('Disposable local publishable key required.');
+  const token=async()=>{
+    const response=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',redirect:'error',
+      signal:AbortSignal.timeout(15000),headers:{apikey:key!,'Content-Type':'application/json'},
+      body:JSON.stringify({email:owner.email,password:owner.password})});
+    expect(response.ok).toBe(true);const receipt=await response.json();
+    if(typeof receipt.access_token!=='string')throw Error('Missing local session.');return receipt.access_token as string;
+  };
+  const [first,second]=await Promise.all([token(),token()]);
+  const request=(path:string,access:string,body?:object)=>fetch(origin+path,{method:body?'POST':'GET',
+    redirect:'error',signal:AbortSignal.timeout(15000),headers:{apikey:key!,Authorization:'Bearer '+access,
+      'Content-Type':'application/json',Accept:'application/json',Prefer:'return=representation'},
+    ...(body?{body:JSON.stringify(body)}:{})});
+  runLocalFixtureSql("update public.profiles set handle='r9race_'||substr(replace(:'actor_id','-',''),1,12) where user_id=:'actor_id'::uuid;",owner.id);
+  // Two separate real authenticated project rows; neither is prepublished.
+  for(let n=0;n<2;n++){
+    const slug='r9-projection-race-'+n,summary='Original '+n;
+    const created=await request('/rest/v1/projects',first,{owner_user_id:owner.id,title:'R9 race '+n,
+      slug,summary,description:''});
+    expect(created.ok).toBe(true);const rows=await created.json();expect(rows).toHaveLength(1);
+    const record=rows[0];expect(record.owner_user_id).toBe(owner.id);
+    const id=record.id as string,base=record.revision as number;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/i);expect(base).toBe(0);
+    const exposure=await request('/rest/v1/project_exposure_intents',first,{owner_user_id:owner.id,
+      project_id:id,show_on_profile:false,show_case_study:true});
+    expect(exposure.ok).toBe(true);await exposure.body?.cancel();
+    const args={p_project_id:id,p_base_revision:base,p_title:record.title,p_summary:'Guarded concurrent '+n,
+      p_description:record.description,p_repository_url:record.repository_url,p_live_url:record.live_url,
+      p_confirm_projection_withdrawal:false};
+    const publish=()=>request('/rest/v1/rpc/owner_publish_case_study_projection',second,
+      {p_project_id:id,p_expected_revision:base,p_confirmation:'PUBLISH CASE STUDY'});
+    const save=()=>request('/rest/v1/rpc/owner_save_private_project_draft',first,args);
+    // Opposite dispatch order on independent records; PostgreSQL chooses winner.
+    const [write,publication]=n===0?await Promise.all([save(),publish()]):await Promise.all([publish(),save()]).then(([p,w])=>[w,p]);
+    expect([write.ok,publication.ok].filter(Boolean)).toHaveLength(1);
+    await Promise.all([write.body?.cancel(),publication.body?.cancel()]);
+    const snapshot=JSON.parse(runLocalFixtureSql("select jsonb_build_object('revision',revision,'summary',summary)::text from public.projects where id=:'item_id'::uuid and owner_user_id=:'actor_id'::uuid;",owner.id,id));
+    const projection=()=>runLocalFixtureSql("select coalesce(public.service_read_published_case_study_projection((select handle from public.profiles where user_id=:'actor_id'::uuid),(select slug from public.projects where id=:'item_id'::uuid))::text,'ABSENT');",owner.id,id);
+    if(write.ok){
+      expect(snapshot).toEqual({revision:base+1,summary:args.p_summary});expect(projection()).toBe('ABSENT');
+    }else{
+      expect(snapshot).toEqual({revision:base,summary});
+      expect(JSON.parse(projection())).toMatchObject({summary});
+      const denied=await save();expect(denied.ok).toBe(false);await denied.body?.cancel();
+      expect(JSON.parse(projection())).toMatchObject({summary});
+      const explicit=await request('/rest/v1/rpc/owner_save_private_project_draft',first,
+        {...args,p_confirm_projection_withdrawal:true});
+      expect(explicit.ok).toBe(true);expect(await explicit.json()).toMatchObject({id,revision:base+1});
+      expect(projection()).toBe('ABSENT');
+    }
+  }
+});
+
+test('B16 R9 guarded project autosave rejects a delayed acknowledgement after actual A-B-A owner switch',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(110_000);
+  const [owner,other]=await Promise.all([localUser('R9 project epoch A'),localUser('R9 project epoch B')]);
+  await signIn(page,owner);await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R9 epoch project');
+  await drawer.getByLabel('Summary (optional)').fill('A initial private summary');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await page.getByRole('link',{name:'R9 epoch project',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const summary=page.locator('form.ws-project-fields').getByLabel('Short description');
+  await expect(summary).toHaveCount(1);
+  const auto=page.getByRole('checkbox',{name:'Autosave private project overview'});
+  await expect(summary).toHaveValue('A initial private summary');
+  let accept!:()=>void,received!:()=>void,finished!:()=>void;
+  const hold=new Promise<void>(r=>{accept=r}),ack=new Promise<void>(r=>{received=r}),
+    settled=new Promise<void>(r=>{finished=r});
+  let commits=0,committed=false,legacy=0;
+  await page.route(url=>url.origin===origin&&(url.pathname==='/rest/v1/rpc/owner_save_private_project_draft'||url.pathname==='/rest/v1/rpc/update_private_project'),async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    if(new URL(route.request().url()).pathname==='/rest/v1/rpc/update_private_project'){legacy++;return route.continue();}
+    commits++;if(commits!==1)return route.continue();
+    const body=route.request().postDataJSON();
+    expect(body.p_summary).toBe('A committed before switch');expect(body.p_confirm_projection_withdrawal).toBe(false);
+    const actual=await route.fetch();
+    try{committed=actual.ok();received();await hold;await route.fulfill({response:actual}).catch(()=>{});}
+    finally{await actual.dispose();finished();}
+  });
+  const control=await page.context().newPage();
+  try{
+    await auto.check();await summary.fill('A committed before switch');await ack;
+    expect(committed).toBe(true);expect(commits).toBe(1);
+    await control.goto('/app/settings');await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);await expect(page.locator('.ws-shell')).toHaveCount(0);
+    await expect(summary).toHaveCount(0);
+    await signIn(control,other);
+    await expect(page.getByText('Project unavailable. Check your connection and session before trying again.',{exact:true})).toBeVisible();
+    await expect(summary).toHaveCount(0);
+    await expect(page.getByText('A committed before switch',{exact:true})).toHaveCount(0);
+    await control.goto('/app/settings');await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);await signIn(control,owner);
+    await expect(summary).toHaveValue('A committed before switch');await expect(auto).not.toBeChecked();
+    await summary.fill('New private A draft after return');accept();await settled;
+    await expect(summary).toHaveValue('New private A draft after return');
+    await expect(page.getByText('Private project draft autosaved.',{exact:true})).toHaveCount(0);
+    expect(commits).toBe(1);expect(legacy).toBe(0);
+    await page.getByRole('button',{name:'Save changes',exact:true}).click();
+    await expect(page.getByText('Private draft saved.',{exact:true})).toBeVisible();
+    expect(commits).toBe(2);expect(legacy).toBe(0);
+    await page.reload();await expect(summary).toHaveValue('New private A draft after return');
+    await expect(auto).not.toBeChecked();
+  }finally{accept();await control.close();}
+});
