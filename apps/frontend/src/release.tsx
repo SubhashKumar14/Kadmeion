@@ -1181,7 +1181,26 @@ function issueDestination(item:PreflightIssue,portfolioId:string,mode:'publish'|
   return {href:editorLink('Content'),label:'Open editor to review structure',
     hint:'Inspect Structure & layers and Content; save a valid new revision.'};
 }
+/** Read only the escaped metadata emitted by the trusted scriptless renderer.
+ * Do not construct a DOM, load resources or read the mutable draft metadata.
+ */
+function privatePreviewMetadata(html:string):{title:string;description:string;robots:string}|null {
+  const head=/^<!doctype html><html lang="en"><head>([\s\S]*?)<style>/.exec(html)?.[1];
+  if(!head)return null;
+  const title=/<title>([^<]*)<\/title>/.exec(head)?.[1];
+  const description=/<meta name="description" content="([^"]*)">/.exec(head)?.[1];
+  const robots=/<meta name="robots" content="([^"]*)">/.exec(head)?.[1];
+  if(title===undefined||description===undefined||robots!=='noindex,nofollow,noarchive')return null;
+  const unescape=(value:string)=>value.replace(/&(?:amp|lt|gt|quot|#39);/g,entity=>{
+    switch(entity){case '&amp;':return '&';case '&lt;':return '<';case '&gt;':return '>';
+      case '&quot;':return '"';case '&#39;':return "'";default:return entity;}
+  });
+  return {title:unescape(title),description:unescape(description),robots};
+}
+
 function PreflightResults({result,portfolioId,revision,mode}:{result:SafePreviewResult;portfolioId:string;revision:number;mode:'publish'|'releases'}) {
+  const [previewWidth,setPreviewWidth]=useState<'fit'|'390'|'768'|'1440'>('fit');
+  const metadata=result.status==='PREVIEW_ONLY'&&result.previewHtml?privatePreviewMetadata(result.previewHtml):null;
   return <section className="ws-release-action" role="group" aria-labelledby="preflight-results">
     <h3 id="preflight-results">Preflight results</h3>
     <p role="status">Private renderability check for frozen revision {revision}. No published release or host readiness proof.</p>
@@ -1212,8 +1231,34 @@ function PreflightResults({result,portfolioId,revision,mode}:{result:SafePreview
         </li>;
       })}</ul>:<p>None in this category.</p>}
     </div>)}
-    {result.previewHtml && <iframe title="Private scriptless preview" className="ws-private-static-preview"
-      sandbox="" referrerPolicy="no-referrer" srcDoc={result.previewHtml}/>}
+    {result.status==='PREVIEW_ONLY'&&result.previewHtml && <>
+      <div className="ws-release-action" role="group" aria-labelledby="private-seo-title">
+        <h4 id="private-seo-title">Frozen preview SEO metadata</h4>
+        {metadata?<dl className="ws-release-facts">
+          <dt>Page title</dt><dd style={{overflowWrap:'anywhere'}}>{metadata.title}</dd>
+          <dt>Meta description</dt><dd style={{overflowWrap:'anywhere'}}>{metadata.description}</dd>
+          <dt>Robots directive</dt><dd><code>{metadata.robots}</code></dd>
+        </dl>:<p>The rendered metadata could not be read. Inspect preflight diagnostics before export.</p>}
+        <p className="ws-field-hint">Exact private preview metadata, not a live search result. No verified canonical URL or sitemap entry is created.</p>
+      </div>
+      <div className="ws-release-actions">
+        <label>Static preview viewport
+          <select value={previewWidth} onChange={event=>{
+            const value=event.target.value;
+            if(value==='fit'||value==='390'||value==='768'||value==='1440')setPreviewWidth(value);
+          }}>
+            <option value="fit">Fit available width</option><option value="390">Phone (390 CSS px)</option>
+            <option value="768">Tablet (768 CSS px)</option><option value="1440">Desktop (1440 CSS px)</option>
+          </select>
+        </label>
+      </div>
+      <p className="ws-field-hint">A fixed viewport may scroll horizontally. Portfolio content width may be smaller than the selected viewport. Export uses the same reviewed HTML at every width.</p>
+      <div role="region" aria-label="Scrollable private static preview" tabIndex={0} style={{overflow:'auto',maxWidth:'100%'}}>
+        <iframe title="Private scriptless preview" className="ws-private-static-preview"
+          style={{width:previewWidth==='fit'?'100%':Number(previewWidth),maxWidth:'none',boxSizing:'content-box',display:'block'}}
+          sandbox="" referrerPolicy="no-referrer" srcDoc={result.previewHtml}/>
+      </div>
+    </>}
     <p className="ws-field-hint">Publication remains blocked until host proof and separate authorization.</p>
   </section>;
 }
