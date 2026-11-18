@@ -149,7 +149,7 @@ begin
  join public.portfolios p on p.id=k.id and p.owner_user_id=u
  join kadmeion_private.analytics_opt_in a on a.portfolio_id=p.id and a.enabled
  ), days as (
- select s.id,s.ord,s.version,s.coverage_started_at,s.eligible,lo+g.n day,sum(x.views)::integer views,
+ select s.id,s.ord,s.version,s.coverage_started_at,s.eligible,lo+g.n AS bucket_day,sum(x.views)::integer AS views,
  jsonb_build_object('DIRECT_OR_UNKNOWN',coalesce(sum(x.views) filter(where x.referrer_bucket='DIRECT_OR_UNKNOWN'),0),
  'SEARCH',coalesce(sum(x.views) filter(where x.referrer_bucket='SEARCH'),0),'SOCIAL',coalesce(sum(x.views) filter(where x.referrer_bucket='SOCIAL'),0),
  'OTHER_EXTERNAL',coalesce(sum(x.views) filter(where x.referrer_bucket='OTHER_EXTERNAL'),0),'INTERNAL',coalesce(sum(x.views) filter(where x.referrer_bucket='INTERNAL'),0)) buckets
@@ -160,8 +160,8 @@ begin
  ), grouped as (
  select ord,jsonb_build_object('portfolioId',id,'version',version,'coverageStartedAt',coverage_started_at,'eligible',eligible,
  'quality',case when bool_or(views>0) then 'PARTIAL' else 'UNAVAILABLE' end,
- 'days',jsonb_agg(jsonb_build_object('day',day,'views',views,'buckets',case when views>0 then buckets end,
- 'quality',case when views>0 then 'PARTIAL' else 'UNAVAILABLE' end) order by day)) item,
+ 'days',jsonb_agg(jsonb_build_object('day',bucket_day,'views',views,'buckets',case when views>0 then buckets end,
+ 'quality',case when views>0 then 'PARTIAL' else 'UNAVAILABLE' end) order by bucket_day)) item,
  coalesce(bool_or(views>250 or coverage_started_at>t),false) bad
  from days group by id,ord,version,coverage_started_at,eligible
  ) select count(*)::integer,jsonb_build_object('asOfUtc',t,'fromDay',lo,'toDay',hi,'retentionDays',30,'portfolios',jsonb_agg(item order by ord))
