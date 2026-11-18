@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type {
@@ -21,14 +21,45 @@ const uuidPattern = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][
 function dateText(value: string) { return new Date(value).toLocaleString(); }
 function errorMessage(value: unknown): string {
   if (value instanceof Error && value.name === 'PrivateModerationError') {
-    return 'The role-checked moderation operation was not confirmed. Check the current case state before retrying.';
+    return 'The role-checked moderation operation was not confirmed. Retry unchanged input for the same operation where supported. Check the current case state before starting a different action.';
   }
   return 'The private moderation service could not verify this operation.';
 }
 type Props = {service: SupabasePrivateModerationService; cases: OperatorModerationCase[];
-  committed: (message: string) => void};
+  committed: (message: string) => void; recheck: () => void};
 
-function Users({service, cases, committed}: Props) {
+// The server remains the authority; this gate only synchronizes form submissions
+// and discards completions from a panel that has been removed or reverified.
+function useScopedActionGate(scope: object) {
+  const active = useRef(false);
+  const pending = useRef<symbol|null>(null);
+  useLayoutEffect(() => {
+    active.current = true;
+    return () => { active.current = false; pending.current = null; };
+  }, [scope]);
+  return {
+    begin(): symbol|null {
+      if (!active.current || pending.current !== null) return null;
+      const token = Symbol();
+      pending.current = token;
+      return token;
+    },
+    current(token: symbol): boolean {
+      return active.current && pending.current === token;
+    },
+    finish(token: symbol): boolean {
+      if (!active.current || pending.current !== token) return false;
+      pending.current = null;
+      return true;
+    }
+  };
+}
+function accessMustBeRechecked(error: unknown): boolean {
+  return error instanceof Error && error.name === 'PrivateModerationError' &&
+    'code' in error && (error.code === 'AUTH_EXPIRED' || error.code === 'FORBIDDEN');
+}
+
+function Users({service, cases, committed, recheck}: Props) {
   const [query, setQuery] = useState('');
   const [target, setTarget] = useState('');
   const [reason, setReason] = useState<ModerationReason>('ABUSE');
@@ -37,21 +68,29 @@ function Users({service, cases, committed}: Props) {
   const [operation, setOperation] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const gate = useScopedActionGate(service);
   const filtered = cases.filter(item =>
     item.targetUserId.toLowerCase().includes(query.trim().toLowerCase()) ||
     item.caseId.toLowerCase().includes(query.trim().toLowerCase()));
   async function open(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || !confirmed || summary.trim().length < 20) return;
+    const token = gate.begin();
+    if (token === null) return;
     setBusy(true);setError('');
     try {
       const receipt = await service.openCase(target.trim(), operation, reason, summary);
+      if (!gate.current(token)) return;
       if (receipt.status !== 'OPEN' || receipt.restrictionEnforced !== false)
         throw new Error('Audit-only case receipt was not confirmed.');
       setOperation(crypto.randomUUID());setTarget('');setSummary('');setConfirmed(false);
       committed('Private audit case recorded. No account restriction or public suspension was performed.');
-    } catch (error) {setError(errorMessage(error));}
-    finally {setBusy(false);}
+    } catch (error) {
+      if (gate.current(token)) {
+        if (accessMustBeRechecked(error)) recheck();
+        else setError(errorMessage(error));
+      }
+    } finally {if (gate.finish(token)) setBusy(false);}
   }
   return <div className="ws-ops-grid">
     <section className="ws-project-aside">
@@ -73,16 +112,16 @@ function Users({service, cases, committed}: Props) {
       <p>Opening a case creates an audit record, not an account ban, content edit, or verified public takedown.</p>
       <form className="ws-ops-form" onSubmit={event => void open(event)}>
         <label className="ws-ops-field">Exact target user ID
-          <input required pattern={uuidPattern} value={target} onChange={event => {setTarget(event.target.value);setOperation(crypto.randomUUID());}}
+          <input required pattern={uuidPattern} value={target} disabled={busy} onChange={event => {setTarget(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}
             autoComplete="off" placeholder="UUID from a verified report"/></label>
         <label className="ws-ops-field">Documented reason
-          <select value={reason} onChange={event => {setReason(event.target.value as ModerationReason);setOperation(crypto.randomUUID());}}>
+          <select value={reason} disabled={busy} onChange={event => {setReason(event.target.value as ModerationReason);setOperation(crypto.randomUUID());setConfirmed(false);}}>
             {reasons.map(item => <option key={item} value={item}>{item}</option>)}
           </select></label>
         <label className="ws-ops-field">Case summary
-          <textarea required minLength={20} maxLength={500} value={summary} rows={5}
-            onChange={event => {setSummary(event.target.value);setOperation(crypto.randomUUID());}}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed}
+          <textarea required minLength={20} maxLength={500} value={summary} rows={5} disabled={busy}
+            onChange={event => {setSummary(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}/></label>
+        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed} disabled={busy}
           onChange={event => setConfirmed(event.target.checked)}/>
           I confirm the serious-abuse scope and understand this is audit-only.
         </label>
@@ -95,100 +134,177 @@ function Users({service, cases, committed}: Props) {
   </div>;
 }
 
-function Moderation({service, cases, reports, committed}: Props & {
+function Moderation({service, cases, reports, committed, recheck}: Props & {
   reports: OperatorPortfolioAbuseReport[];
 }) {
+  const pageSize=25;
+  const [page,setPage]=useState({after:null as string|null,rows:reports});
+  const [pageError,setPageError]=useState('');
+  const [failedCursor,setFailedCursor]=useState<{after:string|null}|null>(null);
   const [selected, setSelected] = useState('');
+  const [uncertain,setUncertain]=useState<{
+    reportId:string; decision:'CASE_OPENED'|'DISMISSED'; rationale:string
+  }|null>(null);
+  const [reviewConflict,setReviewConflict]=useState(false);
+  const [reviewError,setReviewError]=useState('');
   const [decision, setDecision] = useState<'CASE_OPENED'|'DISMISSED'>('CASE_OPENED');
   const [rationale, setRationale] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [holdCase, setHoldCase] = useState('');
   const [portfolio, setPortfolio] = useState('');
   const [holdConfirmed, setHoldConfirmed] = useState(false);
+  const [holdOperation, setHoldOperation] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  async function review(event: FormEvent<HTMLFormElement>) {
+  const gate = useScopedActionGate(service);
+  function clearReview() {
+    setSelected('');setRationale('');setConfirmed(false);
+    setUncertain(null);setReviewConflict(false);setReviewError('');
+  }
+  // Keep one bounded page. Every page is a fresh role-checked RPC.
+  async function loadPage(after:string|null) {
+    if(busy||selected||uncertain)return;
+    const token=gate.begin();
+    if(token===null)return;
+    setBusy(true);setPageError('');setFailedCursor(null);
+    try{
+      const rows=await service.listAbuseReports(after,pageSize);
+      if(gate.current(token))setPage({after,rows});
+    }catch(error){
+      if(!gate.current(token))return;
+      if(accessMustBeRechecked(error))recheck();
+      else{
+        setPageError('The requested page could not be verified. The previous page is unchanged.');
+        setFailedCursor({after});
+      }
+    }finally{if(gate.finish(token))setBusy(false);}
+  }
+  async function review(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if (!selected || !confirmed || rationale.trim().length < 20 || busy) return;
-    setBusy(true);setError('');
-    try {
-      const receipt = await service.reviewAbuseReport(selected, decision, rationale);
-      if (receipt.reportId !== selected) throw new Error('Unverified report receipt.');
-      setSelected('');setConfirmed(false);setRationale('');
-      committed(receipt.status === 'CASE_OPENED'
+    if(busy||reviewConflict)return;
+    if(!uncertain&&(!selected||!confirmed||rationale.trim().length<20||
+      !page.rows.some(report=>report.id===selected)))return;
+    // The server's replay identity is actor+report+decision+trimmed rationale.
+    const submitted=uncertain??{reportId:selected,decision,rationale:rationale.trim()};
+    const token=gate.begin();
+    if(token===null)return;
+    setBusy(true);setReviewError('');
+    try{
+      const receipt=await service.reviewAbuseReport(submitted.reportId,submitted.decision,submitted.rationale);
+      if(!gate.current(token))return;
+      if(receipt.reportId!==submitted.reportId||receipt.status!==submitted.decision)
+        throw new Error('Unverified report receipt.');
+      clearReview();
+      committed(receipt.status==='CASE_OPENED'
         ? 'Report reviewed. Private audit case opened; public revocation remains unverified.'
         : 'Report dismissed with an audited rationale.');
-    } catch (error) {setError(errorMessage(error));}
-    finally {setBusy(false);}
+    }catch(error){
+      if(!gate.current(token))return;
+      if(accessMustBeRechecked(error)){recheck();return;}
+      const code=error instanceof Error&&'code' in error?error.code:null;
+      if(code==='CONFLICT'){
+        setUncertain(submitted);setReviewConflict(true);
+        setReviewError('The server reported a conflicting review. Reload the queue; this is not confirmation of your decision.');
+      }else if(code==='VALIDATION'&&!uncertain){
+        setConfirmed(false);
+        setReviewError('The review was rejected as invalid. Check the decision and rationale.');
+      }else{
+        setUncertain(submitted);
+        setReviewError('The decision was not acknowledged. Retry the exact submission, or reload without claiming success.');
+      }
+    }finally{if(gate.finish(token))setBusy(false);}
   }
   async function hold(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!holdConfirmed || busy) return;
+    if (!holdConfirmed || busy || !!selected || !!uncertain) return;
+    const token = gate.begin();
+    if (token === null) return;
     setBusy(true);setError('');
     try {
-      const receipt = await service.blockPrivatePortfolio(holdCase, portfolio, crypto.randomUUID());
+      const receipt = await service.blockPrivatePortfolio(holdCase, portfolio, holdOperation);
+      if (!gate.current(token)) return;
       if (!receipt.stillBlocked || receipt.publicServingEnabled !== false)
         throw new Error('Unverified hold receipt.');
-      setHoldConfirmed(false);setPortfolio('');
+      setHoldConfirmed(false);setPortfolio('');setHoldOperation(crypto.randomUUID());
       committed('Case-bound private portfolio hold confirmed. This is NOT public host revocation.');
-    } catch (error) {setError(errorMessage(error));}
-    finally {setBusy(false);}
+    } catch (error) {
+      if (gate.current(token)) {
+        if (accessMustBeRechecked(error)) recheck();
+        else setError(errorMessage(error));
+      }
+    } finally {if (gate.finish(token)) setBusy(false);}
   }
   return <div className="ws-ops-grid">
     <section className="ws-project-aside">
       <h2>Submitted portfolio reports</h2>
       <p>Reports are untrusted text, shown only after the backend verifies the operator session.</p>
-      {reports.length === 0 && <p>No pending abuse reports were returned.</p>}
-      {reports.length === 25 && <p>At most 25 pending reports are shown. Further pages require a scoped request.</p>}
-      <ul className="ws-ops-records">{reports.map(report => <li key={report.id}>
+      <p>Pending reports are ordered by report ID, not submission time. The queue may change during review.</p>
+      {page.rows.length===0&&<p>{page.after===null?'No pending abuse reports were returned.':'No further pending reports were returned.'}</p>}
+      {pageError&&<p role="alert">{pageError}</p>}
+      <div className="ws-ops-nav" aria-label="Report queue pages">
+        <button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain}
+          onClick={()=>void loadPage(null)}>{page.after===null?'Refresh first page':'Return to first page'}</button>
+        {page.rows.length===pageSize&&<button type="button" className="ws-secondary"
+          disabled={busy||!!selected||!!uncertain}
+          onClick={()=>void loadPage(page.rows[page.rows.length-1]!.id)}>Next reports</button>}
+        {failedCursor&&<button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain}
+          onClick={()=>void loadPage(failedCursor.after)}>Retry requested page</button>}
+      </div>
+      <ul className="ws-ops-records">{page.rows.map(report => <li key={report.id}>
         <strong>{report.reason_code} · {report.target_path}</strong>
         <small>{dateText(report.created_at)}</small>
         <p className="ws-ops-evidence">{report.evidence}</p>
-        <button type="button" className="ws-secondary" aria-pressed={selected === report.id}
-          onClick={() => {setSelected(report.id);setConfirmed(false);}}>Review report</button>
+        <button type="button" className="ws-secondary" aria-pressed={selected === report.id} disabled={busy||!!uncertain||!!selected}
+          onClick={() => {setSelected(report.id);setRationale('');setConfirmed(false);setReviewError('');}}>Review report</button>
       </li>)}</ul>
       {selected && <form className="ws-ops-form" onSubmit={event => void review(event)}>
         <h3>Review selected report</h3>
-        <label className="ws-ops-field">Decision<select value={decision}
+        <p>Report ID: {selected}</p>
+        <label className="ws-ops-field">Decision<select value={decision} disabled={busy||!!uncertain}
           onChange={event => {setDecision(event.target.value as 'CASE_OPENED'|'DISMISSED');setConfirmed(false);}}>
           <option value="CASE_OPENED">Open audited case</option>
           <option value="DISMISSED">Dismiss report</option>
         </select></label>
         <label className="ws-ops-field">Reasoned review
-          <textarea required minLength={20} maxLength={500} value={rationale} rows={4}
-            onChange={event => setRationale(event.target.value)}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" checked={confirmed} required onChange={event => setConfirmed(event.target.checked)}/>
+          <textarea required minLength={20} maxLength={500} value={rationale} rows={4} disabled={busy||!!uncertain}
+            onChange={event => {setRationale(event.target.value);setConfirmed(false);}}/></label>
+        <label className="ws-ops-confirm"><input type="checkbox" checked={confirmed} required disabled={busy||!!uncertain} onChange={event => setConfirmed(event.target.checked)}/>
           This decision is scoped to the selected report.
         </label>
-        {error && <p role="alert">{error}</p>}
-        <button type="submit" className="ws-primary" disabled={busy || !confirmed || rationale.trim().length < 20}>
-          {busy ? 'Reviewing…' : 'Submit report decision'}</button>
+        {reviewError&&<p role="alert">{reviewError}</p>}
+        <button type="submit" className="ws-primary"
+          disabled={busy||reviewConflict||(!uncertain&&(!confirmed||rationale.trim().length<20))}>
+          {busy?'Reviewing…':uncertain?'Retry exact decision':'Submit report decision'}
+        </button>
+        {uncertain?<button type="button" className="ws-secondary" disabled={busy}
+          onClick={()=>recheck()}>Discard retry details and reload queue (outcome unverified)</button>:
+          <button type="button" className="ws-secondary" disabled={busy} onClick={clearReview}>Cancel review</button>}
       </form>}
     </section>
     <section className="ws-project-aside">
       <h2>Private moderation hold</h2>
       <p>A case-specific private hold is possible. It never proves public URL or CDN revocation.</p>
       <form className="ws-ops-form" onSubmit={event => void hold(event)}>
-        <label className="ws-ops-field">Verified case<select required value={holdCase}
-          onChange={event => {setHoldCase(event.target.value);setHoldConfirmed(false);}}>
+        <label className="ws-ops-field">Verified case<select required value={holdCase} disabled={busy}
+          onChange={event => {setHoldCase(event.target.value);setHoldConfirmed(false);setHoldOperation(crypto.randomUUID());}}>
           <option value="">Select a case</option>
           {cases.filter(item => item.status !== 'CLOSED').map(item =>
             <option key={item.caseId} value={item.caseId}>{item.caseId} ({item.status})</option>)}
         </select></label>
         <label className="ws-ops-field">Private portfolio ID
-          <input required pattern={uuidPattern} value={portfolio} onChange={event => setPortfolio(event.target.value)}/>
+          <input required pattern={uuidPattern} value={portfolio} disabled={busy} onChange={event => {setPortfolio(event.target.value);setHoldConfirmed(false);setHoldOperation(crypto.randomUUID());}}/>
         </label>
-        <label className="ws-ops-confirm"><input type="checkbox" checked={holdConfirmed} required
+        <label className="ws-ops-confirm"><input type="checkbox" checked={holdConfirmed} required disabled={busy}
           onChange={event => setHoldConfirmed(event.target.checked)}/>Apply only a case-bound private hold.</label>
         {error && <p role="alert">{error}</p>}
-        <button className="ws-primary" type="submit" disabled={!holdCase || !holdConfirmed || busy}>
+        <button className="ws-primary" type="submit" disabled={!holdCase || !holdConfirmed || busy || !!selected || !!uncertain}>
           {busy ? 'Applying…' : 'Apply private hold'}</button>
       </form>
     </section>
   </div>;
 }
 
-function Appeals({service, cases, committed}: Props) {
+function Appeals({service, cases, committed, recheck}: Props) {
   const [chosen, setChosen] = useState('');
   const [evidence,setEvidence]=useState<OperatorAppealEvidence|null>(null);
   const [evidenceError,setEvidenceError]=useState(false);
@@ -198,43 +314,65 @@ function Appeals({service, cases, committed}: Props) {
   const [operation, setOperation] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const gate = useScopedActionGate(service);
   const [holdPortfolio, setHoldPortfolio] = useState('');
   const [liftCase, setLiftCase] = useState('');
   const [liftReason, setLiftReason] = useState('');
   const [liftConfirm, setLiftConfirm] = useState(false);
+  const [liftOperation, setLiftOperation] = useState(() => crypto.randomUUID());
   useEffect(()=>{
     let active=true;
     setEvidence(null);
     setEvidenceError(false);
     if (chosen) void service.readAppealEvidence(chosen)
       .then(data=>{if(active) setEvidence(data);})
-      .catch(()=>{if(active) setEvidenceError(true);});
+      .catch(error=>{
+        if (!active) return;
+        // The unavailable-evidence state remains closed; authoritative denial
+        // also discards the old role-verified snapshot before another action.
+        if (accessMustBeRechecked(error)) recheck();
+        else setEvidenceError(true);
+      });
     return ()=>{active=false;};
-  },[service,chosen,evidenceAttempt]);
+  },[service,chosen,evidenceAttempt,recheck]);
   async function close(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!chosen || evidence?.caseId!==chosen || !confirmed || rationale.trim().length < 20 || busy) return;
+    const token = gate.begin();
+    if (token === null) return;
     setBusy(true);setError('');
     try {
       const receipt = await service.closeCase(chosen, operation, rationale);
+      if (!gate.current(token)) return;
       if (receipt.status !== 'CLOSED' || receipt.restrictionEnforced !== false)
         throw new Error('Unverified case closure.');
       setOperation(crypto.randomUUID());setChosen('');setRationale('');setConfirmed(false);
       committed('Case closed with an audit decision. No public release or account restoration was asserted.');
-    } catch (error) {setError(errorMessage(error));}
-    finally {setBusy(false);}
+    } catch (error) {
+      if (gate.current(token)) {
+        if (accessMustBeRechecked(error)) recheck();
+        else setError(errorMessage(error));
+      }
+    } finally {if (gate.finish(token)) setBusy(false);}
   }
   async function lift(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!liftCase || !liftConfirm || liftReason.trim().length < 20 || busy) return;
+    const token = gate.begin();
+    if (token === null) return;
     setBusy(true);setError('');
     try {
-      const receipt = await service.liftPrivateHold(liftCase, holdPortfolio, crypto.randomUUID(), liftReason);
+      const receipt = await service.liftPrivateHold(liftCase, holdPortfolio, liftOperation, liftReason);
+      if (!gate.current(token)) return;
       if (receipt.publicServingEnabled !== false) throw new Error('Unverified release state.');
-      setLiftCase('');setHoldPortfolio('');setLiftReason('');setLiftConfirm(false);
+      setLiftCase('');setHoldPortfolio('');setLiftReason('');setLiftConfirm(false);setLiftOperation(crypto.randomUUID());
       committed('Private hold released after case review; public delivery remains blocked.');
-    } catch (error) {setError(errorMessage(error));}
-    finally {setBusy(false);}
+    } catch (error) {
+      if (gate.current(token)) {
+        if (accessMustBeRechecked(error)) recheck();
+        else setError(errorMessage(error));
+      }
+    } finally {if (gate.finish(token)) setBusy(false);}
   }
   return <div className="ws-ops-grid">
     <section className="ws-project-aside">
@@ -253,7 +391,7 @@ function Appeals({service, cases, committed}: Props) {
       </li>)}</ul>
       {chosen && !evidence && (evidenceError ? <div>
         <p role="alert">Evidence could not be verified. A decision requires the owner statement.</p>
-        <button type="button" className="ws-secondary" onClick={()=>setEvidenceAttempt(value=>value+1)}>Retry appeal evidence</button>
+        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{setConfirmed(false);setEvidenceAttempt(value=>value+1);}}>Retry appeal evidence</button>
       </div> : <p role="status">Loading private appeal evidence…</p>)}
       {evidence?.caseId===chosen && <form className="ws-ops-form" onSubmit={event => void close(event)}>
         <h3>Resolve a verified case</h3>
@@ -261,8 +399,8 @@ function Appeals({service, cases, committed}: Props) {
           <dt>Owner statement</dt><dd>{evidence.statement}</dd>
           <dt>Submitted</dt><dd><time dateTime={evidence.submittedAt}>{dateText(evidence.submittedAt)}</time></dd></dl>
         <label className="ws-ops-field">Decision rationale<textarea required rows={4} minLength={20} maxLength={2000}
-          value={rationale} onChange={event => {setRationale(event.target.value);setOperation(crypto.randomUUID());}}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed}
+          value={rationale} disabled={busy} onChange={event => {setRationale(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}/></label>
+        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed} disabled={busy}
           onChange={event => setConfirmed(event.target.checked)}/>Close only the selected audited case.</label>
         {error && <p role="alert">{error}</p>}
         <button className="ws-primary" disabled={busy || !confirmed || rationale.trim().length < 20} type="submit">
@@ -273,17 +411,17 @@ function Appeals({service, cases, committed}: Props) {
       <h2>Internal hold release</h2>
       <p>Administrator-only. Requires a resolved case and a matching private portfolio hold. This does not republish content.</p>
       <form className="ws-ops-form" onSubmit={event => void lift(event)}>
-        <label className="ws-ops-field">Resolved case<select required value={liftCase}
-          onChange={event => setLiftCase(event.target.value)}>
+        <label className="ws-ops-field">Resolved case<select required value={liftCase} disabled={busy}
+          onChange={event => {setLiftCase(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}>
           <option value="">Select closed case</option>
           {cases.filter(item => item.status === 'CLOSED').map(item =>
             <option key={item.caseId} value={item.caseId}>{item.caseId}</option>)}
         </select></label>
         <label className="ws-ops-field">Portfolio ID
-          <input required value={holdPortfolio} pattern={uuidPattern} onChange={event => setHoldPortfolio(event.target.value)}/></label>
+          <input required value={holdPortfolio} pattern={uuidPattern} disabled={busy} onChange={event => {setHoldPortfolio(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}/></label>
         <label className="ws-ops-field">Hold-release rationale<textarea required minLength={20} maxLength={2000}
-          rows={4} value={liftReason} onChange={event => setLiftReason(event.target.value)}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" checked={liftConfirm} required
+          rows={4} value={liftReason} disabled={busy} onChange={event => {setLiftReason(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}/></label>
+        <label className="ws-ops-confirm"><input type="checkbox" checked={liftConfirm} required disabled={busy}
           onChange={event => setLiftConfirm(event.target.checked)}/>No public publication is authorized by this action.</label>
         {error && <p role="alert">{error}</p>}
         <button type="submit" className="ws-primary" disabled={busy || !liftConfirm || !liftCase || liftReason.trim().length < 20}>
@@ -339,6 +477,10 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
     });
     return () => {active = false;};
   }, [scope, port, path]);
+  const recheck = useCallback(() => {
+    setLastNotice(null);
+    setAttempt(value => value + 1);
+  }, []);
   function committed(message: string) {
     setLastNotice({port,path,text:message});
     setAttempt(value => value + 1);
@@ -366,10 +508,10 @@ export function OperatorConsole({port, path}: {port: SupabaseBrowserAuthPort; pa
         <a className="ws-secondary" key={href} href={href} aria-current={path === href ? 'page' : undefined}>{label}</a>)}
     </nav>
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
-    {path === '/app/operations/users' && <Users service={service} cases={cases} committed={committed}/>}
+    {path === '/app/operations/users' && <Users service={service} cases={cases} committed={committed} recheck={recheck}/>}
     {path === '/app/operations/moderation' &&
-      <Moderation service={service} cases={cases} reports={reports} committed={committed}/>}
-    {path === '/app/operations/appeals' && <Appeals service={service} cases={cases} committed={committed}/>}
+      <Moderation service={service} cases={cases} reports={reports} committed={committed} recheck={recheck}/>}
+    {path === '/app/operations/appeals' && <Appeals service={service} cases={cases} committed={committed} recheck={recheck}/>}
   </section>;
 }
 
@@ -391,7 +533,9 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   const selected=selection?.port===port?selection.id:'';
   const [statement,setStatement]=useState('');
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
-  const [busy,setBusy]=useState(false);
+  const [pendingScope,setPendingScope]=useState<typeof scope|null>(null);
+  const busy=pendingScope===scope;
+  const gate=useScopedActionGate(scope);
   const [failedScope,setFailedScope]=useState<typeof scope|null>(null);
   const loadError=failedScope===scope;
   const [messageState,setMessage]=useState<{port:SupabaseBrowserAuthPort;error:boolean;text:string}|null>(null);
@@ -414,19 +558,33 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   async function appeal(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || !records || current?.status!=='OPEN' || statement.trim().length<20) return;
-    setBusy(true);
+    const token=gate.begin();
+    if(token===null)return;
+    setPendingScope(scope);
     setMessage(null);
     try {
-      await records.service.appeal(current.id,operation,statement);
+      const receipt=await records.service.appeal(current.id,operation,statement);
+      if(!gate.current(token))return;
+      if(receipt.caseId!==current.id||receipt.status!=='APPEAL_RECORDED'||receipt.publicRevocationVerified!==false)
+        throw new Error('Unverified appeal receipt.');
       setStatement('');
       setOperation(crypto.randomUUID());
       setLoaded(null);
       setAttempt(value=>value+1);
       setMessage({port,error:false,text:'Private appeal submitted for review.'});
-    } catch {
-      setMessage({port,error:true,text:'The appeal could not be confirmed. Your statement is available to retry.'});
+    } catch(error) {
+      if(!gate.current(token))return;
+      if(accessMustBeRechecked(error)){
+        setStatement('');
+        setOperation(crypto.randomUUID());
+        setLoaded(null);
+        setMessage({port,error:true,text:'Appeal access could not be verified. Checking your current account access before continuing.'});
+        setAttempt(value=>value+1);
+      }else{
+        setMessage({port,error:true,text:'The appeal could not be confirmed. Retry the unchanged statement for the same operation.'});
+      }
     } finally {
-      setBusy(false);
+      if(gate.finish(token))setPendingScope(null);
     }
   }
 

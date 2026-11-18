@@ -1,0 +1,1463 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kadmeion B16 execution kit</title><style>body{font:16px/1.5 system-ui;margin:30px auto;max-width:1100px;padding:0 20px;color:#182635}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 system-ui}section{border-top:1px solid #bbb;padding:20px 0}button{padding:10px}a{color:#15567c}</style><h1>Kadmeion — 16-session execution kit</h1><p>Prepared plan. Read activation gates before starting. Markdown/plain text is preserved for exact copy into sessions.</p><nav><p><a href="#prompts_SESSION_00_md">S0: Coordinator, scope and dependency control</a></p><p><a href="#prompts_SESSION_01_md">S1: Backend contracts and private media</a></p><p><a href="#prompts_SESSION_02_md">S2: Profile and project workspace</a></p><p><a href="#prompts_SESSION_03_md">S3: Editor transactions and durable recovery</a></p><p><a href="#prompts_SESSION_04_md">S4: Release frontend and portable exports</a></p><p><a href="#prompts_SESSION_05_md">S5: Settings, notifications and account export</a></p><p><a href="#prompts_SESSION_06_md">S6: Independent frontend and journey acceptance</a></p><p><a href="#prompts_SESSION_07_md">S7: Editor panels, layout, themes and reuse</a></p><p><a href="#prompts_SESSION_08_md">S8: Public identity, discovery and template surfaces</a></p><p><a href="#prompts_SESSION_09_md">S9: Public delivery and hosting verification</a></p><p><a href="#prompts_SESSION_10_md">S10: Goals, provider integrations and DevScore</a></p><p><a href="#prompts_SESSION_11_md">S11: Authentication, moderation and lifecycle</a></p><p><a href="#prompts_SESSION_12_md">S12: Consented portfolio analytics</a></p><p><a href="#prompts_SESSION_13_md">S13: Independent backend, security and contract QA</a></p><p><a href="#prompts_SESSION_14_md">S14: Shared shell, approved design and accessibility</a></p><p><a href="#prompts_SESSION_15_md">S15: Release integrator and main custodian</a></p></nav><section id="START_HERE_md"><h2>START_HERE.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># How to run this kit
+
+The recommended structure is sixteen chats named Session 0 through Session 15. Existing Sessions 0–6 continue; add Sessions 7–15. Keep the same Notion coordination tree. This kit does not start background sessions or merge code.
+
+1. Open **Session 0**. Attach this complete ZIP (or its extracted files), paste MASTER_PROMPT.md, then prompts/SESSION_00.md. Tell it to activate B16 after checkpointing existing workers and establishing the ownership transfers. S0 publishes the exact plan/ownership/log links in Notion and docs; it does not replace historical records.
+2. Open **Session 15** with the same master and SESSION_15.md. S0 and S15 record the integration lease transfer. S15 becomes the sole integration/main custodian; S0 remains coordinator.
+3. Send existing **S1–S6** their corresponding prompt plus the master. Ask them to preserve current branches/PRs, checkpoint and release only the named transferred paths. Do not reset them or recreate their implemented features.
+4. Start **S7–S14** with the master and their individual prompt. They can read/plan independent work immediately, but cannot edit transferred files until RELEASED→S0 GRANT→ACK and B16_ACTIVE are recorded.
+5. All sessions use https://app.notion.com/p/41ab082297c78134b007f69c52bd5475 and the linked B16 page https://app.notion.com/p/41bb082297c781948335e8728d512fa9. S0 creates new worker logs under that existing tree. An individual chat&#x27;s rename does not create ownership or connect it automatically.
+6. Resume yielded sessions explicitly. Use the recovery/resume prompt in COORDINATION_PROTOCOL.md. Ask S0 to process progress in batches and S15 to integrate ready exact dependencies; you do not need to copy every report if Notion reads work.
+7. At H16 ask S0 for the remaining critical path and whether full scope is still achievable. At H20 S15 freezes feature admissions and validates the final tree. At H24 obtain actual status, not a forced complete claim.
+8. Approve only the concrete final main PR/commit and separately any needed hosted actions when ready. S15 verifies the resulting main tree and retained work after any authorized merge. No broad &#x27;merge all branches&#x27; instruction.
+
+## What to paste now into Session 0
+
+```text
+Activate the Kadmeion B16-v1 plan from the attached execution kit and its linked Notion page. First verify latest live refs/logs and checkpoint S1–S6. Preserve all existing work. Establish the file leases and transfer sole integration/main custodianship to S15 before new workers edit. Keep the same Notion coordination tree. Start the 24-hour clock only when you publish B16_ACTIVE with exact base, branch/log map and ownership ACKs. Target all approved P1/P2 requirements; do not weaken acceptance or silently drop scope. Route concrete file-budget/provider decisions early while independent implementation continues. Do not merge main or activate production under an unspecified future approval.
+```
+
+## Kit contents
+
+- MASTER_PROMPT.md: shared rules for all sixteen sessions.
+- prompts/SESSION_00.md … SESSION_15.md: sixteen concrete assignments with exact owned path inventories.
+- EXECUTION_PLAN.md: 24-hour waves, bottlenecks, completion criteria and premortem.
+- LATEST_STATE.md / .json: live reviewed PR/branch/CI checkpoint and changes since the audit.
+- FILE_OWNERSHIP.csv: all 431 known paths, old/new writers and transfer gates.
+- WORKFLOW_BACKLOG.csv: all 53 workflows and current remaining work.
+- REQUIREMENT_LEDGER.csv: all 468 registered IDs; historical evidence preserved, mappings requiring review explicitly marked.
+- CONTRACT_QUEUE.csv: 14 producer/consumer contract handoffs.
+- RELEASE_MANIFEST.csv / INTEGRATION_QUEUE.csv: seed provenance and merge batches for S15.
+- DOCUMENT_REFERENCE_INDEX.md: all 165 tracked project-docs paths, existing log and approval links.
+- COORDINATION_PROTOCOL.md / MERGE_AND_RELEASE_RUNBOOK.md: communication, recovery and safe final main assembly.
+- AUDIT_REPORT.html: prior detailed audit; LATEST_STATE supersedes its older worker checkpoints.
+- validation.json / CHECKSUMS.sha256: structural completeness and artifact integrity, not application test passes.
+
+Source status, isolated test status, hosted status and manual approval remain different fields. The kit does not claim every required behavior fits in one day; it gives every omission an owner and an explicit gate.
+
+You can also open the sixteen linked assignments directly from the Notion B16 page; NOTION_ASSIGNMENTS.md provides every exact URL. NEW_FILE_RESERVATIONS.csv and NEW_FILE_POLICY.md make the proposed 15-file envelope concrete; it remains unapproved until the owner decision is recorded.
+</pre></section><section id="LATEST_STATE_md"><h2>LATEST_STATE.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Latest reviewed state — 17 November 2026
+
+Live GitHub API and all S0–S6 Notion logs refreshed for this plan. Local git mirror remained at older worker tips; live API wins. This refresh reviewed actual PR patches and exact current CI results, but did not execute new application tests. Cutoff is the recorded SHA per row; later work must be rechecked at activation.
+
+Integration `7d03713fbbef4f02215d38b28932ad3952adefad`; main `ead5455faa2cd0d7f4aba87384215175fbe13aa0`. Twelve remote branches still present. Branch API reports protected=false for main/integration; do not assume server-enforced protection. Propose protection/rules through owner permissions; operational sole-writer discipline is still necessary.
+
+| PR | Head | Files | Frontend | App/DB | Disposition |
+|---|---|---:|---|---|---|
+| [#9](https://github.com/SubhashKumar14/Kadmeion/pull/9) | `2199041040c3d8d9223f2dda24570dcd0641b284` | 2 | success | success | Open draft; not integrated/feature-accepted |
+
+- CI #9: [Application and Database CI 44052888473](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052888473) — completed/success
+- CI #9: [Frontend React 19 + Vite 8 verification 44052888314](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052888314) — completed/success
+| [#20](https://github.com/SubhashKumar14/Kadmeion/pull/20) | `cc3473532352b538fd4179be8ab9d304a76a6b3d` | 4 | success | success | Open draft; not integrated/feature-accepted |
+
+- CI #20: [Frontend React 19 + Vite 8 verification 44054047219](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44054047219) — completed/success
+- CI #20: [Application and Database CI 44054047262](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44054047262) — completed/success
+| [#21](https://github.com/SubhashKumar14/Kadmeion/pull/21) | `87361bc74d4742aeede75b2c7dc1bf1a94f5f33a` | 3 | success | failure | Open draft; not integrated/feature-accepted |
+
+- CI #21: [Application and Database CI 44052903086](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052903086) — completed/failure
+- CI #21: [Frontend React 19 + Vite 8 verification 44052903155](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052903155) — completed/success
+| [#24](https://github.com/SubhashKumar14/Kadmeion/pull/24) | `44006a767fb3b1721d17e4bca3ee76dd11a439a0` | 2 | success | success | Open draft; not integrated/feature-accepted |
+
+- CI #24: [Frontend React 19 + Vite 8 verification 44053405361](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44053405361) — completed/success
+- CI #24: [Application and Database CI 44053405319](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44053405319) — completed/success
+| [#25](https://github.com/SubhashKumar14/Kadmeion/pull/25) | `12d70b1efa4b2d5101bbc528f292d5ffba542975` | 3 | success | cancelled | Open draft; not integrated/feature-accepted |
+
+- CI #25: [Frontend React 19 + Vite 8 verification 44052520395](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052520395) — completed/success
+- CI #25: [Application and Database CI 44052520307](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052520307) — completed/cancelled
+| [#26](https://github.com/SubhashKumar14/Kadmeion/pull/26) | `b3cc458c1d004821934462b67d26df84d9eabd0d` | — | historical candidate | historical candidate | Verification-only; do not merge wholesale |
+
+| [#27](https://github.com/SubhashKumar14/Kadmeion/pull/27) | `47d1533d9a66c46c9d156c49febe3862a7dc6e3f` | — | historical candidate | historical candidate | Verification-only; do not merge wholesale |
+
+| [#28](https://github.com/SubhashKumar14/Kadmeion/pull/28) | `d3fcc31dac5c842535aebe0f1a10669a77b0df4b` | 4 | success | failure | Open draft; not integrated/feature-accepted |
+
+- CI #28: [Application and Database CI 44052877079](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052877079) — completed/failure
+- CI #28: [Frontend React 19 + Vite 8 verification 44052877087](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44052877087) — completed/success
+
+## What changed since the audit
+
+- S1: export limit/rate taxonomy, conditional goal updates, chronological progress cursor, monotonic update timestamp now coded; #28 app/DB fails, including file-budget variance; standalone SQL pass is not complete new-feature proof. Logged responsive Publish preflight heading failure needs exact diagnosis, not attribution by guess.
+- S2: real capability-gated thumbnail consumer and fresh profile projection now coded; both standalone workflows green. It still needs #28+consumer focused acceptance.
+- S3: working checkpoint freeze, safer reload, stricter pinned-slot validation and separate mode palettes now coded; both standalone workflows green. Latest owner-context composition and new focused recovery/media tests remain.
+- S4: clickable preflight index, fuller private comparison, static ZIP readback integrity now coded. Frontend green; app/DB failure includes six old GET-only fixtures. S6 replacement fixtures exist; combined verification is the next task.
+- S5: goal presets, milestone pages/edit/complete/delete and explicit goal deletion now coded; both standalone workflows green. Consume S1 latest CAS/cursor rather than claim already wired.
+- S6: method-aware fixtures and eight thumbnail permission tests now coded at 12d70b1. App/DB cancelled; not a feature pass.
+- S0: current integration still 7d03713; new worker features above remain unmerged.
+
+The kit is a new plan, not evidence of a new branch, task activation, merge, hosted migration or public deployment. No existing coordination history was erased.
+</pre></section><section id="EXECUTION_PLAN_md"><h2>EXECUTION_PLAN.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># One-day execution plan — 16 sessions, B16-v1
+
+## Recommendation and constraint
+
+Use 16 separate sessions with S0 coordinating and S15 exclusively integrating/releasing. Preserve S1–S6 instead of replacing their current work. Split only ownership that can be transferred safely; sixteen simultaneous writers to a few TSX files would slow the project down.
+
+A guaranteed full P1+P2 implementation, all hosted/manual acceptance and final main merge within one day is not defensible from the remaining scope. This plan targets 24 elapsed hours from a recorded T0 and assigns all requirements; it does not silently shrink scope to fit. External provider/hosting permissions, the source-file budget, manual devices and production authorization can block full acceptance regardless of worker count. The target is aggressive completion; the fallback is an exact unfinished ledger, not a false DONE.
+
+No 16-worker runtime has been started here. These are assignments for 16 user-launched chats/sessions; Notion does not wake them. Existing active sessions must hand off before their files are reassigned. The planning review made no code merge, branch change or hosted mutation.
+
+## Worker allocation
+
+| Session | Responsibility | Boundary |
+|---|---|---|
+| S0 | Coordinator, scope and dependency control | S0 |
+| S1 | Backend contracts and private media | S1 |
+| S2 | Profile and project workspace | S2 |
+| S3 | Editor transactions and durable recovery | S3 |
+| S4 | Release frontend and portable exports | S4 |
+| S5 | Settings, notifications and account export | S5 |
+| S6 | Independent frontend and journey acceptance | S6 |
+| S7 | Editor panels, layout, themes and reuse | S3→S7 |
+| S8 | Public identity, discovery and template surfaces | S2/S1→S8 |
+| S9 | Public delivery and hosting verification | S4/S1→S9 |
+| S10 | Goals, provider integrations and DevScore | S5/S1→S10 |
+| S11 | Authentication, moderation and lifecycle | S5/S1→S11 |
+| S12 | Consented portfolio analytics | NEW scoped files |
+| S13 | Independent backend, security and contract QA | S6→S13 |
+| S14 | Shared shell, approved design and accessibility | S0→S14 |
+| S15 | Release integrator and main custodian | S0→S15 |
+
+## Time plan (elapsed from T0, not promised durations)
+
+| Window | Implementation and verification work | Exit/checkpoint |
+|---|---|---|
+| H0–H1 | S0/S15 inventory and lease transfer; S1–S6 checkpoint; S7–S14 read assigned specs and identify exact contracts. S0 creates logs, reserves files/migrations and routes budget/provider decisions. | B16_ACTIVE, no colliding owners, exact base/branch map, all worker startup ACKs. |
+| H1–H4 | S15 stages existing feature groups; S1/S2 thumbnail, S3/S14 owner context, S4/S13 GET/HEAD, S5/S6 account tests. S8/S10/S11/S12 build independent agreed contracts/UI. | First combined candidate; no old work lost; contract C01–C03 stable and focused tests actually run. |
+| H4–H8 | S1 general media/avatar; S2 profile/project gaps; S3 recovery/import; S7 layout/theme/components; S4/S8/S9 public journey; S5/S11 settings/lifecycle. S10/S12 P2 backend-first development proceeds concurrently. | Real owner-to-preview/media vertical slice; public host feasibility and exact remaining provider decisions resolved or marked blockers. |
+| H8–H12 | Complete public identity/release and private editor/account capabilities; P2 provider/score and opt-in analytics implementation. S6/S13 continuously test ready slices; S14 visual/a11y repairs routed to owners. | Must-have success paths demonstrable on combined tree; published-host claims only if actual proof. |
+| H12–H16 | Finish remaining scoped functionality and independent negatives; source/static/account import/export coverage; all 468 IDs reconciled, not necessarily accepted. | S0 critical-path review: explicit missing requirements and finish forecast. Reassign finished workers through new path leases, not pile onto monoliths. |
+| H16–H20 | Combined regressions, visual/manual review, P2 acceptance, performance/privileged boundaries; S0 capstone/demo evidence. | No admitted feature without evidence; resolve critical failures and document external/manual blockers. |
+| H20–H24 | Feature freeze, final fixes, exact prospective-main checks, provenance/requirement audit and concrete final PR/approval readiness. | Full completion only if all mandatory gates pass. Otherwise named incomplete scope and next actions; no deadline-driven weakening. |
+
+## Fast critical path
+
+Existing accepted security → current S1/S2 private media + current S3/S14 owner-context composition → verified editor/public frozen artifacts → S9 real delivery + S4 release UI + S8 visitor projection → independent S6/S13 acceptance → S15 prospective-main tree → concrete approval/merge verification.
+
+In parallel: S5 account/export/notifications; S11 auth/moderation/lifecycle; S7 styling/layout/reuse; S10 provider/score/goals; S12 analytics; S14 shared visual/accessibility. Code against explicitly agreed types while dependencies are pending, but never label it live/complete until actual backend integration is tested.
+
+## Throughput rules
+
+- WIP limit: one primary feature and one independent fallback per worker. Break tasks into visible behavior, not &#x27;audit all contracts again&#x27;.
+- S15 admits dependency-coherent batches and allows useful CI runs to finish. Use focused tests for tiny follow-ups; rerun broad suites when integration risk changes, not for unchanged files.
+- S0 routes questions at active checkpoints. Do not funnel every domain implementation into S1: S8/S9/S10/S11/S12 own their domain services after leases; S1 owns shared auth-port composition and reviews permissions/interfaces.
+- Reserve unique new migration/module names before writing. Schema/domain workers can implement independent migrations; they cannot co-edit S1&#x27;s current unapplied migration or historical migrations.
+- When a worker finishes, lease a specific remaining file/test slice. S6/S13 assign independent acceptance work; no author self-signoff. Do not create endless speculative improvements beyond approved requirements.
+- Old worker continuation prompts are superseded only for paths explicitly transferred. A new role name alone does not cancel pending original work.
+
+## Decisions that can defeat the one-day target
+
+1. File budget: original cap 200; integration currently 264 counted files, #28 candidate 265, CI justified variance only 64. S0 must present the exact unavoidable file delta and proposed bounded policy; S15 must not disable or disguise the check. Suggested proposal is up to 280 counted files for this completion run, reserving at most 15 above the current candidate (domain modules/migrations/independent tests); NOT approved by this plan. Use existing modules where sound, and itemize every proposed new file before asking. If the owner retains 200, substantial consolidation is a separate prerequisite, incompatible with claiming an effortless one-day finish.
+2. Hosted enablement: appeal migration and candidate media migrations, email/OAuth, public host revocation/availability and ₹0 capability require actual approval/evidence. Readiness of a Vercel preview is not successful publication.
+3. P2 policy: permitted provider data and approved score/analytics methodology must be specific. Unsupported providers use approved link-only fallback and retain sync limitation; no invented score formula or analytics tracking policy.
+4. Manual review: native screen reader/zoom/physical tablet/owner visual acceptance cannot be automated by adding chats. Prepare exact review script and code while scheduling the necessary human review; no unperformed pass.
+
+## Definition of done
+
+Every in-scope required behavior implemented with actual backend/transactions; successful and failure paths accepted against exact IDs; no critical privacy/data-loss/auth bugs; combined tree green with required tests executed; visual/manual/hosted gates satisfied where required; complete migration/flags/operational disclosures; no missing unique worker/main change; one final tested main PR and actual authorized merge readback. P3 remains explicitly deferred. Academic documents describe real results, not planned features as finished.
+
+## Premortem and mitigation
+
+| Failure | Early warning | Mitigation/owner |
+|---|---|---|
+| More workers create merge collisions | Two agents edit portfolio-tools/growth/router | Exact lease transfer, S0 grants, S15 rejects foreign delta. |
+| Existing features get rebuilt | New assignment still says thumbnails/templates absent | LATEST_STATE pinned source, inspect before coding; keep old commit provenance. |
+| Test bottleneck hides regressions | Many green standalone PRs, red combined tree | S15 early composition + S6/S13 focused independent cases. |
+| Day ends with a falsely complete main | Disabled primary actions counted done | Requirement ledger + S0/S6/S13 independent gates; explicit partial outcome. |
+| Chat loss discards work | No branch/log since last long turn | Small capability commits, durable log, recovery prompt; no assumed wakeups. |
+| Provider/budget blocks all workers | Everyone waits for S1 or approval | Surface exact decision early; work independent capabilities; do not bypass gate. |
+| Wrong branch becomes final | Old candidate merged wholesale | S15 inclusion manifest, patch/ancestry verification, one candidate and one main PR. |
+</pre></section><section id="MASTER_PROMPT_md"><h2>MASTER_PROMPT.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Shared master prompt — Kadmeion 16-session completion run
+
+You are one of sixteen separately launched sessions, S0–S15, in run 20261117-7232a31, coordination revision B16-v1. This supplements the existing run; do not restart the project, erase older evidence or create competing integration histories. Read your SESSION_XX prompt after this master.
+
+Repository: https://github.com/SubhashKumar14/Kadmeion
+Existing shared Notion coordination: https://app.notion.com/p/41ab082297c78134b007f69c52bd5475
+B16 plan and activation record: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Last reviewed integration: feat/b0-backend-foundation @ 7d03713fbbef4f02215d38b28932ad3952adefad. Current main: ead5455faa2cd0d7f4aba87384215175fbe13aa0. Re-fetch live refs before acting; the local mirror lagged live GitHub in the planning review. The recorded SHA is a checkpoint, not permission to reset a newer branch.
+
+## Objective and completion truth
+
+Implement every approved in-scope P1 and P2 behavior from the governing documents, owner decisions and audit. Target 24 elapsed hours after S0 records T0. This is a stretch execution window, not a guarantee or permission to omit requirements. P3 optional AI/advanced administration remains explicitly deferred unless separately approved. Never count unavailable panels, mocked datasets, a route existing, or green unrelated tests as completed successful functionality. Existing supported fallbacks remain honest without being marked full capability.
+
+Do real implementation, repairs and focused validation. Report F (new functionality), R (repairs), V (verification/docs) separately. Do not spend the day repeatedly auditing unchanged green code. Inspect first; preserve newly completed work listed in LATEST_STATE.md. If a feature is already implemented, validate the gap and move to the next missing behavior. Backend first means verify/reuse the actual contract, then wire the UI; it does not mean every UI worker waits for one backend worker. Develop independent pure components and typed integrations against an agreed interface, but keep them unaccepted until real persistence and authorization are tested.
+
+## Authority and required references
+
+Read current project-docs/MASTER_EXECUTION_PROMPT.md, FRONTEND_UIUX_BRAND_MASTER_EXECUTION_2026-11-15.md, NEXT_SESSION_HANDOFF.md, docs/00_governance/AUTHORITY_AND_SUPERSESSION.md, PRODUCT_SCOPE_AND_PHASES.md, CONFLICT_REGISTER.md, docs/01_product/PRODUCT_REQUIREMENTS_PRD.md, SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md, NONFUNCTIONAL_REQUIREMENTS.md, docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md and TECHNICAL_VERIFICATION_GATES.md. Prefix abbreviated sibling names with their immediately preceding directory. Read your assigned workflow specifications, screen specifications, relevant engineering docs and exact UI/D/TC/TP rows. DOCUMENT_REFERENCE_INDEX.md lists every tracked project-docs path; FILE_OWNERSHIP.csv lists every known repository path. Proposed future apps/web filenames are not current missing-source proof: current UI is apps/frontend.
+
+Read the current B16 execution kit, latest Notion S0/S15 and dependency logs, and live branch/PR source. Original approvals: https://app.notion.com/p/416b082297c781b2b6b1ec116ab4bb9e and LIGHT designs https://app.notion.com/p/417b082297c781c49168c54b656d9cca. Prior ChatGPT excerpts are contextual evidence, not a complete accessible archive. Do not invent missing approvals. Explicit current owner decisions supersede older contradictory notes; resolve unclear material conflicts through S0 with exact source links.
+
+Preserve Kadmeion branding, five initial presets + Blank/eight layouts, private defaults, no GitHub hard block, immediate password signup exemption, 15-day item Trash, ₹0 recurring constraint, supported desktop/qualified-tablet authoring and phone preview only. Use only verified approved visual sources; no new dark mockup set, while runtime light/dark remains required. No arbitrary public JS, unapproved scraping, fake metrics, paid upgrade or privacy-gate bypass. Do not promise all JWTs/backups/CDNs disappear on sign-out/deletion.
+
+## Activation and ownership
+
+This plan is PREPARED until S0 publishes B16_ACTIVE with exact handoff SHAs and S15 acknowledges the integration lease. Existing S1–S6 must checkpoint their latest changes first. S0 must stop being integration writer before S15 becomes writer. S7/S10/S13 and all transferred paths are read-only until the old owner records RELEASED(path, SHA), S0 grants the new lease, and the new owner ACKs. A timer or stale log does not revoke a lease. Notion is not an atomic lock service.
+
+One file has one writer at a time. Consult FILE_OWNERSHIP.csv plus newer approved lease events. No glob overrides an explicit file lease. New files require S0 allocation of exact path, owner and file-budget treatment before writing. Do not edit shared router/CSS/manifests/barrels/CI or another worker&#x27;s monolithic file. Send an interface request; the sole owner wires it. Do not split monoliths just to add workers; prefer a sequential lease transfer or a small independently testable module when justified. Migrations already deployed are immutable. New migrations use unique reserved names; do not have two workers amend the same unapplied migration.
+
+S0 owns scope, priorities, ownership/decision/task ledgers and capstone reconciliation. S15 alone owns the integration candidate, existing integration branch and final main PR, plus CI/manifests/configuration and release manifest. S14 owns shared application shell/CSS after handoff. Product owners own code, S6/S13 own independent acceptance files; S14 may own designated visual checks but cannot independently sign off its own changes.
+
+## Working and communicating
+
+Keep your existing branch if you are S1–S6; preserve unmerged commits. New sessions branch from S15&#x27;s announced accepted base, proposed name work/20261117-7232a31/sNN-b16-topic. Separate worktrees/directories and per-worker ports/test databases; never share a mutable checkout. Do not force-push, reset remote work, overwrite foreign blobs or merge verification-only PRs #26/#27 wholesale. Normal non-force merges and reviewed conflict resolution preserve provenance. S15 may stage approved dependent commits together before accepting them.
+
+At task start, before changing a shared contract, before opening/updating a PR, and before yielding: read the coordinator, your log and relevant dependency responses. While actively running, checkpoint after a capability or about every 30–45 minutes; do not create artificial no-op commits. Notion does not wake chats and chats do not keep running after yielding. The user launches/resumes sessions; never claim background agents are active without evidence. Do not sleep-poll when independent work is ready.
+
+Use your existing Notion log for S0–S6; S0 creates linked logs for S7–S15 under the same coordination tree on activation. Append events, never rewrite another worker&#x27;s log or replace the shared dashboard. Every event has run/revision/session/task/event ID, timestamp with timezone, exact base/head, owned files, requirement IDs, F/R/V, actual tests/environment, blockers, next action. S0 alone reconciles shared status; S15 alone updates release provenance. Logs are not completion evidence by themselves.
+
+Question format: QUESTION-B16-SNN-###; target session(s); exact blocker; contract/signature/behavior proposed; source evidence; affected files/IDs; safe independent next task. The addressee answers in its own log referencing the question; S0 links both. No-answer is not approval. Surface unresolved critical dependencies promptly; S0 routes them at the next active checkpoint. See COORDINATION_PROTOCOL.md.
+
+## Contracts, tests and acceptance
+
+Before connecting a UI action, record concrete browser method → service/RPC/HTTP/Edge → migration/RLS/storage boundary → input/output/error taxonomy → ownership/epoch → CAS/idempotency → limits → source SHA → local/hosted evidence. Reuse existing services; add backward-compatible methods only where required. Never invent an endpoint from a desired UI. Stable operation IDs preserve exact retry input; conflicts require explicit recovery, not automatic stale overwrite. Local IDs and browser journals are hints, never identity authority.
+
+Deliver one reviewable capability at a time. Run relevant type/build checks and focused behavioral tests; full suites belong to meaningful integrated checkpoints. Test successful persistence/reload plus failure/retry, quota, cross-owner/anonymous denial, stale responses and source/byte integrity as applicable. No assertion weakening, quarantining a failing critical test or fixture success on absent APIs. Feature-gated tests must become mandatory in the combined candidate. Required new-feature checks cannot be skipped because the dependency was absent from a standalone branch.
+
+Track independently: source implemented; merged into integration; isolated tests; hosted validation; manual/visual acceptance. PASS must cite tested source head, actual runner merge/base if applicable, command/run, cases, environment and result. Preserve failures and supersession. Sanitized diagnostics only: no tokens, raw traces, headers, query strings or user bytes in evidence. Retrieve relevant approved references before visual claims. A CI PR head often tests a synthetic merge tree; record that tree rather than assuming head alone.
+
+## Release and one-day safeguards
+
+Use ONE designated candidate line and ONE final integration→main PR. All worker PRs target integration, not main. S15 inventories all known refs/PRs and records every unique commit as included, superseded with equivalent patch proof, or explicitly excluded with reason. No &#x27;merge every branch&#x27;. S15 retains original refs and audit evidence through final acceptance. Close obsolete verification PRs only after equivalence and retained receipts are recorded; do not delete branches during this run.
+
+Code completion, hosted release and final main merge are distinct gates. Existing run forbids main/production mutation; this planning request does not itself authorize merging an unspecified future SHA or changing a hosted system. S15 prepares the exact tested main PR and scope manifest, checks existing current authorization, and requests only any still-required concrete final approval. Do not ask repeatedly for already-authorized reversible work. No public activation, production migrations, cleanup execution or spending without applicable authorization and prerequisites. A draft PR and isolated tests are allowed.
+
+At H16 evaluate remaining critical path; at H20 freeze new feature admissions and stabilize. If mandatory scope is missing, continue to fix within the window and publish the exact residual backlog at H24. Never relabel incomplete work DONE to meet the clock. A partial accepted release must be labeled partial and requires owner scope decision; it cannot satisfy the full-project finish claim. Do not silently defer P2 merely because P1 ran late.
+
+## End-of-turn handoff
+
+Report: session/task IDs; implemented F and repaired R; exact branch/head/PR and changed files; tests passed/failed/skipped with environment and tested tree; contract questions/dependencies; feature/integration/hosted/manual states; next actionable task; whether another session must resume and its short message. If all owned work is accepted, ask S0 for a new unowned task or independent verification slice; never take a foreign file. Continue implementation during unblocked time rather than stopping at a report.
+</pre></section><section id="COORDINATION_PROTOCOL_md"><h2>COORDINATION_PROTOCOL.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Shared Notion and task protocol
+
+Use the existing coordination tree https://app.notion.com/p/41ab082297c78134b007f69c52bd5475; B16 activation page https://app.notion.com/p/41bb082297c781948335e8728d512fa9. This is the same project memory, not a new disconnected workspace. New S7–S15 logs are proposed until S0 creates and verifies them. S0–S6 retain existing logs.
+
+## Ownership transfer (mandatory before conflicting writers)
+
+1. Old owner checkpoints latest branch/PR and records RELEASED exact paths, final SHA, dirty/unpushed state and outstanding questions. It stops edits on released paths.
+2. S0 records transfer ID and new owner, anchored to that exact SHA, in the ownership map. A previous owner’s silence is not release.
+3. New owner fetches source, preserves it, ACKs and gets a branch based on accepted composition or declared dependency. Only then write.
+4. S15 validates effective changed files before integration. Rejected foreign changes go back to their owner; never quietly overwrite.
+
+S0→S15 integration lease is transferred first. S0 no longer pushes integration after ACK. S15 can ask product owners to fix code, but cannot seize their files or accept its own feature without independent review. If S15 session is lost, S0 must explicitly revoke/reissue the lease after verifying branch state; no second active integrator.
+
+## Event schema
+
+```text
+RUN: 20261117-7232a31 / B16-v1
+EVENT: CHANGE-B16-S03-001 (unique, never reused)
+TIME: ISO timestamp + timezone
+TASK / REQUIREMENTS: task + WF/UI/TC/TP/screen IDs
+STATE: ACTIVE | BLOCKED_CONTRACT | BLOCKED_EXTERNAL | READY_FOR_QA | READY_FOR_INTEGRATION | INTEGRATED | ACCEPTED | DEFERRED_APPROVED
+BASE / HEAD / PR: exact SHAs and URL
+FILES: exact owned changed paths
+F: observable new capability
+R: demonstrated defect and correction
+V: command/run; tested source + runner merge SHA; environment; pass/fail/skip
+CONTRACTS / QUESTIONS: IDs; producer/consumer; resolved or pending
+ACCEPTANCE: source / integration / isolated / hosted / manual separately
+NEXT: one concrete independent task; resume required yes/no
+```
+
+## Questions and messages
+
+Use QUESTION-B16-SNN-### in your own log, addressed to explicit recipients and linked from S0&#x27;s queue. State the exact signature/decision needed, source SHA and proposed compatible behavior; distinguish a real blocker from optional improvement. Recipient answers in their own log, linking the original ID; S0 reconciles. Before shared schema changes, producer and consumer ACK exact version. No Notion write is a push notification or guarantee another chat wakes. User may paste `Resume your B16 assignment; read your latest log, S0/S15 state and questions addressed to you; preserve current work and continue your next unblocked task.`
+
+## Normal active cadence
+
+At start and each material checkpoint read relevant messages. Update own log after a capability, failed acceptance or ~30–45 minutes of active work. S0 batches ready reports roughly hourly while active; S15 integrates ready dependency batches rather than waiting for every worker. These are execution habits, not configured timers or automations. If a session yields, it needs another user message to resume.
+
+## Missing resources and decisions
+
+No repository/Notion access: state exactly what cannot be verified; do not invent branches or log writes. No current approved image: keep functional work moving and flag visual acceptance. No backend contract: implement independent pure UI against the documented proposed interface, never mark its live action complete. No owner response to a permission/budget/production decision: retain blocker; do not treat time as approval.
+
+## Batch coordinator prompt
+
+Read all latest B16 logs and live refs. Process new events since the last recorded checkpoint, including related dependencies. Preserve unfinished commits. Reconcile questions and sole-writer leases. Send dependency-ready exact SHAs to S15; do not merge yourself. For every session report integrated/accepted vs remaining, next concrete task, exact short resume message, and source-backed blocker. Re-read updates to verify they saved. No repeated unchanged audit loops.
+
+## Session recovery prompt
+
+Resume Session [number] for 20261117-7232a31/B16-v1 using https://app.notion.com/p/41bb082297c781948335e8728d512fa9. Read MASTER_PROMPT and your assignment, current S0/S15 state, your durable log and live branch. Treat earlier chat text as historical. Recover exact committed/unpushed state if accessible, ACK your active file leases, and continue the next unblocked task without recreating finished work. Never reset or take another worker’s file because a chat was lost.
+</pre></section><section id="MERGE_AND_RELEASE_RUNBOOK_md"><h2>MERGE_AND_RELEASE_RUNBOOK.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># S15 — single final-version runbook
+
+## Purpose
+
+The final version is an evidenced tree, not the branch with the most commits. S15 is the only integration/main writer after the S0 lease transfer. S0 owns requirement scope; S6/S13 independently verify behavior; S14/owner provide appropriate visual/manual evidence. This separation prevents an integrator from declaring its own untested feature finished.
+
+## Before any merge
+
+- Read live GitHub refs/PRs and Notion logs. Current known integration is 7d03713fbbef4f02215d38b28932ad3952adefad; main is ead5455faa2cd0d7f4aba87384215175fbe13aa0. Refresh: both can change.
+- Inventory all refs, including historical backend, main, current feature branches and #26/#27 verification candidates. Record merge-base/ancestry, unique commits, patch equivalence, changed files, unresolved conflicts and exact CI. A search returning no PRs is not reliable if known direct PR reads work.
+- Preserve originals; no force/reset/delete. Distinguish already-integrated security ancestors from newer feature commits in #9/#25. Never replay old security just because a PR remains open.
+- Obtain sole-writer handoff. Create one candidate branch from the current integration. Never assemble whole old file snapshots over newer foreign changes.
+
+## Initial dependency groups
+
+1. S4 #21 + S6 method-aware fixture subset: test together. S6 migration permission tests may need #28; do not silently skip those in a release candidate. S15 can compose all coherent dependencies in one candidate or temporarily select exact test commits with patch provenance, not merge unrelated staging branches.
+2. S1 #28 + S2 #24 + S13 thumbnail/CAS/permission/byte tests. Budget variance and exact responsive heading failure require resolution, not an exemption hidden in CI.
+3. S3 #20 + S14 verifiedOwner shell wiring + S6 actual IndexedDB/Restore/Keep Both tests. #27 old tree is a reference for one approved prop, not current editor source.
+4. S5 #9 Settings/growth source + focused export/notification/goal tests, then transfer growth to S10 and consume #28 goal/error contracts. Passing standalone baseline does not prove those consumers.
+
+Choose order by actual disjoint paths and dependencies, not PR number. S2/S3/S5 latest standalone green work may be integrated once focused gates and current combined checks pass; no need to wait for unrelated provider credentials.
+
+## Integration mechanics
+
+- Prefer normal merge commits to preserve ancestry. Record expected worker head, candidate base and exact admitted commit range. Review effective file delta against candidate, not only original merge base.
+- For conflicts, request intent from each file owner; review final diff against both parents. Never use blanket ours/theirs or reset the candidate to a worker tree.
+- If cherry-picking an approved small dependency/test patch is necessary, record original commit, resulting commit and patch-equivalence in RELEASE_MANIFEST. Reconcile later merge so it cannot duplicate/revert the patch. Do not represent cherry-picked source as original ancestry.
+- Once candidate checks complete, non-force advance integration only when it has not moved; otherwise incorporate its new head and retest affected combined behavior. S15 is sole writer, but expected-head verification still matters.
+- Worker branches continue from announced integration at checkpoints; do not force everyone to sync after each documentation commit.
+
+## Required release manifest
+
+One row for every current PR and unique commit range: owner; original ref/head; requirement IDs; changed files; included resulting SHA/tree; disposition INCLUDED / ALREADY_INTEGRATED / SUPERSEDED_EQUIVALENT / EXCLUDED_APPROVED / PENDING; equivalence proof or exclusion reason; tested source/head/base/runner tree; test IDs/evidence; migrations; flags; hosted/manual status. No PENDING mandatory change at full completion. Preserve every historical branch and candidate explanation until final acceptance.
+
+## Candidate freeze and exact checks
+
+Freeze new feature admissions near H20, not bug fixes. Pin candidate source SHA and tree; run required frontend TypeScript/build/behavior/public browser and application/contracts/SQL/real authenticated browser/HTTP/Edge/email smoke checks plus new feature-specific tests. Record required skipped tests as blockers. Verify current file-budget, reference checks, accessibility reports, production dependency scan and public bundle/secrets policy. Run no destructive hosted jobs by accident. Document environment and migration versions.
+
+Known nonfunctional targets (Lighthouse/CWV/WCAG/header/availability) require actual measurement at the specified environment, not assignment of a passing label. Full hosted/manual acceptance cannot be inferred from local CI. Review all must-have rows in REQUIREMENT_LEDGER against release criteria, including P2; an excluded feature needs an explicit owner scope decision.
+
+## One final PR to main
+
+1. Refresh main. Incorporate any new main commits into candidate/integration, resolve owned conflicts and test affected behavior. There must be no lost main-only change.
+2. Open or update ONE integration→main PR, carrying final product behavior, actual limitations, complete manifest, migration/flag/hosted prerequisites, rollback/recovery and evidence. Worker PRs never target main. The new PR targets exact reviewed current base.
+3. Confirm CI tested the actual prospective merge tree with current main, not just worker head. Pin expected head and base; any movement invalidates the approval/check applicability until reviewed.
+4. Respect branch protections. Branch API currently says protected=false; do not claim protection exists. Configure rules only with relevant authority; lack of a rule is not permission to bypass checks.
+5. Existing coordination forbids main/production actions. Prepare everything first, then ask for any still-missing approval of this concrete PR/SHA and scope. Main merge is separate from deploying services/migrations/public activation; obtain applicable approvals separately, not an indefinite blanket release.
+6. After authorized merge, fetch main, record merge commit/tree, compare expected included content, run required post-merge checks, verify no mandatory change was lost and update Notion/handoff. If deployment is separately authorized, verify actual deployed SHA + migration set + feature flags + smoke outcomes; otherwise state code merged, not deployed.
+
+## Failure and rollback
+
+Do not force-reset main. Stop rollout; preserve diagnostics; fix forward or create a reviewed revert of the faulty integration unit. Database recovery is a separate tested plan: never assume reverting code reverses an applied migration or deleted data. Public visibility/privacy incidents require the approved denial/revocation path and actual host evidence. Keep last known good release and immutable artifacts where architecture permits.
+
+## Final main acceptance record
+
+State exact main SHA/tree, included PR/commit coverage, all 53 workflow dispositions, mandatory test outcomes, hosted versions/flags, outstanding manual/provider constraints, approved exclusions and capstone/demo state. If any mandatory feature remains pending, label the result incomplete even when main CI is green.
+</pre></section><section id="prompts_SESSION_00_md"><h2>prompts/SESSION_00.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 0 — Coordinator, scope and dependency control
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: docs-only worker branch through S15
+Log: https://app.notion.com/p/41ab082297c78147a3bee76433f1f63b
+Primary workflow leads: WF-053
+Mission: Own task routing, decisions, requirement reconciliation and documentation; no integration writes after S15 accepts transfer.
+
+## First actions
+
+First inventory all latest branch/log changes and pending approvals; create the 16-session registry, a migration/new-file reservation list and B16 activation event. Checkpoint old work and obtain RELEASED/ACK records. Transfer the integration lease to S15, the shell to S14, and narrower ownership below. Create S7–S15 logs as child pages, preserving S0–S6 logs. Import the kit into project-docs/execution-b16/ through a docs branch handed to S15; no direct integration write after transfer.
+
+## Implementation / work sequence
+
+Reconcile every one of 468 registered IDs, all 53 workflow outcomes, 52 screens, 115 UI decisions, 90 historical decisions, 138 test cases and 20 proofs. Assign explicit acceptance applicability; do not infer that overlap means completion. Resolve source conflicts, budget/provider blockers and capstone actual-results documentation. Maintain critical-path batches and decision turnaround; never require all 16 to wait for one report.
+
+## Exit evidence
+
+B16_ACTIVE only after ownership/branch/log records exist. At finish no mandatory requirement unassigned or silently dropped; final manifest co-signed with S6/S13/S14 evidence and S15 provenance.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `project-docs/B07_B11_VERIFIED_HANDOFF_2026-11-15.md`
+- `project-docs/B07_HOSTED_DEPLOYMENT_EVIDENCE.md`
+- `project-docs/B1-local-auth-test.md`
+- `project-docs/BACKEND_CURRENT_STATUS.md`
+- `project-docs/D01_D90_AUDIT_METHOD.md`
+- `project-docs/DOCUMENTATION_FILE_TREE.txt`
+- `project-docs/F0_PHASE_AUDIT_2026-11-16.md`
+- `project-docs/FILE_COUNT_REPORT.md`
+- `project-docs/FRONTEND_F1_IMPLEMENTATION_NOTES_2026-11-15.md`
+- `project-docs/FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md`
+- `project-docs/FRONTEND_F3_IMPLEMENTATION_NOTES_2026-11-16.md`
+- `project-docs/FRONTEND_UIUX_BRAND_MASTER_EXECUTION_2026-11-15.md`
+- `project-docs/FULL_REPOSITORY_FILE_MANIFEST.csv`
+- `project-docs/FULL_REPOSITORY_FILE_TREE.txt`
+- `project-docs/FULL_REPOSITORY_STRUCTURE.md`
+- `project-docs/IMPLEMENTATION_STATUS.md`
+- `project-docs/MASTER_EXECUTION_PROMPT.md`
+- `project-docs/NEXT_SESSION_HANDOFF.md`
+- `project-docs/PHASE_AND_MODULE_OWNERSHIP.md`
+- `project-docs/PROPOSED_FUTURE_REPOSITORY_TREE.txt`
+- `project-docs/README.md`
+- `project-docs/REPO_ROOT_README_TO_COMMIT.md`
+- `project-docs/SCREEN_TO_SOURCE_MAP.csv`
+- `project-docs/SESSION0_COORDINATION_2026-11-17.md`
+- `project-docs/assets/reference-derived/kadmeion-original-k-raster-trace.svg`
+- `project-docs/assets/reference-derived/kadmeion-phase-b-pattern-vector.svg`
+- `project-docs/assets/reference/approved_brand_pattern_crop.png`
+- `project-docs/assets/reference/kadmeion_aether_drift_ui_concept_board.png`
+- `project-docs/assets/reference/kadmeion_glyph_loading_system.png`
+- `project-docs/design.md`
+- `project-docs/docs/00_governance/AUTHORITY_AND_SUPERSESSION.md`
+- `project-docs/docs/00_governance/CONFLICT_REGISTER.md`
+- `project-docs/docs/00_governance/DECISION_TRACEABILITY_GUIDE.md`
+- `project-docs/docs/00_governance/GLOSSARY.md`
+- `project-docs/docs/00_governance/PRODUCT_SCOPE_AND_PHASES.md`
+- `project-docs/docs/01_product/INFORMATION_ARCHITECTURE.md`
+- `project-docs/docs/01_product/NONFUNCTIONAL_REQUIREMENTS.md`
+- `project-docs/docs/01_product/PRODUCT_REQUIREMENTS_PRD.md`
+- `project-docs/docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md`
+- `project-docs/docs/01_product/USE_CASE_CATALOG.md`
+- `project-docs/docs/02_design/SCREEN_CATALOG.md`
+- `project-docs/docs/02_design/screens/auth_01_sign_in.md`
+- `project-docs/docs/02_design/screens/auth_02_sign_up.md`
+- `project-docs/docs/02_design/screens/auth_03_oauth_callback.md`
+- `project-docs/docs/02_design/screens/auth_04_password_recovery_request.md`
+- `project-docs/docs/02_design/screens/auth_05_password_reset.md`
+- `project-docs/docs/02_design/screens/auth_06_recovery_outcome.md`
+- `project-docs/docs/02_design/screens/edit_01_portfolio_editor_workbench.md`
+- `project-docs/docs/02_design/screens/edit_02_content_inspector.md`
+- `project-docs/docs/02_design/screens/edit_03_components_and_sections.md`
+- `project-docs/docs/02_design/screens/edit_04_my_components.md`
+- `project-docs/docs/02_design/screens/edit_05_theme_and_responsive_inspector.md`
+- `project-docs/docs/02_design/screens/edit_06_asset_manager.md`
+- `project-docs/docs/02_design/screens/edit_07_advanced_source.md`
+- `project-docs/docs/02_design/screens/edit_08_revision_history_and_problems.md`
+- `project-docs/docs/02_design/screens/edit_09_preview_modes.md`
+- `project-docs/docs/02_design/screens/growth_01_personal_growth_hub.md`
+- `project-docs/docs/02_design/screens/growth_02_developer_activity.md`
+- `project-docs/docs/02_design/screens/growth_03_private_devscore.md`
+- `project-docs/docs/02_design/screens/growth_04_goals.md`
+- `project-docs/docs/02_design/screens/growth_05_portfolio_analytics.md`
+- `project-docs/docs/02_design/screens/growth_06_platform_connections.md`
+- `project-docs/docs/02_design/screens/ops_01_admin_users.md`
+- `project-docs/docs/02_design/screens/ops_02_portfolio_moderation.md`
+- `project-docs/docs/02_design/screens/ops_03_appeals_and_case_history.md`
+- `project-docs/docs/02_design/screens/pub_01_landing.md`
+- `project-docs/docs/02_design/screens/pub_02_explore_portfolios.md`
+- `project-docs/docs/02_design/screens/pub_03_public_template_explorer.md`
+- `project-docs/docs/02_design/screens/public_01_developer_identity_hub.md`
+- `project-docs/docs/02_design/screens/public_02_published_case_study.md`
+- `project-docs/docs/02_design/screens/public_03_published_portfolio.md`
+- `project-docs/docs/02_design/screens/public_04_public_share_controls.md`
+- `project-docs/docs/02_design/screens/publish_01_reviewer_staging.md`
+- `project-docs/docs/02_design/screens/publish_02_reviewer_only_preview.md`
+- `project-docs/docs/02_design/screens/publish_03_publish_preflight.md`
+- `project-docs/docs/02_design/screens/publish_04_releases_and_rollback.md`
+- `project-docs/docs/02_design/screens/set_01_settings_hub.md`
+- `project-docs/docs/02_design/screens/set_02_privacy_sharing.md`
+- `project-docs/docs/02_design/screens/set_03_notifications.md`
+- `project-docs/docs/02_design/screens/set_04_account_security.md`
+- `project-docs/docs/02_design/screens/set_05_trash.md`
+- `project-docs/docs/02_design/screens/set_06_export_center.md`
+- `project-docs/docs/02_design/screens/set_07_account_exit.md`
+- `project-docs/docs/02_design/screens/sys_01_not_found_private_expired_offline.md`
+- `project-docs/docs/02_design/screens/sys_02_unsupported_authoring_device.md`
+- `project-docs/docs/02_design/screens/work_01_welcome_and_onboarding.md`
+- `project-docs/docs/02_design/screens/work_02_workspace_home.md`
+- `project-docs/docs/02_design/screens/work_03_developer_profile_editor.md`
+- `project-docs/docs/02_design/screens/work_04_project_library.md`
+- `project-docs/docs/02_design/screens/work_05_project_quick_add_drawer.md`
+- `project-docs/docs/02_design/screens/work_06_project_detailed_editor.md`
+- `project-docs/docs/02_design/screens/work_07_owned_portfolio_library.md`
+- `project-docs/docs/02_design/screens/work_08_template_choice_new_portfolio.md`
+- `project-docs/docs/03_workflows/01_AUTHENTICATION.md`
+- `project-docs/docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md`
+- `project-docs/docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md`
+- `project-docs/docs/03_workflows/04_EDITOR_AND_COMPONENTS.md`
+- `project-docs/docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md`
+- `project-docs/docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md`
+- `project-docs/docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md`
+- `project-docs/docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md`
+- `project-docs/docs/03_workflows/README.md`
+- `project-docs/docs/04_engineering/API_COMMANDS_EVENTS_AND_ERRORS.md`
+- `project-docs/docs/04_engineering/COST_OPERATIONS_AND_DEPLOYMENT.md`
+- `project-docs/docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md`
+- `project-docs/docs/04_engineering/EDITOR_CORE_AND_FILE_CONTRACT.md`
+- `project-docs/docs/04_engineering/OFFLINE_RECOVERY_AND_DATA_PORTABILITY.md`
+- `project-docs/docs/04_engineering/PROPOSED_REPOSITORY_STRUCTURE.md`
+- `project-docs/docs/04_engineering/PROVIDER_DATA_AND_SCREENSHOT_FEASIBILITY.md`
+- `project-docs/docs/04_engineering/SECURITY_AND_PRIVACY.md`
+- `project-docs/docs/04_engineering/STATIC_RELEASE_HOSTING_AND_EXPORT.md`
+- `project-docs/docs/04_engineering/SYSTEM_ARCHITECTURE.md`
+- `project-docs/docs/05_quality/ACCESSIBILITY_RESPONSIVE_TEST_PLAN.md`
+- `project-docs/docs/05_quality/DESIGN_REVIEW_CHECKLIST.md`
+- `project-docs/docs/05_quality/PLANNED_USER_ACCEPTANCE_TESTS.md`
+- `project-docs/docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md`
+- `project-docs/docs/05_quality/TECHNICAL_VERIFICATION_GATES.md`
+- `project-docs/docs/05_quality/TEST_REPORT_TEMPLATE.md`
+- `project-docs/docs/05_quality/TEST_STRATEGY_AND_PLAN.md`
+- `project-docs/docs/06_capstone/ABSTRACT_AND_PROBLEM_FORMULATION.md`
+- `project-docs/docs/06_capstone/CAPSTONE_REPORT_DRAFT.md`
+- `project-docs/docs/06_capstone/DELIVERY_PLAN.md`
+- `project-docs/docs/06_capstone/DEMONSTRATION_RUNBOOK.md`
+- `project-docs/docs/06_capstone/DIAGRAMS_AND_MODELS.md`
+- `project-docs/docs/06_capstone/FEASIBILITY_STUDY.md`
+- `project-docs/docs/06_capstone/PRESENTATION_OUTLINE.md`
+- `project-docs/docs/06_capstone/PROJECT_CHARTER_AND_PROPOSAL.md`
+- `project-docs/docs/06_capstone/PROJECT_RISK_REGISTER.md`
+- `project-docs/docs/06_capstone/REQUIREMENTS_ANALYSIS_AND_USER_STORIES.md`
+- `project-docs/docs/06_capstone/RESEARCH_AND_REFERENCES.md`
+- `project-docs/docs/06_capstone/SUBMISSION_AND_RESEARCH_INTEGRITY_CHECKLIST.md`
+- `project-docs/docs/06_capstone/SYSTEM_REQUIREMENTS_AND_ENVIRONMENT.md`
+- `project-docs/docs/06_capstone/VIVA_QUESTIONS_AND_RESPONSES.md`
+- `project-docs/docs/06_capstone/WEEKLY_WORK_LOG_TEMPLATE.md`
+- `project-docs/registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv`
+- `project-docs/registers/CONFLICTS.csv`
+- `project-docs/registers/D01_D90_BACKEND_TRACEABILITY.csv`
+- `project-docs/registers/DECISIONS_UI_001_115.csv`
+- `project-docs/registers/F0_SCREEN_SOURCE_MATRIX_2026-11-16.md`
+- `project-docs/registers/F6_AUTOMATED_ACCESSIBILITY_RESULTS.md`
+- `project-docs/registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md`
+- `project-docs/registers/F6_FRONTEND_UAT_EVIDENCE.md`
+- `project-docs/registers/FEATURE_TRACEABILITY.csv`
+- `project-docs/registers/FRONTEND_BACKEND_CONTRACT_INVENTORY_2026-11-17.md`
+- `project-docs/registers/MANIFEST_SHA256.csv`
+- `project-docs/registers/SCREENS.csv`
+- `project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_2026-11-17.csv`
+- `project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_SUMMARY_2026-11-17.md`
+- `project-docs/registers/SESSION0_SOURCE_AND_DOCUMENT_INVENTORY_2026-11-17.csv`
+- `project-docs/registers/SOURCE_INVENTORY.csv`
+- `project-docs/registers/TECHNICAL_PROOFS.csv`
+- `project-docs/registers/TECHNICAL_PROOFS_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/TEST_CASES.csv`
+- `project-docs/registers/TEST_CASES_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/UI_001_115_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/WORKFLOWS.csv`
+- `project-docs/registers/WORKFLOWS_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/sources/APPROVED_BRAND_DESIGN_SNAPSHOT_NEEDS_REFERENCE_CHECK.md`
+- `project-docs/sources/BRANDING_SNAPSHOT_APPROVED_DIRECTION.md`
+- `project-docs/sources/EDITOR_FINAL_BLUEPRINT_v1_ORIGINAL_UNMODIFIED.md`
+- `project-docs/sources/HISTORICAL_V2_333_PATH_COUNT_SUPERSEDED.md`
+- `project-docs/sources/HISTORICAL_V2_333_PATH_MANIFEST_SUPERSEDED.csv`
+- `project-docs/sources/OLD_31_SCREEN_INVENTORY_SUPERSEDED.md`
+- `project-docs/sources/PHASE2_DESIGN_SNAPSHOT_SUPERSEDED.md`
+- `project-docs/sources/README.md`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_01_md"><h2>prompts/SESSION_01.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 1 — Backend contracts and private media
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s1-private-assets
+Log: https://app.notion.com/p/41ab082297c781048ae8e1aed99469a1
+Primary workflow leads: Cross-cutting acceptance/integration; exact scope in requirements ledger.
+Mission: Finish and verify #28; general owner-private editor media and standalone profile-avatar lifecycle; typed API composition.
+
+## First actions
+
+Preserve #28 d3fcc31. Corrected thumbnail migration already passed isolated SQL; current contracts fail budget, and logged publish heading failure remains distinct. Do not recreate existing thumbnail APIs, typed export limits or goal CAS/cursor. Give S2/S5/S10 exact contracts and compose with their consumers under S15.
+
+## Implementation / work sequence
+
+Implement general editor private asset byte-read/attestation interfaces, not project-thumbnail-only API reuse. Complete standalone avatar storage registration/owner binding/validation/limits/replacement and export/erasure reconciliation without a dummy project. Maintain auth epoch guards, shared supabase-auth-port.ts composition and distinct typed denial/transient/quota errors. Review domain workers’ additive contracts; reserve unique new migration paths through S0. Preserve backwards compatibility and verify existing endpoints before adding new ones.
+
+## Exit evidence
+
+S13 proves owner/anon/foreign/project/byte/CAS/idempotency/permission negatives; S6 proves actual S2/S3 consumer readback. No source-only media/public claims. Transfer private-goals-service.ts to S10 and private-account-data-export.ts to S5 only after the #28 checkpoint is integrated or explicitly preserved in the new base.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/auth-web/dev-server.mjs`
+- `apps/auth-web/index.html`
+- `apps/auth-web/src/auth-redirect.ts`
+- `apps/auth-web/src/form-helpers.ts`
+- `apps/auth-web/src/main.ts`
+- `apps/auth-web/src/supabase-auth-port.ts`
+- `apps/auth-web/src/theme-preference.ts`
+- `apps/auth-web/styles.css`
+- `apps/auth-web/tsconfig.json`
+- `packages/contracts/src/private-my-components-service.ts`
+- `packages/contracts/src/private-onboarding-service.ts`
+- `packages/contracts/src/private-project-case-studies.ts`
+- `packages/contracts/src/project-data-service.ts`
+- `packages/contracts/src/project.ts`
+- `packages/contracts/src/projects.ts`
+- `supabase/migrations/20261112181522_private_profiles_and_rls.sql`
+- `supabase/migrations/20261112182015_identity_sharing_and_operator_roles.sql`
+- `supabase/migrations/20261112182855_private_projects_and_assets.sql`
+- `supabase/migrations/20261112184701_project_optimistic_concurrency_and_profile_permissions.sql`
+- `supabase/migrations/20261112184732_portfolio_revision_journal_and_atomic_transactions.sql`
+- `supabase/migrations/20261112184818_portfolio_snapshot_file_count_compatibility.sql`
+- `supabase/migrations/20261112190817_portfolio_snapshot_managed_and_owned_path_allowlist.sql`
+- `supabase/migrations/20261112190910_portfolio_snapshot_required_field_validation.sql`
+- `supabase/migrations/20261112191349_private_project_case_study_revision_control.sql`
+- `supabase/migrations/20261112191527_least_privilege_authenticated_table_grants.sql`
+- `supabase/migrations/20261112194519_restrict_project_and_portfolio_creation_columns.sql`
+- `supabase/migrations/20261112195717_allow_versioned_custom_component_source_paths.sql`
+- `supabase/migrations/20261113081140_private_onboarding_progress_and_owner_rpc.sql`
+- `supabase/migrations/20261113082110_verified_private_asset_registration.sql`
+- `supabase/migrations/20261113163000_private_item_trash_and_restore.sql`
+- `supabase/migrations/20261113170000_private_frozen_release_requests.sql`
+- `supabase/migrations/20261114000500_private_reviewer_grants.sql`
+- `supabase/migrations/20261114003000_private_moderation_case_appeals.sql`
+- `supabase/migrations/20261114010000_private_frozen_revision_atomic_read.sql`
+- `supabase/migrations/20261114021500_frozen_snapshot_canonical_attestation.sql`
+- `supabase/migrations/20261114033000_private_account_erasure_request_journal.sql`
+- `supabase/migrations/20261114063500_private_account_exit_preflight.sql`
+- `supabase/migrations/20261114064500_private_exit_reauth_challenge.sql`
+- `supabase/migrations/20261114080000_private_release_visibility_pointer.sql`
+- `supabase/migrations/20261114084000_private_delivery_denial_gate.sql`
+- `supabase/migrations/20261114091000_private_artifact_pointer_binding.sql`
+- `supabase/migrations/20261114095000_case_bound_operator_private_block.sql`
+- `supabase/migrations/20261114110000_private_account_exit_inventory_snapshots.sql`
+- `supabase/migrations/20261114123000_private_account_exit_storage_reconciliation.sql`
+- `supabase/migrations/20261114140000_private_storage_immutable_uploads.sql`
+- `supabase/migrations/20261114150000_private_asset_content_attestations.sql`
+- `supabase/migrations/20261114161539_verified_profile_projection.sql`
+- `supabase/migrations/20261114162101_published_case_study_projection.sql`
+- `supabase/migrations/20261114162436_account_erasure_execution.sql`
+- `supabase/migrations/20261114163228_expired_trash_purge.sql`
+- `supabase/migrations/20261114170000_private_unlisted_release_delivery.sql`
+- `supabase/migrations/20261114235500_project_privacy_release_invalidation.sql`
+- `supabase/migrations/20261114235910_private_trigger_execute_acl.sql`
+- `supabase/migrations/20261115001000_reserved_portfolio_route_handles.sql`
+- `supabase/migrations/20261115002000_project_exposure_immutable_identity.sql`
+- `supabase/migrations/20261115041204_private_notification_inbox.sql`
+- `supabase/migrations/20261115043831_portfolio_abuse_intake.sql`
+- `supabase/migrations/20261115100000_private_goals_and_manual_history.sql`
+- `supabase/migrations/20261115110000_private_platform_links.sql`
+- `supabase/migrations/20261115121000_public_release_indexing_ack_gate.sql`
+- `supabase/migrations/20261115122000_public_projection_content_privacy_invalidation.sql`
+- `supabase/migrations/20261115130000_erasure_public_release_revocation_gate.sql`
+- `supabase/migrations/20261115130001_private_frozen_media_candidates.sql`
+- `supabase/migrations/20261115130002_account_exit_storage_revocation_gate.sql`
+- `supabase/migrations/20261115130003_frozen_media_delivery.sql`
+- `supabase/migrations/20261115130004_account_exit_withdraw_owned_public_content.sql`
+- `supabase/migrations/20261115130005_account_exit_scoped_host_receipts.sql`
+- `supabase/migrations/20261115130006_guarded_public_portfolio_rollback.sql`
+- `supabase/migrations/20261115130007_atomic_account_metadata_export.sql`
+- `supabase/migrations/20261115133000_account_erasure_jwt_truthful_receipt.sql`
+- `supabase/migrations/20261115140000_owner_my_components_library.sql`
+- `supabase/migrations/20261115154500_owner_profile_draft_save.sql`
+- `supabase/migrations/20261116134114_operator_appeal_evidence.sql`
+- `supabase/migrations/20261117083520_owner_private_project_thumbnails.sql`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_02_md"><h2>prompts/SESSION_02.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 2 — Profile and project workspace
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s2-public-workspace
+Log: https://app.notion.com/p/41ab082297c781309dc4e1d6ea63acf4
+Primary workflow leads: WF-009, WF-010, WF-012, WF-013, WF-014, WF-015, WF-016, WF-017
+Mission: Preserve #24, prove thumbnails with #28; avatar/authored links, richer project fields/filtering, safe exposure and profile authoring.
+
+## First actions
+
+Preserve #24 44006a7: thumbnail upload/attach/read/private Blob/replace/detach and bounded visible-card loading are now coded; both standalone workflows green. Prove it with exact #28 + S13/S6 tests rather than reimplementing it.
+
+## Implementation / work sequence
+
+Consume authored HTTPS profile links and standalone avatar contract, retain saved/draft projection and consent. Finish profile selected projects and deliberate publication control with S8 projection and S9 delivery. Complete richer approved project fields and server-backed search/filter requirements, link-change confirmation and appropriate private autosave with CAS; preserve sibling overview/case-study buffers. Keep manual image fallback; no unapproved remote screenshot service.
+
+## Exit evidence
+
+Actual cold reload retains cover/alt, stable ambiguous retry cannot duplicate writes, stale-owner bytes clear, failed replacement preserves acknowledged cover, cross-tab CAS is safe. Avatar/public profile requires real scoped lifecycle. Keyboard/responsive and each WF-009–017 scenario mapped; hand landing/explore/templates to S8 before it edits.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/profile.tsx`
+- `apps/frontend/src/projects.tsx`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_03_md"><h2>prompts/SESSION_03.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 3 — Editor transactions and durable recovery
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s3-editor
+Log: https://app.notion.com/p/41ab082297c78182ba7bdf09cf96da89
+Primary workflow leads: WF-018, WF-019, WF-020, WF-026, WF-027, WF-028
+Mission: Preserve #20; verified-owner composition, checkpoint/recovery/Keep Both, exact bytes, source buffers, folder/import and autosave semantics.
+
+## First actions
+
+Preserve #20 cc34735: green standalone CI, working checkpoint freeze/recovery, palette history and slot guards already exist. S15/S14 compose the verifiedOwner prop with latest source; old #27 is stale.
+
+## Implementation / work sequence
+
+Complete acknowledged journal persistence, exact-buffer reload/Restore/Keep Both, quota/abort/two-tab/owner-epoch handling, safe local working export, folder/import UX and source diagnostics/last-good preview within approved model. Clarify private autosave vs cloud Save with the specification. Maintain transactional engine for S7 typed layout/theme/asset commands and one acknowledged mutation; no opaque-source loss. Add bounded initial editor panel/slot query handling for S4 exact deep links. Hand portfolio-tools.tsx to S7 at a pinned checkpoint; then only S7 edits it.
+
+## Exit evidence
+
+Real IndexedDB restart/transaction/quota tests, exact managed+owned bytes before/after Restore and cloud reload, no offline identity bypass, all supported buffers and new commands covered. Core exports/theme schema stay compatible with S4; no drag UI that bypasses typed transaction writer.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/portfolios.tsx`
+- `packages/editor-core/src/isolated-owned-preview.ts`
+- `packages/editor-core/src/managed-project-files.ts`
+- `packages/editor-core/src/portfolio-revision-transactions.ts`
+- `packages/editor-core/src/publish-preflight.ts`
+- `packages/storage-adapters/src/editor-save-coordinator.ts`
+- `packages/storage-adapters/src/indexeddb-editor-drafts.ts`
+- `packages/storage-adapters/src/journaled-editor-folder.ts`
+- `packages/storage-adapters/src/portable-editor-snapshot.ts`
+- `packages/storage-adapters/src/supabase-portfolio-revisions.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_04_md"><h2>prompts/SESSION_04.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 4 — Release frontend and portable exports
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s4-release
+Log: https://app.notion.com/p/41ab082297c7819c9a51f338d94fe9f2
+Primary workflow leads: WF-029, WF-030, WF-031, WF-032, WF-033, WF-034, WF-035, WF-036
+Mission: Preserve #21; preflight deep links, frozen comparison, real publish/republish/history/rollback/unpublish/share and archive coverage.
+
+## First actions
+
+Preserve #21 87361bc: private comparison, clickable preflight index and ZIP readback/hashes exist. Stage verifier code with S6 fixtures via S15; six GET-only failures are not a reason to weaken the new verifier. After combined acceptance transfer verifier implementation to S9 and tests to S13.
+
+## Implementation / work sequence
+
+Consume S3 actual panel/slot link contract; implement usable reviewer, publish confirmation, live-vs-draft diff, republish preserving old live on failure, real release history/rollback selection, withdrawal and share from actual host receipts. Finish editable/static/account distinctions, archive import/export integrity and applicable source+asset coverage with S3/S5/S9; no external repository source archive unless actually stored. Owned source remains opaque; arbitrary JS publication remains blocked.
+
+## Exit evidence
+
+S6 tests selection &gt;50, immutable pin, expiry/revoke/delayed response, actual downloaded bytes and checksum, retry identities and final success/denial. Live controls only succeed on approved authoritative delivery; private frozen requests cannot masquerade as live releases.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/release.tsx`
+- `packages/contracts/src/private-release-service.ts`
+- `packages/contracts/src/private-reviewer-service.ts`
+- `packages/storage-adapters/src/portable-source-archive.ts`
+- `packages/storage-adapters/src/static-preview-export.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_05_md"><h2>prompts/SESSION_05.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 5 — Settings, notifications and account export
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s5-account-growth
+Log: https://app.notion.com/p/41ab082297c781faa41fe270adf4c7ec
+Primary workflow leads: WF-043, WF-045, WF-046, WF-047
+Mission: Preserve #9 Settings changes; export quota/receipts/inventory reuse, actionable preferences and honest account exit.
+
+## First actions
+
+Preserve #9 2199041 Settings features; both workflows now green. Goal templates/milestones/delete have been implemented by your previous work: checkpoint them and release growth.tsx to S10 instead of redoing them. Release auth/operations paths to S11.
+
+## Implementation / work sequence
+
+Consume S1 typed metadata limit/rate errors and request-bound inventory readback. Finish bounded metadata/source/recovery export, exact selection/hash/coverage/exclusions/quota/retry and owner-scoped durable non-secret inventory hint if contract permits. Complete actionable notifications and preference toggles with independent failure states. Finish privacy/account-exit journey and reauth/withdrawal disclosure using genuine receipts, alongside S11 lifecycle and S9 delivery. Receive private-account-data-export.ts only after S1 handoff.
+
+## Exit evidence
+
+S6 actual download bytes, scope, quotas, retries/owner switch; split inbox/prefs failures and delayed action rejection. S13 export error and inventory contracts. Never equate metadata export to media archive or database deletion to backup erasure.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/settings.tsx`
+- `packages/contracts/src/private-account-erasure-service.ts`
+- `packages/contracts/src/private-notifications-service.ts`
+- `packages/storage-adapters/src/private-account-data-export.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_06_md"><h2>prompts/SESSION_06.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 6 — Independent frontend and journey acceptance
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s6-acceptance
+Log: https://app.notion.com/p/41ab082297c781d2a861ca24be8bc5a5
+Primary workflow leads: Cross-cutting acceptance/integration; exact scope in requirements ledger.
+Mission: Preserve #25; real browser acceptance of integrated capabilities, all 138 UAT cases reconciled with S13/S14; no product-source edits.
+
+## First actions
+
+Preserve #25 12d70b1: fixtures and eight permission checks are coded but not combined proof. Deliver exact S4 fixture dependency and S1 grants tests to S15; transfer backend test file ownership to S13 only after acknowledged checkpoint. Keep browser owner.spec.ts and settings-owner.spec.ts.
+
+## Implementation / work sequence
+
+Prioritize real combined thumbnail/CAS, editor checkpoint/Keep Both/Restore, S5 exports/notifications/goals, then public publish→GET/HEAD→republish→revoke/rollback and role/lifecycle journeys. Add focused independent test slices for S7–S12 deliverables; reserve new test filenames with S0 instead of parallel edits to owner.spec.ts. Capture sanitized failure diagnostics and distinguish harness mismatch from product defect; never change successful behavior to satisfy stale text. Coordinate actual native manual review with S14/owner.
+
+## Exit evidence
+
+138-case ledger reconciled individually with implemented/automated/manual/hosted scope; no blanket PASS. Required feature API absence fails combined candidate. Record real runner merge tree. Sign off release critical paths independently from implementers; cannot certify unavailable physical-device or provider tests.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/e2e/accessibility.ts`
+- `apps/frontend/e2e/owner.spec.ts`
+- `apps/frontend/e2e/public.spec.ts`
+- `apps/frontend/e2e/settings-owner.spec.ts`
+- `apps/frontend/src/behavior.test.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_07_md"><h2>prompts/SESSION_07.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 7 — Editor panels, layout, themes and reuse
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s07-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: WF-021, WF-022, WF-023, WF-024, WF-025
+Mission: After S3 releases portfolio-tools.tsx: complete layout mapping, scoped tokens/typography, components/Favorites, asset UX and keyboard/drag parity.
+
+## First actions
+
+Read latest #20; wait for portfolio-tools.tsx RELEASED by S3 at accepted checkpoint. Current contrast, separate light/dark palette history, protected replacement and stash work must be preserved.
+
+## Implementation / work sequence
+
+Complete explicit side-by-side layout transformation and unmatched-data mapping/stash; component discovery/categories/Favorites, reuse/known fields/protected source impact, keyboard and drag alternatives; scoped global/template/section/component/breakpoint typography/spacing/tokens and inherited/reset behavior. Complete asset preview/placement UI using S1 verified bytes and S3 transactions. Maintain five presets + Blank/eight real layouts and preview/export parity. Request new typed engine commands from S3 and export support from S4; do not mutate their files.
+
+## Exit evidence
+
+All swap/cancel/Keep Component/stash/Undo paths preserve exact outgoing bytes and invalid buffers. Scoped styling survives save/reload and matches static output; alt/private media verified. S6 acceptance against EDIT-02–06, UI-48–65, not cosmetic demo-only changes.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/portfolio-tools.tsx`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_08_md"><h2>prompts/SESSION_08.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 8 — Public identity, discovery and template surfaces
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s08-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: WF-011
+Mission: Real profile/case-study visitor rendering, public sharing/report entry, factual discovery, complete template previews and approved landing.
+
+## First actions
+
+Take landing.tsx/explore.tsx/templates.tsx from S2 with a recorded lease; public identity contract/server projection paths require S1/S0 transfer. Read current projection handlers before proposing new endpoints.
+
+## Implementation / work sequence
+
+Implement actual public profile, chosen case study and share/report surfaces, honoring published selections and positive verification only. Finish approved seven-section landing and real template previews, factual discovery only from deliberately public data, safe links/SEO/handle rename/redirect policy in coordination with S2/S9. New visitor UI module only if justified/reserved; S14 alone wires main/router. No fictional portfolio discovery, testimonials or counters. Verify approved visual sources.
+
+## Exit evidence
+
+Private/withdrawn/cross-owner data never appears; anonymous published journey shows exact selected content, report acknowledgment and canonical/share metadata. S13 handler policy tests, S6 visitor E2E. When complete take a newly leased P2 presentation or visual backlog slice; do not edit growth.tsx without transfer.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `api/published-identity.mjs`
+- `apps/frontend/src/explore.tsx`
+- `apps/frontend/src/landing.tsx`
+- `apps/frontend/src/templates.tsx`
+- `packages/contracts/src/identity.ts`
+- `packages/contracts/src/private-identity-service.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_09_md"><h2>prompts/SESSION_09.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 9 — Public delivery and hosting verification
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s09-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: Cross-cutting acceptance/integration; exact scope in requirements ledger.
+Mission: Immutable bytes/media, method-aware verifier, revocation/cache/rollback receipts and actual hosting proof; public activation remains gated.
+
+## First actions
+
+After S4 checkpoint, take unlisted-release-verification.ts and delivery server/adapters. Existing method-aware GET/HEAD already implemented; preserve it and accept S13 updated fixtures.
+
+## Implementation / work sequence
+
+Complete immutable public HTML/media delivery, safe canonical route, live pointer/history/revoke/rollback receipts, cache and hostile-origin denial. Verify hosting capability and availability architecture against specs and ₹0 constraint; current per-request DB dependency cannot be called DB-independent delivery. Provide S4/S8 genuine typed results. Prepare exact hosted proof runbook, deployment/migration diff and rollback; use read-only observations and disposable local tests until authorized activation. Do not turn failure gates off to meet a date.
+
+## Exit evidence
+
+GET proves actual bytes/digests; HEAD proves applicable status/headers/bodylessness, not universal hash headers. Canonical/API/direct-media revocation and stale grant/redirect/cache negatives, DB outage behavior documented and accepted. Real host/authorization blockers are explicit, not replaced with mock receipts.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `api/_bounded-rpc-json.mjs`
+- `api/public-portfolio.mjs`
+- `api/reviewer.mjs`
+- `api/unlisted.mjs`
+- `packages/contracts/src/private-release-visibility-service.ts`
+- `packages/contracts/src/releases.ts`
+- `packages/storage-adapters/src/host-revocation-probe.ts`
+- `packages/storage-adapters/src/private-artifact-direct-sql-writer.ts`
+- `packages/storage-adapters/src/private-artifact-pg-worker.ts`
+- `packages/storage-adapters/src/private-artifact-pointer-binding.ts`
+- `packages/storage-adapters/src/private-asset-registration-completion.ts`
+- `packages/storage-adapters/src/private-delivery-denial-gate.ts`
+- `packages/storage-adapters/src/private-frozen-revision-loader.ts`
+- `packages/storage-adapters/src/private-immutable-artifact.ts`
+- `packages/storage-adapters/src/private-reviewer-staging.ts`
+- `packages/storage-adapters/src/private-server-asset-byte-attestor.ts`
+- `packages/storage-adapters/src/public-delivery-policy.ts`
+- `packages/storage-adapters/src/safe-png-publication.ts`
+- `packages/storage-adapters/src/unlisted-release-verification.ts`
+- `supabase/functions/complete-private-asset/index.ts`
+- `supabase/functions/publish/index.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_10_md"><h2>prompts/SESSION_10.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 10 — Goals, provider integrations and DevScore
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s10-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: WF-037, WF-038, WF-040, WF-041, WF-042
+Mission: After S5/S1 handoff: consume conditional goals/cursors, finish goal journey; implement permitted provider facts and explainable private score.
+
+## First actions
+
+After S5/S1 checkpoint take growth.tsx, private-goals-service.ts and private-platform-links-service.ts. Preserve already-built templates, milestone CRUD, typed deletes, paged manual history and corrections. Consume new conditional goal update and chronological cursor.
+
+## Implementation / work sequence
+
+Finish real goal lifecycle/CAS/archiving/deletion and sourced-vs-manual history. Verify each of six provider permissions/rate limits through official current sources; implement permitted public-handle retrieval, provenance, sync/cooldown/stale/partial state and disconnect/delete derived facts. Supported link-only fallback is valid where a provider forbids retrieval, but not a completed sync. Implement private versioned DevScore categories, missingness/confidence, sufficient-coverage threshold, correction/guidance per approved formula; where formula lacks approval ask S0, do not invent weights as approved. Connect S12 analytics module without rewriting it.
+
+## Exit evidence
+
+S13 &gt;100 chronological progress/cursor/foreign/CAS and provider parser/error tests; S6 real goal flow. Never claim link matches prove ownership. No scraping/captcha bypass, public ranking or fake numeric scores. API permission/score-decision gaps remain blocking scope records.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/growth.tsx`
+- `packages/contracts/src/private-goals-service.ts`
+- `packages/contracts/src/private-platform-links-service.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_11_md"><h2>prompts/SESSION_11.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 11 — Authentication, moderation and lifecycle
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s11-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: WF-001, WF-002, WF-003, WF-004, WF-005, WF-006, WF-007, WF-044, WF-049, WF-050, WF-051, WF-052
+Mission: Preserve verified auth; finish actual recovery/OAuth paths, restricted operations/appeals, Trash/session lifecycle and cleanup readiness.
+
+## First actions
+
+Take auth.tsx/auth.css/operations.tsx and associated domain contracts after S5 release. Verified reauth/epoch baseline is integrated: do not rewrite it without demonstrated defect. Hosted appeal RPC was absent at audit; recheck before deployment planning.
+
+## Implementation / work sequence
+
+Complete supported password recovery/OAuth/confirmation controls and abuse/error paths, accurate security/session UX; role-scoped moderation/case/appeal/report handling, reason/audit/notice and restoration. Finish 15-day item Trash and deliberate permanent deletion only where contract supports it, account lifecycle coordination with S5/S9, cleanup dry-run/retention/runbook. Propose new backend support if a required session directory/linked-method operation is actually missing; do not show a cosmetic list. Keep operations separate from P3 advanced admin.
+
+## Exit evidence
+
+S13 role downgrade/ordinary-owner/anon/expiry/CAS, S6 UI cases, hosted mail/OAuth/operator outcomes only when executed. No impersonation, arbitrary author edits, purge execution or hosted migration without approval. Gate actual provider actions separately from implemented code.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/src/auth.css`
+- `apps/frontend/src/auth.tsx`
+- `apps/frontend/src/operations.tsx`
+- `packages/contracts/src/auth-service.ts`
+- `packages/contracts/src/operations.ts`
+- `packages/contracts/src/private-moderation-service.ts`
+- `packages/contracts/src/private-trash-service.ts`
+- `supabase/functions/purge-expired-trash/index.ts`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_12_md"><h2>prompts/SESSION_12.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 12 — Consented portfolio analytics
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s12-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: WF-039
+Mission: Implement approved P2 opt-in aggregates, collection/retention contracts, real charts/tables and disable/delete semantics.
+
+## First actions
+
+WF-039 is a real missing P2 capability, not a UI empty-state task. Read consent/data-retention and analytics approval details before designing schema. Reserve exact module/migration/test paths with S0; S10 owns growth.tsx and S14 router.
+
+## Implementation / work sequence
+
+Implement per-portfolio opt-in, aggregate collection/query/retention with bounded validated events, abuse/rate protection, bot/duplicate policy and no raw visitor identifiers or unnecessary fingerprinting. Create real chart/table/filter views, no-data/error/loading and disclosure; opt-out stops collection and honors approved retention/deletion. Public event receiver is server-side bounded and must not expose service keys or private owner data. S9 wires any approved collector hook; no tracking until actual consent. Specify any new aggregate contract before UI, then build it with isolated tests.
+
+## Exit evidence
+
+S13 consent/foreign/anon write bounds/rate/retention/aggregation tests, S6 real opt-in→visit→aggregate→opt-out journey and accessible chart tables. If approved policy or free-safe host limits are absent, record exact blocker and implement safe independent parts; never award whole WF-039 completion for off-state.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_13_md"><h2>prompts/SESSION_13.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 13 — Independent backend, security and contract QA
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s13-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: Cross-cutting acceptance/integration; exact scope in requirements ledger.
+Mission: After S6 fixture handoff: real SQL/RLS/CAS, media and quota negatives, delivery GET/HEAD, contract and export tests.
+
+## First actions
+
+Receive S6 backend/unit/SQL test leases after #25 is preserved. Pair S4 verifier+fixtures and #28 migration+permission checks under S15 combined candidate; independently verify new code, not only existing 511 SQL assertions.
+
+## Implementation / work sequence
+
+Own backend/contract/editor-domain/adapter test corpus: thumbnail/links/avatar/general media owner/byte/CAS/replay, goal chronology/conditional writes, export quota/inventory/hash, delivery GET/HEAD/revocation, recovery transaction integrity and opaque bytes, moderation/reauth/roles, P2 providers/score/analytics. Use isolated local Supabase/HTTP/Storage/Edge; never real destructive data tests. Strengthen feature gate checks so absent candidates cannot be silently skipped on release.
+
+## Exit evidence
+
+Evidence ties each relevant TC/TP/UI to exact source/test/runner SHA and environment. Review test harness errors separately from product failure; all critical negatives execute in combined tree. Route product fixes to sole owner. Check redaction; no raw tokens/traces. S15 retains artifacts and CI paths.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `supabase/tests/account-erasure-jwt-receipt.sql`
+- `supabase/tests/case-bound-operator-private-block.sql`
+- `supabase/tests/consented-public-delivery.sql`
+- `supabase/tests/global-privileged-rpc-audit.sql`
+- `supabase/tests/owner-isolation-and-transactional-revisions.sql`
+- `supabase/tests/portfolio-private-revisions.sql`
+- `supabase/tests/private-account-erasure-requests.sql`
+- `supabase/tests/private-account-exit-inventory.sql`
+- `supabase/tests/private-account-exit-preflight.sql`
+- `supabase/tests/private-account-exit-reauth.sql`
+- `supabase/tests/private-account-exit-storage-reconciliation.sql`
+- `supabase/tests/private-artifact-pointer-binding.sql`
+- `supabase/tests/private-asset-content-attestations.sql`
+- `supabase/tests/private-delivery-denial-gate.sql`
+- `supabase/tests/private-frozen-release-requests.sql`
+- `supabase/tests/private-goals-and-manual-progress.sql`
+- `supabase/tests/private-moderation-cases.sql`
+- `supabase/tests/private-my-components.sql`
+- `supabase/tests/private-onboarding-progress.sql`
+- `supabase/tests/private-release-visibility-pointer.sql`
+- `supabase/tests/private-reviewer-grants.sql`
+- `supabase/tests/private-trash-lifecycle.sql`
+- `supabase/tests/private-trash-owner-isolation.sql`
+- `supabase/tests/project-exposure-identity-immutability.sql`
+- `supabase/tests/projects-and-assets.sql`
+- `supabase/tests/restricted-creation-privileges.sql`
+- `supabase/tests/rls-and-roles.sql`
+- `supabase/tests/verified-private-asset-registration.sql`
+- `tests/auth-web/auth-redirect.test.ts`
+- `tests/auth-web/form-helpers.test.ts`
+- `tests/auth-web/public-bundle-audit.test.ts`
+- `tests/auth-web/supabase-auth-port.test.ts`
+- `tests/auth-web/theme-preference.test.ts`
+- `tests/contracts/auth-service.test.ts`
+- `tests/contracts/identity.test.ts`
+- `tests/contracts/operations.test.ts`
+- `tests/contracts/private-account-erasure-service.test.ts`
+- `tests/contracts/private-asset-edge-handler.test.ts`
+- `tests/contracts/private-asset-registration-completion.test.ts`
+- `tests/contracts/private-goals-service.test.ts`
+- `tests/contracts/private-identity-service.test.ts`
+- `tests/contracts/private-moderation-service.test.ts`
+- `tests/contracts/private-my-components-service.test.ts`
+- `tests/contracts/private-notifications-service.test.ts`
+- `tests/contracts/private-onboarding-service.test.ts`
+- `tests/contracts/private-platform-links-service.test.ts`
+- `tests/contracts/private-project-case-studies.test.ts`
+- `tests/contracts/private-project-workflows.test.ts`
+- `tests/contracts/private-release-service.test.ts`
+- `tests/contracts/private-release-visibility-service.test.ts`
+- `tests/contracts/private-reviewer-service.test.ts`
+- `tests/contracts/private-trash-service.test.ts`
+- `tests/contracts/project-data-service.test.ts`
+- `tests/contracts/project-schema.test.ts`
+- `tests/contracts/projects.test.ts`
+- `tests/contracts/public-http-security.test.ts`
+- `tests/contracts/publish-edge-handler.test.ts`
+- `tests/contracts/reviewer-preview-handler.test.ts`
+- `tests/contracts/unlisted-delivery-handler.test.ts`
+- `tests/editor/editor-save-coordinator.test.ts`
+- `tests/editor/host-revocation-cli.test.ts`
+- `tests/editor/host-revocation-probe.test.ts`
+- `tests/editor/journaled-editor-folder.test.ts`
+- `tests/editor/portable-source-archive.test.ts`
+- `tests/editor/portfolio-revision-transactions.test.ts`
+- `tests/editor/private-account-data-export.test.ts`
+- `tests/editor/private-artifact-direct-sql-writer.test.ts`
+- `tests/editor/private-artifact-pg-worker.test.ts`
+- `tests/editor/private-artifact-pointer-binding.test.ts`
+- `tests/editor/private-delivery-denial-gate.test.ts`
+- `tests/editor/private-frozen-revision-loader.test.ts`
+- `tests/editor/private-immutable-artifact.test.ts`
+- `tests/editor/private-server-asset-byte-attestor.test.ts`
+- `tests/editor/public-delivery-policy.test.ts`
+- `tests/editor/publish-preflight.test.ts`
+- `tests/editor/safe-png-publication.test.ts`
+- `tests/editor/snapshot-recovery-integrity.test.ts`
+- `tests/editor/static-preview-export.test.ts`
+- `tests/editor/supabase-portfolio-revisions.test.ts`
+- `tests/editor/unlisted-release-verification.test.ts`
+- `tests/integration/local-auth-email.test.mjs`
+- `tests/integration/local-moderation-binding-race.test.mjs`
+- `tests/integration/local-postgres-binding.test.mjs`
+- `tests/integration/local-private-asset-edge.test.mjs`
+- `tests/integration/local-publish-edge.test.mjs`
+- `tests/integration/local-supabase-http.test.mjs`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_14_md"><h2>prompts/SESSION_14.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 14 — Shared shell, approved design and accessibility
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: work/20261117-7232a31/s14-b16
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: WF-008, WF-048
+Mission: After S0 shell handoff: owner context/router, fallback/loading, shared CSS/tokens, responsive light/dark, keyboard and performance repairs.
+
+## First actions
+
+Receive main.tsx/workspace.tsx/shared CSS/behavior from S0. First wire latest S3 verifiedOwner context and inspect intermittent route-heading failures using S6 sanitized diagnostics; do not relax the auth gate.
+
+## Implementation / work sequence
+
+Implement shared fallback/loading/error/quota/device/navigation/title consistency, approved glyph skeleton geometry, responsive light/dark tokens, visible focus, labels/status/keyboard/reduced motion and appropriate semantic controls. Wire S8 visitor routes and S12 analytics via explicit contracts. Review all 52 approved LIGHT references and current responsive supersession; fix your own styles/shell and send route-owner patches as requests. Measure performance/CWV targets, bundle/security headers and fonts/licenses without fabricated numbers. Do not introduce another visual brand.
+
+## Exit evidence
+
+S6 independent browser acceptance; manual SR/native zoom/tablet matrices and owner visual sign-off recorded honestly. Device unavailable means unverified, not passed. Verify foreground title/nav, hidden stale-owner UI, deep links and online/offline transitions.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `apps/frontend/public/brand/kadmeion-mark.svg`
+- `apps/frontend/public/brand/kadmeion-open-folio.svg`
+- `apps/frontend/public/brand/kadmeion-wordmark.svg`
+- `apps/frontend/src/behavior.ts`
+- `apps/frontend/src/main.tsx`
+- `apps/frontend/src/styles.css`
+- `apps/frontend/src/workspace.css`
+- `apps/frontend/src/workspace.tsx`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="prompts_SESSION_15_md"><h2>prompts/SESSION_15.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Session 15 — Release integrator and main custodian
+
+Paste MASTER_PROMPT.md first (or attach the complete kit), then this assignment. Do not operate from this assignment alone without current authority/ownership.
+
+Run: 20261117-7232a31 / B16-v1. Shared plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+Branch: S15-designated candidate/integration
+Log: S0 creates and links your own B16 log under the existing coordination tree before writes.
+Primary workflow leads: Cross-cutting acceptance/integration; exact scope in requirements ledger.
+Mission: Sole candidate/integration/main writer after recorded handoff; preserve all work, resolve provenance, test combined tree, prepare one final main PR.
+
+## First actions
+
+Do not write integration until S0 records RELEASED and you ACK. Inventory live 12 branches, all PRs including known #9/#20/#21/#24/#25/#26/#27/#28, unique commits and current integration/main ancestry. Prefer live API over stale mirror. Preserve existing worker PRs. Build RELEASE_MANIFEST.csv and INTEGRATION_QUEUE.csv from exact reviewed SHAs.
+
+## Implementation / work sequence
+
+Own one work/20261117-7232a31/b16-candidate line, integration feat/b0-backend-foundation and final main PR. First combine known dependency groups: S4+S6 fixture, S1+S2+S13 thumbnail, S3+S14 owner context, S5 account features; resolve budget transparently. Incorporate owner-approved docs/CI/config and newer features in topological batches. Run exact combined checks; stop superseding in-flight runs for trivial updates. Resolve conflicts with owners, never ours/theirs wholesale. Keep original branches and commit/patch equivalence, not just a pretty final tree.
+
+## Exit evidence
+
+Follow MERGE_AND_RELEASE_RUNBOOK.md. One final integration→main PR with full scope/requirement ledger, source+test+runner hashes, migrations/flags/hosted status and rollback. Recheck main/base and approvals immediately before merge. Prepare concrete approval request if required; do not merge unspecified future code. After an authorized merge verify resulting main tree/CI and report actual release/deployment separately. No success if any unique work disappeared or mandatory feature is missing.
+
+## Required reads and dependencies
+
+Read MASTER_PROMPT.md, LATEST_STATE.md, EXECUTION_PLAN.md, FILE_OWNERSHIP.csv, WORKFLOW_BACKLOG.csv, REQUIREMENT_LEDGER.csv, CONTRACT_QUEUE.csv and COORDINATION_PROTOCOL.md. Read every named source file you edit, its direct contracts/tests, the workflow/screen specification linked by the reference index and the relevant engineering/quality docs. Read S0/S15 and dependency logs before each handoff. Do not reread all 165 documents each cycle; verify updated applicable sources.
+
+The following complete proposed path list is an ownership index, not an instruction to rewrite every file. Transfers need the three-way RELEASED/GRANT/ACK. Historical reference bytes are read-only. Unlisted future files require exact reservation. New shared exports/manifest changes go to S15, router/CSS changes to S14.
+
+- `.env.example`
+- `.github/workflows/ci.yml`
+- `.github/workflows/frontend.yml`
+- `.github/workflows/trash-expiry.yml`
+- `.gitignore`
+- `.nvmrc`
+- `README.md`
+- `apps/frontend/index.html`
+- `apps/frontend/package-lock.json`
+- `apps/frontend/package.json`
+- `apps/frontend/playwright.config.ts`
+- `apps/frontend/tsconfig.json`
+- `apps/frontend/vite.config.ts`
+- `package-lock.json`
+- `package.json`
+- `packages/contracts/package.json`
+- `packages/contracts/src/index.ts`
+- `packages/editor-core/package.json`
+- `packages/editor-core/src/index.ts`
+- `packages/storage-adapters/package.json`
+- `packages/storage-adapters/src/index.ts`
+- `scripts/audit-public-bundle.mjs`
+- `scripts/check-file-budget.mjs`
+- `scripts/prepare-auth-preview.mjs`
+- `scripts/publish-unlisted.mjs`
+- `scripts/smoke-auth-server.mjs`
+- `scripts/verify-approved-light-references.mjs`
+- `scripts/verify-auth-preview.mjs`
+- `scripts/verify-backend-traceability.mjs`
+- `scripts/verify-host-revocation.mjs`
+- `supabase/config.toml`
+- `tsconfig.json`
+- `vercel.json`
+
+## Continue until the assigned capability is delivered
+
+Implement and commit reviewable functionality, request independent tests, and report exact F/R/V evidence. While blocked on a contract or CI, take the next independent assigned capability. Do not repeatedly run unchanged full suites, wait silently for another chat, merge your own PR into integration/main, or change a leased foreign file. End with the exact resume/handoff status in COORDINATION_PROTOCOL.md.
+</pre></section><section id="DOCUMENT_REFERENCE_INDEX_md"><h2>DOCUMENT_REFERENCE_INDEX.md</h2><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy text</button><pre># Complete document and source reference index
+
+Repository root paths below are exact known tracked paths at the reviewed snapshot. 165 project-docs files are listed, including binary approved references, registers and superseded records. Superseded material is historical, not active authority. Read the current master and applicable specs before coding; use live source SHAs and the latest S0 handoff. All 431 repository paths and sole-writer proposals are in FILE_OWNERSHIP.csv. The audit includes every branch/blob version from its cutoff; LATEST_STATE.md updates current active PRs.
+
+## Governing and reference files
+
+- `project-docs/B07_B11_VERIFIED_HANDOFF_2026-11-15.md`
+- `project-docs/B07_HOSTED_DEPLOYMENT_EVIDENCE.md`
+- `project-docs/B1-local-auth-test.md`
+- `project-docs/BACKEND_CURRENT_STATUS.md`
+- `project-docs/D01_D90_AUDIT_METHOD.md`
+- `project-docs/DOCUMENTATION_FILE_TREE.txt`
+- `project-docs/F0_PHASE_AUDIT_2026-11-16.md`
+- `project-docs/FILE_COUNT_REPORT.md`
+- `project-docs/FRONTEND_F1_IMPLEMENTATION_NOTES_2026-11-15.md`
+- `project-docs/FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md`
+- `project-docs/FRONTEND_F3_IMPLEMENTATION_NOTES_2026-11-16.md`
+- `project-docs/FRONTEND_UIUX_BRAND_MASTER_EXECUTION_2026-11-15.md`
+- `project-docs/FULL_REPOSITORY_FILE_MANIFEST.csv`
+- `project-docs/FULL_REPOSITORY_FILE_TREE.txt`
+- `project-docs/FULL_REPOSITORY_STRUCTURE.md`
+- `project-docs/IMPLEMENTATION_STATUS.md`
+- `project-docs/MASTER_EXECUTION_PROMPT.md`
+- `project-docs/NEXT_SESSION_HANDOFF.md`
+- `project-docs/PHASE_AND_MODULE_OWNERSHIP.md`
+- `project-docs/PROPOSED_FUTURE_REPOSITORY_TREE.txt`
+- `project-docs/README.md`
+- `project-docs/REPO_ROOT_README_TO_COMMIT.md`
+- `project-docs/SCREEN_TO_SOURCE_MAP.csv`
+- `project-docs/SESSION0_COORDINATION_2026-11-17.md`
+- `project-docs/assets/reference-derived/kadmeion-original-k-raster-trace.svg`
+- `project-docs/assets/reference-derived/kadmeion-phase-b-pattern-vector.svg`
+- `project-docs/assets/reference/approved_brand_pattern_crop.png`
+- `project-docs/assets/reference/kadmeion_aether_drift_ui_concept_board.png`
+- `project-docs/assets/reference/kadmeion_glyph_loading_system.png`
+- `project-docs/design.md`
+- `project-docs/docs/00_governance/AUTHORITY_AND_SUPERSESSION.md`
+- `project-docs/docs/00_governance/CONFLICT_REGISTER.md`
+- `project-docs/docs/00_governance/DECISION_TRACEABILITY_GUIDE.md`
+- `project-docs/docs/00_governance/GLOSSARY.md`
+- `project-docs/docs/00_governance/PRODUCT_SCOPE_AND_PHASES.md`
+- `project-docs/docs/01_product/INFORMATION_ARCHITECTURE.md`
+- `project-docs/docs/01_product/NONFUNCTIONAL_REQUIREMENTS.md`
+- `project-docs/docs/01_product/PRODUCT_REQUIREMENTS_PRD.md`
+- `project-docs/docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md`
+- `project-docs/docs/01_product/USE_CASE_CATALOG.md`
+- `project-docs/docs/02_design/SCREEN_CATALOG.md`
+- `project-docs/docs/02_design/screens/auth_01_sign_in.md`
+- `project-docs/docs/02_design/screens/auth_02_sign_up.md`
+- `project-docs/docs/02_design/screens/auth_03_oauth_callback.md`
+- `project-docs/docs/02_design/screens/auth_04_password_recovery_request.md`
+- `project-docs/docs/02_design/screens/auth_05_password_reset.md`
+- `project-docs/docs/02_design/screens/auth_06_recovery_outcome.md`
+- `project-docs/docs/02_design/screens/edit_01_portfolio_editor_workbench.md`
+- `project-docs/docs/02_design/screens/edit_02_content_inspector.md`
+- `project-docs/docs/02_design/screens/edit_03_components_and_sections.md`
+- `project-docs/docs/02_design/screens/edit_04_my_components.md`
+- `project-docs/docs/02_design/screens/edit_05_theme_and_responsive_inspector.md`
+- `project-docs/docs/02_design/screens/edit_06_asset_manager.md`
+- `project-docs/docs/02_design/screens/edit_07_advanced_source.md`
+- `project-docs/docs/02_design/screens/edit_08_revision_history_and_problems.md`
+- `project-docs/docs/02_design/screens/edit_09_preview_modes.md`
+- `project-docs/docs/02_design/screens/growth_01_personal_growth_hub.md`
+- `project-docs/docs/02_design/screens/growth_02_developer_activity.md`
+- `project-docs/docs/02_design/screens/growth_03_private_devscore.md`
+- `project-docs/docs/02_design/screens/growth_04_goals.md`
+- `project-docs/docs/02_design/screens/growth_05_portfolio_analytics.md`
+- `project-docs/docs/02_design/screens/growth_06_platform_connections.md`
+- `project-docs/docs/02_design/screens/ops_01_admin_users.md`
+- `project-docs/docs/02_design/screens/ops_02_portfolio_moderation.md`
+- `project-docs/docs/02_design/screens/ops_03_appeals_and_case_history.md`
+- `project-docs/docs/02_design/screens/pub_01_landing.md`
+- `project-docs/docs/02_design/screens/pub_02_explore_portfolios.md`
+- `project-docs/docs/02_design/screens/pub_03_public_template_explorer.md`
+- `project-docs/docs/02_design/screens/public_01_developer_identity_hub.md`
+- `project-docs/docs/02_design/screens/public_02_published_case_study.md`
+- `project-docs/docs/02_design/screens/public_03_published_portfolio.md`
+- `project-docs/docs/02_design/screens/public_04_public_share_controls.md`
+- `project-docs/docs/02_design/screens/publish_01_reviewer_staging.md`
+- `project-docs/docs/02_design/screens/publish_02_reviewer_only_preview.md`
+- `project-docs/docs/02_design/screens/publish_03_publish_preflight.md`
+- `project-docs/docs/02_design/screens/publish_04_releases_and_rollback.md`
+- `project-docs/docs/02_design/screens/set_01_settings_hub.md`
+- `project-docs/docs/02_design/screens/set_02_privacy_sharing.md`
+- `project-docs/docs/02_design/screens/set_03_notifications.md`
+- `project-docs/docs/02_design/screens/set_04_account_security.md`
+- `project-docs/docs/02_design/screens/set_05_trash.md`
+- `project-docs/docs/02_design/screens/set_06_export_center.md`
+- `project-docs/docs/02_design/screens/set_07_account_exit.md`
+- `project-docs/docs/02_design/screens/sys_01_not_found_private_expired_offline.md`
+- `project-docs/docs/02_design/screens/sys_02_unsupported_authoring_device.md`
+- `project-docs/docs/02_design/screens/work_01_welcome_and_onboarding.md`
+- `project-docs/docs/02_design/screens/work_02_workspace_home.md`
+- `project-docs/docs/02_design/screens/work_03_developer_profile_editor.md`
+- `project-docs/docs/02_design/screens/work_04_project_library.md`
+- `project-docs/docs/02_design/screens/work_05_project_quick_add_drawer.md`
+- `project-docs/docs/02_design/screens/work_06_project_detailed_editor.md`
+- `project-docs/docs/02_design/screens/work_07_owned_portfolio_library.md`
+- `project-docs/docs/02_design/screens/work_08_template_choice_new_portfolio.md`
+- `project-docs/docs/03_workflows/01_AUTHENTICATION.md`
+- `project-docs/docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md`
+- `project-docs/docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md`
+- `project-docs/docs/03_workflows/04_EDITOR_AND_COMPONENTS.md`
+- `project-docs/docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md`
+- `project-docs/docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md`
+- `project-docs/docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md`
+- `project-docs/docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md`
+- `project-docs/docs/03_workflows/README.md`
+- `project-docs/docs/04_engineering/API_COMMANDS_EVENTS_AND_ERRORS.md`
+- `project-docs/docs/04_engineering/COST_OPERATIONS_AND_DEPLOYMENT.md`
+- `project-docs/docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md`
+- `project-docs/docs/04_engineering/EDITOR_CORE_AND_FILE_CONTRACT.md`
+- `project-docs/docs/04_engineering/OFFLINE_RECOVERY_AND_DATA_PORTABILITY.md`
+- `project-docs/docs/04_engineering/PROPOSED_REPOSITORY_STRUCTURE.md`
+- `project-docs/docs/04_engineering/PROVIDER_DATA_AND_SCREENSHOT_FEASIBILITY.md`
+- `project-docs/docs/04_engineering/SECURITY_AND_PRIVACY.md`
+- `project-docs/docs/04_engineering/STATIC_RELEASE_HOSTING_AND_EXPORT.md`
+- `project-docs/docs/04_engineering/SYSTEM_ARCHITECTURE.md`
+- `project-docs/docs/05_quality/ACCESSIBILITY_RESPONSIVE_TEST_PLAN.md`
+- `project-docs/docs/05_quality/DESIGN_REVIEW_CHECKLIST.md`
+- `project-docs/docs/05_quality/PLANNED_USER_ACCEPTANCE_TESTS.md`
+- `project-docs/docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md`
+- `project-docs/docs/05_quality/TECHNICAL_VERIFICATION_GATES.md`
+- `project-docs/docs/05_quality/TEST_REPORT_TEMPLATE.md`
+- `project-docs/docs/05_quality/TEST_STRATEGY_AND_PLAN.md`
+- `project-docs/docs/06_capstone/ABSTRACT_AND_PROBLEM_FORMULATION.md`
+- `project-docs/docs/06_capstone/CAPSTONE_REPORT_DRAFT.md`
+- `project-docs/docs/06_capstone/DELIVERY_PLAN.md`
+- `project-docs/docs/06_capstone/DEMONSTRATION_RUNBOOK.md`
+- `project-docs/docs/06_capstone/DIAGRAMS_AND_MODELS.md`
+- `project-docs/docs/06_capstone/FEASIBILITY_STUDY.md`
+- `project-docs/docs/06_capstone/PRESENTATION_OUTLINE.md`
+- `project-docs/docs/06_capstone/PROJECT_CHARTER_AND_PROPOSAL.md`
+- `project-docs/docs/06_capstone/PROJECT_RISK_REGISTER.md`
+- `project-docs/docs/06_capstone/REQUIREMENTS_ANALYSIS_AND_USER_STORIES.md`
+- `project-docs/docs/06_capstone/RESEARCH_AND_REFERENCES.md`
+- `project-docs/docs/06_capstone/SUBMISSION_AND_RESEARCH_INTEGRITY_CHECKLIST.md`
+- `project-docs/docs/06_capstone/SYSTEM_REQUIREMENTS_AND_ENVIRONMENT.md`
+- `project-docs/docs/06_capstone/VIVA_QUESTIONS_AND_RESPONSES.md`
+- `project-docs/docs/06_capstone/WEEKLY_WORK_LOG_TEMPLATE.md`
+- `project-docs/registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv`
+- `project-docs/registers/CONFLICTS.csv`
+- `project-docs/registers/D01_D90_BACKEND_TRACEABILITY.csv`
+- `project-docs/registers/DECISIONS_UI_001_115.csv`
+- `project-docs/registers/F0_SCREEN_SOURCE_MATRIX_2026-11-16.md`
+- `project-docs/registers/F6_AUTOMATED_ACCESSIBILITY_RESULTS.md`
+- `project-docs/registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md`
+- `project-docs/registers/F6_FRONTEND_UAT_EVIDENCE.md`
+- `project-docs/registers/FEATURE_TRACEABILITY.csv`
+- `project-docs/registers/FRONTEND_BACKEND_CONTRACT_INVENTORY_2026-11-17.md`
+- `project-docs/registers/MANIFEST_SHA256.csv`
+- `project-docs/registers/SCREENS.csv`
+- `project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_2026-11-17.csv`
+- `project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_SUMMARY_2026-11-17.md`
+- `project-docs/registers/SESSION0_SOURCE_AND_DOCUMENT_INVENTORY_2026-11-17.csv`
+- `project-docs/registers/SOURCE_INVENTORY.csv`
+- `project-docs/registers/TECHNICAL_PROOFS.csv`
+- `project-docs/registers/TECHNICAL_PROOFS_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/TEST_CASES.csv`
+- `project-docs/registers/TEST_CASES_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/UI_001_115_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/WORKFLOWS.csv`
+- `project-docs/registers/WORKFLOWS_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/sources/APPROVED_BRAND_DESIGN_SNAPSHOT_NEEDS_REFERENCE_CHECK.md`
+- `project-docs/sources/BRANDING_SNAPSHOT_APPROVED_DIRECTION.md`
+- `project-docs/sources/EDITOR_FINAL_BLUEPRINT_v1_ORIGINAL_UNMODIFIED.md`
+- `project-docs/sources/HISTORICAL_V2_333_PATH_COUNT_SUPERSEDED.md`
+- `project-docs/sources/HISTORICAL_V2_333_PATH_MANIFEST_SUPERSEDED.csv`
+- `project-docs/sources/OLD_31_SCREEN_INVENTORY_SUPERSEDED.md`
+- `project-docs/sources/PHASE2_DESIGN_SNAPSHOT_SUPERSEDED.md`
+- `project-docs/sources/README.md`
+
+## External records
+
+- Existing coordination: https://app.notion.com/p/41ab082297c78134b007f69c52bd5475
+- B16 plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+- Approved decisions/interview: https://app.notion.com/p/416b082297c781b2b6b1ec116ab4bb9e
+- LIGHT approval register: https://app.notion.com/p/417b082297c781c49168c54b656d9cca
+- Audit report: https://chatgpt.com/library?file_id=libfile_cb9fae7971f0819181c4772c3213dcf0&amp;account_id=personal
+- S0 existing log: https://app.notion.com/p/41ab082297c78147a3bee76433f1f63b
+- S1 existing log: https://app.notion.com/p/41ab082297c781048ae8e1aed99469a1
+- S2 existing log: https://app.notion.com/p/41ab082297c781309dc4e1d6ea63acf4
+- S3 existing log: https://app.notion.com/p/41ab082297c78182ba7bdf09cf96da89
+- S4 existing log: https://app.notion.com/p/41ab082297c7819c9a51f338d94fe9f2
+- S5 existing log: https://app.notion.com/p/41ab082297c781faa41fe270adf4c7ec
+- S6 existing log: https://app.notion.com/p/41ab082297c781d2a861ca24be8bc5a5
+</pre></section></html>

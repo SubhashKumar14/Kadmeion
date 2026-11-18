@@ -18,7 +18,9 @@ export function importPortableSnapshot(payload:string):PortfolioSnapshot {
     throw new ContractError('VALIDATION','Invalid portable project JSON.');
   }
   const p=parsed as {kind?:unknown;formatVersion?:unknown;snapshot?:PortfolioSnapshot}|null;
-  if(!p||p.kind!=='kadmeion-private-project'||p.formatVersion!==1||!p.snapshot)
+  if(!p||typeof p!=='object'||Array.isArray(p)||
+     Object.keys(p).length!==3||Object.keys(p).some(key=>!['kind','formatVersion','snapshot'].includes(key))||
+     !Object.hasOwn(p,'snapshot')||p.kind!=='kadmeion-private-project'||p.formatVersion!==1||!p.snapshot)
     throw new ContractError('VALIDATION','Unsupported project format.');
   validateSnapshot(p.snapshot);
   return structuredClone(p.snapshot);

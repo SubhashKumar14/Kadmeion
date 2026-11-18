@@ -185,3 +185,95 @@ test('manual milestone completion accepts canonicalized provider timestamp respo
   const response=await client.updateMilestone(eventId,{completed_at:input});
   assert.equal(response.completed_at,canonical);
 });
+
+/** B16 C07 WF-041: conditional writes and raw microsecond history. No candidate skip. */
+const expectedRaw='2026-11-17T12:00:00.123456+05:30';
+const nextRaw='2026-11-17T06:30:00.123457Z';
+const conditionalGoal={...goal,updated_at:expectedRaw};
+const c07=(http:typeof fetch)=>new SupabasePrivateGoalsService(origin,'sb_publishable_key',async()=> 'owner.jwt',http,id);
+test('C07 conditional goal PATCH and DELETE keep raw timestamp and require exact, advancing receipt',async()=>{
+  for(const variant of ['valid','zero','same','older','wrong-owner','wrong-payload'] as const){
+    let writes=0;
+    const client=c07(async(url,init)=>{
+      writes++;
+      assert.equal(new URL(String(url)).searchParams.get('updated_at'),'eq.'+expectedRaw);
+      assert.equal(new URL(String(url)).searchParams.get('id'),'eq.'+goalId);
+      assert.equal(init?.method,'PATCH');
+      assert.deepEqual(JSON.parse(String(init?.body)),{title:'Revised title'});
+      const changed={...conditionalGoal,title:'Revised title',updated_at:nextRaw};
+      if(variant==='zero')return Response.json([]);
+      return Response.json([{...changed,...(variant==='same'?{updated_at:'2026-11-17T06:30:00.123456Z'}:
+        variant==='older'?{updated_at:'2026-11-17T06:30:00.123455Z'}:
+        variant==='wrong-owner'?{owner_user_id:eventId}:variant==='wrong-payload'?{title:'Other'}:{})}]);
+    });
+    const result=client.updateGoalIfUnchanged(goalId,expectedRaw,{title:'Revised title'});
+    if(variant==='valid')assert.equal((await result).updated_at,nextRaw);
+    else await assert.rejects(result,{code:variant==='zero'?'CONFLICT':'INVALID_ACK'});
+    assert.equal(writes,1,'no blind retry of conditional write');
+  }
+  for(const variant of ['valid','zero','wrong-version','wrong-owner'] as const){
+    const client=c07(async(url,init)=>{
+      assert.equal(init?.method,'DELETE');
+      assert.equal(new URL(String(url)).searchParams.get('updated_at'),'eq.'+expectedRaw);
+      return Response.json(variant==='zero'?[]:[{...conditionalGoal,
+        updated_at:variant==='wrong-version'?nextRaw:'2026-11-17T06:30:00.123456Z',
+        owner_user_id:variant==='wrong-owner'?eventId:id}]);
+    });
+    const result=client.deleteGoalIfUnchanged(goalId,expectedRaw);
+    if(variant==='valid')assert.equal(await result,goalId);
+    else await assert.rejects(result,{code:variant==='zero'?'CONFLICT':'INVALID_ACK'});
+  }
+  let calls=0;
+  const client=c07(async()=>{calls++;return Response.json([]);});
+  await assert.rejects(client.updateGoalIfUnchanged(goalId,'not-a-date',{title:'Bad'}),{code:'VALIDATION'});
+  await assert.rejects(client.deleteGoalIfUnchanged(goalId,'2026-02-30T00:00:00Z'),{code:'VALIDATION'});
+  assert.equal(calls,0);
+});
+test('C07 newest-first history spans more than 100 rows, preserving microsecond cursor and UUID ties',async()=>{
+  const rowId=(n:number)=>'91000000-0000-4000-8000-'+String(n).padStart(12,'0');
+  // Two equal timestamps share the page boundary; differing offsets
+  // express the same instant, so neither string nor JS millisecond sorting is valid.
+  const rows=Array.from({length:105},(_,i)=>({...progress,id:rowId(105-i),
+    created_at:i===100?'2026-11-17T12:00:00.123401+05:30':
+      '2026-11-17T06:30:00.'+String(123500-(i===100?99:i)).padStart(6,'0')+'Z'}));
+  // Force equal timestamps at indices 99/100 in different representations.
+  rows[99].created_at='2026-11-17T06:30:00.123401Z';
+  let calls=0;
+  const client=c07(async(url)=>{
+    const q=new URL(String(url)).searchParams;
+    assert.equal(q.get('order'),'created_at.desc,id.desc');
+    assert.equal(q.get('goal_id'),'eq.'+goalId);
+    assert.equal(q.get('limit'),'101');
+    calls++;
+    if(calls===1){assert.equal(q.has('or'),false);return Response.json(rows.slice(0,101));}
+    const last=rows[99];
+    assert.equal(q.get('or'),'(created_at.lt.'+last.created_at+',and(created_at.eq.'+
+      last.created_at+',id.lt.'+last.id+'))');
+    return Response.json(rows.slice(100));
+  });
+  const first=await client.listProgressChronologicalPage(goalId,100);
+  assert.equal(first.items.length,100);
+  assert.deepEqual(first.nextCursor,{version:1,goalId,ownerUserId:id,createdAt:rows[99].created_at,id:rows[99].id});
+  const second=await client.listProgressChronologicalPage(goalId,100,first.nextCursor);
+  assert.deepEqual([...first.items,...second.items],rows);
+  assert.equal(second.nextCursor,null);assert.equal(calls,2);
+  assert.equal(new Set([...first.items,...second.items].map(row=>row.id)).size,105);
+});
+test('C07 chronology rejects wrong owner/goal, duplicate or increasing exact instant across cursor',async()=>{
+  const cursor={version:1 as const,goalId,ownerUserId:id,createdAt:expectedRaw,id:eventId};
+  const before={...progress,id:operation,created_at:'2026-11-17T06:30:00.123455Z'};
+  for(const rows of [
+    [{...before,owner_user_id:operation}],
+    [{...before,goal_id:operation}],
+    [before,before],
+    [{...before,created_at:nextRaw}],
+    [{...before,created_at:'2026-11-17T06:30:00.123456Z',id:eventId}]
+  ]){
+    await assert.rejects(c07(async()=>Response.json(rows)).listProgressChronologicalPage(goalId,50,cursor),{code:'INVALID_ACK'});
+  }
+  let calls=0;
+  const client=c07(async()=>{calls++;return Response.json([]);});
+  await assert.rejects(client.listProgressChronologicalPage(goalId,50,{...cursor,ownerUserId:operation}),{code:'VALIDATION'});
+  await assert.rejects(client.listProgressChronologicalPage(goalId,50,{...cursor,goalId:operation}),{code:'VALIDATION'});
+  assert.equal(calls,0);
+});

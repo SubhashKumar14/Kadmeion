@@ -1,0 +1,622 @@
+{
+  "baseline": "7d03713fbbef4f02215d38b28932ad3952adefad",
+  "main": "ead5455faa2cd0d7f4aba87384215175fbe13aa0",
+  "branches": [
+    {
+      "name": "feat/b0-backend-foundation",
+      "commit": {
+        "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad"
+      },
+      "protected": false
+    },
+    {
+      "name": "feat/backend-hardening-node26-20261115",
+      "commit": {
+        "sha": "0dce46e8b792cef4ef1f4d77e3997a317269f1c7",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/0dce46e8b792cef4ef1f4d77e3997a317269f1c7"
+      },
+      "protected": false
+    },
+    {
+      "name": "main",
+      "commit": {
+        "sha": "ead5455faa2cd0d7f4aba87384215175fbe13aa0",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/ead5455faa2cd0d7f4aba87384215175fbe13aa0"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s0-editor-candidate",
+      "commit": {
+        "sha": "47d1533d9a66c46c9d156c49febe3862a7dc6e3f",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/47d1533d9a66c46c9d156c49febe3862a7dc6e3f"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s0-security-candidate",
+      "commit": {
+        "sha": "b3cc458c1d004821934462b67d26df84d9eabd0d",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/b3cc458c1d004821934462b67d26df84d9eabd0d"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s1-contracts",
+      "commit": {
+        "sha": "474246d3a783b39a6c61ec34f94af4ec311c2428",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/474246d3a783b39a6c61ec34f94af4ec311c2428"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s1-private-assets",
+      "commit": {
+        "sha": "d3fcc31dac5c842535aebe0f1a10669a77b0df4b",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/d3fcc31dac5c842535aebe0f1a10669a77b0df4b"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s2-public-workspace",
+      "commit": {
+        "sha": "44006a767fb3b1721d17e4bca3ee76dd11a439a0",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/44006a767fb3b1721d17e4bca3ee76dd11a439a0"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s3-editor",
+      "commit": {
+        "sha": "cc3473532352b538fd4179be8ab9d304a76a6b3d",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/cc3473532352b538fd4179be8ab9d304a76a6b3d"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s4-release",
+      "commit": {
+        "sha": "87361bc74d4742aeede75b2c7dc1bf1a94f5f33a",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/87361bc74d4742aeede75b2c7dc1bf1a94f5f33a"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s5-account-growth",
+      "commit": {
+        "sha": "2199041040c3d8d9223f2dda24570dcd0641b284",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/2199041040c3d8d9223f2dda24570dcd0641b284"
+      },
+      "protected": false
+    },
+    {
+      "name": "work/20261117-7232a31/s6-acceptance",
+      "commit": {
+        "sha": "12d70b1efa4b2d5101bbc528f292d5ffba542975",
+        "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/12d70b1efa4b2d5101bbc528f292d5ffba542975"
+      },
+      "protected": false
+    }
+  ],
+  "prs": [
+    {
+      "number": 9,
+      "head": "2199041040c3d8d9223f2dda24570dcd0641b284",
+      "branch": "work/20261117-7232a31/s5-account-growth",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/9",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 44052888473,
+            "name": "Application and Database CI",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1230,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052888473/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052888473/logs",
+            "workflow_id": 416366662
+          },
+          {
+            "id": 44052888314,
+            "name": "Frontend React 19 + Vite 8 verification",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 391,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052888314/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052888314/logs",
+            "workflow_id": 419171289
+          }
+        ]
+      },
+      "compare": {
+        "repository_full_name": "SubhashKumar14/Kadmeion",
+        "base": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "head": "2199041040c3d8d9223f2dda24570dcd0641b284",
+        "status": "ahead",
+        "ahead_by": 7,
+        "behind_by": 0,
+        "total_commits": 7,
+        "too_large": null,
+        "base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "merge_base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "files": [
+          {
+            "filename": "apps/frontend/src/growth.tsx",
+            "status": "modified",
+            "additions": 268,
+            "deletions": 59,
+            "changes": 327,
+            "previous_filename": null
+          },
+          {
+            "filename": "apps/frontend/src/settings.tsx",
+            "status": "modified",
+            "additions": 261,
+            "deletions": 86,
+            "changes": 347,
+            "previous_filename": null
+          }
+        ]
+      }
+    },
+    {
+      "number": 20,
+      "head": "cc3473532352b538fd4179be8ab9d304a76a6b3d",
+      "branch": "work/20261117-7232a31/s3-editor",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/20",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 44054047219,
+            "name": "Frontend React 19 + Vite 8 verification",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 397,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44054047219/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44054047219/logs",
+            "workflow_id": 419171289
+          },
+          {
+            "id": 44054047262,
+            "name": "Application and Database CI",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1236,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44054047262/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44054047262/logs",
+            "workflow_id": 416366662
+          }
+        ]
+      },
+      "compare": {
+        "repository_full_name": "SubhashKumar14/Kadmeion",
+        "base": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "head": "cc3473532352b538fd4179be8ab9d304a76a6b3d",
+        "status": "ahead",
+        "ahead_by": 18,
+        "behind_by": 0,
+        "total_commits": 18,
+        "too_large": null,
+        "base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "merge_base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "files": [
+          {
+            "filename": "apps/frontend/src/portfolio-tools.tsx",
+            "status": "modified",
+            "additions": 231,
+            "deletions": 69,
+            "changes": 300,
+            "previous_filename": null
+          },
+          {
+            "filename": "apps/frontend/src/portfolios.tsx",
+            "status": "modified",
+            "additions": 552,
+            "deletions": 52,
+            "changes": 604,
+            "previous_filename": null
+          },
+          {
+            "filename": "packages/editor-core/src/portfolio-revision-transactions.ts",
+            "status": "modified",
+            "additions": 99,
+            "deletions": 16,
+            "changes": 115,
+            "previous_filename": null
+          },
+          {
+            "filename": "packages/storage-adapters/src/indexeddb-editor-drafts.ts",
+            "status": "modified",
+            "additions": 306,
+            "deletions": 1,
+            "changes": 307,
+            "previous_filename": null
+          }
+        ]
+      }
+    },
+    {
+      "number": 21,
+      "head": "87361bc74d4742aeede75b2c7dc1bf1a94f5f33a",
+      "branch": "work/20261117-7232a31/s4-release",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/21",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 44052903086,
+            "name": "Application and Database CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_number": 1231,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052903086/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052903086/logs",
+            "workflow_id": 416366662
+          },
+          {
+            "id": 44052903155,
+            "name": "Frontend React 19 + Vite 8 verification",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 392,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052903155/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052903155/logs",
+            "workflow_id": 419171289
+          }
+        ]
+      },
+      "compare": {
+        "repository_full_name": "SubhashKumar14/Kadmeion",
+        "base": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "head": "87361bc74d4742aeede75b2c7dc1bf1a94f5f33a",
+        "status": "ahead",
+        "ahead_by": 9,
+        "behind_by": 0,
+        "total_commits": 9,
+        "too_large": null,
+        "base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "merge_base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "files": [
+          {
+            "filename": "apps/frontend/src/release.tsx",
+            "status": "modified",
+            "additions": 361,
+            "deletions": 67,
+            "changes": 428,
+            "previous_filename": null
+          },
+          {
+            "filename": "packages/storage-adapters/src/static-preview-export.ts",
+            "status": "modified",
+            "additions": 21,
+            "deletions": 6,
+            "changes": 27,
+            "previous_filename": null
+          },
+          {
+            "filename": "packages/storage-adapters/src/unlisted-release-verification.ts",
+            "status": "modified",
+            "additions": 117,
+            "deletions": 43,
+            "changes": 160,
+            "previous_filename": null
+          }
+        ]
+      }
+    },
+    {
+      "number": 24,
+      "head": "44006a767fb3b1721d17e4bca3ee76dd11a439a0",
+      "branch": "work/20261117-7232a31/s2-public-workspace",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/24",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 44053405361,
+            "name": "Frontend React 19 + Vite 8 verification",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 395,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44053405361/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44053405361/logs",
+            "workflow_id": 419171289
+          },
+          {
+            "id": 44053405319,
+            "name": "Application and Database CI",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1234,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44053405319/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44053405319/logs",
+            "workflow_id": 416366662
+          }
+        ]
+      },
+      "compare": {
+        "repository_full_name": "SubhashKumar14/Kadmeion",
+        "base": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "head": "44006a767fb3b1721d17e4bca3ee76dd11a439a0",
+        "status": "ahead",
+        "ahead_by": 14,
+        "behind_by": 0,
+        "total_commits": 14,
+        "too_large": null,
+        "base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "merge_base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "files": [
+          {
+            "filename": "apps/frontend/src/profile.tsx",
+            "status": "modified",
+            "additions": 271,
+            "deletions": 25,
+            "changes": 296,
+            "previous_filename": null
+          },
+          {
+            "filename": "apps/frontend/src/projects.tsx",
+            "status": "modified",
+            "additions": 681,
+            "deletions": 79,
+            "changes": 760,
+            "previous_filename": null
+          }
+        ]
+      }
+    },
+    {
+      "number": 25,
+      "head": "12d70b1efa4b2d5101bbc528f292d5ffba542975",
+      "branch": "work/20261117-7232a31/s6-acceptance",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/25",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 44052520395,
+            "name": "Frontend React 19 + Vite 8 verification",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 385,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052520395/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052520395/logs",
+            "workflow_id": 419171289
+          },
+          {
+            "id": 44052520307,
+            "name": "Application and Database CI",
+            "status": "completed",
+            "conclusion": "cancelled",
+            "run_number": 1224,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052520307/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052520307/logs",
+            "workflow_id": 416366662
+          }
+        ]
+      },
+      "compare": {
+        "repository_full_name": "SubhashKumar14/Kadmeion",
+        "base": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "head": "12d70b1efa4b2d5101bbc528f292d5ffba542975",
+        "status": "ahead",
+        "ahead_by": 4,
+        "behind_by": 0,
+        "total_commits": 4,
+        "too_large": null,
+        "base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "merge_base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "files": [
+          {
+            "filename": "apps/frontend/e2e/owner.spec.ts",
+            "status": "modified",
+            "additions": 50,
+            "deletions": 3,
+            "changes": 53,
+            "previous_filename": null
+          },
+          {
+            "filename": "supabase/tests/projects-and-assets.sql",
+            "status": "modified",
+            "additions": 26,
+            "deletions": 1,
+            "changes": 27,
+            "previous_filename": null
+          },
+          {
+            "filename": "tests/editor/unlisted-release-verification.test.ts",
+            "status": "modified",
+            "additions": 42,
+            "deletions": 9,
+            "changes": 51,
+            "previous_filename": null
+          }
+        ]
+      }
+    },
+    {
+      "number": 26,
+      "head": "b3cc458c1d004821934462b67d26df84d9eabd0d",
+      "branch": "work/20261117-7232a31/s0-security-candidate",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "1fb4f1f52cf63ee634e748ad58ba34108d250433",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": false,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/26"
+    },
+    {
+      "number": 27,
+      "head": "47d1533d9a66c46c9d156c49febe3862a7dc6e3f",
+      "branch": "work/20261117-7232a31/s0-editor-candidate",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "1fb4f1f52cf63ee634e748ad58ba34108d250433",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/27"
+    },
+    {
+      "number": 28,
+      "head": "d3fcc31dac5c842535aebe0f1a10669a77b0df4b",
+      "branch": "work/20261117-7232a31/s1-private-assets",
+      "base": "feat/b0-backend-foundation",
+      "base_sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "mergeable": true,
+      "url": "https://github.com/SubhashKumar14/Kadmeion/pull/28",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 44052877079,
+            "name": "Application and Database CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_number": 1229,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052877079/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052877079/logs",
+            "workflow_id": 416366662
+          },
+          {
+            "id": 44052877087,
+            "name": "Frontend React 19 + Vite 8 verification",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 390,
+            "jobs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052877087/jobs",
+            "logs_url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/actions/runs/44052877087/logs",
+            "workflow_id": 419171289
+          }
+        ]
+      },
+      "compare": {
+        "repository_full_name": "SubhashKumar14/Kadmeion",
+        "base": "7d03713fbbef4f02215d38b28932ad3952adefad",
+        "head": "d3fcc31dac5c842535aebe0f1a10669a77b0df4b",
+        "status": "ahead",
+        "ahead_by": 7,
+        "behind_by": 0,
+        "total_commits": 7,
+        "too_large": null,
+        "base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "merge_base_commit": {
+          "sha": "7d03713fbbef4f02215d38b28932ad3952adefad",
+          "url": "https://api.github.com/repos/SubhashKumar14/Kadmeion/commits/7d03713fbbef4f02215d38b28932ad3952adefad",
+          "html_url": "https://github.com/SubhashKumar14/Kadmeion/commit/7d03713fbbef4f02215d38b28932ad3952adefad"
+        },
+        "files": [
+          {
+            "filename": "apps/auth-web/src/supabase-auth-port.ts",
+            "status": "modified",
+            "additions": 321,
+            "deletions": 77,
+            "changes": 398,
+            "previous_filename": null
+          },
+          {
+            "filename": "packages/contracts/src/private-goals-service.ts",
+            "status": "modified",
+            "additions": 72,
+            "deletions": 9,
+            "changes": 81,
+            "previous_filename": null
+          },
+          {
+            "filename": "packages/storage-adapters/src/private-account-data-export.ts",
+            "status": "modified",
+            "additions": 19,
+            "deletions": 4,
+            "changes": 23,
+            "previous_filename": null
+          },
+          {
+            "filename": "supabase/migrations/20261117083520_owner_private_project_thumbnails.sql",
+            "status": "added",
+            "additions": 186,
+            "deletions": 0,
+            "changes": 186,
+            "previous_filename": null
+          }
+        ]
+      }
+    }
+  ],
+  "checked_at": "2026-11-17",
+  "scope": "Live GitHub API overrides stale local mirror refs; snapshots are not new feature acceptance."
+}
