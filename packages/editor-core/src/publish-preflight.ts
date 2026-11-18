@@ -338,6 +338,8 @@ export function prepareSafeStaticPreview(
   const themeFile=valid?input.snapshot.files['theme/tokens.json']:undefined;
   if(themeFile!==undefined){
     const tokens:unknown=JSON.parse(themeFile);
+    if(record(tokens)&&Object.hasOwn(tokens,'scopedTokens'))
+      block('SCOPED_THEME_RENDER_PENDING','theme/tokens.json','Scoped theme rendering requires the compatible renderer.');
     if(record(tokens)&&themeKeys.some(key=>Object.hasOwn(tokens,key))){
       if(theme&&themeKeys.some(key=>tokens[key]!==theme?.[key]))
         block('FROZEN_THEME_MISMATCH','theme/tokens.json','Frozen portfolio tokens and render settings disagree.');
