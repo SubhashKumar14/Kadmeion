@@ -276,7 +276,16 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
 function notificationDestination(item: PrivateNotification): string {
   if (item.event_type === 'ACCOUNT_EXIT_REQUESTED') return '/app/settings/account/delete';
   if (item.category === 'SECURITY') return '/app/settings/security';
-  if (item.category === 'MODERATION') return '/app/settings/cases';
+  if (item.category === 'MODERATION') {
+    // Case-event targets are case UUIDs; portfolio-hold targets are NOT.
+    // The destination performs a fresh owner-only case read under RLS.
+    const caseEvent=item.event_type==='MODERATION_OPENED'||item.event_type==='MODERATION_DECIDED'||
+      item.event_type==='MODERATION_HOLD_LIFTED'||item.event_type==='MODERATION_ACCOUNT_RESTRICTED'||
+      item.event_type==='MODERATION_ACCOUNT_UPHELD'||item.event_type==='MODERATION_ACCOUNT_RESTORED';
+    if(caseEvent&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.target_id))
+      return '/app/settings/cases?case='+encodeURIComponent(item.target_id.toLowerCase());
+    return '/app/settings/cases';
+  }
   // Trigger contract: reviewer/release/sync target_id is the portfolio UUID.
   // Related areas stay private and perform their own live owner readback.
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.target_id))

@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {createServer} from 'node:http';
-import {verifyReleaseWithdrawal} from '../../packages/storage-adapters/src/host-revocation-probe.ts';
+import {verifyReleaseWithdrawal,probePublicReplacementDenial,probePublicTakedownPlan} from '../../packages/storage-adapters/src/host-revocation-probe.ts';
 import {once} from 'node:events';
 import {SupabasePrivateFrozenRevisionLoader}
   from '../../packages/storage-adapters/src/private-frozen-revision-loader.ts';
@@ -327,34 +327,13 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     }));
     await once(server, 'listening');
     const deliveryOrigin = 'http://127.0.0.1:' + server.address().port;
-    const serviceRpc = (operation, body) => api('/rest/v1/rpc/' + operation, {
-      method: 'POST', key: cfg.service, jwt: cfg.service, body
-    });
-    let authoritativePublicAcks = 0;
+    deliveryEnv.KADMEION_RELEASE_HOST_ORIGIN=deliveryOrigin;
+    deliveryEnv.KADMEION_RELEASE_HOSTNAME='127.0.0.1';
     const verificationPorts = {
       origin: deliveryOrigin,
-      rpc: async (operation, body) => ok(await serviceRpc(operation, body), operation),
-      publicAuthority: async (operation, body) => {
-        if (operation === 'service_acknowledge_public_delivery') {
-          const receipt = body.p_expected_receipt;
-          assert.equal(receipt.visibility, 'PUBLIC');
-          assert.equal(receipt.verifiedAt, null);
-          assert.ok(Number.isSafeInteger(receipt.deliveryEpoch) && receipt.deliveryEpoch > 0);
-          const legacy = await serviceRpc('service_acknowledge_unlisted_release', {
-            p_portfolio_id: receipt.portfolioId, p_intent_id: receipt.intentId,
-            p_html_sha256: receipt.storedHtmlSha256
-          });
-          assert.equal(legacy.ok, false, 'The old PUBLIC ACK must be denied');
-          assert.equal(legacy.data?.code, '40001');
-          const acknowledged = ok(await serviceRpc(operation, body), operation);
-          assert.equal(acknowledged.deliveryEpoch, receipt.deliveryEpoch + 1);
-          assert.equal(acknowledged.intentId, receipt.intentId);
-          assert.ok(acknowledged.verifiedAt);
-          authoritativePublicAcks++;
-          return acknowledged;
-        }
-        return ok(await serviceRpc(operation, body), operation);
-      }
+      rpc: async (operation, body) => ok(await api('/rest/v1/rpc/' + operation, {
+        method: 'POST', key: cfg.service, jwt: cfg.service, body
+      }), operation)
     };
     const verifyDelivery = (probe) => verifyActivatedUnlistedRelease({
       portfolioId, intentId: probe.intentId, htmlSha256: probe.htmlSha256
@@ -544,10 +523,74 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.equal((await fetch(canonical)).status, 404);
     await assert.rejects(pointer.requestUnlistedPublication(publicFrozen.requestId,
       publicPointer.generation, randomUUID(), 'PUBLISH UNLISTED'), {code: 'FORBIDDEN'});
-    const publicConsent = await pointer.requestPublicPublication(publicFrozen.requestId,
-      publicPointer.generation, randomUUID(), 'PUBLISH PUBLIC');
-    assert.equal((await publishConsentedUnlistedRelease(publicConsent.intentId, verificationPorts)).status,
-      'DELIVERY_ACKNOWLEDGED');
+    // C11 PUBLIC requires a separately bound authoritative service receipt.
+    // This branch is a disposable integration diagnostic, not an owner branch edit.
+    const authorityRpc=(operation,body,credentials={key:cfg.service,jwt:cfg.service})=>
+      api('/rest/v1/rpc/'+operation,{method:'POST',...credentials,body});
+    const publishPublic=async(consent,requestId,operationId)=>{
+      const expectedConsent={portfolioId,requestId,operationId,visibility:'PUBLIC'};
+      let acknowledgements=0;
+      const result=await publishConsentedUnlistedRelease(consent.intentId,{
+        ...verificationPorts,expectedConsent,
+        rpc:async(operation,body)=>{
+          assert.ok(['service_prepare_unlisted_release','service_probe_unlisted_release',
+            'service_activate_unlisted_release'].includes(operation),
+          'PUBLIC must never use legacy UNLISTED mutation '+operation);
+          return verificationPorts.rpc(operation,body);
+        },
+        publicAuthority:async(operation,body)=>{
+          if(operation==='service_acknowledge_public_delivery'){
+            const before=body.p_expected_receipt;
+            assert.equal(before.intentId,consent.intentId);
+            assert.equal(before.requestId,requestId);
+            assert.equal(before.operationId,operationId);
+            assert.equal(before.verifiedAt,null);
+            // The exact unacknowledged PUBLIC canary must reject the old ACK,
+            // even using the trusted service role; no insecure compatibility path.
+            const old=await authorityRpc('service_acknowledge_unlisted_release',{
+              p_portfolio_id:portfolioId,p_intent_id:consent.intentId,p_html_sha256:before.storedHtmlSha256
+            });
+            assert.equal(old.ok,false,'Legacy PUBLIC ACK is prohibited');
+            assert.equal(old.data?.code,'40001');
+            for(const credentials of [{key:cfg.anon,jwt:owner.jwt},{key:cfg.anon,jwt:cfg.anon}]){
+              const read=await authorityRpc('service_read_current_public_delivery_receipt',{
+                p_portfolio_id:portfolioId,p_intent_id:consent.intentId
+              },credentials);
+              assert.equal(read.ok,false,'Authority receipt is service-only');
+              const denied=await authorityRpc(operation,body,credentials);
+              assert.equal(denied.ok,false,'Authority ACK is service-only');
+            }
+            assert.deepEqual(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
+              p_portfolio_id:portfolioId,p_intent_id:consent.intentId
+            }),'Read unchanged C11 canary'),before);
+            const after=ok(await authorityRpc(operation,body),'C11 atomic acknowledge');
+            assert.equal(after.deliveryEpoch,before.deliveryEpoch+1);
+            assert.ok(after.verifiedAt);
+            acknowledgements++;
+            return after;
+          }
+          return ok(await authorityRpc(operation,body),operation);
+        }
+      });
+      assert.equal(result.status,'DELIVERY_ACKNOWLEDGED');
+      assert.equal(acknowledgements,1);
+      const receipt=result.authoritativePublicReceipt;
+      assert.equal(receipt.portfolioId,portfolioId);
+      assert.equal(receipt.requestId,requestId);
+      assert.equal(receipt.operationId,operationId);
+      assert.equal(receipt.visibility,'PUBLIC');
+      assert.equal(receipt.intentId,consent.intentId);
+      assert.equal(result.observedPublicDelivery.observedHttpRequests,4+2*receipt.assetHashes.length);
+      assert.deepEqual(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
+        p_portfolio_id:portfolioId,p_intent_id:consent.intentId
+      }),'Read acknowledged authority'),receipt);
+      return receipt;
+    };
+    const publicOperation=randomUUID();
+    const publicConsent=await pointer.requestPublicPublication(publicFrozen.requestId,
+      publicPointer.generation,publicOperation,'PUBLISH PUBLIC');
+    const firstPublicReceipt=await publishPublic(publicConsent,publicFrozen.requestId,publicOperation);
+    assert.equal(firstPublicReceipt.mediaManifest,null);
     const canonicalResponse = await fetch(canonical);
     assert.equal(canonicalResponse.status, 200);
     assert.equal(canonicalResponse.headers.get('x-robots-tag'), 'index, follow');
@@ -627,10 +670,16 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       assert.equal(denied.statusCode,404,'Expired reviewer media');
       assert.match(denied.headers.get('cache-control'),/no-store/);
     }
+    const replacementOperation=randomUUID();
     const replacementConsent=await pointer.requestPublicPublication(replacementFrozen.requestId,
-      replacementPointer.generation,randomUUID(),'PUBLISH PUBLIC');
-    assert.equal((await publishConsentedUnlistedRelease(replacementConsent.intentId,verificationPorts)).status,
-      'DELIVERY_ACKNOWLEDGED');
+      replacementPointer.generation,replacementOperation,'PUBLISH PUBLIC');
+    const secondPublicReceipt=await publishPublic(replacementConsent,replacementFrozen.requestId,replacementOperation);
+    assert.equal(secondPublicReceipt.mediaManifest,stagedMedia.manifestSha256);
+    assert.deepEqual(secondPublicReceipt.assetHashes,[imageHash]);
+    assert.ok(secondPublicReceipt.deliveryEpoch>firstPublicReceipt.deliveryEpoch);
+    assert.equal(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
+      p_portfolio_id:portfolioId,p_intent_id:publicConsent.intentId
+    }),'Read retired A authority'),null);
     assert.match(await (await fetch(canonical)).text(),/Replacement verified content/);
     const directImage=deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+slug+mediaQuery;
     const staleManifest=new URL(directImage);
@@ -645,12 +694,25 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     }
     await assert.rejects(outsiderPointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
       replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC'),{code:'FORBIDDEN'});
+    const publicRollbackOperation=randomUUID();
     const publicRollback=await pointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
-      replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC');
-    assert.equal((await publishConsentedUnlistedRelease(publicRollback.intentId,verificationPorts)).status,
-      'DELIVERY_ACKNOWLEDGED');
+      replacementPointer.generation,publicRollbackOperation,'ROLL BACK PUBLIC');
+    const rollbackReceipt=await publishPublic(publicRollback,publicFrozen.requestId,publicRollbackOperation);
+    assert.ok(rollbackReceipt.deliveryEpoch>secondPublicReceipt.deliveryEpoch);
+    assert.equal(rollbackReceipt.storedHtmlSha256,firstPublicReceipt.storedHtmlSha256);
+    const canonicalPath='/'+handle+'/'+slug;
+    const scopeA={canonicalPath,manifestSha256:null,assetHashes:[]};
+    const scopeB={canonicalPath,manifestSha256:secondPublicReceipt.mediaManifest,
+      assetHashes:secondPublicReceipt.assetHashes};
+    const retired=await probePublicReplacementDenial({
+      origin:deliveryOrigin,current:scopeA,history:[scopeB],allowLocal:true
+    });
+    assert.equal(retired.status,'OBSERVED_REPLACED_SCOPE_DENIED');
+    assert.equal(retired.observedHttpRequests,2);
+    assert.equal(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
+      p_portfolio_id:portfolioId,p_intent_id:replacementConsent.intentId
+    }),'Read retired B authority'),null);
     assert.match(await (await fetch(canonical)).text(),/Owner&#39;s checked artifact/);
-    assert.equal(authoritativePublicAcks, 3, 'A, B and explicit rollback use the authoritative PUBLIC ACK');
     for(const method of ['GET','HEAD'])
       assert.equal((await fetch(directImage,{method})).status,404,'Rollback withdraws replaced media');
     assert.equal((await publicHostRead()).statusCode,404,'Public rollback must keep the unlisted alias unavailable');
@@ -674,6 +736,16 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       assert.equal((await fetch(deliveryOrigin + '/' + nextHandle + '/' + slug)).status, 404);
     }
 
+    // Renaming and returning to the old address cannot resurrect either
+    // manifest. Observe actual canonical, direct API, report and PNG GET/HEAD.
+    const renamed='/changed_'+handle+'/'+slug;
+    const deniedPlan=await probePublicTakedownPlan({origin:deliveryOrigin,allowLocal:true,
+      scopes:[scopeA,scopeB,{...scopeA,canonicalPath:renamed},{...scopeB,canonicalPath:renamed}]});
+    assert.equal(deniedPlan.status,'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS');
+    assert.equal(deniedPlan.observedHttpRequests,16);
+    assert.equal(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
+      p_portfolio_id:portfolioId,p_intent_id:publicRollback.intentId
+    }),'Read retired rollback authority'),null);
     // New generation is never silently revived after Trash.
     const preparedAgain=await pointer.prepare(portfolioId,frozen.requestId,
       artifact.manifestSha256,replacementPointer.generation,randomUUID());

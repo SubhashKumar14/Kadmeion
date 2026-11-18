@@ -2298,3 +2298,88 @@ test('C08 physical terminal ledger, privacy reduction, tombstone and expired-ses
       assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1',[actor.id])).rows[0].n,0);
     }finally{await pg.end();}
   });
+
+test('C14 real owner session, competing restriction decisions, outward denial, explicit restore and physical cascade',
+  {timeout:120_000},async()=>{
+  // This fixture is intentionally a real disposable Supabase/Postgres transaction,
+  // never a hosted moderation operation. Requires the C11 and C14 migrations.
+  const actor=await adminUser('c14-administrator');
+  const owner=await adminUser('c14-restricted-owner');
+  const other=await adminUser('c14-unrelated-owner');
+  const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+  const match=raw.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(match,'Disposable local Postgres URL missing');
+  const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+  assert.equal(db.pathname,'/postgres');
+  const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false,
+    connectionTimeoutMillis:3000,query_timeout:10000});
+  const rpc=(who,name,body={})=>send('/rest/v1/rpc/'+name,{...json(who),method:'POST',body});
+  try{
+    await pg.connect();
+    await pg.query("INSERT INTO kadmeion_private.operator_roles(user_id,role) VALUES($1,'administrator')",[actor.id]);
+    const opened=successful(await rpc(actor,'operator_open_moderation_case',{
+      p_target_user_id:owner.id,p_operation_id:randomUUID(),p_reason_code:'SECURITY',
+      p_summary:'Evidence-supported local security review of public sharing behavior'
+    }),'Open real case with administrator');
+    assert.equal(opened.status,'OPEN');
+    const caseId=opened.caseId;
+    const baseline=successful(await rpc(owner,'owner_read_account_sharing_restriction'),
+      'Read original owner restriction');
+    assert.equal(baseline.status,'CLEAR');assert.equal(baseline.version,0);
+    assert.ok(!(await rpc(other,'operator_change_account_sharing_restriction',{
+      p_case_id:caseId,p_action:'RESTRICT',p_expected_version:0,
+      p_operation_id:randomUUID(),p_rationale:'Unrelated actor cannot restrict this account',
+      p_confirmation:'RESTRICT PUBLIC SHARING'})).ok);
+    const decision=(action,version,operationId=randomUUID())=>rpc(actor,
+      'operator_change_account_sharing_restriction',{
+        p_case_id:caseId,p_action:action,p_expected_version:version,
+        p_operation_id:operationId,
+        p_rationale:'Reviewed scoped evidence for controlled publication restriction',
+        p_confirmation:action==='RESTRICT'?'RESTRICT PUBLIC SHARING':
+          action==='RESTORE'?'RESTORE PUBLIC SHARING':'UPHOLD PUBLIC SHARING RESTRICTION'
+      });
+    // Two independent real requests compete for version zero. Exactly one
+    // may commit; a loser must neither create an event nor increment version.
+    const pair=await Promise.all([decision('RESTRICT',0),decision('RESTRICT',0)]);
+    assert.equal(pair.filter(x=>x.ok).length,1,'Exactly one competing restriction may commit');
+    assert.ok(pair.some(x=>!x.ok),'The stale concurrent restriction must fail');
+    const accepted=successful(pair.find(x=>x.ok),'Winner restriction');
+    assert.equal(accepted.status,'ACTIVE');assert.equal(accepted.version,1);
+    assert.equal(accepted.applicationSharingRestricted,true);
+    assert.equal(accepted.publicRepublished,false);
+    const current=successful(await rpc(owner,'owner_read_account_sharing_restriction'),
+      'Owner sees active restriction');
+    assert.equal(current.status,'ACTIVE');assert.equal(current.version,1);
+    const foreign=successful(await rpc(other,'owner_read_account_sharing_restriction'),
+      'Other owner reads own clear status');
+    assert.equal(foreign.status,'CLEAR');assert.equal(foreign.version,0);
+    const denied=await setPreferenceFixture(owner,'sharing',visibleSharing);
+    assert.ok(!denied.ok,'Restricted account must not enable outward sharing');
+    successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+      ...json(owner),method:'PATCH',body:{headline:'Private authoring remains available'}
+    }),'Private authoring remains available while restricted');
+    assert.equal((await pg.query('select count(*)::int n from kadmeion_private.account_sharing_restriction_events where owner_user_id=$1',[owner.id])).rows[0].n,1);
+    const stale=await decision('RESTORE',0);
+    assert.ok(!stale.ok,'Stale restore cannot clear active restriction');
+    const restored=successful(await decision('RESTORE',1),'Explicit administrator restore');
+    assert.equal(restored.status,'CLEAR');assert.equal(restored.version,2);
+    assert.equal(restored.publicRepublished,false);
+    assert.equal(successful(await rpc(owner,'owner_read_account_sharing_restriction'),'Restored owner read').status,'CLEAR');
+    assert.equal((await pg.query('select count(*)::int n from kadmeion_private.account_sharing_restriction_events where owner_user_id=$1',[owner.id])).rows[0].n,2);
+    // Restore only lifts the guard; it never silently republishes anything.
+    assert.equal((await pg.query('select count(*)::int n from kadmeion_private.profile_publications where user_id=$1',[owner.id])).rows[0].n,0);
+    assert.equal((await pg.query('delete from auth.users where id=$1 returning id',[owner.id])).rowCount,1);
+    const counts=(await pg.query('select '+
+      '(select count(*)::int from public.profiles where user_id=$1) profiles,'+
+      '(select count(*)::int from kadmeion_private.account_sharing_restrictions where owner_user_id=$1) restrictions,'+
+      '(select count(*)::int from kadmeion_private.account_sharing_restriction_events where owner_user_id=$1) events,'+
+      '(select count(*)::int from public.private_moderation_cases where owner_user_id=$1) cases,'+
+      '(select count(*)::int from auth.users where id=$2) foreign_users',
+      [owner.id,other.id])).rows[0];
+    assert.deepEqual(counts,{profiles:0,restrictions:0,events:0,cases:0,foreign_users:1});
+  }finally{await pg.end().catch(()=>{});}
+});

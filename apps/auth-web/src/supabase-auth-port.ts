@@ -2438,6 +2438,41 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** A privacy-only owner receipt. Never infer case authority from the browser. */
+  async readOwnerAccountSharingRestriction(expectedEpoch = this.getOwnerSessionEpoch()):Promise<AuthOutcome<{
+    status:'CLEAR'|'ACTIVE';version:number;currentCaseId:string|null;
+    scope:'ACCOUNT_PUBLIC_SHARING';updatedAt:string|null
+  }>>{
+    return this.outcome(async()=>{
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        throw new Error('Owner session changed before reading account sharing restrictions.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(epoch!==expectedEpoch||this.reconcileOwnerSessionEpoch()!==expectedEpoch||
+        !this.isCurrentSession(session)||session.user.id!==userId)
+        throw new Error('Owner session changed before reading account sharing restrictions.');
+      const raw=await this.ownerRest('rpc/owner_read_account_sharing_restriction',session.access_token,'POST',{});
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session)||
+        session.user.id!==userId)
+        throw new Error('Owner session changed while reading account sharing restrictions.');
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))
+        throw new Error('Account sharing restriction receipt was invalid.');
+      const r=raw as Record<string,unknown>;
+      if(Object.keys(r).length!==5||
+        !['status','version','currentCaseId','scope','updatedAt'].every(key=>Object.hasOwn(r,key))||
+        (r.status!=='CLEAR'&&r.status!=='ACTIVE')||
+        !Number.isSafeInteger(r.version)||typeof r.version!=='number'||r.version<0||
+        r.scope!=='ACCOUNT_PUBLIC_SHARING'||
+        (r.currentCaseId!==null&&(typeof r.currentCaseId!=='string'||
+          !PROJECT_ID_PATTERN.test(r.currentCaseId)||r.currentCaseId!==r.currentCaseId.toLowerCase()))||
+        (r.updatedAt!==null&&(typeof r.updatedAt!=='string'||!Number.isFinite(Date.parse(r.updatedAt))))||
+        (r.status==='CLEAR'&&r.currentCaseId!==null)||
+        (r.status==='ACTIVE'&&r.currentCaseId===null))
+        throw new Error('Account sharing restriction receipt was invalid.');
+      return {status:r.status,version:r.version,currentCaseId:r.currentCaseId,
+        scope:'ACCOUNT_PUBLIC_SHARING' as const,updatedAt:r.updatedAt};
+    });
+  }
+
   async ownerSharingPreferences(): Promise<AuthOutcome<{shareDisplayName: boolean; shareHeadline: boolean; shareBio: boolean; publicationRequested: boolean}>> {
     return this.outcome(async () => {
       const {session, userId} = await this.ownerSession();
