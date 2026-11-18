@@ -43,6 +43,23 @@ function canonicalValue(value:unknown):string|undefined {
     return item;
   });
 }
+/** Reopen an archive without executing or persisting its authored source.
+ * Compare all snapshot fields, including opaque text, slot and stash content. */
+async function reopenFrozenArchive(file:File,expected:PortfolioSnapshot):
+    Promise<{sha256:string;files:number;slots:number;stashes:number}> {
+  if(!Number.isSafeInteger(file.size)||file.size<22||file.size>2*1024*1024)
+    throw new Error('Invalid private source archive size.');
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  if(bytes.byteLength!==file.size)throw new Error('Incomplete source archive read.');
+  const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+  const snapshot=importPortfolioSourceZip(bytes);
+  if(canonicalValue(snapshot)!==canonicalValue(expected))
+    throw new Error('Archive does not match this frozen snapshot.');
+  const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
+  return {sha256:Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join(''),
+    files:Object.keys(snapshot.files).length,slots:Object.keys(snapshot.slots).length,
+    stashes:Object.keys(snapshot.stashes).length};
+}
 function snapshotDelta<T>(before:Record<string,T>,after:Record<string,T>):SnapshotDelta[]{
   return [...new Set([...Object.keys(before),...Object.keys(after)])].sort().flatMap<SnapshotDelta>(key=>{
     const hasBefore=Object.hasOwn(before,key),hasAfter=Object.hasOwn(after,key);
@@ -972,6 +989,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {sourceArchiveSha?.requestId===frozen.requestId&&<dl className="ws-release-facts">
               <dt>Downloaded archive SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{sourceArchiveSha.sha256}</code></dd>
             </dl>}
+            <FrozenArchiveReopen key={frozen.requestId} port={port} request={frozen} disabled={readsBusy}/>
             <h4>Static preview ZIP</h4>
             <p>A separate scriptless rendered HTML preview with a SHA-256 file manifest. It excludes editable source and unsupported media; no hosted URL is created.</p>
             {mode==='releases'?<>
@@ -1139,6 +1157,55 @@ function FrozenRequestHistory({requests,error,pending,onRetry,retryDisabled,onSe
   </section>;
 }
 
+
+/** The reopened file never leaves the device. A fresh owner-scoped pin is
+ * required before claiming a match; no import, save, upload or publication. */
+function FrozenArchiveReopen({port,request,disabled}:{
+  port:SupabaseBrowserAuthPort;request:PrivateFrozenRequest;disabled:boolean;
+}){
+  const [pending,setPending]=useState(false);
+  const [error,setError]=useState('');
+  const [result,setResult]=useState<Awaited<ReturnType<typeof reopenFrozenArchive>>|null>(null);
+  const epoch=useRef(0);
+  const flight=useRef<object|null>(null);
+  useLayoutEffect(()=>{
+    epoch.current+=1;flight.current=null;setPending(false);setResult(null);setError('');
+    return()=>{epoch.current+=1;flight.current=null;};
+  },[port,request.requestId,request.snapshotSha256]);
+  async function reopen(file:File){
+    if(disabled||flight.current!==null)return;
+    const ticket={},expected=epoch.current;
+    const current=()=>flight.current===ticket&&epoch.current===expected;
+    flight.current=ticket;setPending(true);setError('');setResult(null);
+    try{
+      if(!Number.isSafeInteger(file.size)||file.size<22||file.size>2*1024*1024)
+        throw new Error('Invalid archive size.');
+      const pin=await port.loadOwnerFrozenRelease(request.requestId);
+      if(!current())return;
+      if(!matchesFrozenPin(pin.data,request))throw new Error('Frozen pin unavailable.');
+      const reopened=await reopenFrozenArchive(file,pin.data.snapshot);
+      if(current())setResult(reopened);
+    }catch{
+      if(current())setError('The selected ZIP could not be reopened and matched to this exact owner-private frozen revision. No project was changed.');
+    }finally{
+      if(current()){flight.current=null;setPending(false);}
+    }
+  }
+  return <div className="ws-release-action" role="group" aria-label="Reopen editable frozen archive">
+    <h4>Reopen an editable archive</h4>
+    <p>Choose a downloaded source ZIP to check it against this exact frozen revision. This reads the file locally and does not import, execute, upload or change a project.</p>
+    <label>Editable source ZIP
+      <input type="file" accept=".zip,application/zip" disabled={disabled||pending}
+        onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
+          if(file)void reopen(file);}}/>
+    </label>
+    {pending&&<p role="status">Reopening and checking private archive…</p>}
+    {error&&<p role="alert">{error}</p>}
+    {result&&<div role="status"><p>Archive contents match the frozen snapshot: {result.files} files, {result.slots} slots, {result.stashes} stash entries.</p>
+      <p>Reopened ZIP SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.sha256}</code></p>
+      <p>Uploaded media and other revisions are not verified by this source archive.</p></div>}
+  </div>;
+}
 
 function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
   const groups=[['Project files',comparison.files],['Component slots',comparison.slots],
