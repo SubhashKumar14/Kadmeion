@@ -10,6 +10,7 @@ import type {
   SupabasePrivatePlatformLinksService, PrivatePlatformLink, PlatformProvider
 } from '../../../packages/contracts/src/private-platform-links-service.ts';
 import {PrivatePlatformLinkError} from '../../../packages/contracts/src/private-platform-links-service.ts';
+import {availableProviderActions,PrivateProviderFactsError,type ProviderState,type ProviderUserAction,type SupabasePrivateProviderFactsService} from '../../../packages/contracts/src/private-provider-facts-service.ts';
 
 const routes={
   '/app/growth':'Growth overview',
@@ -20,7 +21,7 @@ const routes={
   '/app/integrations':'Platform connections'
 } as const;
 type GrowthRoute=keyof typeof routes;
-type GrowthServices={goals:SupabasePrivateGoalsService;links:SupabasePrivatePlatformLinksService};
+type GrowthServices={goals:SupabasePrivateGoalsService;links:SupabasePrivatePlatformLinksService;providerFacts?:SupabasePrivateProviderFactsService};
 export function isGrowthRoute(path:string):boolean{return Object.hasOwn(routes,path);}
 const providers:Readonly<{id:PlatformProvider;name:string;description:string}[]>= [
   {id:'GITHUB',name:'GitHub',description:'Developer code profile'},
@@ -910,7 +911,129 @@ export function linkFailureKind(err:unknown):'VALIDATION'|'OWNER_DENIED'|'REVIEW
   }
   return 'REVIEW';
 }
-function ProviderCard({service,provider,existing,onUpdate,onRefresh,onInvalidate}:{
+/** Real owner-wire C12 consumer. A manual link alone is not a provider capability. */
+function GitHubFactsPanel({service,link,blocked,beginWrite,endWrite,onInvalidate,onLinkChanged}:{
+  service:SupabasePrivateProviderFactsService;link:PrivatePlatformLink;blocked:boolean;
+  beginWrite:()=>boolean;endWrite:()=>void;onInvalidate:()=>void;onLinkChanged:()=>void;
+}){
+  const [state,setState]=useState<ProviderState|null>(null);
+  const [busy,setBusy]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState('');
+  const [consentReview,setConsentReview]=useState(false),[clearReview,setClearReview]=useState(false);
+  const generation=useRef(0),pending=useRef(false),mounted=useRef(false);
+  const visibilityEpoch=useRef(0),refreshAfterSettle=useRef(false);
+  // Re-evaluate after each asynchronous boundary (no stale TS narrowing).
+  const isVisible=()=>document.visibilityState!=='hidden';
+  function match(value:ProviderState){
+    return value.ownerId===link.owner_user_id&&value.linkId===link.id&&value.handle===link.handle;
+  }
+  function fault(err:unknown){
+    setState(null);setConsentReview(false);setClearReview(false);
+    if(err instanceof PrivateProviderFactsError&&(err.code==='AUTH_EXPIRED'||err.code==='FORBIDDEN')){
+      onInvalidate();return;
+    }
+    setError(err instanceof PrivateProviderFactsError&&err.code==='RATE_LIMITED'?
+      'The server limited this request. Read the saved state and cooldown before retrying.':
+      'The server did not confirm the current provider state. Read it again before another action. No operation was automatically retried.');
+  }
+  async function read(){
+    if(!isVisible())return;
+    if(pending.current){refreshAfterSettle.current=true;return;}
+    pending.current=true;const request=++generation.current,visibility=visibilityEpoch.current;
+    refreshAfterSettle.current=false;
+    setState(null);setBusy(true);setError('');setMessage('');setConsentReview(false);setClearReview(false);
+    try{
+      const saved=await service.readState(link.id);
+      if(!mounted.current||request!==generation.current)return;
+      if(!match(saved)){onLinkChanged();return;}
+      if(isVisible()&&visibility===visibilityEpoch.current)setState(saved);
+    }catch(err){if(mounted.current&&request===generation.current)fault(err);}
+    finally{if(request===generation.current){pending.current=false;if(mounted.current){setBusy(false);if(isVisible()&&(refreshAfterSettle.current||visibility!==visibilityEpoch.current))void read();}}}
+  }
+  useEffect(()=>{
+    mounted.current=true;
+    const refresh=()=>{
+      // A hidden tab has no current visibility proof; forget displayed facts.
+      // Returning performs only an owner DB read, not a provider lookup/sync.
+      if(!isVisible()){
+        visibilityEpoch.current++;refreshAfterSettle.current=true;
+        setState(null);setConsentReview(false);setClearReview(false);setMessage('');
+      }else void read();
+    };
+    window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
+    refresh();
+    return()=>{mounted.current=false;generation.current++;pending.current=false;refreshAfterSettle.current=false;
+      window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
+  },[service,link.id,link.handle,link.owner_user_id]);
+  async function act(action:ProviderUserAction){
+    const prior=state;
+    if(!prior||busy||blocked||pending.current||!isVisible()||!availableProviderActions(prior,Date.now()).includes(action)||
+      action==='ENABLE'&&!consentReview||action==='DISABLE'&&!clearReview||!beginWrite())return;
+    pending.current=true;const request=++generation.current,visibility=visibilityEpoch.current;
+    refreshAfterSettle.current=false;
+    setState(null);setBusy(true);setError('');setMessage('');setConsentReview(false);setClearReview(false);
+    const op={linkId:link.id,expectedVersion:prior.version,operationId:crypto.randomUUID(),policyVersion:1 as const};
+    try{
+      const receipt=action==='ENABLE'||action==='DISABLE'?await service.changeConsent({...op,action}):
+        action==='CONFIRM'?await service.confirmCandidate(op):await service.sync({...op,action});
+      if(!mounted.current||request!==generation.current)return;
+      if(!match(receipt.state)){setState(null);onLinkChanged();return;}
+      // Display only a second authoritative read after a write. A delayed receipt
+      // alone must not resurrect facts which were disabled or unlinked elsewhere.
+      const saved=await service.readState(link.id);
+      if(!mounted.current||request!==generation.current)return;
+      if(!match(saved)){setState(null);onLinkChanged();return;}
+      if(saved.version<receipt.state.version){setState(null);setError('Saved provider revision could not be confirmed. Read it again.');return;}
+      if(!isVisible()||visibility!==visibilityEpoch.current)return;
+      setState(saved);
+      setMessage(saved.version!==receipt.state.version?'Provider state changed after the operation. Showing the latest saved read.':
+        receipt.status==='PENDING'?'Request pending on the server. Refresh saved state before another sync.':
+        saved.status==='UNAVAILABLE'?'Provider refresh failed. Any retained facts are labeled stale.':
+        action==='DISABLE'&&!saved.consent&&saved.facts===null&&saved.candidate===null?'Sync consent revoked and current imported facts cleared. The manual link remains.':
+        'Provider state read back from the private server.');
+    }catch(err){if(mounted.current&&request===generation.current)fault(err);}
+    finally{endWrite();if(request===generation.current){pending.current=false;if(mounted.current){setBusy(false);if(isVisible()&&(refreshAfterSettle.current||visibility!==visibilityEpoch.current))void read();}}}
+  }
+  const actions=state?availableProviderActions(state,Date.now()):[];
+  const disabled=busy||blocked;
+  return <section aria-label="Private GitHub provider facts" className="ws-growth-form">
+    <h3>GitHub public facts</h3>
+    <p>Optional, owner-private source data. Only the public account name, source ID, repository and gist counts are imported. A matching profile is not ownership verification.</p>
+    {busy&&<p role="status">Checking private provider state…</p>}
+    {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}
+    <button type="button" className="ws-secondary" disabled={disabled} onClick={()=>void read()}>Refresh saved GitHub state</button>
+    {state&&<>
+      <p><strong>Data status:</strong> {state.status==='OFF'?'Consent off':state.status==='PENDING'?'Pending':state.status==='AWAITING_CONFIRMATION'?'Review matching profile':state.status==='SYNCED'?state.freshness==='STALE'?'Stale saved facts':'Saved provider facts':state.status==='UNAVAILABLE'?'Refresh unavailable':'Ready for explicit lookup'}</p>
+      {state.lastAttemptAt&&<p>Last attempt: <time dateTime={state.lastAttemptAt}>{state.lastAttemptAt}</time></p>}
+      {state.cooldownUntil&&<p>Server-reported cooldown: <time dateTime={state.cooldownUntil}>{state.cooldownUntil}</time>. Refresh saved state to check availability.</p>}
+      {state.lastError&&<p role="status">Last source failure: {state.lastError.replaceAll('_',' ').toLowerCase()}.</p>}
+      {state.facts&&<dl>
+        <dt>Account</dt><dd><a href={state.facts.htmlUrl} target="_blank" rel="noopener noreferrer">{state.facts.login}</a></dd>
+        <dt>Source</dt><dd><a href={state.facts.sourceUrl} target="_blank" rel="noopener noreferrer">GitHub public account API</a></dd>
+        <dt>Public repositories</dt><dd>{state.facts.publicRepos}</dd>
+        <dt>Public gists</dt><dd>{state.facts.publicGists}</dd>
+        <dt>Fetched</dt><dd><time dateTime={state.facts.fetchedAt}>{state.facts.fetchedAt}</time></dd>
+        <dt>Freshness at saved read</dt><dd>{state.freshness==='STALE'?'Stale — last known facts':'Fresh at read'}</dd>
+      </dl>}
+      {state.candidate&&<section aria-label="Review GitHub account">
+        <p>Candidate: <a href={state.candidate.htmlUrl} target="_blank" rel="noopener noreferrer">{state.candidate.login}</a>. Confirm only if this is the intended public profile.</p>
+        {state.candidateExpiresAt&&<p>Confirmation expires: <time dateTime={state.candidateExpiresAt}>{state.candidateExpiresAt}</time>.</p>}
+        <button type="button" className="ws-primary" disabled={disabled||!actions.includes('CONFIRM')} onClick={()=>void act('CONFIRM')}>Confirm this public profile</button>
+      </section>}
+      {actions.includes('ENABLE')&&<>
+        <label className="ws-growth-confirm"><input type="checkbox" checked={consentReview} disabled={disabled} onChange={e=>setConsentReview(e.target.checked)}/>Allow explicit public GitHub lookup and private storage of the listed facts.</label>
+        <button type="button" className="ws-secondary" disabled={disabled||!consentReview} onClick={()=>void act('ENABLE')}>Enable private GitHub synchronization</button>
+      </>}
+      {state.consent&&<>
+        <button type="button" className="ws-primary" disabled={disabled||!actions.includes(state.facts?'SYNC':'LOOKUP')} onClick={()=>void act(state.facts?'SYNC':'LOOKUP')}>{state.facts?'Sync Now':'Find public GitHub profile'}</button>
+        <label className="ws-growth-confirm"><input type="checkbox" checked={clearReview} disabled={disabled} onChange={e=>setClearReview(e.target.checked)}/>Revoke consent and remove current imported GitHub facts and pending candidates. Keep the manual link.</label>
+        <button type="button" className="ws-secondary" disabled={disabled||!clearReview||!actions.includes('DISABLE')} onClick={()=>void act('DISABLE')}>Disable sync and delete imported facts</button>
+      </>}
+    </>}
+  </section>;
+}
+
+function ProviderCard({service,providerFacts,provider,existing,onUpdate,onRefresh,onInvalidate}:{
+  providerFacts?:SupabasePrivateProviderFactsService;
   service:SupabasePrivatePlatformLinksService;
   provider:{id:PlatformProvider;name:string;description:string};
   existing:PrivatePlatformLink|undefined;onUpdate:(record:PrivatePlatformLink|null)=>void;
@@ -922,9 +1045,12 @@ function ProviderCard({service,provider,existing,onUpdate,onRefresh,onInvalidate
   const [error,setError]=useState('');
   const [confirm,setConfirm]=useState(false);
   const [review,setReview]=useState(false);
-  const inFlight=useRef(false),mounted=useRef(false);
+  const inFlight=useRef(false),mounted=useRef(false),factsWriting=useRef(false);
+  const [factsBusy,setFactsBusy]=useState(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   useEffect(()=>{setHandle(existing?.handle??'');setConfirm(false);},[existing?.id,existing?.handle]);
+  function beginFactsWrite(){if(inFlight.current||factsWriting.current)return false;factsWriting.current=true;setFactsBusy(true);return true;}
+  function endFactsWrite(){factsWriting.current=false;if(mounted.current)setFactsBusy(false);}
   function failed(err:unknown){
     if(!mounted.current)return;
     const kind=linkFailureKind(err);
@@ -934,7 +1060,7 @@ function ProviderCard({service,provider,existing,onUpdate,onRefresh,onInvalidate
   }
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();const draft=handle.trim();
-    if(busy||inFlight.current||review||!draft||existing?.handle===draft)return;
+    if(busy||inFlight.current||factsWriting.current||review||!draft||existing?.handle===draft)return;
     inFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       const result=await service.save(provider.id,draft,existing);
@@ -944,7 +1070,7 @@ function ProviderCard({service,provider,existing,onUpdate,onRefresh,onInvalidate
     finally{inFlight.current=false;if(mounted.current)setBusy(false);}
   }
   async function remove(){
-    if(!existing||busy||inFlight.current||review||!confirm)return;
+    if(!existing||busy||inFlight.current||factsWriting.current||review||!confirm)return;
     inFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       await service.remove(existing);
@@ -955,27 +1081,28 @@ function ProviderCard({service,provider,existing,onUpdate,onRefresh,onInvalidate
   }
   return <article className="ws-project-aside ws-growth-provider" aria-label={provider.name}>
     <h2>{provider.name}</h2><p>{provider.description}</p>
-    <p className="ws-growth-status">Private manual link · Never synced · Ownership not verified</p>
+    <p className="ws-growth-status">Private manual link · Ownership not verified{provider.id==='GITHUB'&&providerFacts?' · Separate consented facts below':' · Provider synchronization unavailable'}</p>
     {existing&&<p>Stored link: <a href={existing.profile_url} target="_blank" rel="noopener noreferrer">{existing.profile_url}</a>{review&&' (Previously confirmed; current state is unverified.)'}</p>}
     <form className="ws-growth-form" onSubmit={event=>void save(event)}>
       <label className="ws-growth-field">Public handle
-        <input maxLength={64} value={handle} required autoComplete="off" disabled={busy||review}
+        <input maxLength={64} value={handle} required autoComplete="off" disabled={busy||review||factsBusy}
           onChange={event=>{setHandle(event.target.value);setConfirm(false);setError('');setNotice('');}}/></label>
-      <button type="submit" className="ws-secondary" disabled={busy||review||!handle.trim()||existing?.handle===handle.trim()}>
+      <button type="submit" className="ws-secondary" disabled={busy||review||factsBusy||!handle.trim()||existing?.handle===handle.trim()}>
         {busy?'Saving…':existing?'Update private link':'Save private link'}</button>
     </form>
     {existing&&<div className="ws-growth-form">
-      <label className="ws-growth-confirm"><input type="checkbox" checked={confirm} disabled={busy||review} onChange={event=>setConfirm(event.target.checked)}/>
-        Confirm disconnect of this stored link</label>
-      <button type="button" className="ws-secondary" disabled={!confirm||busy||review} onClick={()=>void remove()}>Disconnect link</button>
+      <label className="ws-growth-confirm"><input type="checkbox" checked={confirm} disabled={busy||review||factsBusy} onChange={event=>setConfirm(event.target.checked)}/>
+        Confirm disconnect of this stored link{provider.id==='GITHUB'&&providerFacts?' and remove its current imported data':''}</label>
+      <button type="button" className="ws-secondary" disabled={!confirm||busy||review||factsBusy} onClick={()=>void remove()}>Disconnect link</button>
     </div>}
+    {existing&&provider.id==='GITHUB'&&providerFacts&&!busy&&!review&&<GitHubFactsPanel key={existing.id+':'+existing.handle+':'+existing.updated_at} service={providerFacts} link={existing} blocked={busy||review} beginWrite={beginFactsWrite} endWrite={endFactsWrite} onInvalidate={onInvalidate} onLinkChanged={onRefresh}/>}
     {error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
     {review&&<><p>Refreshing replaces the displayed draft with saved records. Copy the draft first if needed.</p>
       <button type="button" className="ws-secondary" disabled={busy} onClick={onRefresh}>Refresh saved links</button></>}
   </article>;
 }
 
-function Connections({service}:{service:SupabasePrivatePlatformLinksService}){
+function Connections({service,providerFacts}:{service:SupabasePrivatePlatformLinksService;providerFacts?:SupabasePrivateProviderFactsService}){
   const [links,setLinks]=useState<PrivatePlatformLink[]|null>(null);
   const [error,setError]=useState('');
   const [attempt,setAttempt]=useState(0);
@@ -1004,11 +1131,11 @@ function Connections({service}:{service:SupabasePrivatePlatformLinksService}){
     generation.current++;setLinks(null);setError('The owner session or access was not confirmed. Private links have been hidden.');
   }
   return <section>
-    <p>Optional public-handle links are stored privately. No OAuth, syncing, provider API, verification or public profile sharing is active.</p>
+    <p>Optional public-handle links are stored privately. {providerFacts?'GitHub facts require separate consent and explicit actions; other providers remain link-only.':'Provider synchronization is unavailable. Links remain manual.'} No OAuth, ownership verification or public profile sharing is implied.</p>
     {error&&<p role="alert">{error} <button className="ws-secondary" type="button" onClick={refresh}>Retry links</button></p>}
     {!links&&!error&&<EvidencePending label="Loading your private platform links…"/>}
     {links&&<div className="ws-growth-provider-grid">{providers.map(provider=>
-      <ProviderCard key={viewGeneration+':'+provider.id} provider={provider} service={service}
+      <ProviderCard key={viewGeneration+':'+provider.id} provider={provider} service={service} providerFacts={providerFacts}
         existing={links.find(item=>item.provider===provider.id)}
         onUpdate={record=>updated(provider.id,record)} onRefresh={refresh} onInvalidate={invalidate}/>)}</div>}
   </section>;
@@ -1062,6 +1189,6 @@ export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}
       path==='/app/growth'?<GrowthHome key={current!.viewKey} service={services.goals}/>:
       path==='/app/growth/activity'?<Activity key={current!.viewKey} service={services.goals}/>:
       path==='/app/growth/goals'?<Goals key={current!.viewKey} service={services.goals}/>:
-      <Connections key={current!.viewKey} service={services.links}/>}
+      <Connections key={current!.viewKey} service={services.links} providerFacts={services.providerFacts}/>}
   </section>;
 }
