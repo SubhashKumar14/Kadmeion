@@ -4110,8 +4110,14 @@ test('B16 C05 WF-047 R7 actual avatar V2 ZIP and JSON reopen verify exact bytes,
   };
   const unpinned=await readPin();
   expect(unpinned.status).toBe('UNPINNED');expect(unpinned.expectedSha256).toBeNull();
-  const storagePath=unpinned.path??unpinned.objectPath;
-  if(typeof storagePath!=='string'||!storagePath.startsWith(owner.id+'/profile/'))throw Error('Invalid PROFILE path.');
+  // The pin RPC intentionally omits object paths; bind the owner-visible avatar descriptor to its pin.
+  expect(selectedBody.ownerUserId).toBe(owner.id);
+  expect(selectedBody.asset.scope).toBe('PROFILE');
+  expect(unpinned.ownerUserId).toBe(owner.id);expect(unpinned.assetId).toBe(assetId);
+  expect(unpinned.scope).toBe('PROFILE');expect(unpinned.projectId).toBeNull();
+  expect(unpinned.byteSize).toBe(png.length);expect(unpinned.mimeType).toBe('image/png');
+  const storagePath=selectedBody.asset.objectPath;
+  if(typeof storagePath!=='string'||!storagePath.startsWith(owner.id+'/profile/')||storagePath.split('/').length!==3)throw Error('Invalid PROFILE path.');
   const stored=await call('/storage/v1/object/authenticated/kadmeion-private-assets/'+storagePath.split('/').map(encodeURIComponent).join('/'),jwt,key);
   if(!stored.ok)throw Error('Actual stored avatar read HTTP '+stored.status);
   const actual=Buffer.from(await stored.arrayBuffer());
