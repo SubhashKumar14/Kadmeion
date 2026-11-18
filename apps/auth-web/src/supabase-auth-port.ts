@@ -125,7 +125,7 @@ function mediaHttpError(status:number,payload:unknown,attestation=false,storage=
     ['ResourceAlreadyExists','KeyAlreadyExists'].includes(storageCode))
     return mediaError(attestation?'INTEGRITY':'CONFLICT',attestation?'Private asset attestation did not verify.':
       'This project changed while you were editing. Load the latest revision before saving again.',status);
-  if(code==='22023'&&(row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE'||row?.message==='PRIVATE_ASSET_PIN_INTEGRITY'))
+  if(code==='22023'&&(row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE'||row?.message==='PRIVATE_ASSET_PIN_INTEGRITY'||row?.message==='PRIVATE_STORAGE_OBJECT_NOT_VERIFIED'))
     return mediaError('INTEGRITY','Private thumbnail could not be verified.',status);
   if(code==='22023'||(attestation&&status===400)||['InvalidMimeType','InvalidKey','InvalidRequest'].includes(storageCode))
     return mediaError('VALIDATION','Invalid private media request.',status);
@@ -1537,26 +1537,50 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Parse one bounded JSON stream; distinguish invalid data from interrupted transport. */
-  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+  private async readBoundedOwnerMedia(response:Response,session:StoredSession,epoch:number,max:number,timeoutMs:number):Promise<Uint8Array>{
+    if(!Number.isSafeInteger(max)||max<1||max>5242880)
+      throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
     const reader=response.body?.getReader();
     if(!reader)throw mediaError('INTEGRITY','Private media response could not be verified.');
-    const parts:Uint8Array[]=[];let size=0;
+    const buffer=new Uint8Array(max);
+    let size=0,empty=0,chunks=0,timer:ReturnType<typeof setTimeout>|undefined;
+    const deadline=performance.now()+timeoutMs;
+    const expiry=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.')),timeoutMs);
+    });
     try{
       for(;;){
+        if(performance.now()>=deadline)throw mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.');
         let part:ReadableStreamReadResult<Uint8Array>;
-        try{part=await reader.read();}
-        catch{throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');}
+        try{part=await Promise.race([reader.read(),expiry]);}
+        catch(error){
+          if(error instanceof OwnerMediaError)throw error;
+          throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');
+        }
         this.assertOwnerImageEpoch(session,epoch);
+        if(performance.now()>=deadline)throw mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.');
         if(part.done)break;
-        size+=part.value.byteLength;
-        if(size>max)throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
-        parts.push(part.value);
+        if(!(part.value instanceof Uint8Array)||++chunks>16384||part.value.byteLength>max-size)
+          throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
+        if(part.value.byteLength===0){
+          if(++empty>=16)throw mediaError('INTEGRITY','Private media response made no progress.');
+          continue;
+        }
+        empty=0;buffer.set(part.value,size);size+=part.value.byteLength;
       }
-      const bytes=new Uint8Array(size);let offset=0;
-      for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
-      try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
-      catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
-    }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+      return buffer.subarray(0,size);
+    }finally{
+      if(timer!==undefined)clearTimeout(timer);
+      try{void reader.cancel().catch(()=>{});}catch{/* best effort */}
+      try{reader.releaseLock();}catch{/* pending read cancelled */}
+    }
+  }
+
+  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+    const bytes=await this.readBoundedOwnerMedia(response,session,epoch,max,15000);
+    this.assertOwnerImageEpoch(session,epoch);
+    try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+    catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
   }
 
   private async mediaResponseError(response:Response,session:StoredSession,epoch:number,attestation=false,storage=false):Promise<OwnerMediaError>{
@@ -1660,21 +1684,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
         (declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==size))||!response.body)
         throw mediaError('INTEGRITY','Private image readback was not verified.');
-      const reader=response.body.getReader();
-      const chunks:BlobPart[]=[];
-      let total=0;
-      try{
-        while(true){
-          const part=await reader.read();
-          this.assertOwnerImageEpoch(session,epoch);
-          if(part.done)break;
-          total+=part.value.byteLength;
-          if(total>size||total>5242880)throw mediaError('INTEGRITY','Private image exceeds its verified size.');
-          chunks.push(new Uint8Array(part.value));
-        }
-      }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
-      if(total!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
-      const blob=new Blob(chunks,{type:mime});
+      const bytes=await this.readBoundedOwnerMedia(response,session,epoch,size,60000);
+      if(bytes.byteLength!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
+      const blob=new Blob([new Uint8Array(bytes)],{type:mime});
       await this.validateOwnerRaster(blob,true);
       this.assertOwnerImageEpoch(session,epoch);
       return blob;
@@ -2032,7 +2044,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const a=row.asset&&typeof row.asset==='object'&&!Array.isArray(row.asset)?row.asset as Json:null;
     if(!a||Object.keys(a).length!==7||a.scope!=='PROFILE'||
       typeof a.id!=='string'||!PROJECT_ID_PATTERN.test(a.id)||a.id!==a.id.toLowerCase()||
-      !['image/png','image/jpeg','image/webp'].includes(String(a.mime))||
+      typeof a.mime!=='string'||!['image/png','image/jpeg','image/webp'].includes(a.mime)||
       typeof a.size!=='number'||!Number.isSafeInteger(a.size)||a.size<12||a.size>5242880||
       typeof a.altText!=='string'||a.altText!==a.altText.trim()||!a.altText||a.altText.length>500||
       typeof a.createdAt!=='string'||!Number.isFinite(Date.parse(a.createdAt))||
@@ -2089,9 +2101,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         p_operation_id:operation,p_mime_type:format.mime,p_byte_size:file.size,p_alt_text:description});
       const reserve=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
       if(!reserve||Object.keys(reserve).length!==8||reserve.ownerUserId!==userId||reserve.scope!=='PROFILE'||
-        typeof reserve.assetId!=='string'||!PROJECT_ID_PATTERN.test(reserve.assetId)||
+        typeof reserve.assetId!=='string'||!PROJECT_ID_PATTERN.test(reserve.assetId)||reserve.assetId!==reserve.assetId.toLowerCase()||
         reserve.objectPath!==path||reserve.mime!==format.mime||reserve.size!==file.size||
-        reserve.altText!==description||!['PENDING_UPLOAD','REGISTERED'].includes(String(reserve.state)))
+        reserve.altText!==description||(reserve.state!=='PENDING_UPLOAD'&&reserve.state!=='REGISTERED'))
         throw mediaError('INTEGRITY','Private avatar reservation could not be verified.');
       const assetId=reserve.assetId;
       let accepted=reserve.state==='REGISTERED',ambiguous=false;
