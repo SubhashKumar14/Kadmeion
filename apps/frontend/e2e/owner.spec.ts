@@ -2618,3 +2618,115 @@ test('B16 real invalid and absent recovery grants cannot open reset form or muta
   await expect(page.locator('.ws-shell')).toHaveCount(0);
   expect(writes).toBe(0);
 });
+
+test('B16 C10 real trusted static scoped-theme CSS uses measured 600/950 boundaries',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S3 R4 shared engine and trusted static renderer.');
+  const {createPortfolioPresetDraft,createEditorHead,applyEditorTransaction,prepareSafeStaticPreview}=await import('../../../packages/editor-core/src/index.ts');
+  const snapshot=createPortfolioPresetDraft('stairs');
+  const manifest=JSON.parse(snapshot.files['kadmeion.json']);
+  snapshot.files['kadmeion.json']=JSON.stringify({...manifest,seo:{title:'Scoped fixture',description:'Private static scoped fixture'}});
+  const document=JSON.parse(snapshot.files['pages/home.page.json']);
+  const section=document.sections[0];
+  snapshot.files['pages/home.page.json']=JSON.stringify({...document,sections:[section]});
+  for(const [key,slot] of Object.entries(snapshot.slots)){
+    if(!key.startsWith('stepped-hero-')&&slot.state==='S0')snapshot.slots[key]={state:'EMPTY',content:{}};
+  }
+  snapshot.slots['stepped-hero-title']={state:'S0',componentId:'title-stacked@1',content:{title:'Real scoped heading',subtitle:'Private preview'}};
+  snapshot.slots['stepped-hero-cta']={state:'S0',componentId:'external-link@1',content:{label:'Example',url:'https://example.com/work'}};
+  snapshot.files['theme/tokens.json']=JSON.stringify({mode:'light',surface:'#ffffff',text:'#222222',accent:'#444444'});
+  let head=createEditorHead(snapshot);
+  const change=(scope:{kind:'global'}|{kind:'template'|'section'|'component';id:string},
+    layer:'base'|'phone'|'tablet'|'desktop',value:string)=>{
+    head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,
+      intent:{kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',scope,layer,
+        edit:{kind:'set',key:'text',value}}});
+  };
+  change({kind:'global'},'base','#111111');
+  change({kind:'template',id:'stairs'},'base','#333333');
+  change({kind:'section',id:section.id},'base','#555555');
+  change({kind:'component',id:'stepped-hero-title'},'phone','#224466');
+  change({kind:'component',id:'stepped-hero-title'},'tablet','#336633');
+  change({kind:'component',id:'stepped-hero-title'},'desktop','#663344');
+  const id='10000000-0000-4000-8000-000000000001',sha='a'.repeat(64);
+  // Synthetic frozen envelope for isolated compiler/browser geometry proof;
+  // this is not a database frozen receipt or hosted publication claim.
+  const render=()=>prepareSafeStaticPreview({
+    snapshot:head.snapshot,frozen:{portfolioId:id,revision:1,snapshotSha256:sha,status:'FROZEN',publicUrl:null,visibilityIntent:'PUBLIC'},
+    loadedPortfolioId:id,loadedRevision:1,loadedSnapshotSha256:sha,
+    plan:[
+      {slotKey:'stepped-hero-title',componentId:'title-stacked@1',kind:'heading',required:true},
+      {slotKey:'stepped-hero-cta',componentId:'external-link@1',kind:'external-link',required:false}
+    ]
+  });
+  const result=render();
+  expect(result.status).toBe('PREVIEW_ONLY');
+  expect(result.publicationReady).toBe(false);
+  if(!result.previewHtml)throw new Error('Scoped trusted static preview missing.');
+  await page.setViewportSize({width:1600,height:900});
+  await page.setContent(result.previewHtml);
+  const container=page.locator('.k-theme-container'),slot=page.locator('.k-theme-slot-0');
+  for(const [width,color] of [[600,'rgb(34, 68, 102)'],[601,'rgb(51, 102, 51)'],
+    [950,'rgb(51, 102, 51)'],[951,'rgb(102, 51, 68)']] as const){
+    await container.evaluate((node,w)=>{(node as HTMLElement).style.width=w+'px';},width);
+    await expect.poll(()=>container.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(width,0);
+    await expect(slot).toHaveCSS('color',color);
+    await expect(page.locator('.k-theme-section-0')).toHaveCSS('color','rgb(85, 85, 85)');
+    await expect(page.locator('.k-theme-root')).toHaveCSS('color','rgb(51, 51, 51)');
+  }
+  const before=structuredClone(head.snapshot);
+  head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,
+    intent:{kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',
+      scope:{kind:'component',id:'stepped-hero-title'},layer:'desktop',edit:{kind:'reset',key:'text'}}});
+  const reset=render();
+  expect(reset.status).toBe('PREVIEW_ONLY');
+  if(!reset.previewHtml)throw new Error('Static reset preview missing.');
+  await page.setContent(reset.previewHtml);
+  await page.locator('.k-theme-container').evaluate(node=>{(node as HTMLElement).style.width='951px';});
+  await expect(page.locator('.k-theme-slot-0')).toHaveCSS('color','rgb(85, 85, 85)');
+  head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,intent:{kind:'UNDO'}});
+  expect(head.snapshot).toEqual(before);
+});
+
+test('B16 release pending glyph reflects real owner read, failure and explicit recovery',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S4 release pending UI and disposable local Supabase.');
+  test.setTimeout(75_000);
+  const owner=await localUser('S6 release pending');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 release pending fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 release pending fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const portfolioId=editorPath.split('/').find(segment=>/^[0-9a-f-]{36}$/i.test(segment));
+  if(!portfolioId)throw new Error('Local portfolio ID missing.');
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  let failure=true,heldReads=0;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/portfolios'&&url.searchParams.get('id')==='eq.'+portfolioId,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(failure){heldReads++;await held;return route.fulfill({status:503,json:{message:'S6 simulated release read outage'}});}
+    await route.continue();
+  });
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const section=page.locator('.ws-release-page');
+  try{
+    await page.goto(editorPath.replace('/edit','/staging'),{waitUntil:'domcontentloaded'});
+    await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toBeVisible();
+    expect(heldReads>0).toBe(true);
+    const glyph=section.locator('.glyph-skeleton[aria-hidden="true"]');
+    await expect(glyph).toHaveCount(1);
+    await expect(glyph.locator('a,button,input,select,textarea,[tabindex="0"]')).toHaveCount(0);
+    await expect(section.locator('.ws-release-visual-canvas')).toHaveCount(0);
+    await expect(section.getByRole('button',{name:'Freeze private revision'})).toHaveCount(0);
+  }finally{release();}
+  await expect(section.getByRole('alert')).toBeVisible();
+  await expect(section.locator('.glyph-skeleton')).toHaveCount(0);
+  await expect(section.locator('.ws-release-visual-canvas')).toHaveCount(0);
+  failure=false;
+  await section.getByRole('button',{name:'Retry private release check'}).click();
+  await expect(section.locator('.ws-release-visual-canvas')).toBeVisible();
+  await expect(section.getByRole('button',{name:'Freeze private revision'})).toBeEnabled();
+  await expect(section.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+  await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toHaveCount(0);
+});
