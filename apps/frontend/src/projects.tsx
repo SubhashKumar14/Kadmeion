@@ -53,6 +53,9 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [pageError,setPageError]=useState('');
   const [loadingMore,setLoadingMore]=useState(false);
   const requestEpoch=useRef(0);
+  const ownerEpoch=useRef(port.getOwnerSessionEpoch());
+  const ownerExpired=useRef(false);
+  const currentOwner=()=>!ownerExpired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
   const pageInFlight=useRef(false);
   const [search,setSearch]=useState('');
   const [view,setView]=useState<'gallery'|'list'>('gallery');
@@ -70,6 +73,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const opener=useRef<HTMLButtonElement>(null);
   const topOpener=useRef<HTMLButtonElement>(null);
   function invalidateOwner() {
+    ownerExpired.current=true;
     creationAttempt.current++;
     creationInFlight.current=false;
     setSaving(false);
@@ -91,13 +95,19 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   useEffect(()=>{
     let active=true;
     const epoch=++requestEpoch.current;
+    ownerEpoch.current=port.getOwnerSessionEpoch();ownerExpired.current=false;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next!==ownerEpoch.current&&!ownerExpired.current)invalidateOwner();
+    });
+    const current=()=>active&&epoch===requestEpoch.current&&currentOwner();
+    if(!current())return ()=>{active=false;unsubscribe();};
     pageInFlight.current=false;
     setLoadingMore(false);
     setPageError('');
     setState({status:'loading'});
     const load=async()=>{
       const identity=await port.getUser();
-      if (!active || epoch!==requestEpoch.current) return;
+      if (!current()) return;
       const ownerId=identity.data?.user?.id;
       if (identity.error || !ownerId) {
         invalidateOwner();
@@ -109,9 +119,9 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       const reply=await pageReader.call(port,PAGE_SIZE,null);
-      if (!active || epoch!==requestEpoch.current) return;
+      if (!current()) return;
       const check=await port.getUser();
-      if (!active || epoch!==requestEpoch.current) return;
+      if (!current()) return;
       if (check.error || check.data?.user?.id!==ownerId) {
         invalidateOwner();
       } else if (!reply.data || reply.error) {
@@ -123,10 +133,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       }
     };
     void load().catch(()=>{
-      if(active && epoch===requestEpoch.current)
+      if(current())
         setState({status:'error',message:'The private project service is unavailable. Retry securely.'});
     });
-    return ()=>{active=false;requestEpoch.current++;};
+    return ()=>{active=false;requestEpoch.current++;unsubscribe();};
   },[port,reload]);
 
   useEffect(()=>()=>{
@@ -170,9 +180,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   },[port,state.status,state.status==='ready'?state.ownerId:null]);
 
   async function loadMore() {
-    if(state.status!=='ready' || !state.nextCursor || pageInFlight.current) return;
+    if(!currentOwner()||state.status!=='ready' || !state.nextCursor || pageInFlight.current) return;
     const {ownerId,nextCursor}=state;
     const epoch=requestEpoch.current;
+    const current=()=>epoch===requestEpoch.current&&currentOwner();
     const pageReader=(port as ProjectPagePort).listOwnerProjectsPage;
     if(typeof pageReader!=='function') {
       setPageError('Private project pagination is unavailable. Retry later.');
@@ -186,14 +197,14 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     };
     try {
       const startIdentity=await port.getUser();
-      if(epoch!==requestEpoch.current)return;
+      if(!current())return;
       if(startIdentity.error || startIdentity.data?.user?.id!==ownerId) {
         rejectStaleOwner();return;
       }
       const reply=await pageReader.call(port,PAGE_SIZE,nextCursor);
-      if(epoch!==requestEpoch.current)return;
+      if(!current())return;
       const currentIdentity=await port.getUser();
-      if(epoch!==requestEpoch.current)return;
+      if(!current())return;
       if(currentIdentity.error || currentIdentity.data?.user?.id!==ownerId) {
         rejectStaleOwner();return;
       }
@@ -217,10 +228,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return {...old,items:[...old.items,...added],nextCursor:reply.data!.nextCursor};
       });
     } catch {
-      if(epoch===requestEpoch.current)
+      if(current())
         setPageError('More private projects could not be loaded. Your earlier pages remain visible.');
     } finally {
-      if(epoch===requestEpoch.current) {
+      if(current()) {
         pageInFlight.current=false;
         setLoadingMore(false);
       }
@@ -249,19 +260,19 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const hasFilters=!!search.trim() || linkFilter!=='all'||detailFilter!=='all';
   function clearFilters(){setSearch('');setLinkFilter('all');setDetailFilter('all');setSort('recent');}
   function open(event: MouseEvent<HTMLButtonElement>) {
-    if (!modal.current || modal.current.open) return;
+    if (!currentOwner()||state.status!=='ready'||!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
     setError('');
     modal.current.showModal();
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(creationInFlight.current)return;
+    if(!currentOwner()||state.status!=='ready'||creationInFlight.current)return;
     creationInFlight.current=true;
     const attempt=++creationAttempt.current;
     const sessionEpoch=port.getOwnerSessionEpoch();
     const submitted={...draft};
-    const stillCurrent=()=>attempt===creationAttempt.current;
+    const stillCurrent=()=>attempt===creationAttempt.current&&currentOwner();
     setSaving(true);setError('');setNotice('');
     try {
       const identity=await port.getUser();
@@ -314,7 +325,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         <h1 id="ws-title">Project library.</h1>
         <p>Organize your projects and case studies. New project drafts stay private.</p>
       </div>
-      <button type="button" className="ws-primary" ref={topOpener} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" ref={topOpener} disabled={state.status!=='ready'} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
     </div>
     <div className="ws-project-controls">
       <label className="ws-project-search">Search private projects
