@@ -296,6 +296,13 @@ async function observeReleaseWithdrawal(
     observedHttpRequests:after.observedHttpRequests+2*htmlPaths.length+2*liveAssets.size});
 }
 
+export function validWithdrawalManifest(manifest:unknown,hashes:unknown):boolean {
+  return Array.isArray(hashes)&&hashes.length<=8&&
+    hashes.every(sha=>typeof sha==='string'&&SHA256.test(sha))&&
+    new Set(hashes).size===hashes.length&&
+    (hashes.length===0?manifest===null:typeof manifest==='string'&&SHA256.test(manifest));
+}
+
 const PUBLIC_RELEASE_IMG=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
 function matchPublicMediaSet(bytes:Uint8Array,paths:readonly string[]):void{
   try{
@@ -317,14 +324,11 @@ function matchPublicMediaSet(bytes:Uint8Array,paths:readonly string[]):void{
  */
 export async function verifyCanonicalPublicWithdrawal(
   input:{origin:string;canonicalPath:string;expectedServedSha256:string;
-    manifestSha256:string;assetHashes:readonly string[];allowLocal?:boolean},
+    manifestSha256:string|null;assetHashes:readonly string[];allowLocal?:boolean},
   withdraw:()=>Promise<void>,http:typeof fetch=fetch
 ):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
   if(!input||!canonicalPathValid(input.canonicalPath)||UNLISTED.test(input.canonicalPath)||
-     typeof input.manifestSha256!=='string'||!SHA256.test(input.manifestSha256)||
-     !Array.isArray(input.assetHashes)||input.assetHashes.length>8||
-     input.assetHashes.some(sha=>typeof sha!=='string'||!SHA256.test(sha))||
-     new Set(input.assetHashes).size!==input.assetHashes.length)
+     !validWithdrawalManifest(input.manifestSha256,input.assetHashes))
     throw new HostRevocationProbeError('INVALID_INPUT');
   const alias=publicApiAlias(input.canonicalPath)!;
   const assets=input.assetHashes.map(sha256=>({
@@ -497,6 +501,14 @@ function reviewerHostPaths(input:ReviewerHostWithdrawalInput):{
 /** Actual HTTP GET/HEAD lifecycle check, including every referenced immutable PNG.
  * This observation remains narrower than a guarantee of global cache erasure.
  */
+export function matchesReviewerMediaSet(html:string,paths:readonly string[]):boolean {
+  const imgs=[...html.matchAll(REVIEWER_IMG)];
+  const seen=new Set(imgs.map(img=>img[1]));
+  const expected=new Set(paths.map(path=>path.replaceAll('&','&amp;')));
+  return (html.match(/<img\b/gi)??[]).length===imgs.length&&
+    seen.size===expected.size&&[...seen].every(src=>expected.has(src));
+}
+
 export async function verifyReviewerHostWithdrawal(
   input:ReviewerHostWithdrawalInput,revoke:()=>Promise<void>,http:typeof fetch=fetch
 ):Promise<ReviewerHostWithdrawalObservation>{
@@ -509,11 +521,7 @@ export async function verifyReviewerHostWithdrawal(
     checks++;
     // The actual rendered IMG list must match the manifest's ENTIRE declared
     // media set. Partial coverage cannot produce an accepted revocation proof.
-    const imgs=[...html.matchAll(REVIEWER_IMG)];
-    if((html.match(/<img\b/gi)??[]).length!==imgs.length||
-       imgs.length!==mediaPaths.length||
-       new Set(imgs.map(x=>x[1])).size!==imgs.length||
-       imgs.some((img)=>!mediaPaths.some(asset=>img[1]===asset.path.replaceAll('&','&amp;'))))
+    if(!matchesReviewerMediaSet(html,mediaPaths.map(asset=>asset.path)))
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
     await reviewerLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),false);
     checks++;
