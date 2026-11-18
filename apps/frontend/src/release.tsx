@@ -20,6 +20,17 @@ function matchesFrozenPin(pin:LoadedPrivateFrozenRevision|null|undefined,request
     pin.frozen.status==='FROZEN' && pin.frozen.publicUrl===null;
 }
 
+/** A historical DB acknowledgement identifies an owner pin, not a live release.
+ * Catalogue omission is allowed; a present catalogue or journal contradiction is not. */
+function matchesAcknowledgedPin(pin:LoadedPrivateFrozenRevision|null|undefined,row:PrivateReleaseAcknowledgement,
+    portfolioId:string,requests:readonly OwnerFrozenRequest[]|null,revisions:readonly SavedOwnerRevision[]|null):
+    pin is LoadedPrivateFrozenRevision {
+  if(!pin||row.portfolioId!==portfolioId||pin.frozen.portfolioId!==portfolioId||
+     !matchesFrozenPin(pin,pin.frozen))return false;
+  const known=requests?.filter(item=>item.requestId===row.requestId)??[];
+  if(known.length>1||(known[0]&&(known[0].status!=='FROZEN'||!matchesFrozenPin(pin,known[0]))))return false;
+  return !revisions?.some(item=>item.revision===pin.loadedRevision&&item.snapshotSha256!==pin.loadedSnapshotSha256);
+}
 const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
 type SafeGrant = {grantId:string;requestId:string;expiresAt:string;status:'REGISTERED_UNSERVABLE'|'REVOKED'};
@@ -33,6 +44,7 @@ function samePreparedPointer(a:PrivatePointerSnapshot,b:PrivatePointerSnapshot):
 type SnapshotDelta={key:string;kind:'Added'|'Removed'|'Changed';beforeBytes:number|null;afterBytes:number|null;fields?:string[]};
 type FrozenComparison={
   requestId:string; frozenRevision:number; draftRevision:number;
+  targetKind:'SAVED_DRAFT'|'FROZEN';targetRequestId?:string;
   files:SnapshotDelta[];slots:SnapshotDelta[];stashes:SnapshotDelta[];
   frozenSnapshot:PortfolioSnapshot;draftSnapshot:PortfolioSnapshot;title:string;
 };
@@ -42,6 +54,23 @@ function canonicalValue(value:unknown):string|undefined {
       return Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0));
     return item;
   });
+}
+/** Reopen an archive without executing or persisting its authored source.
+ * Compare all snapshot fields, including opaque text, slot and stash content. */
+async function reopenFrozenArchive(file:File,expected:PortfolioSnapshot):
+    Promise<{sha256:string;files:number;slots:number;stashes:number}> {
+  if(!Number.isSafeInteger(file.size)||file.size<22||file.size>2*1024*1024)
+    throw new Error('Invalid private source archive size.');
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  if(bytes.byteLength!==file.size)throw new Error('Incomplete source archive read.');
+  const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+  const snapshot=importPortfolioSourceZip(bytes);
+  if(canonicalValue(snapshot)!==canonicalValue(expected))
+    throw new Error('Archive does not match this frozen snapshot.');
+  const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
+  return {sha256:Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join(''),
+    files:Object.keys(snapshot.files).length,slots:Object.keys(snapshot.slots).length,
+    stashes:Object.keys(snapshot.stashes).length};
 }
 function snapshotDelta<T>(before:Record<string,T>,after:Record<string,T>):SnapshotDelta[]{
   return [...new Set([...Object.keys(before),...Object.keys(after)])].sort().flatMap<SnapshotDelta>(key=>{
@@ -124,6 +153,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [historySelectionError,setHistorySelectionError]=useState('');
   const [result,setResult]=useState<SafePreviewResult|null>(null);
   const [comparison,setComparison]=useState<FrozenComparison|null>(null);
+  const [comparisonTarget,setComparisonTarget]=useState('');
   const [editableConsent,setEditableConsent]=useState<string|null>(null);
   const [sourceArchiveSha,setSourceArchiveSha]=useState<{requestId:string;sha256:string}|null>(null);
   const [staticArchiveSha,setStaticArchiveSha]=useState<{requestId:string;sha256:string;htmlSha256:string}|null>(null);
@@ -144,16 +174,26 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const operation=useRef<string|null>(null);
   const grantOperation=useRef<string|null>(null);
   const blockOperation=useRef<BlockAttempt|null>(null);
-  const blockFlight=useRef<object|null>(null);
+  const actionFlight=useRef<object|null>(null);
   const historySelectionEpoch=useRef(0);
   const routeEpoch=useRef(0);
   useLayoutEffect(()=>{
     routeEpoch.current+=1;
-    return ()=>{routeEpoch.current+=1;historySelectionEpoch.current+=1;};
+    return ()=>{routeEpoch.current+=1;historySelectionEpoch.current+=1;actionFlight.current=null;};
   },[port,id,mode]);
   const base='/app/portfolios/'+id;
   const readsBusy=busy||historySelectionPending||readPhase!==null;
-  const retryPrivateReads=()=>setRetry(value=>value+1);
+  const retryPrivateReads=()=>{if(!readsBusy&&actionFlight.current===null)setRetry(value=>value+1);};
+  // React's busy state is rendered asynchronously; a second event can
+  // otherwise enter a mutation or download before that state is committed.
+  function beginReleaseAction(){
+    if(readsBusy||actionFlight.current!==null)return null;
+    const ticket={},epoch=routeEpoch.current;
+    actionFlight.current=ticket;
+    const current=()=>routeEpoch.current===epoch&&actionFlight.current===ticket;
+    const finish=()=>{if(current()){actionFlight.current=null;setBusy(false);}};
+    return {current,finish};
+  }
 
   // Reset only when the owner/route identity changes, not on Retry. A retry
   // must preserve the frozen request and its idempotency key after an
@@ -166,10 +206,10 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setSelectedRevision(null);setRevisionError('');setPointer(null);
     setVisibility('UNLISTED');setFrozen(null);setPinnedPreviewReceipt(null);
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setGrants(null);setRevokedGrantIds(new Set());setGrantListError('');
     setConfirmRevoke(false);setConfirmBlock(null);setNotice('');setError('');setBusy(false);
-    operation.current=null;grantOperation.current=null;blockOperation.current=null;blockFlight.current=null;
+    operation.current=null;grantOperation.current=null;blockOperation.current=null;actionFlight.current=null;
   },[port,id,mode]);
 
   useEffect(()=>{
@@ -181,7 +221,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         if (!active) return;
         if (!reply.data) {setError(reply.error?.message ?? 'Portfolio unavailable.');return;}
         setRecord(reply.data);
-        setComparison(previous=>previous&&previous.draftRevision!==reply.data!.revision?null:previous);
+        setComparison(previous=>previous?.targetKind==='SAVED_DRAFT'&&previous.draftRevision!==reply.data!.revision?null:previous);
         if (mode==='staging'||mode==='publish'||mode==='releases') {
           setReadPhase('revisions');
           const saved=await port.listOwnerPortfolioRevisions(id);
@@ -245,8 +285,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   async function downloadStaticPreview(){
     if (readsBusy || !frozen || historySelection!==null || ackSelection!==null || result?.status!=='PREVIEW_ONLY' || !result.previewHtml) return;
     const reviewedHtml=result.previewHtml;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');setStaticArchiveSha(null);
     try {
       const {exportStandaloneStaticPreview}=await import('../../../packages/storage-adapters/src/static-preview-export.ts');
@@ -261,14 +301,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       setNotice('Offline static preview download prepared. ZIP structure and HTML digest checked.');
     } catch {
       if (current()) {setResult(null);setError('The frozen revision could not be exported. Run preflight again to check eligibility.');}
-    } finally {if (current()) setBusy(false);}
+    } finally {finish();}
   }
 
   /** Compare authenticated saved snapshots, not a live site or unsaved buffer. */
   async function compareFrozenWithSaved(){
     if(!frozen||readsBusy||historySelection!==null||ackSelection!==null)return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setComparison(null);setError('');setNotice('');
     try{
       const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
@@ -283,19 +323,50 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       if(draft.data.revision===frozen.revision&&canonicalValue(before)!==canonicalValue(after))
         throw new Error('Same-revision snapshots disagree.');
       setComparison({requestId:frozen.requestId,frozenRevision:frozen.revision,
-        draftRevision:draft.data.revision,files:snapshotDelta(before.files,after.files),
+        draftRevision:draft.data.revision,targetKind:'SAVED_DRAFT',files:snapshotDelta(before.files,after.files),
         slots:snapshotDelta(before.slots,after.slots),stashes:snapshotDelta(before.stashes,after.stashes),
         frozenSnapshot:before,draftSnapshot:after,title:draft.data.title});
     }catch{
       if(current())setError('The frozen revision and current saved draft could not both be verified. No comparison was produced.');
-    }finally{if(current())setBusy(false);}
+    }finally{finish();}
+  }
+
+  /** A historical comparison reads both actual immutable owner pins.
+   * Neither historical acknowledgement nor private candidate means live. */
+  async function compareFrozenHistory(){
+    if(mode!=='releases'||!frozen||!record||readsBusy||historySelection!==null||ackSelection!==null)return;
+    const known=frozenRequests?.filter(item=>item.requestId===comparisonTarget)??[];
+    const target=known.length===1?known[0]:undefined;
+    if(!target||target.requestId===frozen.requestId||target.portfolioId!==id||target.status!=='FROZEN')return;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
+    setBusy(true);setComparison(null);setError('');setNotice('');
+    try{
+      const before=await port.loadOwnerFrozenRelease(frozen.requestId);
+      if(!current())return;
+      if(frozen.portfolioId!==id||!matchesFrozenPin(before.data,frozen))throw new Error('Selected frozen pin not verified.');
+      const after=await port.loadOwnerFrozenRelease(target.requestId);
+      if(!current())return;
+      if(!matchesFrozenPin(after.data,target))throw new Error('Comparison frozen pin not verified.');
+      if(before.data.loadedRevision===after.data.loadedRevision&&
+         (before.data.loadedSnapshotSha256!==after.data.loadedSnapshotSha256||
+          canonicalValue(before.data.snapshot)!==canonicalValue(after.data.snapshot)))
+        throw new Error('Same-revision pins disagree.');
+      const a=before.data.snapshot,b=after.data.snapshot;
+      setComparison({requestId:frozen.requestId,frozenRevision:frozen.revision,
+        draftRevision:target.revision,targetKind:'FROZEN',targetRequestId:target.requestId,
+        files:snapshotDelta(a.files,b.files),slots:snapshotDelta(a.slots,b.slots),
+        stashes:snapshotDelta(a.stashes,b.stashes),frozenSnapshot:a,draftSnapshot:b,title:record.title});
+    }catch{
+      if(current())setError('Both exact owner-private frozen revisions could not be verified. No historical comparison was produced.');
+    }finally{finish();}
   }
 
   /** Bounded, importable private source format, not static rendered HTML. */
   async function downloadFrozenEditable(){
     if(!frozen||readsBusy||historySelection!==null||ackSelection!==null||editableConsent!==frozen.requestId)return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');setSourceArchiveSha(null);
     try{
       const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
@@ -316,13 +387,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       setNotice('Private editable source archive prepared and round-trip checked. It has not been published.');
     }catch{
       if(current())setError('The exact private source archive could not be verified or exported. No download was prepared.');
-    }finally{if(current())setBusy(false);}
+    }finally{finish();}
   }
 
   async function inspect(){
     if (!record?.revision || selectedRevision===null || readsBusy || historySelection!==null || ackSelection!==null) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');setResult(null);setStaticArchiveSha(null);
     try {
       let request=frozen;
@@ -360,7 +431,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       setResult(prepareSafeStaticPreview({...evidence.data,plan:buildPlan(evidence.data.snapshot)}));
     } catch {
       if (current()) setError('The frozen revision could not be checked. Nothing was published.');
-    } finally {if (current()) setBusy(false);}
+    } finally {finish();}
   }
 
   /** Registration is a real owner-scoped RPC, not a published reviewer URL.
@@ -371,8 +442,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     // frozen revision. The draft or an unverifiable pin is not a substitute.
     if (!frozen || grant || readsBusy || mode!=='staging' || historySelection!==null ||
         pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');
     try {
       // Recheck owner pin immediately before registering, not merely the old canvas.
@@ -396,22 +467,29 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       }
       setGrantNow(now);
       setGrant({grantId,requestId:frozen.requestId,expiresAt,status:'REGISTERED_UNSERVABLE'});
-      const updated=await port.listOwnerReviewerGrants(id);
-      if (!current()) return;
-      if (updated.data) {setGrants(updated.data);setGrantListError('');}
-      else setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
+      // A verified registration receipt is durable independently of the list
+      // readback. Do not report it as failed or retain a spent operation key
+      // just because refreshing the owner catalogue throws.
       grantOperation.current=null;
       setNotice(Date.parse(expiresAt)<=Date.now()
         ? 'The recorded reviewer grant has expired. No reviewer link is available.'
         : 'Private reviewer grant registered. The link remains disabled pending hosted delivery verification.');
+      try{
+        const updated=await port.listOwnerReviewerGrants(id);
+        if (!current()) return;
+        if (updated.data) {setGrants(updated.data);setGrantListError('');}
+        else setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
+      }catch{
+        if(current())setGrantListError('Grant registered, but the owner-only saved-grant list could not be refreshed.');
+      }
     } catch {if (current()) setError('Reviewer registration failed. Retry the same request.');}
-    finally {if (current()) setBusy(false);}
+    finally {finish();}
   }
 
   async function revokeReviewer(){
     if (!grant || grant.status==='REVOKED' || revokedGrantIds.has(grant.grantId) || readsBusy || !confirmRevoke) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');
     try {
       const response=await port.revokeOwnerReviewerGrant(grant.grantId);
@@ -422,23 +500,27 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       }
       setRevokedGrantIds(previous=>new Set([...previous,grant.grantId]));
       setGrant(previous=>previous?.grantId===grant.grantId ? {...previous,status:'REVOKED'} : previous);
-      const refreshed=await port.listOwnerReviewerGrants(id);
-      if (!current()) return;
-      if (refreshed.data) {setGrants(refreshed.data);setGrantListError('');}
-      else setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
+      // A confirmed revoke is terminal for this grant ID, even if the
+      // subsequent catalogue read throws or returns an unavailable result.
       setConfirmRevoke(false);
       setNotice('Private reviewer grant revoked. External delivery revocation has not been independently verified.');
+      try{
+        const refreshed=await port.listOwnerReviewerGrants(id);
+        if (!current()) return;
+        if (refreshed.data) {setGrants(refreshed.data);setGrantListError('');}
+        else setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
+      }catch{
+        if(current())setGrantListError('Revocation succeeded but the reviewer list could not be refreshed.');
+      }
     } catch {if (current()) setError('Reviewer revocation could not be checked. Retry safely.');}
-    finally {if (current()) setBusy(false);}
+    finally {finish();}
   }
 
   async function blockCandidate(){
     const target=confirmBlock;
-    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||busy||blockFlight.current) return;
-    const epoch=routeEpoch.current;
-    const current=()=>epoch===routeEpoch.current;
-    const flight={};
-    blockFlight.current=flight;
+    if (!target||target.portfolioId!==id||target.status!=='PREPARED_PRIVATE'||readsBusy) return;
+    const action=beginReleaseAction();if(!action)return;
+    const {current,finish}=action;
     setBusy(true);setError('');setNotice('');
     try {
       let attempt=blockOperation.current;
@@ -502,16 +584,16 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     } catch {
       if (current()) setError('The private block or its readback could not be confirmed. Review the retained operation before retrying.');
     } finally {
-      if(blockFlight.current===flight){blockFlight.current=null;if(current())setBusy(false);}
+      finish();
     }
   }
 
   /** A latest-50 catalogue omission is not an authorization failure.
    * Reuse an older request only after checking the exact owner-RPC frozen pin. */
   async function selectFrozenRequest(request:OwnerFrozenRequest){
-    if (busy||historySelectionPending) return;
+    if (readsBusy||actionFlight.current!==null) return;
     setAckSelection(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     const visible=revisions?.find(item=>item.revision===request.revision);
     if (request.portfolioId!==id||request.status!=='FROZEN'||
         (visible!==undefined&&visible.snapshotSha256!==request.snapshotSha256)) {
@@ -560,18 +642,17 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
    * the bounded frozen-request catalogue. The loader checks exact request ID.
    */
   async function selectAcknowledgedRequest(row:PrivateReleaseAcknowledgement){
-    if(mode!=='releases'||readsBusy||row.portfolioId!==id)return;
+    if(mode!=='releases'||readsBusy||actionFlight.current!==null||row.portfolioId!==id)return;
     const epoch=++historySelectionEpoch.current;
     setHistorySelection(null);setAckSelection(row);setHistorySelectionPending(true);setHistorySelectionError('');
     setFrozen(null);setPinnedPreviewReceipt(null);setPinnedPreviewError('');setResult(null);
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setConfirmRevoke(false);setError('');setNotice('');
     try{
       const response=await port.loadOwnerFrozenRelease(row.requestId);
       if(epoch!==historySelectionEpoch.current)return;
       const pin=response.data;
-      if(!pin||pin.frozen.portfolioId!==id||!matchesFrozenPin(pin,pin.frozen)||
-         revisions?.some(item=>item.revision===pin.loadedRevision&&item.snapshotSha256!==pin.loadedSnapshotSha256)){
+      if(!matchesAcknowledgedPin(pin,row,id,frozenRequests,revisions)){
         setHistorySelectionError('The acknowledged frozen request could not be verified. No current draft was substituted.');
         return;
       }
@@ -593,7 +674,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   function cancelHistoricalSelection(){
     historySelectionEpoch.current+=1;
     setHistorySelection(null);setAckSelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
-    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     // Returning to the saved draft requires an explicit, listed selection;
     // do not leave an older absent-in-list revision silently selected.
     setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
@@ -625,6 +706,21 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       document.removeEventListener('visibilitychange',refresh);
     };
   },[mode,grant,grants]);
+  // Revocation may also have been recorded by another owner session.
+  // A successful catalogue read can establish terminal state, but absence
+  // from the bounded catalogue never establishes either active or revoked.
+  useEffect(()=>{
+    if(!grants)return;
+    const terminalIds=new Set(grants.filter(item=>item.revokedAt!==null).filter(item=>!!item.revokedAt).map(item=>item.grantId));
+    if(!terminalIds.size)return;
+    setRevokedGrantIds(previous=>{
+      if([...terminalIds].every(grantId=>previous.has(grantId)))return previous;
+      return new Set([...previous,...terminalIds]);
+    });
+    setGrant(previous=>previous&&previous.status!=='REVOKED'&&terminalIds.has(previous.grantId)
+      ? {...previous,status:'REVOKED'}:previous);
+    if(grant&&terminalIds.has(grant.grantId))setConfirmRevoke(false);
+  },[grants,grant]);
   const grantExpired=grant!==null && Date.parse(grant.expiresAt)<=grantNow;
   return <section aria-labelledby="release-title" data-release-mode={mode} className="ws-owner-page ws-release-page">
     <div className="ws-heading">
@@ -640,7 +736,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {notice && <p role="status" className="ws-field-hint">{notice}</p>}
     {!record && !error && readPhase==='portfolio' && <ReleasePending label="Loading private release details…" detail />}
-    {error && <button type="button" className="ws-secondary" disabled={busy||historySelectionPending} onClick={()=>{setError('');setRetry(value=>value+1);}}>
+    {error && <button type="button" className="ws-secondary" disabled={readsBusy} onClick={()=>{if(actionFlight.current===null&&!readsBusy){setError('');retryPrivateReads();}}}>
       Retry private release check</button>}
     {record && <div className="ws-project-detail ws-owner-columns">
       {mode==='staging' && <aside className="ws-project-aside ws-release-visual" aria-labelledby="staging-visual-title">
@@ -722,13 +818,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {(pointer.status==='PREPARED_PRIVATE'||confirmBlock||blockOperation.current) && <div className="ws-release-action">
               <h3>Withdraw private candidate</h3>
               <p>Blocking the pointer withdraws its database delivery route and pending delivery state while preserving the saved draft. External HTTP and CDN revocation still require independent verification.</p>
-              {!confirmBlock ? <button type="button" className="ws-secondary" disabled={busy||historySelectionPending}
+              {!confirmBlock ? <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>setConfirmBlock(blockOperation.current?.target??pointer)}>
                 {blockOperation.current?'Review pending private block':'Review private block'}</button> : <div className="ws-release-confirm">
                 <p>Block this private candidate reviewed at generation {confirmBlock.generation}?</p>
                 <p className="ws-field-hint">The current pointer is rechecked before submission. The service blocks the current pointer without an atomic expected-generation condition; a concurrent update can still change the target. A recorded block is not proof of public revocation.</p>
                 {blockOperation.current?.receipt&&<p role="status">A database receipt was recorded. Retry checks current state without submitting another block.</p>}
-                <button type="button" className="ws-primary" disabled={busy||historySelectionPending} onClick={()=>void blockCandidate()}>
+                <button type="button" className="ws-primary" disabled={readsBusy} onClick={()=>void blockCandidate()}>
                   {busy?'Checking…':blockOperation.current?.receipt?'Recheck private pointer':'Confirm private block'}</button>
                 <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setConfirmBlock(null)}>
                   {blockOperation.current?'Close review (keep operation)':'Cancel'}</button>
@@ -748,14 +844,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
             onRetry={retryPrivateReads} retryDisabled={readsBusy}
             onSelect={request=>void selectFrozenRequest(request)}
-            selectionDisabled={busy||historySelectionPending}
+            selectionDisabled={readsBusy}
             activeRequestId={frozen?.requestId}
             candidateRequestId={pointer?.candidateRequestId??undefined} />
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
             {historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the exact private frozen revision…" />}
             {historySelectionError&&<p role="alert">{historySelectionError}</p>}
             {historySelectionError&&!historySelectionPending&&
-              <button type="button" className="ws-secondary" disabled={busy}
+              <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={cancelHistoricalSelection}>Cancel frozen pin selection</button>
@@ -777,7 +873,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             onClick={retryPrivateReads}>Retry saved revisions</button></>}
           {revisions===null&&!revisionError&&readPhase==='revisions'&&<ReleasePending label="Loading saved revisions…" />}
           <label>Saved revision
-            <select aria-label="Saved revision" value={selectedRevision??''} disabled={busy||historySelection!==null||!!frozen||!revisions?.length}
+            <select aria-label="Saved revision" value={selectedRevision??''} disabled={readsBusy||historySelection!==null||!!frozen||!revisions?.length}
               onChange={event=>{
                 const next=Number(event.target.value);
                 setSelectedRevision(revisions?.some(row=>row.revision===next)?next:null);
@@ -794,7 +890,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           </label>
           {revisions?.length===50 && <p className="ws-field-hint">Showing the latest 50 saved revisions.</p>}
           <label>Future visibility intent
-            <select value={visibility} disabled={busy||historySelection!==null||!!frozen} onChange={event=>{
+            <select value={visibility} disabled={readsBusy||historySelection!==null||!!frozen} onChange={event=>{
               setVisibility(event.target.value==='PUBLIC'?'PUBLIC':'UNLISTED');
               operation.current=null;
             }}><option value="UNLISTED">Unlisted (not activated)</option>
@@ -818,7 +914,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   historySelectionEpoch.current+=1;
                   setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
                   setFrozen(null);setResult(null);setGrant(null);setConfirmRevoke(false);
-                  setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+                  setComparison(null);setComparisonTarget('');setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
                   setSelectedRevision(revisions?.some(row=>row.revision===record?.revision)
                     ? record!.revision : null);
                   operation.current=null;grantOperation.current=null;
@@ -827,7 +923,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
             onRetry={retryPrivateReads} retryDisabled={readsBusy}
             onSelect={request=>void selectFrozenRequest(request)}
-            selectionDisabled={busy||historySelectionPending}
+            selectionDisabled={readsBusy}
             activeRequestId={frozen?.requestId} />
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
             {mode==='publish'&&historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the exact private frozen revision…" />}
@@ -836,7 +932,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               historySelection.portfolioId===id&&historySelection.status==='FROZEN'&&
               !revisions?.some(row=>row.revision===historySelection.revision&&
                 row.snapshotSha256!==historySelection.snapshotSha256) &&
-              <button type="button" className="ws-secondary" disabled={busy}
+              <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={cancelHistoricalSelection}>Cancel frozen pin selection</button>
@@ -862,7 +958,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <h3 id="reviewer-grant-title">Reviewer access</h3>
             <p>Register a time-limited owner-private grant. No reviewer URL can be shared until host authorization, expiry and revocation are proven.</p>
             {!grant ? <>
-              <label>Grant lifetime<select disabled={busy||!!grantOperation.current} value={validMinutes}
+              <label>Grant lifetime<select disabled={readsBusy||!!grantOperation.current} value={validMinutes}
                 onChange={event=>{setValidMinutes(Number(event.target.value));grantOperation.current=null;}}>
                 <option value={30}>30 minutes</option><option value={60}>1 hour</option>
                 <option value={1440}>24 hours</option></select></label>
@@ -927,6 +1023,21 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <p>Compare the immutable pin with the latest saved owner draft, not a live website. Unsaved changes are excluded.</p>
             <button className="ws-secondary" type="button" disabled={readsBusy} onClick={()=>void compareFrozenWithSaved()}>
               {busy?'Checking…':'Compare frozen revision with saved draft'}</button>
+            {mode==='releases'&&<div className="ws-release-action" role="group" aria-label="Compare historical frozen revisions">
+              <h4>Compare with another frozen request</h4>
+              <p>Both immutable snapshots are loaded again from the owner service. This is not a live-site comparison or a rollback.</p>
+              <label>Other frozen request
+                <select aria-label="Other frozen request" value={comparisonTarget}
+                  disabled={readsBusy||!frozenRequests?.some(item=>item.requestId!==frozen.requestId)}
+                  onChange={event=>{if(actionFlight.current===null){setComparisonTarget(event.target.value);setComparison(null);}}}>
+                  <option value="">Select a different frozen request</option>
+                  {frozenRequests?.filter(item=>item.requestId!==frozen.requestId).map(item=>
+                    <option key={item.requestId} value={item.requestId}>Revision {item.revision} · {item.requestId.slice(0,8)}</option>)}
+                </select>
+              </label>
+              <button className="ws-secondary" type="button" disabled={readsBusy||!comparisonTarget}
+                onClick={()=>void compareFrozenHistory()}>Compare two frozen requests</button>
+            </div>}
             {comparison?.requestId===frozen.requestId&&<FrozenComparisonResults comparison={comparison}/>}
           </section>}
         {(mode==='publish'||mode==='releases')&&frozen&&!historySelection&&
@@ -944,6 +1055,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {sourceArchiveSha?.requestId===frozen.requestId&&<dl className="ws-release-facts">
               <dt>Downloaded archive SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{sourceArchiveSha.sha256}</code></dd>
             </dl>}
+            <FrozenArchiveReopen key={frozen.requestId+':source'} port={port} request={frozen} disabled={readsBusy} kind="source"/>
             <h4>Static preview ZIP</h4>
             <p>A separate scriptless rendered HTML preview with a SHA-256 file manifest. It excludes editable source and unsupported media; no hosted URL is created.</p>
             {mode==='releases'?<>
@@ -958,6 +1070,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Static archive SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staticArchiveSha.sha256}</code></dd>
               <dt>Rendered HTML SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staticArchiveSha.htmlSha256}</code></dd>
             </dl>}
+            <FrozenArchiveReopen key={frozen.requestId+':static'} port={port} request={frozen} disabled={readsBusy} kind="static"/>
           </section>}
       </div>
       {mode!=='staging' && mode!=='publish' && <aside className="ws-project-aside">
@@ -1002,7 +1115,7 @@ function mergeReleaseAcknowledgements(portfolioId:string,previous:readonly Priva
     seen.add(row.intentId);
   }
   const last=page.items.at(-1);
-  if(page.nextCursor!==null&&(!last||page.nextCursor.portfolioId!==portfolioId||
+  if(page.nextCursor!==null&&(!last||page.nextCursor.version!==1||page.nextCursor.portfolioId!==portfolioId||
      page.nextCursor.intentId!==last.intentId||page.nextCursor.verifiedAt!==last.verifiedAt))
     throw new Error('Release acknowledgement cursor is inconsistent.');
   return {items:[...previous,...page.items],nextCursor:page.nextCursor};
@@ -1023,7 +1136,7 @@ function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect
   const epoch=useRef(0);
   const flight=useRef<object|null>(null);
   async function read(after:PrivateReleaseAcknowledgementCursor|null,previous:readonly PrivateReleaseAcknowledgement[],expected:number){
-    if(!available||epoch.current!==expected||flight.current!==null)return;
+    if(!available||selectionDisabled||epoch.current!==expected||flight.current!==null)return;
     const ticket={};
     flight.current=ticket;setPending(true);setError('');
     const current=()=>epoch.current===expected&&flight.current===ticket;
@@ -1065,7 +1178,7 @@ function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect
           <p>Frozen request <code style={{overflowWrap:'anywhere'}}>{row.requestId}</code></p>
         </div><div>
           <button type="button" className="ws-secondary" disabled={selectionDisabled||pending}
-            onClick={()=>onSelect(row)}>{request?'Inspect matching frozen revision '+request.revision:'Inspect acknowledged frozen request'}</button>
+            onClick={()=>{if(!selectionDisabled&&flight.current===null)onSelect(row);}}>{request?'Inspect matching frozen revision '+request.revision:'Inspect acknowledged frozen request'}</button>
           {!request&&<p className="ws-field-hint">Outside the loaded catalogue; the exact owner pin will be checked before inspection.</p>}
         </div></li>;
       })}</ol>}
@@ -1112,11 +1225,80 @@ function FrozenRequestHistory({requests,error,pending,onRetry,retryDisabled,onSe
 }
 
 
+/** The reopened file never leaves the device. A fresh owner-scoped pin is
+ * required before claiming a match; no import, save, upload or publication. */
+type ReopenedArchiveEvidence=
+  | {kind:'source';receipt:Awaited<ReturnType<typeof reopenFrozenArchive>>}
+  | {kind:'static';receipt:{archiveSha256:string;htmlSha256:string;previewOnly:true;publicUrl:null}};
+
+function FrozenArchiveReopen({port,request,disabled,kind}:{
+  port:SupabaseBrowserAuthPort;request:PrivateFrozenRequest;disabled:boolean;kind:'source'|'static';
+}){
+  const isSource=kind==='source';
+  const [pending,setPending]=useState(false);
+  const [error,setError]=useState('');
+  const [result,setResult]=useState<ReopenedArchiveEvidence|null>(null);
+  const epoch=useRef(0);
+  const flight=useRef<object|null>(null);
+  useLayoutEffect(()=>{
+    epoch.current+=1;flight.current=null;setPending(false);setResult(null);setError('');
+    return()=>{epoch.current+=1;flight.current=null;};
+  },[port,request.requestId,request.snapshotSha256,kind]);
+  async function reopen(file:File){
+    if(disabled||flight.current!==null)return;
+    const ticket={},expected=epoch.current;
+    const current=()=>flight.current===ticket&&epoch.current===expected;
+    flight.current=ticket;setPending(true);setError('');setResult(null);
+    try{
+      if(!Number.isSafeInteger(file.size)||file.size<22||file.size>(isSource?2:1)*1024*1024)
+        throw new Error('Invalid archive size.');
+      const pin=await port.loadOwnerFrozenRelease(request.requestId);
+      if(!current())return;
+      if(!matchesFrozenPin(pin.data,request))throw new Error('Frozen pin unavailable.');
+      if(isSource){
+        const receipt=await reopenFrozenArchive(file,pin.data.snapshot);
+        if(current())setResult({kind:'source',receipt});
+      }else{
+        const bytes=new Uint8Array(await file.arrayBuffer());
+        if(!current())return;
+        if(bytes.byteLength!==file.size)throw new Error('Incomplete static preview archive read.');
+        const {verifyStandaloneStaticPreview}=await import('../../../packages/storage-adapters/src/static-preview-export.ts');
+        if(!current())return;
+        const receipt=await verifyStandaloneStaticPreview({...pin.data,plan:buildPlan(pin.data.snapshot)},bytes);
+        if(current())setResult({kind:'static',receipt});
+      }
+    }catch{
+      if(current())setError('The selected ZIP could not be reopened and matched to this exact owner-private frozen revision. No project was changed.');
+    }finally{
+      if(current()){flight.current=null;setPending(false);}
+    }
+  }
+  return <div className="ws-release-action" role="group" aria-label={isSource?'Reopen editable frozen archive':'Reopen static frozen archive'}>
+    <h4>{isSource?'Reopen an editable archive':'Reopen a static preview archive'}</h4>
+    <p>{isSource?'Choose a downloaded source ZIP to check it against this exact frozen revision.':'Choose a downloaded static preview ZIP to verify its HTML and manifest against the current trusted renderer for this exact frozen revision. Older renderer versions may require a new download.'} This reads the file locally and does not import, execute, upload or change a project.</p>
+    <label>{isSource?'Editable source ZIP':'Static preview ZIP'}
+      <input type="file" accept=".zip,application/zip" disabled={disabled||pending}
+        onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
+          if(file)void reopen(file);}}/>
+    </label>
+    {pending&&<p role="status">Reopening and checking private archive…</p>}
+    {error&&<p role="alert">{error}</p>}
+    {result?.kind==='source'&&<div role="status"><p>Archive contents match the frozen snapshot: {result.receipt.files} files, {result.receipt.slots} slots, {result.receipt.stashes} stash entries.</p>
+      <p>Reopened ZIP SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.receipt.sha256}</code></p>
+      <p>Uploaded media and other revisions are not verified by this source archive.</p></div>}
+    {result?.kind==='static'&&<div role="status"><p>Static preview ZIP matches the trusted frozen renderer. No archive HTML was executed.</p>
+      <p>Reopened ZIP SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.receipt.archiveSha256}</code></p>
+      <p>Rendered HTML SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.receipt.htmlSha256}</code></p>
+      <p>This is a local preview, not evidence of public delivery or media portability.</p></div>}
+  </div>;
+}
+
 function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
+  const targetLabel=comparison.targetKind==='FROZEN'?'Frozen revision':'Saved draft revision';
   const groups=[['Project files',comparison.files],['Component slots',comparison.slots],
     ['Stash entries',comparison.stashes]] as const;
   return <div className="ws-release-diagnostics" aria-label="Verified private snapshot comparison">
-    <p role="status">Private frozen revision {comparison.frozenRevision} compared with saved draft revision {comparison.draftRevision}.</p>
+    <p role="status">Private frozen revision {comparison.frozenRevision} compared with {targetLabel.toLowerCase()} {comparison.draftRevision}.</p>
     {groups.map(([name,items])=><details key={name}>
       <summary>{name}: {items.length} {items.length===1?'difference':'differences'}</summary>
       {items.length?<ul>{items.map(item=><li key={item.key}><strong>{item.kind}</strong> · <code style={{overflowWrap:'anywhere'}}>{item.key}</code>
@@ -1131,7 +1313,7 @@ function FrozenComparisonResults({comparison}:{comparison:FrozenComparison}){
       <p>Read-only simulations of saved snapshots using the current portfolio title. Custom source is never executed here.</p>
       <h4>Frozen revision {comparison.frozenRevision}</h4>
       <div className="ws-release-visual-canvas"><PortfolioCanvas snapshot={comparison.frozenSnapshot} title={comparison.title} simulation keyboardScroll/></div>
-      <h4>Saved draft revision {comparison.draftRevision}</h4>
+      <h4>{targetLabel} {comparison.draftRevision}</h4>
       <div className="ws-release-visual-canvas"><PortfolioCanvas snapshot={comparison.draftSnapshot} title={comparison.title} simulation keyboardScroll/></div>
     </details>
   </div>;
