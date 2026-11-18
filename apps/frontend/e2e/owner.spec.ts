@@ -1367,6 +1367,12 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
   await expect(drawer.getByLabel('Summary (optional)')).toHaveValue('Preserve this private form on conflict');
   await expect(drawer).toBeVisible();
+  // S2 uncertainty fence: a 409 is not permission for an immediate second insert.
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await drawer.getByRole('button',{name:'Check saved project before retry'}).click();
+  await expect(drawer.getByRole('alert')).toContainText('No matching saved project was found');
+  await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeEnabled();
   await drawer.getByRole('button',{name:'Save project'}).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
@@ -2556,6 +2562,92 @@ test('B16 verified owner and workspace glyph pending states are real, decorative
   }finally{releaseAuth();releaseRecords();}
 });
 
+test('B16 WF-012 real uncertain quick-add checks durable insert and acknowledged readback without duplicate writes',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and S2 uncertainty fence required.');
+  test.setTimeout(115_000);
+  const owner=await localUser('S6 quick-add uncertain owner');
+  await page.setViewportSize({width:1600,height:1000});
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  let mode:'before503'|'lostAck'|'read503'|'real'='before503';
+  let postCount=0,committed=0,readFailures=0;
+  let acknowledgedId:string|null=null;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/projects',async route=>{
+    const method=route.request().method();
+    if(method==='POST'){
+      postCount++;
+      if(mode==='before503'){
+        mode='real';
+        return route.fulfill({status:503,json:{message:'Disposable pre-insert outage'}});
+      }
+      const response=await route.fetch();
+      try{
+        if(response.ok()){
+          const rows=await response.json();
+          if(!Array.isArray(rows)||rows.length!==1||typeof rows[0]?.id!=='string')throw new Error('Real insert receipt missing.');
+          committed++;acknowledgedId=rows[0].id;
+          if(mode==='lostAck'){mode='real';return await route.abort('failed');}
+        }
+        await route.fulfill({response});
+      }finally{await response.dispose();}
+      return;
+    }
+    if(method==='GET'&&mode==='read503'&&acknowledgedId&&new URL(route.request().url()).searchParams.get('id')==='eq.'+acknowledgedId){
+      readFailures++;mode='real';return route.fulfill({status:503,json:{message:'Disposable post-insert read outage'}});
+    }
+    await route.continue();
+  });
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  const title=drawer.getByLabel('Project title');
+  const summary=drawer.getByLabel('Summary (optional)');
+  const slug=drawer.getByLabel('Private URL slug');
+  const repository=drawer.getByLabel('Repository URL (optional)');
+  const live=drawer.getByLabel('Live website URL (optional)');
+  const save=drawer.getByRole('button',{name:'Save project'});
+  const check=drawer.getByRole('button',{name:'Check saved project before retry'});
+  async function open(label:string,privateSlug:string,first=false){
+    await page.getByRole('button',{name:first?'Add first project':'Add project',exact:true}).click();
+    await title.fill(label);
+    // The native details disclosure survives closing and reopening the drawer.
+    if(!await slug.isVisible())await drawer.getByText('Edit private URL slug',{exact:true}).click();
+    await expect(slug).toBeVisible();
+    await slug.fill(privateSlug);await summary.fill('Durable recovery fixture');
+    await repository.fill('https://example.com/repo');await live.fill('https://example.com/live');
+  }
+  async function retain(label:string,privateSlug:string){
+    await expect(drawer).toBeVisible();await expect(check).toBeEnabled();await expect(save).toBeDisabled();
+    await expect(title).toHaveValue(label);await expect(slug).toHaveValue(privateSlug);
+    await expect(summary).toHaveValue('Durable recovery fixture');
+    await expect(repository).toHaveValue('https://example.com/repo');
+    await expect(live).toHaveValue('https://example.com/live');
+  }
+  await open('S6 before insert','s6-before-insert',true);await save.click();
+  await retain('S6 before insert','s6-before-insert');
+  expect(postCount).toBe(1);expect(committed).toBe(0);
+  await check.click();await expect(drawer.getByRole('alert')).toContainText('No matching saved project was found');
+  await expect(save).toBeEnabled();expect(postCount).toBe(1);
+  await save.click();await expect(drawer).toBeHidden();expect(postCount).toBe(2);expect(committed).toBe(1);
+  await expect(page.getByRole('link',{name:'S6 before insert'})).toBeVisible();
+  mode='lostAck';acknowledgedId=null;
+  await open('S6 lost acknowledgement','s6-lost-ack');await save.click();
+  await retain('S6 lost acknowledgement','s6-lost-ack');expect(postCount).toBe(3);expect(committed).toBe(2);
+  await check.click();await expect(drawer).toBeHidden();expect(postCount).toBe(3);
+  await expect(page.getByRole('link',{name:'S6 lost acknowledgement'})).toBeVisible();
+  mode='read503';acknowledgedId=null;
+  await open('S6 acknowledged readback','s6-readback');await save.click();
+  await retain('S6 acknowledged readback','s6-readback');expect(readFailures).toBe(1);
+  expect(postCount).toBe(4);expect(committed).toBe(3);
+  await check.click();await expect(drawer).toBeHidden();expect(postCount).toBe(4);
+  await expect(page.getByText('The acknowledged private project was verified. No additional write was made.',{exact:true})).toBeVisible();
+  await page.reload();
+  for(const label of ['S6 before insert','S6 lost acknowledgement','S6 acknowledged readback']){
+    await expect(page.getByRole('link',{name:label,exact:true})).toHaveCount(1);
+  }
+  const rows=runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug in ('s6-before-insert','s6-lost-ack','s6-readback');",owner.id);
+  expect(rows).toBe('3');expect(postCount).toBe(4);
+});
+
 test('B16 auth confirmation denial, neutral resend failures and explicit retry (injected provider boundary)', async ({page}) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Requires disposable local Supabase.');
   test.setTimeout(60_000);
@@ -3151,6 +3243,98 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
   }
 });
 
+
+test('B16 release pending glyph reflects real owner read, failure and explicit recovery',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S4 release pending UI and disposable local Supabase.');
+  test.setTimeout(75_000);
+  const owner=await localUser('S6 release pending');
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 release pending fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 release pending fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const portfolioId=editorPath.split('/').find(segment=>/^[0-9a-f-]{36}$/i.test(segment));
+  if(!portfolioId)throw new Error('Local portfolio ID missing.');
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  let failure=true,heldReads=0;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/portfolios'&&url.searchParams.get('id')==='eq.'+portfolioId,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(failure){heldReads++;await held;return route.fulfill({status:503,json:{message:'S6 simulated release read outage'}});}
+    await route.continue();
+  });
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const section=page.locator('.ws-release-page');
+  try{
+    await page.goto(editorPath.replace('/edit','/staging'),{waitUntil:'domcontentloaded'});
+    await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toBeVisible();
+    expect(heldReads>0).toBe(true);
+    const glyph=section.locator('.glyph-skeleton[aria-hidden="true"]');
+    await expect(glyph).toHaveCount(1);
+    await expect(glyph.locator('a,button,input,select,textarea,[tabindex="0"]')).toHaveCount(0);
+    await expect(section.locator('.ws-release-visual-canvas')).toHaveCount(0);
+    await expect(section.getByRole('button',{name:'Freeze private revision'})).toHaveCount(0);
+  }finally{release();}
+  await expect(section.getByRole('alert')).toBeVisible();
+  await expect(section.locator('.glyph-skeleton')).toHaveCount(0);
+  await expect(section.locator('.ws-release-visual-canvas')).toHaveCount(0);
+  failure=false;
+  await section.getByRole('button',{name:'Retry private release check'}).click();
+  await expect(section.locator('.ws-release-visual-canvas')).toBeVisible();
+  await expect(section.getByRole('button',{name:'Freeze private revision'})).toBeEnabled();
+  await expect(section.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
+  await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toHaveCount(0);
+});
+
+test('B16 WF-018 all five curated presets and genuine Blank persist exact authored skeletons',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and mounted private editor only.');
+  test.setTimeout(140_000);
+  await page.setViewportSize({width:1600,height:1000});
+  const owner=await localUser('S6 all preset fixtures');
+  await signIn(page,owner);
+  const cases=[
+    ['Arc','arc',['arc-hero@1','project-showcase@1','editorial-bento@1','skills@1','contact@1']],
+    ['Collage','collage',['collage-hero@1','project-showcase@1','experience@1','contact@1']],
+    ['Editorial','editorial',['editorial-bento@1','project-showcase@1','skills@1','contact@1']],
+    ['Stairs','stairs',['stepped-hero@1','editorial-bento@1','project-showcase@1','contact@1']],
+    ['Studio','studio',['arc-hero@1','project-showcase@1','experience@1','skills@1','contact@1']],
+    ['Blank','blank',[]]
+  ] as const;
+  const ids:string[]=[];
+  for(const [label,preset,layouts] of cases){
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:label,exact:true}).check();
+    await expect(page.getByRole('group',{name:'Selected layout preview'}).getByRole('heading',{name:label,exact:true})).toBeVisible();
+    const title='S6 '+label+' skeleton fixture';
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    const id=new URL(page.url()).pathname.split('/')[3]!;
+    expect(/^[0-9a-f-]{36}$/i.test(id)).toBe(true);
+    ids.push(id);
+    if(preset==='blank'){
+      await expect(page.getByText('This blank draft has no slots.',{exact:true})).toBeVisible();
+      await expect(page.getByText('No authored sections yet.',{exact:true})).toBeVisible();
+    }
+    await page.goto('/app/export');
+    await page.getByLabel('Portfolio to export').selectOption(id,{timeout:10_000});
+    const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+    const downloaded=await download.path();if(!downloaded)throw new Error('Verified private export unavailable.');
+    const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(downloaded)));
+    expect(JSON.parse(snapshot.files['kadmeion.json']).preset).toBe(preset);
+    const document=JSON.parse(snapshot.files['pages/home.page.json']);
+    expect(document.sections.map((section:{layout:string})=>section.layout)).toEqual(layouts);
+    expect(Object.values(snapshot.slots).every(slot=>Object.keys(slot.content).length===0)).toBe(true);
+    if(preset==='blank'){
+      expect(document.header).toBeNull();
+      expect(Object.keys(snapshot.slots)).toHaveLength(0);
+    }
+  }
+  expect(new Set(ids).size).toBe(cases.length);
+});
+
 test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreign denial and detach',async({page,browser})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local C05 SQL and real mounted avatar consumer.');
   test.setTimeout(90_000);
@@ -3212,7 +3396,7 @@ test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreig
   expect(await page.evaluate(async url=>{try{await fetch(url);return false;}catch{return true;}},retiredUrl)).toBe(true);
   await page.reload();await check(secondBytes,'Replacement private avatar');
   expect(storageRead!==null).toBe(true);
-  const isolated=await browser.newPage();
+  const isolated=await browser.newPage({baseURL:new URL(page.url()).origin});
   try{
     await signIn(isolated,other);await isolated.goto('/app/profile');
     const foreign=isolated.getByRole('region',{name:'Private profile avatar'});
@@ -3224,7 +3408,7 @@ test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreig
     const receipt=await signed.json();
     if(typeof receipt.access_token!=='string')throw new Error('Local foreign owner token absent.');
     const leak=await fetch(origin+storageRead!,{headers:{apikey:key,Authorization:'Bearer '+receipt.access_token},redirect:'error'});
-    expect(leak.ok()).toBe(false);await leak.body?.cancel();
+    expect(leak.ok).toBe(false);expect([400,401,403,404]).toContain(leak.status);await leak.body?.cancel();
   }finally{await isolated.close();}
   const remove=avatar.getByRole('button',{name:'Remove avatar selection'});
   await expect(remove).toBeDisabled();

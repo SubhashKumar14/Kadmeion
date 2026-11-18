@@ -450,3 +450,32 @@ test('C11 stalled HEAD cannot produce a successful revocation or hold observatio
     assert.equal(canceled,true);
   }finally{if(timer!==undefined)clearTimeout(timer);try{controller?.close();}catch{}}
 });
+
+test('B16 S9 revoked routes reject stale canonical or release metadata',async()=>{
+  for(const headers of [
+    {'Link':'</release_owner/release-fixture>; rel="canonical"'},
+    {'X-Kadmeion-Served-Sha256':'a'.repeat(64)},
+    {'Last-Modified':'Wed, 18 Nov 2026 00:00:00 GMT'}
+  ]) {
+    await assert.rejects(probeHostRevocation(input,async(_url,options)=>
+      response(404,headers,options?.method==='HEAD'?'':'Not found')),
+      {code:'UNSAFE_HEADERS'});
+  }
+});
+
+test('B16 S9 a matching digest and image/png MIME cannot establish non-PNG live media',async()=>{
+  const html='<!doctype html><title>Release</title>';
+  const fake=Buffer.from('not PNG bytes','utf8');
+  const sha=(bytes:string|Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
+  const path='/assets/'+sha(fake)+'.png';
+  const candidate={...input,candidateDirectPaths:[path],liveAssets:[{path,sha256:sha(fake)}]};
+  let withdrawals=0;
+  const http:typeof fetch=async(url,options)=>{
+    const media=new URL(String(url)).pathname===path;
+    return new Response(options?.method==='HEAD'?null:media?fake:html,{
+      headers:{'Content-Type':media?'image/png':'text/html','Cache-Control':'no-store'}});
+  };
+  await assert.rejects(verifyReleaseWithdrawal(candidate,sha(html),async()=>{withdrawals++;},http),
+    {code:'RELEASE_NOT_OBSERVED'});
+  assert.equal(withdrawals,0);
+});

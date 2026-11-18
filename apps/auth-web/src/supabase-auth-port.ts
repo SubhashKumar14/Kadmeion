@@ -1646,6 +1646,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }catch{throw mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE','Private media service is unavailable.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==this.origin+path))
+        throw mediaError('INTEGRITY','Private media response origin could not be verified.');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,attestation,path.startsWith('/storage/v1/'));
       const raw=await this.readMediaJsonBody(response,session,epoch,65536);
       this.assertOwnerImageEpoch(session,epoch);
@@ -1710,15 +1712,18 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    * Bound streamed bytes before constructing a Blob, and reject stale sessions. */
   private async readOwnerImageBytes(session:StoredSession,epoch:number,path:string,mime:OwnerPrivateImageMime,size:number):Promise<Blob> {
     this.assertOwnerImageEpoch(session,epoch);
+    const url=this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path;
     let response:Response;
     try{
-      response=await this.fetcher(this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path,{
+      response=await this.fetcher(url,{
         headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token},
         credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
       });
     }catch{throw mediaError('PROVIDER_UNAVAILABLE','Private image bytes could not be read. Retry or use the folder cover.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==url))
+        throw mediaError('INTEGRITY','Private image response origin could not be verified.');
       const declared=response.headers.get('content-length');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,false,true);
       if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
@@ -2148,9 +2153,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const assetId=reserve.assetId;
       let accepted=reserve.state==='REGISTERED',ambiguous=false;
       if(reserve.state==='PENDING_UPLOAD'){
+        const uploadUrl=this.origin+'/storage/v1/object/kadmeion-private-assets/'+path;
         let response:Response|null=null;
         try{
-          response=await this.fetcher(this.origin+'/storage/v1/object/kadmeion-private-assets/'+path,{
+          response=await this.fetcher(uploadUrl,{
             method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
               'Content-Type':format.mime,'x-upsert':'false','Cache-Control':'no-store'},
             body:file,credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
@@ -2159,6 +2165,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         let rejection:OwnerMediaError|null=null;
         try{
           this.assertOwnerImageEpoch(session,expectedEpoch);
+          if(response&&(response.redirected||(response.url&&response.url!==uploadUrl)))
+            throw mediaError('INTEGRITY','Private avatar upload response origin could not be verified.');
           accepted=response?.ok===true;
           if(response&&!accepted)rejection=await this.mediaResponseError(response,session,expectedEpoch,false,true);
           ambiguous=!response||rejection?.code==='CONFLICT'||
@@ -2367,6 +2375,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** Private owner service factory only; no collector activation or schema assumption. */
+  async ownerAnalytics(){
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const token=this.ownerEpochToken(userId,epoch);
+      const {SupabasePrivateAnalyticsService}=await import('../../../packages/contracts/src/private-analytics-service.ts');
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private analytics.');
+      const service=new SupabasePrivateAnalyticsService(this.origin,this.publishableKey,userId,token,isCurrentOwner,this.fetcher);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private analytics.');
+      return {service,ownerId:userId,adapterEpoch:epoch,isCurrentOwner};
+    });
+  }
+
   async ownerSettings() {
     return this.outcome(async () => {
       const {session,userId,epoch} = await this.ownerSession();
@@ -2519,13 +2542,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Bounded initial owner-private library. 100 is a page size, not a total. */
-  async listOwnerProjects():Promise<AuthOutcome<OwnerProject[]>> {
+  async listOwnerProjects(expectedEpoch = this.getOwnerSessionEpoch()):Promise<AuthOutcome<OwnerProject[]>> {
     return this.outcome(async()=>{
-      const {session,userId}=await this.ownerSession();
+      if(this.getOwnerSessionEpoch()!==expectedEpoch)throw new Error('Owner session changed before project loading.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(epoch!==expectedEpoch||this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))
+        throw new Error('Owner session changed before project loading.');
       const result=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS+
         '&owner_user_id=eq.'+encodeURIComponent(userId)+
         '&trashed_at=is.null&order=updated_at.desc&limit=100',session.access_token);
-      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project loading.');
+      if (this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))throw new Error('Owner session changed during project loading.');
       if (!Array.isArray(result)||result.length>100)throw new Error('Invalid owner project list response.');
       const items=result.map(row=>this.parsePrivateProject(row,userId));
       if (new Set(items.map(item=>item.id)).size!==items.length)
@@ -2607,7 +2633,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Creates an owner-private draft, never a shared or published project. */
-  async createPrivateProject(input:NewPrivateProject):Promise<AuthOutcome<OwnerProject>> {
+  async createPrivateProject(input:NewPrivateProject, expectedEpoch = this.getOwnerSessionEpoch()):Promise<AuthOutcome<OwnerProject>> {
     return this.outcome(async()=>{
       if (!input || typeof input.title!=='string' ||
         typeof input.slug!=='string' || typeof input.summary!=='string')
@@ -2628,12 +2654,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         } catch {throw new Error('A project link must be a valid HTTPS URL.');}
       }
       const repositoryUrl=urlOption(input.repositoryUrl),liveUrl=urlOption(input.liveUrl);
-      const {session,userId}=await this.ownerSession();
+      if(this.getOwnerSessionEpoch()!==expectedEpoch)throw new Error('Owner session changed before project creation.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(epoch!==expectedEpoch||this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))
+        throw new Error('Owner session changed before project creation.');
       const data=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS,session.access_token,'POST',{
         owner_user_id:userId,title,slug,summary,description:'',
         repository_url:repositoryUrl,live_url:liveUrl
       },true);
-      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
+      if (this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
       if(!Array.isArray(data)||data.length!==1)
         throw new Error('The private insert was not confirmed.');
       const created=this.parsePrivateProject(data[0],userId);
