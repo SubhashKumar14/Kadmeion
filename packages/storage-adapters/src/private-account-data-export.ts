@@ -51,7 +51,7 @@ function safeRestrictedAudit(value:unknown):boolean {
 }
 export class PrivateAccountExportError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'PROVIDER_UNAVAILABLE'|
-    'INTEGRITY'|'LIMIT_EXCEEDED'|'RATE_LIMITED'|'UNVERIFIED';
+    'INTEGRITY'|'LIMIT_EXCEEDED'|'RATE_LIMITED'|'UNVERIFIED'|'VERSION_REQUIRED';
   constructor(code:PrivateAccountExportError['code'],message:string){
     super(message);this.name='PrivateAccountExportError';this.code=code;
   }
@@ -125,6 +125,78 @@ async function verifyOwnerComponentRows(value:unknown,ownerId:string):Promise<vo
   }
 }
 
+const V2_TABLES=[...TABLES,['profile_assets','owner_user_id']] as const;
+const exactFields=(row:JsonObject,fields:readonly string[])=>
+  Object.keys(row).length===fields.length&&fields.every(field=>Object.hasOwn(row,field));
+const validDate=(value:unknown):value is string=>
+  typeof value==='string'&&value.length<=64&&Number.isFinite(Date.parse(value));
+function verifyV2ProfileAssets(records:JsonObject,ownerId:string):void {
+  const assets=records.profile_assets,profiles=records.profiles;
+  requireCondition(Array.isArray(assets)&&assets.length<=20&&Array.isArray(profiles)&&profiles.length<=1,
+    'INTEGRITY','Invalid private profile asset inventory.');
+  const ids=new Set<string>(),paths=new Set<string>(),operations=new Set<string>(),objects=new Set<string>();
+  const registered=new Set<string>();
+  for(const item of assets){
+    requireCondition(object(item)&&exactFields(item,['id','owner_user_id','operation_id','object_path','mime_type',
+      'byte_size','alt_text','state','storage_object_id','storage_version','created_at','registered_at'])&&
+      isUuid(item.id)&&item.owner_user_id===ownerId&&isUuid(item.operation_id)&&
+      item.object_path===ownerId+'/profile/'+item.operation_id+'.img'&&
+      ['image/png','image/jpeg','image/webp'].includes(String(item.mime_type))&&
+      typeof item.byte_size==='number'&&Number.isSafeInteger(item.byte_size)&&item.byte_size>=12&&item.byte_size<=MAX_ASSET_BYTES&&
+      typeof item.alt_text==='string'&&item.alt_text===item.alt_text.trim()&&
+      Array.from(item.alt_text).length>=1&&Array.from(item.alt_text).length<=500&&validDate(item.created_at)&&
+      !ids.has(item.id)&&!paths.has(item.object_path as string)&&!operations.has(item.operation_id),
+      'INTEGRITY','Invalid, duplicate or foreign private profile asset metadata.');
+    ids.add(item.id);paths.add(item.object_path as string);operations.add(item.operation_id);
+    if(item.state==='PENDING_UPLOAD'){
+      requireCondition(item.storage_object_id===null&&item.storage_version===null&&item.registered_at===null,
+        'INTEGRITY','Pending profile upload has unexpected registration evidence.');
+    }else{
+      requireCondition(item.state==='REGISTERED'&&isUuid(item.storage_object_id)&&
+        typeof item.storage_version==='string'&&item.storage_version.length>=1&&item.storage_version.length<=128&&
+        validDate(item.registered_at)&&!objects.has(item.storage_object_id),
+        'INTEGRITY','Invalid registered profile asset identity.');
+      objects.add(item.storage_object_id);registered.add(item.id);
+    }
+  }
+  for(const profile of profiles)
+    requireCondition(object(profile)&&profile.user_id===ownerId&&
+      !Object.hasOwn(profile,'avatar_last_operation_id')&&!Object.hasOwn(profile,'avatar_last_base_revision')&&
+      typeof profile.avatar_revision==='number'&&Number.isSafeInteger(profile.avatar_revision)&&profile.avatar_revision>=0&&
+      (profile.avatar_asset_id===null||(isUuid(profile.avatar_asset_id)&&registered.has(profile.avatar_asset_id))),
+      'INTEGRITY','Private avatar selection does not match registered owner metadata.');
+}
+async function verifyMetadataV2(envelope:unknown,ownerId:string,snapshotId:string,requestId:string|null):Promise<JsonObject>{
+  requireCondition(object(envelope)&&exactFields(envelope,['status','schemaVersion','requestId','snapshotId',
+    'ownerUserId','capturedAt','records','restrictedAudit','verifiedReleaseHistory','storageBytesIncluded',
+    'providerDataIncluded','deletionAllowed'])&&envelope.status==='APPLICATION_METADATA_SNAPSHOT'&&
+    envelope.schemaVersion===2&&envelope.snapshotId===snapshotId&&envelope.requestId===requestId&&
+    envelope.ownerUserId===ownerId&&validDate(envelope.capturedAt)&&envelope.storageBytesIncluded===false&&
+    envelope.providerDataIncluded===false&&envelope.deletionAllowed===false&&object(envelope.records)&&
+    exactFields(envelope.records,V2_TABLES.map(([table])=>table))&&object(envelope.restrictedAudit)&&
+    Array.isArray(envelope.verifiedReleaseHistory)&&envelope.verifiedReleaseHistory.length<=MAX_ROWS,
+    'INTEGRITY','Invalid request-bound version 2 metadata export receipt.');
+  for(const [table,column] of V2_TABLES){
+    const rows=envelope.records[table];
+    requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&rows.every(row=>object(row)&&row[column]===ownerId),
+      'INTEGRITY','Version 2 metadata has an invalid or foreign record.');
+    requireCondition(encoder.encode(JSON.stringify(rows)).byteLength<=MAX_TABLE_BYTES,
+      'LIMIT_EXCEEDED','A metadata category exceeds the supported byte limit.');
+    if(table==='private_my_component_versions')await verifyOwnerComponentRows(rows,ownerId);
+  }
+  verifyV2ProfileAssets(envelope.records,ownerId);
+  for(const row of envelope.verifiedReleaseHistory)
+    requireCondition(object(row)&&isUuid(row.intent_id)&&isUuid(row.portfolio_id)&&isUuid(row.request_id)&&
+      typeof row.html_sha256==='string'&&/^[a-f0-9]{64}$/.test(row.html_sha256)&&safeRestrictedAudit(row),
+      'INTEGRITY','Invalid verified release history.');
+  const auditKeys=['reviewerGrants','moderationCases','moderationEvents','accountExitRequests','reauthChallenges',
+    'inventorySnapshots','releasePointers','releaseEvents'];
+  requireCondition(exactFields(envelope.restrictedAudit,auditKeys),'INTEGRITY','Incomplete restricted audit projection.');
+  for(const rows of Object.values(envelope.restrictedAudit))
+    requireCondition(Array.isArray(rows)&&rows.length<=MAX_ROWS&&rows.every(row=>object(row)&&safeRestrictedAudit(row)),
+      'INTEGRITY','Version 2 audit has an invalid or forbidden record.');
+  return envelope;
+}
 function base64(bytes:Uint8Array):string {
   let binary='';
   for(let i=0;i<bytes.length;i+=8192)
@@ -220,7 +292,9 @@ export class SupabasePrivateAccountDataExporter {
         // Never surface arbitrary PostgREST details, and bound error bodies.
         try{
           const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192,signal)));
-          if(object(raw)&&raw.code==='54000'&&
+          if(object(raw)&&raw.code==='55000'&&raw.message==='PROFILE_ASSET_EXPORT_VERSION_REQUIRED'){
+            code='VERSION_REQUIRED';message='Use the profile-inclusive version 2 export; this legacy scope cannot cover the account.';
+          }else if(object(raw)&&raw.code==='54000'&&
             ['ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED','ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED'].includes(String(raw.message))){
             code='LIMIT_EXCEEDED';message='The account exceeds the supported export limits.';
           }
@@ -421,6 +495,30 @@ export class SupabasePrivateAccountDataExporter {
     return {filename:'kadmeion-account-metadata.json',mime:'application/json',
       bytes,status:'APPLICATION_METADATA_SNAPSHOT',
       storageBytesIncluded:false,providerDataIncluded:false};
+  }
+  /** Profile-inclusive metadata using the mandatory exact snapshot/request scope. */
+  async exportApplicationMetadataV2(snapshotId:string,expectedRequestId:string|null):Promise<{
+    filename:'kadmeion-account-metadata-v2.json';mime:'application/json';bytes:Uint8Array;
+    status:'APPLICATION_METADATA_SNAPSHOT';storageBytesIncluded:false;providerDataIncluded:false;
+  }>{
+    requireCondition(isUuid(snapshotId)&&(expectedRequestId===null||isUuid(expectedRequestId)),
+      'VALIDATION','Explicit version 2 inventory snapshot and request scope required.');
+    const token=await this.accessToken();
+    requireCondition(typeof token==='string'&&token.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===token,'AUTH_EXPIRED','The account session changed. Start a new export.');
+      return token;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const owner=await scoped.owner();
+    const raw=await scoped.json('/rest/v1/rpc/owner_export_account_metadata_v2',
+      12*1024*1024,{p_snapshot_id:snapshotId,p_expected_request_id:expectedRequestId});
+    const envelope=await verifyMetadataV2(raw,owner.id,snapshotId,expectedRequestId);
+    const bytes=encoder.encode(JSON.stringify(envelope));
+    enforceExportBudget(0,bytes.byteLength,12*1024*1024);
+    await sameSession();
+    return {filename:'kadmeion-account-metadata-v2.json',mime:'application/json',bytes,
+      status:'APPLICATION_METADATA_SNAPSHOT',storageBytesIncluded:false,providerDataIncluded:false};
   }
   /** Returns JSON bytes for a user-triggered local Blob download. Never uploads them. */
   async export(snapshotId:string):Promise<PrivateAccountExportArtifact> {
