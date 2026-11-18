@@ -4242,3 +4242,115 @@ test('B16 R9 actual guarded project autosave coalesces, fences CAS and owner, an
     await expect(foreignPage.getByLabel('Short description',{exact:true})).toHaveCount(0);
   }finally{await foreignPage.close();}
 });
+
+test('B16 R9 guarded project save versus real case study publication shares atomic project revision',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(90_000);
+  const owner=await localUser('R9 concurrent projection owner');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY||process.env.VITE_SUPABASE_ANON_KEY;
+  if(!key||process.env.VITE_SUPABASE_URL!==origin)throw Error('Disposable local publishable key required.');
+  const token=async()=>{
+    const response=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',redirect:'error',
+      signal:AbortSignal.timeout(15000),headers:{apikey:key!,'Content-Type':'application/json'},
+      body:JSON.stringify({email:owner.email,password:owner.password})});
+    expect(response.ok).toBe(true);const receipt=await response.json();
+    if(typeof receipt.access_token!=='string')throw Error('Missing local session.');return receipt.access_token as string;
+  };
+  const [first,second]=await Promise.all([token(),token()]);
+  const request=(path:string,access:string,body?:object)=>fetch(origin+path,{method:body?'POST':'GET',
+    redirect:'error',signal:AbortSignal.timeout(15000),headers:{apikey:key!,Authorization:'Bearer '+access,
+      'Content-Type':'application/json',Accept:'application/json',Prefer:'return=representation'},
+    ...(body?{body:JSON.stringify(body)}:{})});
+  runLocalFixtureSql("update public.profiles set handle='r9race_'||substr(replace(:'actor_id','-',''),1,12) where user_id=:'actor_id'::uuid;",owner.id);
+  // Two separate real authenticated project rows; neither is prepublished.
+  for(let n=0;n<2;n++){
+    const slug='r9-projection-race-'+n,summary='Original '+n;
+    const created=await request('/rest/v1/projects',first,{owner_user_id:owner.id,title:'R9 race '+n,
+      slug,summary,description:''});
+    expect(created.ok).toBe(true);const rows=await created.json();expect(rows).toHaveLength(1);
+    const record=rows[0];expect(record.owner_user_id).toBe(owner.id);
+    const id=record.id as string,base=record.revision as number;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/i);expect(base).toBe(0);
+    const exposure=await request('/rest/v1/project_exposure_intents',first,{owner_user_id:owner.id,
+      project_id:id,show_on_profile:false,show_case_study:true});
+    expect(exposure.ok).toBe(true);await exposure.body?.cancel();
+    const args={p_project_id:id,p_base_revision:base,p_title:record.title,p_summary:'Guarded concurrent '+n,
+      p_description:record.description,p_repository_url:record.repository_url,p_live_url:record.live_url,
+      p_confirm_projection_withdrawal:false};
+    const publish=()=>request('/rest/v1/rpc/owner_publish_case_study_projection',second,
+      {p_project_id:id,p_expected_revision:base,p_confirmation:'PUBLISH CASE STUDY'});
+    const save=()=>request('/rest/v1/rpc/owner_save_private_project_draft',first,args);
+    // Opposite dispatch order on independent records; PostgreSQL chooses winner.
+    const [write,publication]=n===0?await Promise.all([save(),publish()]):await Promise.all([publish(),save()]).then(([p,w])=>[w,p]);
+    expect([write.ok,publication.ok].filter(Boolean)).toHaveLength(1);
+    await Promise.all([write.body?.cancel(),publication.body?.cancel()]);
+    const snapshot=JSON.parse(runLocalFixtureSql("select jsonb_build_object('revision',revision,'summary',summary)::text from public.projects where id=:'item_id'::uuid and owner_user_id=:'actor_id'::uuid;",owner.id,id));
+    const projection=()=>runLocalFixtureSql("select coalesce(public.service_read_published_case_study_projection((select handle from public.profiles where user_id=:'actor_id'::uuid),(select slug from public.projects where id=:'item_id'::uuid))::text,'ABSENT');",owner.id,id);
+    if(write.ok){
+      expect(snapshot).toEqual({revision:base+1,summary:args.p_summary});expect(projection()).toBe('ABSENT');
+    }else{
+      expect(snapshot).toEqual({revision:base,summary});
+      expect(JSON.parse(projection())).toMatchObject({summary});
+      const denied=await save();expect(denied.ok).toBe(false);await denied.body?.cancel();
+      expect(JSON.parse(projection())).toMatchObject({summary});
+      const explicit=await request('/rest/v1/rpc/owner_save_private_project_draft',first,
+        {...args,p_confirm_projection_withdrawal:true});
+      expect(explicit.ok).toBe(true);expect(await explicit.json()).toMatchObject({id,revision:base+1});
+      expect(projection()).toBe('ABSENT');
+    }
+  }
+});
+
+test('B16 R9 guarded project autosave rejects a delayed acknowledgement after actual A-B-A owner switch',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(110_000);
+  const [owner,other]=await Promise.all([localUser('R9 project epoch A'),localUser('R9 project epoch B')]);
+  await signIn(page,owner);await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R9 epoch project');
+  await drawer.getByLabel('Summary (optional)').fill('A initial private summary');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await page.getByRole('link',{name:'R9 epoch project',exact:true}).click();
+  const summary=page.getByLabel('Short description',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private project overview'});
+  await expect(summary).toHaveValue('A initial private summary');
+  let accept!:()=>void,received!:()=>void,finished!:()=>void;
+  const hold=new Promise<void>(r=>{accept=r}),ack=new Promise<void>(r=>{received=r}),
+    settled=new Promise<void>(r=>{finished=r});
+  let commits=0,committed=false,legacy=0;
+  await page.route(url=>url.origin===origin&&(url.pathname==='/rest/v1/rpc/owner_save_private_project_draft'||url.pathname==='/rest/v1/rpc/update_private_project'),async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    if(new URL(route.request().url()).pathname==='/rest/v1/rpc/update_private_project'){legacy++;return route.continue();}
+    commits++;if(commits!==1)return route.continue();
+    const body=route.request().postDataJSON();
+    expect(body.p_summary).toBe('A committed before switch');expect(body.p_confirm_projection_withdrawal).toBe(false);
+    const actual=await route.fetch();
+    try{committed=actual.ok();received();await hold;await route.fulfill({response:actual}).catch(()=>{});}
+    finally{await actual.dispose();finished();}
+  });
+  const control=await page.context().newPage();
+  try{
+    await auto.check();await summary.fill('A committed before switch');await ack;
+    expect(committed).toBe(true);expect(commits).toBe(1);
+    await control.goto('/app/settings');await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);await expect(page.locator('.ws-shell')).toHaveCount(0);
+    await expect(summary).toHaveCount(0);
+    await signIn(control,other);
+    await expect(page.getByText('Project unavailable. Check your connection and session before trying again.',{exact:true})).toBeVisible();
+    await expect(summary).toHaveCount(0);
+    await expect(page.getByText('A committed before switch',{exact:true})).toHaveCount(0);
+    await control.goto('/app/settings');await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);await signIn(control,owner);
+    await expect(summary).toHaveValue('A committed before switch');await expect(auto).not.toBeChecked();
+    await summary.fill('New private A draft after return');accept();await settled;
+    await expect(summary).toHaveValue('New private A draft after return');
+    await expect(page.getByText('Private project draft autosaved.',{exact:true})).toHaveCount(0);
+    expect(commits).toBe(1);expect(legacy).toBe(0);
+    await page.getByRole('button',{name:'Save changes',exact:true}).click();
+    await expect(page.getByText('Private draft saved.',{exact:true})).toBeVisible();
+    expect(commits).toBe(2);expect(legacy).toBe(0);
+    await page.reload();await expect(summary).toHaveValue('New private A draft after return');
+    await expect(auto).not.toBeChecked();
+  }finally{accept();await control.close();}
+});
