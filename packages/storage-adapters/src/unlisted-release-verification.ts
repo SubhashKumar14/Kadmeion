@@ -529,11 +529,22 @@ export function parseAuthority(raw:unknown,expected:AuthorityIdentity,validRoute
      !gen(raw.releaseGeneration)||!gen(raw.stageGeneration)||!gen(raw.pointerGeneration)||!gen(raw.revocationGeneration,0)||!gen(raw.deliveryEpoch)||raw.deliveryEpoch>=MAX||
      raw.stageGeneration>raw.releaseGeneration||raw.releaseGeneration>raw.pointerGeneration||raw.stageGeneration<=raw.revocationGeneration||
      typeof raw.handle!=='string'||typeof raw.slug!=='string'||!validRoute(raw.handle,raw.slug)||'/'+raw.handle+'/'+raw.slug!==expected.publicPath||!digest(raw.storedHtmlSha256)||
-     !Array.isArray(raw.assetHashes)||raw.assetHashes.length>8||!raw.assetHashes.every(digest)||new Set(raw.assetHashes).size!==raw.assetHashes.length||
+     !Array.isArray(raw.assetHashes)||raw.assetHashes.length>8||![...raw.assetHashes].every(digest)||new Set(raw.assetHashes).size!==raw.assetHashes.length||
      (raw.assetHashes.length===0?raw.mediaManifest!==null:!digest(raw.mediaManifest))||(raw.verifiedAt!==null&&!ts(raw.verifiedAt)))fail();
   return Object.freeze({...raw,assetHashes:Object.freeze([...raw.assetHashes])}) as AuthorityReceipt;
 }
 function same(a:AuthorityReceipt,b:AuthorityReceipt):boolean{return keys.every(k=>k==='assetHashes'?a.assetHashes.length===b.assetHashes.length&&a.assetHashes.every((sha,i)=>sha===b.assetHashes[i]):a[k]===b[k]);}
+// Snapshot the observation before the next asynchronous authority read. No
+// mutable transport-owned result or sparse asset array may alter the receipt.
+function immutableAuthoritySample(raw:unknown):AuthoritySample|null{
+  if(!obj(raw)||!exact(raw,['htmlSha256','servedHtmlSha256','apiPath','mediaManifest','assetHashes','observedHttpRequests'])||
+     !digest(raw.htmlSha256)||!digest(raw.servedHtmlSha256)||
+     typeof raw.apiPath!=='string'||!Array.isArray(raw.assetHashes)||raw.assetHashes.length>8||
+     ![...raw.assetHashes].every(digest)||new Set(raw.assetHashes).size!==raw.assetHashes.length||
+     (raw.assetHashes.length===0?raw.mediaManifest!==null:!digest(raw.mediaManifest))||
+     !gen(raw.observedHttpRequests))return null;
+  return Object.freeze({...raw,assetHashes:Object.freeze([...raw.assetHashes])}) as AuthoritySample;
+}
 function sampleMatches(s:AuthoritySample|null,a:AuthorityReceipt):s is AuthoritySample{
   if(!s)return false;
   const alias='/api/public-portfolio?'+new URLSearchParams({handle:a.handle,slug:a.slug});
@@ -541,11 +552,12 @@ function sampleMatches(s:AuthoritySample|null,a:AuthorityReceipt):s is Authority
     Array.isArray(s.assetHashes)&&s.assetHashes.length===a.assetHashes.length&&new Set(s.assetHashes).size===s.assetHashes.length&&s.assetHashes.every(sha=>a.assetHashes.includes(sha))&&s.observedHttpRequests===4+2*a.assetHashes.length;
 }
 export async function verifyAuthority(expected:AuthorityIdentity,ports:AuthorityPorts,checkOnly=false){
-  const read=async()=>parseAuthority(await ports.read(expected.portfolioId,expected.intentId),expected,ports.validRoute);
+  const identity=Object.freeze({...expected});
+  const read=async()=>parseAuthority(await ports.read(identity.portfolioId,identity.intentId),identity,ports.validRoute);
   const first=await read();
   const acknowledged=first.verifiedAt!==null;
   if(checkOnly&&!acknowledged)fail();
-  const probe=async(indexable:boolean)=>{try{return await ports.sample(expected.publicPath,expected.htmlSha256,indexable);}catch{return null;}};
+  const probe=async(indexable:boolean)=>{try{return immutableAuthoritySample(await ports.sample(identity.publicPath,identity.htmlSha256,indexable));}catch{return null;}};
   const sampled=await probe(acknowledged);
   // An authority failure is never a compensating-write trigger.
   const after=await read();
@@ -561,7 +573,7 @@ export async function verifyAuthority(expected:AuthorityIdentity,ports:Authority
   if(acknowledged)return {status:'DELIVERY_ACKNOWLEDGED' as const,receipt:first,sample:sampled};
   if(first.deliveryEpoch>=MAX-1)fail();
   // A lost ACK is an unknown result: propagate, never recover or retry here.
-  const ack= parseAuthority(await ports.ack(first),expected,ports.validRoute);
+  const ack= parseAuthority(await ports.ack(first),identity,ports.validRoute);
   if(ack.verifiedAt===null||ack.deliveryEpoch!==first.deliveryEpoch+1||!same(first,{...ack,deliveryEpoch:first.deliveryEpoch,verifiedAt:null}))fail();
   const finalSample=await probe(true);
   const finalReceipt=await read();
