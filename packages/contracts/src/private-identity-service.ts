@@ -167,6 +167,15 @@ export class PrivateIdentityError extends Error {
   }
 }
 
+// PostgREST scalar RPCs may return an item range even with HTTP 200.
+// Accept only a complete singleton row, never a byte range or partial page.
+function completeScalarRpcRange(headers:Headers):boolean {
+  const range=headers.get('content-range');
+  const unit=headers.get('range-unit');
+  return (unit===null||unit.toLowerCase()==='items')&&
+    (range===null||range==='0-0/*'||range==='0-0/1');
+}
+
 // Only a complete 200 RPC result may acknowledge a saved preference tuple.
 // A proxy/cache partial or alternative success status is not durable proof.
 function assertSharingResponseEnvelope(response:Response,url:string):void {
@@ -174,7 +183,7 @@ function assertSharingResponseEnvelope(response:Response,url:string):void {
     throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
   if(response.status===401||response.status===403)
     throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
-  if(response.ok&&(response.status!==200||response.headers.has('content-range')))
+  if(response.ok&&(response.status!==200||!completeScalarRpcRange(response.headers)))
     throw new PrivateIdentityError('INVALID_ACK','Incomplete sharing response.');
 }
 
