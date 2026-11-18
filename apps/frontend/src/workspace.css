@@ -1343,3 +1343,25 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 /* A hero art field is editable only when it contains an actual slot button. */
 .pv-hero-art button.pv-slot{pointer-events:auto}
 .pv-hero-art button.pv-slot:focus-visible{outline-offset:-3px}
+
+/* UI-036 / UI-103: retain named workspace destinations while giving tablet
+ * and zoomed desktop layouts usable content width. The phone disclosure and
+ * desktop editor's approved compact rail remain separate breakpoints. */
+@media (720px < width < 901px){
+  .ws-shell{grid-template-columns:100px minmax(0,1fr)}
+  .ws-rail{padding:20px 8px 14px;min-width:0}
+  .ws-rail .ws-brand{padding:0 4px 24px;align-items:center}
+  .ws-rail .ws-brand .brand-letters,.ws-rail .ws-brand small{display:none}
+  .ws-rail .ws-brand .brand-symbol{width:42px;height:42px}
+  .ws-rail-label{font-size:.625rem;margin:0 0 10px;text-align:center;overflow-wrap:anywhere}
+  .ws-rail nav a{flex-direction:column;justify-content:center;gap:5px;min-width:0;
+    min-height:56px;padding:7px 2px;font-size:.6875rem;line-height:1.25;
+    text-align:center;white-space:normal;overflow-wrap:anywhere;border-bottom:3px solid transparent}
+  .ws-rail nav a svg{flex:none}
+  .ws-rail nav a span{max-width:100%;min-width:0}
+  .ws-rail nav a[aria-current=page]{border-left:0;border-bottom-color:#e8a378}
+  .ws-rail-bottom{padding:12px 0 0}
+  .ws-rail-bottom p{display:none}
+  .ws-rail-bottom button{width:100%;min-height:44px;padding:5px;font-size:.75rem;white-space:normal}
+}
+.ws-onboarding button[aria-disabled=true]{cursor:not-allowed}
