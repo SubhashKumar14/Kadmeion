@@ -617,6 +617,19 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   </>;
 }
 
+// Distinguish confirmed expiry from a stale generation without issuing an
+// ID-only restore against a changed or ambiguous Trash journal.
+function classifyTrashReadback(rows:PrivateTrashEntry[],item:PrivateTrashEntry,now:number):'CURRENT'|'EXPIRED'|'CHANGED' {
+  if(rows.length>100||!Number.isFinite(now))return 'CHANGED';
+  const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
+  const match=same[0];
+  if(same.length!==1||!match)return 'CHANGED';
+  const deadline=Date.parse(match.restore_until);
+  if(!Number.isFinite(deadline)||!Number.isFinite(Date.parse(match.trashed_at)))return 'CHANGED';
+  if(deadline<=now)return 'EXPIRED';
+  return match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until?'CURRENT':'CHANGED';
+}
+
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -679,24 +692,37 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
       !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.trashed_at===item.trashed_at))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
-      setMessage({error:true,text:'The restore deadline has passed.'});
+      setMessage({error:true,text:'The 15-day restoration window has ended.'});
       return;
     }
     inFlight.current=true;setBusy(true);setMessage(null);
+    let dispatched=false;
     try{
+      const latest=await service.list();
+      if(!current())return;
+      const checkedAt=Date.now(),state=classifyTrashReadback(latest,item,checkedAt);
+      if(state==='EXPIRED'){
+        setItems(latest);setNow(checkedAt);
+        setMessage({error:true,text:'The 15-day restoration window has ended.'});
+        return;
+      }
+      if(state!=='CURRENT')
+        throw new PrivateTrashError('INVALID_STATE','The Trash generation changed before restoration.');
+      dispatched=true;
       const receipt=await service.restore(item.item_type,item.item_id);
       if(!current())return;
-      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+      if(receipt.item_type!==item.item_type||receipt.item_id!==item.item_id||receipt.status!=='restored'||receipt.public_visibility!=='private')
         throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
       setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
       setMessage({error:false,text:'Item restored as private.'});
     }catch(error){
       if(!current())return;
-      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+      if(dispatched&&error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+        readbackRequired.current=true;uncertainRestore.current=dispatched;setNeedsReadback(true);
+        setMessage({error:true,text:dispatched?'Restore was not confirmed. Refresh Trash and review your private library before retrying.':
+          'The current Trash record could not be verified. No restore request was sent. Refresh Trash before retrying.'});
       }
     }finally{
       inFlight.current=false;if(current())setBusy(false);
@@ -746,6 +772,80 @@ async function exportDigest(bytes:Uint8Array):Promise<string>{
   const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
   return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
 }
+// Offline recovery is an inspection of a user-selected bounded file, not
+// import into this account, restoration of database rows, or an erasure grant.
+function RecoveryReopen({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false),running=useRef(false);
+  const recoveredBytes=useRef<Uint8Array|null>(null);
+  const [file,setFile]=useState<File|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [message,setMessage]=useState<Message>(null);
+  const [inspection,setInspection]=useState<{sha256:string;assets:number;bytes:number;fromZip:boolean;schemaVersion:number}|null>(null);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  useEffect(()=>{
+    alive.current=true;
+    return()=>{alive.current=false;recoveredBytes.current=null;};
+  },[]);
+  function clearInspection(){recoveredBytes.current=null;setInspection(null);setMessage(null);}
+  async function inspect(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(!file||running.current||!current())return;
+    clearInspection();
+    if(file.size<=0||file.size>16*1024*1024){setMessage({error:true,text:'Choose a nonempty recovery JSON (up to 16 MiB) or ZIP (up to 10 MiB).'});return;}
+    running.current=true;setBusy(true);
+    try{
+      const auth=await port.getUser();
+      if(!current())return;
+      if(auth.error||!auth.data?.user?.id)throw new Error('Owner identity could not be checked. Sign in again to inspect recovery data.');
+      const owner=auth.data.user.id;
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      if(!current())return;
+      if(bytes.byteLength!==file.size)throw new Error('The selected file changed while opening.');
+      const fromZip=bytes[0]===0x50&&bytes[1]===0x4b&&bytes[2]===0x03&&bytes[3]===0x04;
+      if(fromZip&&bytes.byteLength>10*1024*1024)throw new Error('The selected recovery ZIP exceeds 10 MiB.');
+      const {restoreBoundedPrivateAccountJsonFromRecoveryBundle,verifyBoundedPrivateAccountExport}=
+        await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+      if(!current())return;
+      const json=fromZip?(await restoreBoundedPrivateAccountJsonFromRecoveryBundle(bytes)).bytes:bytes;
+      const verified=await verifyBoundedPrivateAccountExport(json);
+      if(!current())return;
+      if(verified.ownerId!==owner)throw new Error('This recovery file does not match the current account.');
+      if(fromZip)recoveredBytes.current=json;
+      setInspection({sha256:verified.sha256,assets:verified.assetsChecked,bytes:verified.assetBytesChecked,fromZip,schemaVersion:verified.schemaVersion??1});
+      setMessage({error:false,text:'Recovery file passed local structure, ownership and media-digest checks.'});
+    }catch(error){
+      if(current()){recoveredBytes.current=null;setInspection(null);setMessage(failure(error));}
+    }finally{running.current=false;if(current())setBusy(false);}
+  }
+  function saveRecovered(){
+    if(!current()||running.current||!inspection?.fromZip||!recoveredBytes.current)return;
+    try{
+      downloadPrivateFile('kadmeion-reopened-private-recovery.json',recoveredBytes.current,'application/json');
+      setMessage({error:false,text:'Reconstructed private JSON download prepared.'});
+    }catch(error){if(current())setMessage(failure(error));}
+  }
+  return <SettingsCard title="Reopen a private recovery file">
+    <p>Checks a previously downloaded bounded recovery ZIP or JSON locally. No file is uploaded or imported into your account. A matching file and digest do not prove provider authenticity, current data, or complete erasure rights.</p>
+    <form onSubmit={event=>void inspect(event)}>
+      <label className="ws-export-select">Recovery ZIP or JSON
+        <input type="file" accept=".zip,.json,application/zip,application/json" disabled={busy} onChange={event=>{
+          if(!current()||running.current)return;
+          clearInspection();setFile(event.target.files?.[0]??null);
+        }}/>
+      </label>
+      <button className="ws-secondary" type="submit" disabled={!file||busy}>{busy?'Checking recovery file…':'Verify and reopen recovery file'}</button>
+    </form>
+    <Status message={message}/>
+    {inspection&&<><dl><dt>Recovery schema version</dt><dd>{inspection.schemaVersion}</dd><dt>Verified media references</dt><dd>{inspection.assets}</dd>
+      <dt>Verified media bytes</dt><dd>{inspection.bytes}</dd>
+      <dt>Reconstructed JSON SHA-256</dt><dd style={{overflowWrap:'anywhere'}}><code>{inspection.sha256}</code></dd></dl>
+      {inspection.fromZip&&<button type="button" className="ws-secondary" disabled={busy} onClick={saveRecovered}>Download reopened private recovery JSON</button>}
+      <p>Local verification only. This does not establish the provenance of the recovery file or alter storage, account access, or publication.</p>
+    </>}
+  </SettingsCard>;
+}
+
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch] = useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -851,7 +951,8 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
             capturedAt:decoded.capturedAt,scope:'Profile-inclusive private application metadata (version 2); no uploaded bytes or account-exit proof.',
             categories:categories.length,records:categories.reduce((count,rows)=>count+rows.length,0)};
         }else{
-          const result=await services.data.exportV2(captured.snapshotId,captured.requestId);
+          setMessage({error:false,text:'Preparing private recovery. Missing trusted media hashes may be verified by the owner-authorized server worker; no public access is enabled.'});
+        const result=await services.data.exportV2(captured.snapshotId,captured.requestId);
           if(!current())return;
           const {verifyBoundedPrivateAccountExport,createBoundedPrivateAccountRecoveryBundle}=
             await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
@@ -1059,6 +1160,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         ? <a href={'/app/portfolios/'+selectedPortfolio.id+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
+    <RecoveryReopen port={port}/>
     <SettingsCard title="Coverage and exclusions">
       <p>Keep downloads private. They may contain personal information and editable source. Provider credentials, session tokens, restricted admin data, external platform records, backups, caches and third-party copies are not exported.</p>
       <p>Inventory quotas and provider availability may prevent preparation. Downloading an archive does not revoke public links, validate independent hosting, restore account access, or authorize deletion. External release/retention proof remains separate.</p>
