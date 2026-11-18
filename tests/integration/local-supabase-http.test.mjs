@@ -729,6 +729,48 @@ test('account erasure removes active account data only after fresh owner confirm
   const post = (actor, rpc, body) => send('/rest/v1/rpc/' + rpc, {
     ...json(actor), method: 'POST', body
   });
+  // Register and attach a real standalone C05 avatar before account exit.
+  // Test-only trusted attestation uses the actual object bytes, not a fake digest.
+  const reservation = successful(await post(owner, 'reserve_private_profile_asset', {
+    p_operation_id: randomUUID(), p_mime_type: 'image/png',
+    p_byte_size: png.byteLength, p_alt_text: 'Local account exit avatar'
+  }), 'Reserve private avatar before erasure');
+  assert.equal(reservation.state, 'PENDING_UPLOAD');
+  const avatarObject = '/storage/v1/object/' + bucket + '/' + reservation.objectPath;
+  const avatarRead = '/storage/v1/object/authenticated/' + bucket + '/' + reservation.objectPath;
+  successful(await send(avatarObject, {
+    ...bearer(owner), method: 'POST', body: png, headers: {'Content-Type': 'image/png'}
+  }), 'Upload real private avatar');
+  successful(await post(owner, 'register_private_profile_asset', {
+    p_asset_id: reservation.assetId
+  }), 'Register private avatar');
+  const pinArgs = {p_scope: 'PROFILE', p_asset_id: reservation.assetId, p_project_id: null};
+  const pin = successful(await post(owner, 'read_owner_private_asset_pin', pinArgs), 'Read avatar storage pin');
+  const avatarBytes = await send(avatarRead, bearer(owner));
+  assert.equal(avatarBytes.ok, true); assert.deepEqual(avatarBytes.bytes, png);
+  assert.equal((await send(avatarRead, bearer(outsider))).ok, false);
+  const hash = createHash('sha256').update(avatarBytes.bytes).digest('hex');
+  successful(await send('/rest/v1/rpc/record_private_profile_asset_content_attestation', {
+    method: 'POST', key: cfg.service, bearer: cfg.service,
+    headers: {'Content-Type': 'application/json'}, body: {
+      p_asset_id: reservation.assetId, p_owner_user_id: owner.id,
+      p_storage_object_id: pin.objectId, p_storage_version: pin.version,
+      p_expected_sha256: hash
+    }
+  }), 'Trusted local avatar attestation');
+  const attached = successful(await post(owner, 'set_private_profile_avatar', {
+    p_base_revision: 0, p_asset_id: reservation.assetId, p_operation_id: randomUUID()
+  }), 'Attach attested avatar');
+  assert.equal(attached.asset.id, reservation.assetId);
+  assert.equal(attached.revision, 1);
+  // The outsider must retain real bytes when the disposable owner is erased.
+  const outsiderName = outsider.id + '/exit/retained.png';
+  const outsiderObject = '/storage/v1/object/' + bucket + '/' + outsiderName;
+  const outsiderRead = '/storage/v1/object/authenticated/' + bucket + '/' + outsiderName;
+  successful(await send(outsiderObject, {
+    ...bearer(outsider), method: 'POST', body: png, headers: {'Content-Type': 'image/png'}
+  }), 'Create outsider control bytes');
+  assert.deepEqual((await send(outsiderRead, bearer(outsider))).bytes, png);
   const request = successful(await post(owner, 'request_private_account_erasure', {
     p_operation_id: randomUUID(), p_confirmation: 'DELETE MY ACCOUNT'
   }), 'Request account erasure');
@@ -781,8 +823,21 @@ test('account erasure removes active account data only after fresh owner confirm
   assert.equal((await send(privateObject,bearer(fresh))).ok,true,'Withdrawal removed private uploads');
   assert.deepEqual(await service.withdrawPublicContent(request.requestId,challenge.challengeId,operationId,
     'WITHDRAW PUBLIC CONTENT'),withdrawn);
-  assert.equal(await service.removeUploadBatch(), 1);
+  // Both registered PROFILE media and an ordinary owner object must be physically
+  // removed by the deliberate exit cleanup. A denied JWT alone is not erasure.
+  assert.equal((await send(avatarRead, bearer(fresh))).ok, true);
+  const trustedStorage = {key: cfg.service, bearer: cfg.service};
+  const beforeCleanup = await send(avatarRead, trustedStorage);
+  assert.equal(beforeCleanup.ok, true, 'Trusted local Storage can observe avatar bytes before cleanup');
+  assert.deepEqual(beforeCleanup.bytes, png);
+  assert.equal(await service.removeUploadBatch(), 2);
   assert.equal(await service.removeUploadBatch(), 0);
+  for (const path of [avatarRead, privateObject]) {
+    const absent = await send(path, trustedStorage);
+    assert.ok(!absent.ok, 'Trusted local Storage must not serve deleted owner bytes');
+  }
+  const retained = await send(outsiderRead, bearer(outsider));
+  assert.equal(retained.ok, true); assert.deepEqual(retained.bytes, png);
   const receipt = await service.execute(request.requestId, challenge.challengeId, 'DELETE MY ACCOUNT');
   assert.equal(receipt.status, 'ACTIVE_ACCOUNT_ERASED');
   assert.equal(receipt.accessTerminated, false, 'Deletion removes Auth rows but cannot revoke existing JWT signatures immediately');
@@ -792,6 +847,34 @@ test('account erasure removes active account data only after fresh owner confirm
   assert.equal((await execute(fresh)).ok, false);
   assert.equal((await send('/auth/v1/user', bearer(fresh))).ok, false);
   assert.equal((await send('/auth/v1/user', bearer(outsider))).ok, true);
+  // Read physical metadata from the disposable local Postgres, independent of RLS/JWT denial.
+  const raw = execFileSync('supabase', ['status','-o','env'], {encoding:'utf8', timeout:20000});
+  const dbMatch = raw.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(dbMatch, 'Local SQL fixture URL required');
+  const db = new URL(dbMatch[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322'); assert.equal(db.username,'postgres');
+  assert.equal(db.pathname,'/postgres');
+  const pg = new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false,
+    connectionTimeoutMillis:3000,query_timeout:10000});
+  try {
+    await pg.connect();
+    const counts = (await pg.query(`
+      select
+        (select count(*)::int from auth.users where id=$1::uuid) as owner_users,
+        (select count(*)::int from auth.sessions where user_id=$1::uuid) as owner_sessions,
+        (select count(*)::int from public.profiles where user_id=$1::uuid) as owner_profiles,
+        (select count(*)::int from public.profile_assets where owner_user_id=$1::uuid) as owner_avatars,
+        (select count(*)::int from kadmeion_private.private_profile_asset_content_attestations where owner_user_id=$1::uuid) as owner_pins,
+        (select count(*)::int from storage.objects where bucket_id=$3 and split_part(name,'/',1)=$1::text) as owner_objects,
+        (select count(*)::int from auth.users where id=$2::uuid) as foreign_users,
+        (select count(*)::int from storage.objects where bucket_id=$3 and name=$4) as foreign_objects
+      `, [owner.id,outsider.id,bucket,outsiderName])).rows[0];
+    assert.deepEqual(counts,{owner_users:0,owner_sessions:0,owner_profiles:0,owner_avatars:0,
+      owner_pins:0,owner_objects:0,foreign_users:1,foreign_objects:1});
+  } finally { await pg.end().catch(()=>{}); }
 });
 
 test('B4: future private host denial RPC is not exposed on the Data API',
@@ -2459,3 +2542,189 @@ test('R9 guarded project RPC: actual password sessions, atomic CAS and explicit 
     assert.equal(dead.ok,false,'Revoked session cannot write');
     assert.equal((await read()).revision,final.revision);
   });
+
+test('C12 real local provider consent, SQL claim/finish, revoked late receipt and physical owner deletion',
+  {timeout:120_000},async()=>{
+  // Live GoTrue/JWT, local-only Supabase SQL; provider bytes are injected,
+  // never fetched from GitHub or another external endpoint.
+  const owner=await adminUser('c12-facts-owner');
+  const other=await adminUser('c12-facts-foreign');
+  const createLink=async(who,handle)=>successful(await send(
+    '/rest/v1/private_platform_links?select=id',{
+      ...json(who),method:'POST',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{provider:'GITHUB',handle}
+    }),'Create private GitHub link')[0].id;
+  const link=await createLink(owner,'fixtureuser');
+  const foreign=await createLink(other,'foreignuser');
+  const rpc=(who,name,body)=>send('/rest/v1/rpc/'+name,{...json(who),method:'POST',body});
+  const trusted=(name,body)=>send('/rest/v1/rpc/'+name,{
+    method:'POST',key:cfg.service,bearer:cfg.service,
+    headers:{'Content-Type':'application/json'},body
+  });
+  const change=(action,version)=>rpc(owner,'change_owner_github_provider_consent',{
+    p_link_id:link,p_action:action,p_expected_version:version,
+    p_operation_id:randomUUID(),p_policy_version:1
+  });
+  const claims=JSON.parse(Buffer.from(owner.token.split('.')[1],'base64url').toString('utf8'));
+  assert.equal(claims.sub,owner.id);assert.match(claims.session_id,/^[0-9a-f-]{36}$/i);
+  assert.equal(successful(await rpc(owner,'read_owner_github_provider_state',{p_link_id:link}),
+    'Read private provider initial state').status,'OFF');
+  assert.ok(!(await rpc(other,'read_owner_github_provider_state',{p_link_id:link})).ok,
+    'Another owner must not access a provider link');
+  const enabled=successful(await change('ENABLE',0),'Enable owner provider consent');
+  assert.equal(enabled.status,'APPLIED');assert.equal(enabled.state.status,'READY');
+  assert.equal(enabled.state.version,1);
+  const attemptOp=randomUUID();
+  const claim=successful(await trusted('service_claim_github_provider_sync',{
+    p_owner_id:owner.id,p_session_id:claims.session_id,p_link_id:link,
+    p_action:'LOOKUP',p_expected_version:enabled.state.version,
+    p_operation_id:attemptOp,p_policy_version:1
+  }),'Claim bounded local provider attempt');
+  assert.equal(claim.status,'CLAIMED');
+  assert.equal(claim.handle,'fixtureuser');
+  assert.match(claim.attemptId,/^[0-9a-f-]{36}$/i);
+  const completion={
+    p_owner_id:owner.id,p_session_id:claims.session_id,p_link_id:link,
+    p_claim_version:claim.state.version,p_attempt_id:claim.attemptId,
+    p_outcome:'SUCCESS',p_login:'fixtureuser',p_provider_id:12345,
+    p_html_url:'https://github.com/fixtureuser',p_public_repos:7,p_public_gists:2
+  };
+  const finished=successful(await trusted('service_finish_github_provider_sync',completion),
+    'Finish injected provider fact receipt');
+  assert.equal(finished.status,'APPLIED');
+  assert.equal(finished.state.status,'AWAITING_CONFIRMATION');
+  assert.equal(finished.state.candidate.id,12345);
+  assert.equal(finished.state.facts,null);
+  const revoked=successful(await change('DISABLE',finished.state.version),
+    'Disable owner consent and erase candidate');
+  assert.equal(revoked.state.status,'OFF');assert.equal(revoked.state.consent,false);
+  assert.equal(revoked.state.candidate,null);assert.equal(revoked.state.facts,null);
+  const delayed=successful(await trusted('service_finish_github_provider_sync',completion),
+    'Replay stale completion after consent withdrawal');
+  assert.equal(delayed.status,'IGNORED','Late provider bytes must not resurrect facts');
+  const read=successful(await rpc(owner,'read_owner_github_provider_state',{p_link_id:link}),
+    'Read persisted consent-off state');
+  assert.equal(read.status,'OFF');assert.equal(read.facts,null);assert.equal(read.candidate,null);
+  const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+  const match=raw.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(match,'Local database address missing');
+  const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+  assert.equal(db.pathname,'/postgres');
+  const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false,
+    connectionTimeoutMillis:3000,query_timeout:10000});
+  try{
+    await pg.connect();
+    await pg.query('DELETE FROM public.private_platform_links WHERE id=$1',[link]);
+    const afterLink=(await pg.query(
+      'SELECT count(*)::int n FROM kadmeion_private.github_provider_state WHERE link_id=$1',[link])).rows[0].n;
+    assert.equal(afterLink,0,'Deleting a link physically cascades its provider facts');
+    assert.equal((await pg.query('DELETE FROM auth.users WHERE id=$1 RETURNING id',[owner.id])).rowCount,1);
+    const counts=(await pg.query('SELECT '+
+      '(SELECT count(*)::int FROM public.private_platform_links WHERE owner_user_id=$1) owner_links,'+
+      '(SELECT count(*)::int FROM kadmeion_private.github_owner_quota WHERE owner_id=$1) owner_quotas,'+
+      '(SELECT count(*)::int FROM public.private_platform_links WHERE id=$2) foreign_links,'+
+      '(SELECT count(*)::int FROM auth.users WHERE id=$3) foreign_users',
+      [owner.id,foreign,other.id])).rows[0];
+    assert.deepEqual(counts,{owner_links:0,owner_quotas:0,foreign_links:1,foreign_users:1});
+  }finally{await pg.end().catch(()=>{});}
+});
+
+test('160700 guarded project autosave: two real owner sessions, no silent withdrawal, exact CAS and explicit confirmation',
+  {timeout:120_000},async()=>{
+  // Only the pre-existing disposable local Auth/HTTP helpers are used.
+  // This test intentionally requires the registered 160700 migration.
+  const owner=await adminUser('guarded-draft-owner');
+  const outsider=await adminUser('guarded-draft-foreign');
+  const second=successful(await send('/auth/v1/token?grant_type=password',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:{email:owner.email,password:owner.password}
+  }),'Second independent owner password session');
+  assert.equal(second.user.id,owner.id);
+  const tab={...owner,token:second.access_token};
+  const sid=token=>JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8')).session_id;
+  assert.notEqual(sid(owner.token),sid(tab.token),'The competing write must use another real session');
+  const handle='guard_'+randomUUID().slice(0,8);
+  const slug='guarded-'+randomUUID().slice(0,8);
+  successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+    ...json(owner),method:'PATCH',body:{handle}
+  }),'Set canonical fixture handle');
+  const rows=successful(await send('/rest/v1/projects?select=id,revision,title,summary,description,repository_url,live_url',{
+    ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug,title:'Original project',summary:'Original public summary',description:'Owner draft'}
+  }),'Create actual private project');
+  assert.equal(rows.length,1);
+  const project=rows[0],id=project.id;
+  successful(await send('/rest/v1/project_exposure_intents',{
+    ...json(owner),method:'POST',body:{project_id:id,owner_user_id:owner.id,show_case_study:true}
+  }),'Explicit public case-study intent');
+  const rpc=(who,name,body)=>send('/rest/v1/rpc/'+name,{
+    ...json(who),method:'POST',body
+  });
+  successful(await rpc(owner,'owner_publish_case_study_projection',{
+    p_project_id:id,p_expected_revision:project.revision,p_confirmation:'PUBLISH CASE STUDY'
+  }),'Publish exact current case-study projection');
+  const publicRead=()=>send('/rest/v1/rpc/service_read_published_case_study_projection',{
+    key:cfg.service,bearer:cfg.service,method:'POST',headers:{'Content-Type':'application/json'},
+    body:{p_handle:handle,p_slug:slug}
+  });
+  const read=async()=>successful(await send('/rest/v1/projects?id=eq.'+id+
+    '&select=id,revision,title,summary,description,repository_url,live_url',bearer(owner)),
+    'Read durable actual project')[0];
+  const draft=(source,patch={})=>({
+    p_project_id:id,p_base_revision:source.revision,p_title:source.title,
+    p_summary:source.summary,p_description:source.description,
+    p_repository_url:source.repository_url,p_live_url:source.live_url,
+    p_confirm_projection_withdrawal:false,...patch
+  });
+  const save=(who,body)=>rpc(who,'owner_save_private_project_draft',body);
+  const projected=successful(await publicRead(),'Read original public projection');
+  assert.equal(projected.title,project.title);assert.equal(projected.summary,project.summary);
+  const unchanged=successful(await save(owner,draft(project)),'No-op autosave preserves revision');
+  assert.equal(unchanged.id,id);assert.equal(unchanged.revision,project.revision);
+  assert.deepEqual(successful(await publicRead(),'No-op retained original projection'),projected);
+  const changed=draft(project,{p_summary:'Private unsent draft summary'});
+  const denial=await save(tab,changed);
+  assert.equal(denial.ok,false);
+  assert.equal(denial.data?.code,'P0001');
+  assert.equal(denial.data?.message,'PROJECT_WITHDRAWAL_CONFIRMATION_REQUIRED');
+  assert.deepEqual(await read(),project);
+  assert.deepEqual(successful(await publicRead(),'Blocked autosave retains old public bytes'),projected);
+  assert.ok(!(await save(outsider,{...changed,p_confirm_projection_withdrawal:true})).ok,
+    'Foreign owner cannot confirm withdrawal or save our project');
+  assert.ok(!(await send('/rest/v1/rpc/owner_save_private_project_draft',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:changed
+  })).ok,'Anonymous draft write must be denied');
+  assert.ok(!(await send('/rest/v1/rpc/owner_save_private_project_draft',{
+    key:cfg.service,bearer:cfg.service,method:'POST',
+    headers:{'Content-Type':'application/json'},body:changed
+  })).ok,'Service role cannot impersonate owner through autosave');
+  const confirmed=successful(await save(owner,{...changed,p_confirm_projection_withdrawal:true}),
+    'Explicitly confirmed atomic save and withdrawal');
+  assert.equal(confirmed.id,id);assert.equal(confirmed.revision,project.revision+1);
+  assert.equal(successful(await publicRead(),'Explicit withdrawal removed old public bytes'),null);
+  const after=await read();
+  assert.equal(after.summary,changed.p_summary);assert.equal(after.revision,confirmed.revision);
+  const stale=await save(tab,changed);
+  assert.equal(stale.ok,false);assert.equal(stale.data?.code,'40001');
+  const competing=await Promise.all([
+    save(owner,draft(after,{p_title:'Owner session wins A'})),
+    save(tab,draft(after,{p_title:'Other session wins B'}))
+  ]);
+  assert.equal(competing.filter(x=>x.ok).length,1,'Only one same-revision owner writes may commit');
+  const loser=competing.find(x=>!x.ok);
+  assert.equal(loser.data?.code,'40001');
+  const winner=await read();
+  assert.equal(winner.revision,after.revision+1);
+  assert.ok(['Owner session wins A','Other session wins B'].includes(winner.title));
+  const reverted=successful(await save(tab,draft(winner,{p_title:project.title,p_summary:project.summary})),
+    'Restore same original field values with a new revision');
+  assert.equal(reverted.revision,winner.revision+1);
+  const aba=await save(owner,changed);
+  assert.equal(aba.ok,false);assert.equal(aba.data?.code,'40001','ABA field values cannot authorize stale revision');
+  assert.equal(successful(await publicRead(),'Reverted draft is never automatically republished'),null);
+});
