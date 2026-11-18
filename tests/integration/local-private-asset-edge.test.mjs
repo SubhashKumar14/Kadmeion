@@ -188,10 +188,10 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
       stdio:['ignore','pipe','pipe'],env:{...process.env,KADMEION_LOCAL_INTEGRATION:'1'}
     });
     const diagnostics=[];
-    const capture=chunk=>{for(const line of String(chunk).slice(0,10000).split(/\r?\n/))
+    const captureEdgeDiagnostics=chunk=>{for(const line of String(chunk).slice(0,10000).split(/\r?\n/))
       if(/error|failed|denied|resolution/i.test(line)&&diagnostics.length<8)
         diagnostics.push(line.replace(/(?:eyJ|sb_secret_)[A-Za-z0-9_.-]+/g,'[redacted]').slice(0,150));};
-    worker.stdout?.on('data',capture);worker.stderr?.on('data',capture);
+    worker.stdout?.on('data',captureEdgeDiagnostics);worker.stderr?.on('data',captureEdgeDiagnostics);
     try{
       let ready=false;
       for(let n=0;n<50&&worker.exitCode===null;n++){
