@@ -1448,3 +1448,40 @@ test('C13 owner analytics factory requires fresh verified identity and retires o
   assert.deepEqual(await latest.data.service.getOwnerAnalyticsState(portfolio),state);
   assert.equal(rpcCalls,2);
 });
+
+test('R10 local owner provider factory mounts without egress and retires on owner change',async()=>{
+  const link='10000000-0000-4000-8000-000000000002';
+  const state={schemaVersion:1,ownerId:user.id,linkId:link,provider:'GITHUB',handle:'local-fixture',
+    version:0,consent:false,status:'OFF',facts:null,candidate:null,candidateExpiresAt:null,lastAttemptAt:null,
+    cooldownUntil:null,lastError:null,freshness:'NONE',ownershipVerified:false};
+  let reads=0;let current=tokens;
+  const fetcher:typeof fetch=async(url,init)=>{
+    const u=new URL(String(url));
+    assert.ok(['http://127.0.0.1:54321','https://project.supabase.co'].includes(u.origin));
+    if(u.search.includes('grant_type=password')){
+      const login=JSON.parse(String(init?.body));current=login.email===secondUser.email?secondTokens:tokens;return json(current);
+    }
+    if(u.pathname==='/auth/v1/user')return json(current.user);
+    if(u.pathname==='/rest/v1/rpc/read_owner_github_provider_state'){
+      reads++;assert.equal(new Headers(init?.headers).get('authorization'),'Bearer '+current.access_token);
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_link_id:link});
+      return json(state);
+    }
+    throw Error('Unexpected provider network request');
+  };
+  const local=new SupabaseBrowserAuthPort({supabaseUrl:'http://127.0.0.1:54321',appOrigin:'http://localhost:3000',
+    publishableKey:'sb_publishable_local_fixture_12345',storage:storage(),fetcher});
+  assert.ok((await local.ownerGrowth()).error);
+  assert.equal((await local.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  const held=await local.ownerGrowth();assert.ok(held.data?.providerFacts);assert.equal(reads,0);
+  assert.deepEqual(await held.data.providerFacts.readState(link),state);
+  assert.equal(reads,1);
+  assert.equal((await local.signInWithPassword({email:secondUser.email,password:'fixture'})).error,null);
+  assert.equal((await local.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  await assert.rejects(held.data.providerFacts.readState(link),{code:'AUTH_EXPIRED'});
+  assert.equal(reads,1);
+  const hosted=mock(fetcher).port;
+  assert.equal((await hosted.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  const hostedGrowth=await hosted.ownerGrowth();
+  assert.ok(hostedGrowth.data);assert.equal(hostedGrowth.data.providerFacts,undefined);assert.equal(reads,1);
+});
