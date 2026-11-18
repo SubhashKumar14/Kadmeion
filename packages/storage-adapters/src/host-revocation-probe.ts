@@ -104,7 +104,7 @@ async function fetchPath(url:URL,method:'GET'|'HEAD',http:typeof fetch):Promise<
   let expired=false;
   try{
     const pending=Promise.resolve().then(()=>http(url,{method,credentials:'omit',cache:'no-store',
-      redirect:'error',signal:controller.signal})).then(response=>{
+      redirect:'error',headers:{Purpose:'prefetch','Sec-GPC':'1'},signal:controller.signal})).then(response=>{
         if(expired||response.redirected||(response.url!==''&&response.url!==url.href)){
           cancelProbeBody(response.body);throw new HostRevocationProbeError('HOST_UNAVAILABLE');
         }
