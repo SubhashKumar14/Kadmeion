@@ -505,7 +505,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
   const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;baseSnapshot:PortfolioSnapshot;
-    ownerKey:string;cloudRevision:number;format:'json'|'zip';archiveSha256:string;
+    ownerKey:string;cloudRevision:number;format:'json'|'zip';archiveSha256:string;archiveBytes:number;
     changedFiles:string[];changedSlots:string[]}|null>(null);
   const [portableFile,setPortableFile]=useState('');
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
@@ -1350,7 +1350,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'){
         const bytes=await file!.arrayBuffer();
         if(!draftCurrent(view))return;
-        if(bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid snapshot byte length.');
+        if(bytes.byteLength!==file!.size||bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid or incomplete snapshot byte length.');
         let snapshot:PortfolioSnapshot;
         if(format==='zip'){
           const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
@@ -1368,7 +1368,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setPortableFile(difference.changedFiles[0]??'');
         setPortableComparison({snapshot,baseSnapshot:fresh.data.snapshot,
           ownerKey:JSON.stringify([view.owner!.id,view.owner!.epoch,view.id]),
-          format,cloudRevision:fresh.data.revision,archiveSha256,...difference});
+          format,cloudRevision:fresh.data.revision,archiveSha256,archiveBytes:bytes.byteLength,...difference});
         setPortableNotice((format==='zip'?'Private source ZIP verified and compared.':'Private project JSON parsed and compared.')+
           ' This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
       }
@@ -1688,7 +1688,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       {portableNotice&&<p role="status">{portableNotice}</p>}
       {portableComparison&&<div aria-label="Portable snapshot comparison">
         <p>Compared to saved cloud revision {portableComparison.cloudRevision}: {portableComparison.changedFiles.length} different files and {portableComparison.changedSlots.length} different slot/stash keys.</p>
-        <p>Input file SHA-256: <code style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code>. This fingerprint identifies the compared bytes; it is not a signature or publication approval.</p>
+        <p>Reviewed local {portableComparison.format.toUpperCase()} · {portableComparison.archiveBytes} bytes</p>
+        <p>Reviewed file SHA-256: <code aria-label="Reviewed file SHA-256" style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code>. This fingerprint identifies the compared bytes; it is not a signature or publication approval.</p>
         {portableComparison.changedFiles.length>0&&<section aria-label="Exact source comparison">
           <label>Changed source file<select value={portableFile} onChange={event=>setPortableFile(event.currentTarget.value)}>
             <option value="">Select a changed file</option>{portableComparison.changedFiles.map(path=><option key={path} value={path}>{path}</option>)}

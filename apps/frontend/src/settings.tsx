@@ -123,6 +123,15 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   </section>;
 }
 
+function permittedSharingAtVersion(state: Pick<ProfileSharingState,'version'|'preferences'>, desired: SharingPreferences):boolean {
+  if(state.version<Number.MAX_SAFE_INTEGER-1)return true;
+  const old=state.preferences;
+  const keys=['shareDisplayName','shareHeadline','shareBio','publicationRequested'] as const;
+  if(old&&keys.every(key=>old[key]===desired[key]))return true;
+  if(state.version===Number.MAX_SAFE_INTEGER&&!old)return false;
+  return !desired.publicationRequested&&keys.every(key=>!desired[key]||old?.[key]===true);
+}
+
 function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -134,6 +143,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const savedPrefs=savedState?(savedState.preferences??defaults):null;
   const terminal=savedState?.version===Number.MAX_SAFE_INTEGER;
   const terminalAbsent=terminal&&savedState?.preferences===null;
+  const restricted=(savedState?.version??0)>=Number.MAX_SAFE_INTEGER-1;
   const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
   const [confirmed,setConfirmed]=useState(false);
   const [message,setMessage]=useState<Message>(emptyMessage);
@@ -175,7 +185,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
     if(!prefs||!savedState||terminalAbsent||!confirmed||retryChange||readbackRequired.current||readPending.current||writing.current||!current())return;
-    if(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState.preferences?.[key])))return;
+    if(!permittedSharingAtVersion(savedState,prefs))return;
     const expected={...savedState,preferences:savedState.preferences===null?null:{...savedState.preferences}};
     await applyChange({expected,desired:{...prefs},operationId:crypto.randomUUID()});
   }
@@ -216,7 +226,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
           {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
         {savedState?.preferences===null&&<p>No saved preference record; showing private defaults.</p>}
-        {terminal&&<p>Privacy changes are restricted to reducing previously selected fields. Publication cannot be enabled.</p>}
+        {restricted&&<p>The preference version is at or near its limit. Changes may only reduce previously selected fields, and a changed selection must disable publication intent.</p>}
         <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
       </div>}
       {prefs&&<form onSubmit={event => void save(event)}>
@@ -225,16 +235,16 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <fieldset disabled={busy||reading||!!retryChange||terminalAbsent}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
-            <input type="checkbox" checked={prefs[key]} disabled={terminal&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
-              if(terminal&&event.target.checked&&!savedState?.preferences?.[key])return;
+            <input type="checkbox" checked={prefs[key]} disabled={restricted&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
+              if(restricted&&event.target.checked&&!savedState?.preferences?.[key])return;
               const next = {...prefs, [key]: event.target.checked};
               if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
               setPrefs(next); setConfirmed(false);
             }}/>{label}
           </label>)}
           <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
-            disabled={(terminal&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
-            onChange={event => {if(terminal&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+            disabled={(restricted&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
+            onChange={event => {if(restricted&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
@@ -243,7 +253,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
           <p>This confirms the private sharing intent and withdrawal request, not verified withdrawal. Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState?.preferences?.[key])))}>{busy?'Saving…':'Save sharing preferences'}</button>
+          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||!savedState||!permittedSharingAtVersion(savedState,prefs)}>{busy?'Saving…':'Save sharing preferences'}</button>
           {retryChange&&<button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void applyChange(retryChange)}>Retry same privacy change</button>}
           <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
           <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
@@ -290,6 +300,13 @@ function notificationDestination(item: PrivateNotification): string {
 
 function optionalPreferenceBlocked(busy:boolean,reading:boolean,stale:boolean,retrying:boolean,version:number|undefined):boolean {
   return busy||reading||stale||retrying||version===undefined||version===Number.MAX_SAFE_INTEGER;
+}
+
+function terminalNotificationChange(state:NotificationPreferenceState|undefined):NotificationPreferenceInput|null {
+  if(state?.version!==Number.MAX_SAFE_INTEGER-1)return null;
+  const old=state.preferences;
+  if(old&&!old.reviewerEnabled&&!old.publishEnabled&&!old.syncEnabled)return null;
+  return {reviewerEnabled:false,publishEnabled:false,syncEnabled:false};
 }
 
 function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Services['notifications']}) {
@@ -384,12 +401,21 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
   const displayedPrefs=pendingPrefs??effective(prefs);
   const controlsBlocked=optionalPreferenceBlocked(busy,preferencesLoading,preferencesStale,!!prefRetry,prefs?.version);
+  const lastWritableVersion=prefs?.version===Number.MAX_SAFE_INTEGER-1;
+  const individualBlocked=controlsBlocked||lastWritableVersion;
+  async function disableOptionalAtLimit(){
+    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    const desired=terminalNotificationChange(prefs);
+    if(!desired)return;
+    const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
+    await applyPreference({expected,desired,operationId:crypto.randomUUID()});
+  }
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
     preferencesReading.current=true;setPreferencesLoading(true);setPreferencesStale(true);setPrefRetry(null);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    if(individualBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
     const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
     await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
   }
@@ -453,6 +479,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" disabled={busy} onClick={reloadPreferences}>Retry notification preferences</button>}
     {prefs!==undefined&&preferencesStale&&!pendingPrefs&&<p role="status">Showing last confirmed preferences; reload or resolve the pending change before making another choice.</p>}
     {prefs?.version===Number.MAX_SAFE_INTEGER&&<p>Optional notices are disabled and cannot be re-enabled. Security and moderation notices remain required.</p>}
+    {lastWritableVersion&&<div><p>The preference version is near its limit. The final change must disable all optional notices together.</p><button type="button" className="ws-secondary" disabled={controlsBlocked||!terminalNotificationChange(prefs)} onClick={()=>void disableOptionalAtLimit()}>Disable all optional notifications</button></div>}
     {prefs?.preferences === null && prefs.version!==Number.MAX_SAFE_INTEGER && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
@@ -460,9 +487,9 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={controlsBlocked}
-          onClick={event=>{if(controlsBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
-          onChange={event=>{if(!controlsBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={individualBlocked}
+          onClick={event=>{if(individualBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
+          onChange={event=>{if(!individualBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
@@ -617,6 +644,16 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   </>;
 }
 
+// A fresh list check narrows the stale-generation window. The server's
+// restore RPC remains authoritative; this is not an atomic generation CAS.
+function currentTrashGeneration(rows:PrivateTrashEntry[],item:PrivateTrashEntry,now:number):boolean {
+  if(rows.length>100||!Number.isFinite(now))return false;
+  const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
+  const match=same[0];
+  return same.length===1&&!!match&&match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until&&
+    Date.parse(match.restore_until)>now;
+}
+
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -683,20 +720,28 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
       return;
     }
     inFlight.current=true;setBusy(true);setMessage(null);
+    let dispatched=false;
     try{
+      const latest=await service.list();
+      if(!current())return;
+      if(!currentTrashGeneration(latest,item,Date.now()))
+        throw new PrivateTrashError('INVALID_STATE','The Trash record changed or expired before restoration.');
+      dispatched=true;
       const receipt=await service.restore(item.item_type,item.item_id);
       if(!current())return;
-      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+      if(receipt.item_type!==item.item_type||receipt.item_id!==item.item_id||
+        receipt.status!=='restored'||receipt.public_visibility!=='private')
         throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
       setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
       setMessage({error:false,text:'Item restored as private.'});
     }catch(error){
       if(!current())return;
-      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+      if(dispatched&&error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+        readbackRequired.current=true;uncertainRestore.current=dispatched;setNeedsReadback(true);
+        setMessage({error:true,text:dispatched?'Restore was not confirmed. Refresh Trash and review your private library before retrying.':
+          'The current Trash record could not be verified. No restore request was sent. Refresh Trash before retrying.'});
       }
     }finally{
       inFlight.current=false;if(current())setBusy(false);
@@ -746,6 +791,80 @@ async function exportDigest(bytes:Uint8Array):Promise<string>{
   const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
   return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
 }
+// Offline recovery is an inspection of a user-selected bounded file, not
+// import into this account, restoration of database rows, or an erasure grant.
+function RecoveryReopen({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false),running=useRef(false);
+  const recoveredBytes=useRef<Uint8Array|null>(null);
+  const [file,setFile]=useState<File|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [message,setMessage]=useState<Message>(null);
+  const [inspection,setInspection]=useState<{sha256:string;assets:number;bytes:number;fromZip:boolean;schemaVersion:number}|null>(null);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  useEffect(()=>{
+    alive.current=true;
+    return()=>{alive.current=false;recoveredBytes.current=null;};
+  },[]);
+  function clearInspection(){recoveredBytes.current=null;setInspection(null);setMessage(null);}
+  async function inspect(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(!file||running.current||!current())return;
+    clearInspection();
+    if(file.size<=0||file.size>16*1024*1024){setMessage({error:true,text:'Choose a nonempty recovery JSON (up to 16 MiB) or ZIP (up to 10 MiB).'});return;}
+    running.current=true;setBusy(true);
+    try{
+      const auth=await port.getUser();
+      if(!current())return;
+      if(auth.error||!auth.data?.user?.id)throw new Error('Owner identity could not be checked. Sign in again to inspect recovery data.');
+      const owner=auth.data.user.id;
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      if(!current())return;
+      if(bytes.byteLength!==file.size)throw new Error('The selected file changed while opening.');
+      const fromZip=bytes[0]===0x50&&bytes[1]===0x4b&&bytes[2]===0x03&&bytes[3]===0x04;
+      if(fromZip&&bytes.byteLength>10*1024*1024)throw new Error('The selected recovery ZIP exceeds 10 MiB.');
+      const {restoreBoundedPrivateAccountJsonFromRecoveryBundle,verifyBoundedPrivateAccountExport}=
+        await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+      if(!current())return;
+      const json=fromZip?(await restoreBoundedPrivateAccountJsonFromRecoveryBundle(bytes)).bytes:bytes;
+      const verified=await verifyBoundedPrivateAccountExport(json);
+      if(!current())return;
+      if(verified.ownerId!==owner)throw new Error('This recovery file does not match the current account.');
+      if(fromZip)recoveredBytes.current=json;
+      setInspection({sha256:verified.sha256,assets:verified.assetsChecked,bytes:verified.assetBytesChecked,fromZip,schemaVersion:verified.schemaVersion??1});
+      setMessage({error:false,text:'Recovery file passed local structure, ownership and media-digest checks.'});
+    }catch(error){
+      if(current()){recoveredBytes.current=null;setInspection(null);setMessage(failure(error));}
+    }finally{running.current=false;if(current())setBusy(false);}
+  }
+  function saveRecovered(){
+    if(!current()||running.current||!inspection?.fromZip||!recoveredBytes.current)return;
+    try{
+      downloadPrivateFile('kadmeion-reopened-private-recovery.json',recoveredBytes.current,'application/json');
+      setMessage({error:false,text:'Reconstructed private JSON download prepared.'});
+    }catch(error){if(current())setMessage(failure(error));}
+  }
+  return <SettingsCard title="Reopen a private recovery file">
+    <p>Checks a previously downloaded bounded recovery ZIP or JSON locally. No file is uploaded or imported into your account. A matching file and digest do not prove provider authenticity, current data, or complete erasure rights.</p>
+    <form onSubmit={event=>void inspect(event)}>
+      <label className="ws-export-select">Recovery ZIP or JSON
+        <input type="file" accept=".zip,.json,application/zip,application/json" disabled={busy} onChange={event=>{
+          if(!current()||running.current)return;
+          clearInspection();setFile(event.target.files?.[0]??null);
+        }}/>
+      </label>
+      <button className="ws-secondary" type="submit" disabled={!file||busy}>{busy?'Checking recovery file…':'Verify and reopen recovery file'}</button>
+    </form>
+    <Status message={message}/>
+    {inspection&&<><dl><dt>Recovery schema version</dt><dd>{inspection.schemaVersion}</dd><dt>Verified media references</dt><dd>{inspection.assets}</dd>
+      <dt>Verified media bytes</dt><dd>{inspection.bytes}</dd>
+      <dt>Reconstructed JSON SHA-256</dt><dd style={{overflowWrap:'anywhere'}}><code>{inspection.sha256}</code></dd></dl>
+      {inspection.fromZip&&<button type="button" className="ws-secondary" disabled={busy} onClick={saveRecovered}>Download reopened private recovery JSON</button>}
+      <p>Local verification only. This does not establish the provenance of the recovery file or alter storage, account access, or publication.</p>
+    </>}
+  </SettingsCard>;
+}
+
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch] = useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -1059,6 +1178,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         ? <a href={'/app/portfolios/'+selectedPortfolio.id+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
+    <RecoveryReopen port={port}/>
     <SettingsCard title="Coverage and exclusions">
       <p>Keep downloads private. They may contain personal information and editable source. Provider credentials, session tokens, restricted admin data, external platform records, backups, caches and third-party copies are not exported.</p>
       <p>Inventory quotas and provider availability may prevent preparation. Downloading an archive does not revoke public links, validate independent hosting, restore account access, or authorize deletion. External release/retention proof remains separate.</p>
@@ -1079,6 +1199,13 @@ const confirmedExit: (receipt:AccountErasureReceipt,history:PrivateAccountErasur
 
 function sameExitScope(scope:{schemaVersion:number;requestId:string|null;snapshotId:string}|null,requestId:string):boolean {
   return scope!==null&&scope.schemaVersion===2&&scope.requestId===requestId;
+}
+
+function validExitReadiness(review:{requestId:string;challengeId:string;count:number;checkedAt:number}|null,requestId:string,challengeId:string,expiresAt:string,now:number):boolean {
+  return review!==null&&review.requestId===requestId&&review.challengeId===challengeId&&
+    Number.isSafeInteger(review.count)&&review.count>=0&&review.count<=100&&
+    Number.isFinite(now)&&Number.isFinite(review.checkedAt)&&review.checkedAt<=now&&
+    now-review.checkedAt<=60_000&&Number.isFinite(Date.parse(expiresAt))&&Date.parse(expiresAt)>now;
 }
 
 function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: Services}) {
@@ -1106,11 +1233,25 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
   const [recoveredProof, setRecoveredProof] = useState<{requestId:string;verification:AccountExitReauthVerification}|null>(null);
   const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
   const withdrawalOperation = useRef<string|null>(null);
+  const [cleanupReview,setCleanupReview]=useState<{requestId:string;challengeId:string;count:number;checkedAt:number;paths:readonly string[]}|null>(null);
+  const [cleanupConfirmation,setCleanupConfirmation]=useState('');
+  const [finalConfirmation,setFinalConfirmation]=useState('');
+  const [executionUncertain,setExecutionUncertain]=useState(false);
+  const [readinessNow,setReadinessNow]=useState(Date.now);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
   const activeScope=activeRequest&&sameExitScope(exitScope,activeRequest.id)?exitScope:null;
   const activeStorage=activeScope&&exitStorage?.snapshotId===activeScope.snapshotId&&exitStorage.requestId===activeScope.requestId?exitStorage:null;
   const activeExport=activeScope&&exitExport?.snapshotId===activeScope.snapshotId&&exitExport.requestId===activeScope.requestId?exitExport:null;
   const reauth = recoveredProof && activeRequest?.id === recoveredProof.requestId ? recoveredProof.verification : null;
+  const ready=!!activeRequest&&!!reauth&&validExitReadiness(cleanupReview,activeRequest.id,reauth.challengeId,reauth.expiresAt,readinessNow);
+  const mayExecute=ready&&cleanupReview?.count===0&&!executionUncertain;
+  useEffect(()=>{
+    if(!cleanupReview)return;
+    const refresh=()=>setReadinessNow(Date.now());
+    const timer=window.setTimeout(refresh,Math.max(1,cleanupReview.checkedAt+60_001-Date.now()));
+    window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
+    return()=>{window.clearTimeout(timer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
+  },[cleanupReview]);
 
   const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
   useEffect(() => {
@@ -1147,7 +1288,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
           }
           setInventory(result);
           setRequests(history);
-          setRecoveredProof({requestId,verification});
+          setRecoveredProof({requestId,verification});setExecutionUncertain(false);
         }
         setRecovery('ready');
       } catch (error) {
@@ -1253,6 +1394,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     setRecoveredProof(null);
     setWithdrawConfirmation('');
     withdrawalOperation.current = null;
+    setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
   }
 
   // A confirmed challenge is short-lived. Do not leave a success receipt or
@@ -1269,6 +1411,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
         setRecoveredProof(null);
         setWithdrawConfirmation('');
         withdrawalOperation.current = null;
+        setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
         setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
         return;
       }
@@ -1416,6 +1559,106 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     }
   }
 
+  async function reviewCleanup(){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!reauth||executionUncertain||!current()||Date.parse(reauth.expiresAt)<=Date.now())return;
+    const requestId=activeRequest.id,challengeId=reauth.challengeId;
+    inFlight.current=true;setBusy(true);setMessage(null);setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
+    try{
+      const history=await service.list();
+      if(!current())return;
+      setRequests(history);
+      if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+        history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId)
+        throw new Error('The pending request changed. Review it again.');
+      const paths=await service.reviewUploadPaths();
+      if(!current())return;
+      const checkedAt=Date.now();
+      if(Date.parse(reauth.expiresAt)<=checkedAt)throw new Error('Identity verification expired.');
+      setReadinessNow(checkedAt);setCleanupReview({requestId,challengeId,count:paths.length,checkedAt,paths:Object.freeze([...paths])});
+    }catch(error){if(current())setMessage(failure(error));}
+    finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
+  async function removeReviewedUploads(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!reauth||!current()||executionUncertain||
+      cleanupConfirmation!=='REMOVE PRIVATE UPLOADS'||!cleanupReview||cleanupReview.count===0||
+      cleanupReview.paths.length!==cleanupReview.count||
+      !validExitReadiness(cleanupReview,activeRequest.id,reauth.challengeId,reauth.expiresAt,Date.now()))return;
+    const requestId=activeRequest.id,challengeId=reauth.challengeId,review=cleanupReview;
+    inFlight.current=true;setBusy(true);setMessage(null);
+    setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
+    let dispatched=false;
+    try{
+      const history=await service.list();
+      if(!current())return;
+      setRequests(history);
+      if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+        history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId||
+        !validExitReadiness(review,requestId,challengeId,reauth.expiresAt,Date.now()))
+        throw new Error('The request or cleanup review changed. No removal was sent.');
+      dispatched=true;
+      const removed=await service.removeUploadBatch(review.paths);
+      if(!current())return;
+      if(removed!==review.count)throw new Error('The reviewed upload batch was not fully acknowledged.');
+      setExitStorage(null);setMessage({error:false,text:'Removal of '+removed+' reviewed private uploads was acknowledged. Review cleanup again before final erasure. Backups and external copies remain unverified.'});
+    }catch(error){
+      if(!current())return;
+      setExitStorage(null);
+      setMessage(dispatched?{error:true,text:'Upload removal was not confirmed. Review the remaining server inventory before any further removal; do not assume files were retained or erased.'}:failure(error));
+    }finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
+  async function executeFinal(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!reauth||!current()||executionUncertain||
+      finalConfirmation!=='DELETE MY ACCOUNT'||cleanupReview?.count!==0||
+      !validExitReadiness(cleanupReview,activeRequest.id,reauth.challengeId,reauth.expiresAt,Date.now()))return;
+    const requestId=activeRequest.id,challengeId=reauth.challengeId;
+    inFlight.current=true;setBusy(true);setMessage(null);setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
+    let dispatched=false;
+    try{
+      const history=await service.list();
+      if(!current())return;
+      setRequests(history);
+      if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+        history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId)
+        throw new Error('The pending request changed. No erasure request was sent.');
+      const paths=await service.reviewUploadPaths();
+      if(!current())return;
+      if(paths.length!==0||Date.parse(reauth.expiresAt)<=Date.now())
+        throw new Error('Storage cleanup or fresh identity verification is still required.');
+      // This RPC is the only final authority. Its transaction rechecks exact
+      // request, live session, current challenge, scoped host proof and all Storage.
+      dispatched=true;
+      const receipt=await service.execute(requestId,challengeId,'DELETE MY ACCOUNT');
+      if(!current())return;
+      discardProof();setRequests(null);setInventory(null);setExitScope(null);
+      setExitStorage(null);setExitExport(null);
+      setMessage({error:false,text:'Active application account erasure acknowledged. Existing signed tokens, backups and external copies are not proven erased.'});
+      // The explicitly labeled submit action includes a local, nonsecret receipt.
+      try{
+        downloadPrivateFile('kadmeion-account-erasure-receipt.json',
+          new TextEncoder().encode(JSON.stringify(receipt)),'application/json');
+      }catch{/* The authoritative erasure receipt is not invalidated by a browser download failure. */}
+      // The confirmed erasure and this device's local sign-out are separate
+      // outcomes. Never reinterpret a confirmed receipt as an unknown write.
+      if(current()){
+        try{
+          await port.signOut({scope:'local'});
+        }catch{/* Local sign-out failure must not invalidate the erasure receipt. */}
+        if(current())setMessage({error:true,text:'Active account erasure was acknowledged. Local sign-out could not be confirmed; close this session. Backup and external copies remain unverified.'});
+      }
+    }catch(error){
+      if(!current())return;
+      const code=typeof error==='object'&&error!==null&&'code' in error?error.code:null;
+      if(dispatched&&code!=='CONFLICT'&&code!=='REAUTH_REQUIRED'&&code!=='CHALLENGE_EXPIRED'&&code!=='VALIDATION'){
+        setExecutionUncertain(true);discardProof();setRequests(null);
+        setMessage({error:true,text:'Final erasure could not be confirmed. Do not repeat it from this session. Sign in again to review whether the account still exists.'});
+      }else setMessage(failure(error));
+    }finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Deletion prerequisites">
       {recovery === 'checking' && <p role="status">Checking current identity verification…</p>}
@@ -1489,6 +1732,26 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
               Withdraw app-managed public content
             </button>
           </form>
+          <section aria-label="Irreversible account erasure">
+            <h3>Final erasure</h3>
+            <p>Prepare your export first. Review the actual server-gated cleanup prerequisites. A zero count covers only the eligible private bucket, not all Storage or external copies.</p>
+            <button className="ws-secondary" type="button" disabled={busy||executionUncertain} onClick={()=>void reviewCleanup()}>Review server-gated cleanup readiness</button>
+            {ready&&cleanupReview&&<p role="status">Eligible uploads in the next bounded batch: {cleanupReview.count}. {cleanupReview.count>0?'Confirm the exact reviewed batch below; final erasure remains blocked.':'No eligible uploads returned; final server checks are still required.'}</p>}
+            {ready&&cleanupReview&&cleanupReview.count>0&&<form onSubmit={event=>void removeReviewedUploads(event)}>
+              <p>Irreversibly remove only the {cleanupReview.count} reviewed objects in the application private asset bucket. Download any needed recovery files first. This is not account erasure.</p>
+              <label className="ws-export-select">Type REMOVE PRIVATE UPLOADS to confirm this batch
+                <input autoComplete="off" value={cleanupConfirmation} disabled={busy} onChange={event=>setCleanupConfirmation(event.target.value)}/>
+              </label>
+              <button type="submit" className="ws-secondary" disabled={busy||cleanupConfirmation!=='REMOVE PRIVATE UPLOADS'}>Remove reviewed private uploads</button>
+            </form>}
+            {mayExecute&&<form onSubmit={event=>void executeFinal(event)}>
+              <p>Irreversible removal of the active application account. Existing signed tokens may remain valid until expiry. Backup and external-copy erasure are not verified.</p>
+              <label className="ws-export-select">Type DELETE MY ACCOUNT for final erasure
+                <input autoComplete="off" value={finalConfirmation} disabled={busy} onChange={event=>setFinalConfirmation(event.target.value)}/>
+              </label>
+              <button type="submit" className="ws-secondary" disabled={busy||finalConfirmation!=='DELETE MY ACCOUNT'}>Permanently erase account and prepare receipt</button>
+            </form>}
+          </section>
         </>}
       </>}
       {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
