@@ -67,6 +67,14 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [saving,setSaving]=useState(false);
   const creationInFlight=useRef(false);
   const creationAttempt=useRef(0);
+  const [unconfirmed,setUnconfirmed]=useState<NewPrivateProject|null>(null);
+  const uncertainCreate=useRef<NewPrivateProject|null>(null);
+  const scanCursor=useRef<ProjectCursor|null>(null);
+  const scanSeen=useRef(new Set<string>());
+  const [confirmedProject,setConfirmedProject]=useState<string|null>(null);
+  const [existingProject,setExistingProject]=useState<string|null>(null);
+  function clearUncertain(){uncertainCreate.current=null;setUnconfirmed(null);scanCursor.current=null;scanSeen.current.clear();setExistingProject(null);}
+  function markUncertain(value:NewPrivateProject){clearUncertain();uncertainCreate.current=value;setUnconfirmed(value);}
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const modal=useRef<HTMLDialogElement>(null);
@@ -88,7 +96,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setDraft(freshDraft());
     setCustomSlug(false);
     setError('');
-    setNotice('');
+    setNotice('');setConfirmedProject(null);clearUncertain();
     modal.current?.close();
     setState({status:'error',message:accountChangedMessage});
   }
@@ -179,63 +187,52 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     };
   },[port,state.status,state.status==='ready'?state.ownerId:null]);
 
-  async function loadMore() {
-    if(!currentOwner()||state.status!=='ready' || !state.nextCursor || pageInFlight.current) return;
+  // Load one page or an explicitly requested bounded batch for search/sort.
+  // This is not a server-side snapshot: concurrent edits may move keyset rows.
+  async function loadMore(batch=false) {
+    if(!currentOwner()||state.status!=='ready'||!state.nextCursor||pageInFlight.current)return;
     const {ownerId,nextCursor}=state;
     const epoch=requestEpoch.current;
     const current=()=>epoch===requestEpoch.current&&currentOwner();
     const pageReader=(port as ProjectPagePort).listOwnerProjectsPage;
-    if(typeof pageReader!=='function') {
-      setPageError('Private project pagination is unavailable. Retry later.');
-      return;
-    }
-    pageInFlight.current=true;
-    setLoadingMore(true);
-    setPageError('');
-    const rejectStaleOwner=()=>{
-      if(epoch===requestEpoch.current) invalidateOwner();
-    };
-    try {
+    if(typeof pageReader!=='function'){setPageError('Private project pagination is unavailable. Retry later.');return;}
+    pageInFlight.current=true;setLoadingMore(true);setPageError('');
+    let cursor:ProjectCursor|null=nextCursor;
+    const seenCursors=new Set<string>();
+    const key=(value:ProjectCursor)=>JSON.stringify([value.updatedAt,value.id]);
+    try{
       const startIdentity=await port.getUser();
       if(!current())return;
-      if(startIdentity.error || startIdentity.data?.user?.id!==ownerId) {
-        rejectStaleOwner();return;
-      }
-      const reply=await pageReader.call(port,PAGE_SIZE,nextCursor);
-      if(!current())return;
-      const currentIdentity=await port.getUser();
-      if(!current())return;
-      if(currentIdentity.error || currentIdentity.data?.user?.id!==ownerId) {
-        rejectStaleOwner();return;
-      }
-      if(reply.error || !reply.data) {
-        setPageError(reply.error?.message??'More private projects could not be loaded. Your earlier pages remain visible.');
-        return;
-      }
-      if(!validProjectPage(reply.data,ownerId,nextCursor)) {
-        setPageError('The next page failed validation. Previously loaded projects were kept.');
-        return;
-      }
-      setState(old=>{
-        if(old.status!=='ready' || old.ownerId!==ownerId ||
-           old.nextCursor?.id!==nextCursor.id ||
-           old.nextCursor?.updatedAt!==nextCursor.updatedAt) return old;
-        const seen=new Set(old.items.map(project=>project.id));
-        const added=reply.data!.items.filter(project=>{
-          if(seen.has(project.id))return false;
-          seen.add(project.id);return true;
+      if(startIdentity.error||startIdentity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      for(let index=0;cursor&&index<(batch?10:1);index++){
+        const requested:ProjectCursor=cursor;
+        if(seenCursors.has(key(requested))){
+          setPageError('The project cursor repeated. Refresh before loading more.');return;
+        }
+        seenCursors.add(key(requested));
+        const reply:AuthOutcome<ProjectPage>=await pageReader.call(port,PAGE_SIZE,requested);
+        if(!current())return;
+        const identity=await port.getUser();
+        if(!current())return;
+        if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(reply.error||!reply.data){
+          setPageError(reply.error?.message??'More projects could not be loaded. Earlier pages remain available.');return;
+        }
+        const page:ProjectPage=reply.data;
+        if(!validProjectPage(page,ownerId,requested)||(page.nextCursor&&seenCursors.has(key(page.nextCursor)))){
+          setPageError('The next page failed validation. Previously loaded projects were kept.');return;
+        }
+        setState(previous=>{
+          if(previous.status!=='ready'||previous.ownerId!==ownerId||
+            previous.nextCursor?.id!==requested.id||previous.nextCursor?.updatedAt!==requested.updatedAt)return previous;
+          const seen=new Set(previous.items.map(project=>project.id));
+          const added=page.items.filter(project=>{if(seen.has(project.id))return false;seen.add(project.id);return true;});
+          return {...previous,items:[...previous.items,...added],nextCursor:page.nextCursor};
         });
-        return {...old,items:[...old.items,...added],nextCursor:reply.data!.nextCursor};
-      });
-    } catch {
-      if(current())
-        setPageError('More private projects could not be loaded. Your earlier pages remain visible.');
-    } finally {
-      if(current()) {
-        pageInFlight.current=false;
-        setLoadingMore(false);
+        cursor=page.nextCursor;
       }
-    }
+    }catch{if(current())setPageError('More private projects could not be loaded. Your earlier pages remain visible.');}
+    finally{if(current()){pageInFlight.current=false;setLoadingMore(false);}}
   }
   const filtered=useMemo(()=>{
     if(state.status!=='ready')return [];
@@ -260,20 +257,21 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const hasFilters=!!search.trim() || linkFilter!=='all'||detailFilter!=='all';
   function clearFilters(){setSearch('');setLinkFilter('all');setDetailFilter('all');setSort('recent');}
   function open(event: MouseEvent<HTMLButtonElement>) {
-    if (!currentOwner()||state.status!=='ready'||!modal.current || modal.current.open) return;
+    if (!currentOwner()||state.status!=='ready'||pageInFlight.current||!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
     setError('');
     modal.current.showModal();
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(!currentOwner()||state.status!=='ready'||creationInFlight.current)return;
+    if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current||uncertainCreate.current)return;
     creationInFlight.current=true;
     const attempt=++creationAttempt.current;
     const sessionEpoch=port.getOwnerSessionEpoch();
     const submitted={...draft};
     const stillCurrent=()=>attempt===creationAttempt.current&&currentOwner();
-    setSaving(true);setError('');setNotice('');
+    setSaving(true);setError('');setNotice('');setConfirmedProject(null);
+    let dispatched=false;
     try {
       const identity=await port.getUser();
       if(!stillCurrent())return;
@@ -284,6 +282,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         invalidateOwner();
         return;
       }
+      dispatched=true;
       const saved=await port.createPrivateProject(submitted);
       if(!stillCurrent())return;
       if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
@@ -294,23 +293,17 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       if(saved.error||!saved.data) {
-        setError(saved.error?.message||'Private project save was not confirmed. Your form is retained.');
+        markUncertain(submitted);
+        setError(saved.error?.message||'Private project save was not confirmed. Check saved projects before another write.');
         return;
       }
       // Reload the owner-bound first page after a confirmed create. Do not
       // mix an optimistic record with a stale cursor or a previous owner.
-      requestEpoch.current++;
-      pageInFlight.current=false;
-      setState({status:'loading'});
-      setPageError('');
-      setReload(value=>value+1);
-      modal.current?.close();
-      setDraft(freshDraft());setCustomSlug(false);
-      setNotice('Saved privately in your account. This did not publish or connect a repository.');
+      completeCreate(saved.data.id,'Saved privately in your account. This did not publish or connect a repository.');
     } catch {
       if(stillCurrent()) {
         if(port.getOwnerSessionEpoch()!==sessionEpoch) invalidateOwner();
-        else setError('Project creation could not be verified. Your form values are retained.');
+        else {if(dispatched)markUncertain(submitted);setError('Project creation could not be verified. Your form values are retained.');}
       }
     } finally {
       if(stillCurrent()) {
@@ -319,13 +312,60 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       }
     }
   }
+  function completeCreate(id:string,message:string){
+    clearUncertain();setConfirmedProject(id);requestEpoch.current++;pageInFlight.current=false;
+    setState({status:'loading'});setPageError('');setReload(value=>value+1);
+    modal.current?.close();setDraft(freshDraft());setCustomSlug(false);setNotice(message);
+  }
+  async function checkCreatedProject(){
+    const submitted=uncertainCreate.current;
+    if(!submitted||!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current)return;
+    const read=(port as ProjectPagePort).listOwnerProjectsPage;
+    if(typeof read!=='function'){setError('The private project lookup is unavailable. Your draft is retained.');return;}
+    const ownerId=state.ownerId,attempt=++creationAttempt.current;
+    const valid=()=>attempt===creationAttempt.current&&currentOwner();
+    creationInFlight.current=true;setSaving(true);setError('');setExistingProject(null);
+    try{
+      const identity=await port.getUser();if(!valid())return;
+      if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      for(let index=0;index<10;index++){
+        const cursor:ProjectCursor|null=scanCursor.current;
+        const key=cursor?JSON.stringify([cursor.updatedAt,cursor.id]):'first';
+        if(scanSeen.current.has(key)){setError('The lookup cursor repeated. Refresh the project lookup before retrying.');return;}
+        const response:AuthOutcome<ProjectPage>=await read.call(port,PAGE_SIZE,cursor);
+        if(!valid())return;
+        const owner=await port.getUser();if(!valid())return;
+        if(owner.error||owner.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(response.error||!response.data||!validProjectPage(response.data,ownerId,cursor)){
+          setError('Saved project lookup could not be verified. Your draft is retained; retry the lookup.');return;
+        }
+        const page:ProjectPage=response.data;
+        const existing=page.items.find(item=>item.slug===submitted.slug.trim());
+        if(existing){
+          const normalizedUrl=(value:string|null)=>value?new URL(value).href:null;
+          let same=false;
+          try{same=existing.revision===0&&existing.title===submitted.title.trim()&&
+            existing.summary===submitted.summary.trim()&&existing.description===''&&
+            existing.repositoryUrl===normalizedUrl(submitted.repositoryUrl)&&existing.liveUrl===normalizedUrl(submitted.liveUrl);}catch{/* do not infer a match */}
+          if(same){completeCreate(existing.id,'The requested private project matches a saved record. No additional write was made.');return;}
+          setExistingProject(existing.id);setError('This private slug is already in use but the saved record differs. Review that record or choose another slug.');return;
+        }
+        scanSeen.current.add(key);scanCursor.current=page.nextCursor;
+        if(!page.nextCursor){
+          clearUncertain();setError('No matching saved project was found in the current pages. Your draft is retained; you may explicitly retry.');return;
+        }
+      }
+      setError('No match in the pages checked yet. Continue checking before another write.');
+    }catch{if(valid())setError('The saved-project lookup failed. Retry without submitting another write.');}
+    finally{if(valid()){creationInFlight.current=false;setSaving(false);}}
+  }
   return <section className="ws-projects ws-owner-page" aria-labelledby="ws-title">
     <div className="ws-project-head">
       <div className="ws-heading"><p className="ws-kicker">WORKSPACE / PROJECT LIBRARY</p>
         <h1 id="ws-title">Project library.</h1>
         <p>Organize your projects and case studies. New project drafts stay private.</p>
       </div>
-      <button type="button" className="ws-primary" ref={topOpener} disabled={state.status!=='ready'} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" ref={topOpener} disabled={state.status!=='ready'||loadingMore} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
     </div>
     <div className="ws-project-controls">
       <label className="ws-project-search">Search private projects
@@ -366,10 +406,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         }}>Refresh projects</button>
     </div>
     {state.status==='ready' && <div className="ws-actions">
-      <p>Filters cover loaded private records. Publication status and technology tags are not available in this index.</p>
+      <p>Search, link and description filters cover all loaded private records. Load further pages to search the rest of your library. Publication status and technology tags are not available in this index.</p>
       {(hasFilters||sort!=='recent')&&<button type="button" className="ws-secondary" onClick={clearFilters}>Clear filters</button>}
     </div>}
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
+    {confirmedProject&&<a className="ws-secondary" href={'/app/projects/'+confirmedProject}>Continue editing saved project</a>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
      state.status==='error'?<div role="alert" className="ws-project-state">
        <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>{setState({status:'loading'});setReload(value=>value+1);}}>Retry securely</button></div>:
@@ -387,7 +428,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <p>{hasFilters?'Change filters or load additional private pages to search older projects.':
             'Add a project title and a short description. You can add links later.'}</p>
           {hasFilters?<button type="button" className="ws-secondary" onClick={clearFilters}>{search&&linkFilter==='all'&&detailFilter==='all'?'Clear search':'Reset project filters'}</button>:
-            <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
+            <button type="button" className="ws-primary" disabled={loadingMore} onClick={open}>Add first project</button>}
         </div>
         {!hasFilters && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
           <h2 id="ws-project-guide">Show the work behind your code.</h2>
@@ -417,10 +458,12 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       </ul>}
       {state.nextCursor && <div className="ws-actions">
         <button type="button" className="ws-secondary"
-          disabled={loadingMore} aria-busy={loadingMore}
+          disabled={loadingMore||saving} aria-busy={loadingMore}
           onClick={()=>void loadMore()}>
           {loadingMore?'Loading more…':pageError?'Retry loading more projects':'Load more projects'}
         </button>
+        <button type="button" className="ws-secondary" disabled={loadingMore||saving} onClick={()=>void loadMore(true)}>Load up to 500 more for search</button>
+        <p>Results and sort order update as pages arrive. Repeat until all available pages are loaded; refresh for recent changes.</p>
         {pageError && <p role="alert" className="ws-inline-alert">{pageError}</p>}
       </div>}
     </>}
@@ -433,31 +476,34 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
             disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>×</button></div>
         <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
-        <label>Project title<input disabled={saving} required autoComplete="off" maxLength={120} value={draft.title}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,title:event.target.value,
+        <label>Project title<input disabled={saving||!!unconfirmed} required autoComplete="off" maxLength={120} value={draft.title}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,title:event.target.value,
             slug:customSlug?old.slug:suggestSlug(event.target.value)}));}}/></label>
         <details className="ws-project-slug"><summary>Edit private URL slug</summary>
-        <label>Private URL slug<input disabled={saving} required spellCheck={false} minLength={3} maxLength={64}
+        <label>Private URL slug<input disabled={saving||!!unconfirmed} required spellCheck={false} minLength={3} maxLength={64}
           pattern="[a-z0-9]+(-[a-z0-9]+)*" value={draft.slug}
           onInvalid={event => {
             const disclosure = event.currentTarget.closest('details');
             if (disclosure) disclosure.open = true;
           }}
-          onChange={event=>{if(creationInFlight.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
+          onChange={event=>{if(creationInFlight.current||uncertainCreate.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
           <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
-        <label>Summary (optional)<textarea disabled={saving} rows={3} maxLength={360} value={draft.summary}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
-        <label>Repository URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+        <label>Summary (optional)<textarea disabled={saving||!!unconfirmed} rows={3} maxLength={360} value={draft.summary}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
+        <label>Repository URL (optional)<input disabled={saving||!!unconfirmed} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/repository" value={draft.repositoryUrl||''}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
-        <label>Live website URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
+        <label>Live website URL (optional)<input disabled={saving||!!unconfirmed} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
-        {saving&&<p role="status">Saving your private project…</p>}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
+        {saving&&<p role="status">{unconfirmed?'Checking saved private projects…':'Saving your private project…'}</p>}
+        {unconfirmed&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={saving} onClick={()=>void checkCreatedProject()}>Check saved project before retry</button>
+          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{scanCursor.current=null;scanSeen.current.clear();setError('Lookup reset. Check the saved project again.');}}>Restart lookup</button>
+          {existingProject&&<><a href={'/app/projects/'+existingProject}>Review existing private project</a><button type="button" className="ws-secondary" disabled={saving} onClick={()=>{clearUncertain();setCustomSlug(true);setError('Choose a different unique private slug before saving.');}}>Edit a different slug</button></>}</div>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>Cancel</button>
-          <button type="submit" className="ws-primary" disabled={saving}>{saving?'Saving…':'Save project'}</button>
+          <button type="submit" className="ws-primary" disabled={saving||!!unconfirmed}>{saving?'Saving…':'Save project'}</button>
         </div>
       </form>
     </dialog>
