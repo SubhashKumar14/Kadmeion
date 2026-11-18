@@ -1246,6 +1246,11 @@ export async function createBoundedPrivateAccountRecoveryBundle(
     throw new PrivateAccountExportError('LIMIT_EXCEEDED',
       'The verified partial export exceeds the safe offline ZIP capacity. Keep the original JSON instead.');
   }
+  // A ZIP is not a recovery artifact until the independent reader can reopen
+  // it and reconstruct the exact verified source. No download on divergence.
+  const reopened=await restoreBoundedPrivateAccountJsonFromRecoveryBundle(zip);
+  requireCondition(reopened.sha256===verified.sha256&&reopened.bytes.byteLength===exportBytes.byteLength,
+    'INTEGRITY','The recovery ZIP could not reconstruct the original verified JSON. Keep the original JSON instead.');
   return {
     filename:isV2?'kadmeion-private-account-partial-v2.zip':'kadmeion-private-account-partial.zip',zip,
     sha256:await sha256(zip),originalExportSha256:verified.sha256,
