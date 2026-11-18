@@ -2324,7 +2324,10 @@ test('B16 WF-049/052 real moderation case and appeal lost acknowledgement replay
   expect(open.committed()).toBe(true);
   await expect(page.getByLabel('Case summary')).toHaveValue(rationale);
   await expect(page.getByLabel('I confirm the serious-abuse scope and understand this is audit-only.')).toBeChecked();
-  await page.getByRole('button',{name:'Record private case'}).click();
+  await expect(page.getByLabel('Exact target user ID')).toBeDisabled();
+  await expect(page.getByLabel('Case summary')).toBeDisabled();
+  await expect(page.getByRole('button',{name:'Record private case',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'Retry exact case',exact:true}).click();
   await expect(page.getByRole('status')).toContainText('Private audit case recorded.');
   expect(open.operations.length===2&&open.operations[0]===open.operations[1]).toBe(true);
   await expect(page.getByText('Owner ID '+subject.id,{exact:true})).toHaveCount(1);
@@ -4113,4 +4116,101 @@ test('B16 WF-012 uncertain paged match requires exact owner readback after closi
   await expect(page.getByRole('link',{name:'R7 exact uncertain record',exact:true})).toHaveCount(1);
   expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug='r7-exact-uncertain-record';",owner.id)).toBe('1');
   expect(writes).toBe(1);
+});
+
+test('B16 C14 real administrator restriction lost ACK, mandatory notices, owner appeal and explicit private restoration',async({page,browser},testInfo)=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(160_000);
+  const administrator=await localUser('C14 mounted administrator'),owner=await localUser('C14 mounted owner'),
+    outsider=await localUser('C14 mounted outsider');
+  grantLocalOperatorRole(administrator.id);
+  await signIn(page,administrator);
+  await page.goto('/app/operations/users');
+  await page.getByLabel('Exact target user ID').fill(owner.id);
+  await page.getByLabel('Case summary').fill('Documented local C14 case for public sharing review.');
+  await page.getByLabel('I confirm the serious-abuse scope and understand this is audit-only.').check();
+  const opened=page.waitForResponse(response=>{
+    const url=new URL(response.url());
+    return url.origin===origin&&url.pathname==='/rest/v1/rpc/operator_open_moderation_case'&&response.ok();
+  });
+  await page.getByRole('button',{name:'Record private case',exact:true}).click();
+  const opening=await (await opened).json() as {caseId:string};
+  const caseId=opening.caseId;
+  expect(caseId).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(page.getByRole('status')).toContainText('Private audit case recorded.');
+  await page.goto('/app/operations/moderation');
+  const authority=page.getByRole('region',{name:'Account public-sharing authority'});
+  await authority.getByLabel('Account restriction case').selectOption(caseId);
+  await authority.getByLabel('Restriction decision').selectOption('RESTRICT');
+  const reason='Documented administrator decision for limited public-sharing restriction.';
+  await authority.getByLabel('Owner-visible decision rationale').fill(reason);
+  await authority.getByLabel('Type RESTRICT PUBLIC SHARING to confirm').fill('RESTRICT PUBLIC SHARING');
+  const requests:{operation:string;version:number;action:string;rationale:string;confirmation:string;caseId:string}[]=[];
+  let committed=false;
+  const rpcPattern='**/rest/v1/rpc/operator_change_account_sharing_restriction';
+  await page.route(rpcPattern,async route=>{
+    const body=route.request().postDataJSON() as {p_operation_id:string;p_expected_version:number;p_action:string;p_rationale:string;p_confirmation:string;p_case_id:string};
+    requests.push({operation:body.p_operation_id,version:body.p_expected_version,action:body.p_action,
+      rationale:body.p_rationale,confirmation:body.p_confirmation,caseId:body.p_case_id});
+    const result=await route.fetch();
+    try{
+      if(!committed&&result.ok()){committed=true;await route.abort('failed');}
+      else await route.fulfill({response:result});
+    }finally{await result.dispose();}
+  });
+  await authority.getByRole('button',{name:'Record restriction decision',exact:true}).click();
+  await expect(authority.getByRole('alert')).toContainText('Decision acknowledgement is unverified');
+  expect(committed).toBe(true);
+  await expect(authority.getByLabel('Account restriction case')).toBeDisabled();
+  await expect(authority.getByLabel('Restriction decision')).toBeDisabled();
+  await expect(authority.getByLabel('Owner-visible decision rationale')).toHaveValue(reason);
+  await expect(authority.getByLabel('Owner-visible decision rationale')).toBeDisabled();
+  await authority.getByRole('button',{name:'Retry exact restriction decision',exact:true}).click();
+  await expect(page.getByRole('status')).toContainText('Application public-sharing restriction recorded');
+  expect(requests).toHaveLength(2);
+  expect(requests[1]).toEqual(requests[0]);
+  expect(requests[0]).toMatchObject({caseId,version:0,action:'RESTRICT',rationale:reason});
+  await page.unroute(rpcPattern);
+  const noticeCount=(event:'MODERATION_ACCOUNT_RESTRICTED'|'MODERATION_ACCOUNT_RESTORED')=>
+    runLocalFixtureSql("select count(*) from public.private_notifications where owner_user_id=:'actor_id'::uuid and target_id=:'item_id'::uuid and category='MODERATION' and priority='HIGH' and event_type='"+event+"';",owner.id,caseId);
+  expect(noticeCount('MODERATION_ACCOUNT_RESTRICTED')).toBe('1');
+  const context=await browser.newContext({baseURL:testInfo.project.use.baseURL});
+  const outsiderContext=await browser.newContext({baseURL:testInfo.project.use.baseURL});
+  try{
+    const subject=await context.newPage(),foreign=await outsiderContext.newPage();
+    await signIn(subject,owner);
+    await subject.goto('/app');
+    await expect(subject.locator('.ws-shell')).toBeVisible();
+    await subject.goto('/app/settings/cases');
+    const sharing=subject.getByRole('region',{name:'Your account public-sharing status'});
+    await expect(sharing.getByText('Your account\u0027s public sharing is restricted.',{exact:false})).toBeVisible();
+    await sharing.getByRole('link',{name:'Open restriction case'}).click();
+    await expect(subject).toHaveURL(new RegExp('/app/settings/cases\\?case='+caseId+'$'));
+    await expect(subject.getByRole('list',{name:'Case events'}).getByText('Public sharing restricted',{exact:true})).toBeVisible();
+    const appeal='Owner appeal asks for review of this documented public-sharing restriction.';
+    await subject.getByLabel('Appeal statement').fill(appeal);
+    await subject.getByRole('button',{name:'Submit private appeal',exact:true}).click();
+    await expect(subject.getByRole('heading',{name:'Appeal pending',exact:true})).toBeVisible();
+    await signIn(foreign,outsider);
+    await foreign.goto('/app/settings/cases?case='+caseId);
+    await expect(foreign.getByText('This case is unavailable to the current account.',{exact:true})).toBeVisible();
+    await expect(foreign.getByText(reason,{exact:true})).toHaveCount(0);
+    await expect(foreign.getByRole('button',{name:'Submit private appeal'})).toHaveCount(0);
+    await page.goto('/app/operations/appeals');
+    await authority.getByLabel('Account restriction case').selectOption(caseId);
+    await expect(authority.getByText(appeal,{exact:true})).toBeVisible();
+    await authority.getByLabel('Restriction decision').selectOption('RESTORE');
+    await authority.getByLabel('Owner-visible decision rationale').fill('Administrator reviewed the owner appeal and restores private sharing eligibility.');
+    await authority.getByLabel('Type RESTORE PUBLIC SHARING to confirm').fill('RESTORE PUBLIC SHARING');
+    await authority.getByRole('button',{name:'Record restriction decision',exact:true}).click();
+    await expect(page.getByRole('status')).toContainText('Sharing eligibility restored. Previous releases remain withdrawn');
+    expect(noticeCount('MODERATION_ACCOUNT_RESTORED')).toBe('1');
+    await subject.reload();
+    await expect(sharing.getByText('No active account-wide public-sharing restriction was returned.',{exact:false})).toBeVisible();
+    await expect(sharing.getByRole('link',{name:'Open restriction case'})).toHaveCount(0);
+    await expect(subject.getByRole('heading',{name:'Closed',exact:true})).toBeVisible();
+    await expect(subject.getByRole('list',{name:'Case events'}).getByText('Sharing eligibility restored',{exact:true})).toBeVisible();
+    await expect(subject.getByRole('list',{name:'Case events'}).getByText(appeal,{exact:true})).toHaveCount(1);
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.profile_publications where user_id=:'actor_id'::uuid;",owner.id)).toBe('0');
+  }finally{await context.close();await outsiderContext.close();}
 });
