@@ -776,6 +776,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     (detail.saved.liveUrl ?? '') !== (detail.draft.liveUrl ?? '')
   );
   const blocked=saving || checking || casePending || imagePending;
+  // Private drafts are in memory until acknowledged. Warn on document exit;
+  // do not store private content or claim an offline/cloud save.
+  useEffect(()=>{
+    if(!dirty&&!caseDirty&&!saving&&!checking&&!casePending&&!imagePending)return;
+    const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
+    window.addEventListener('beforeunload',warn);
+    return()=>window.removeEventListener('beforeunload',warn);
+  },[dirty,caseDirty,saving,checking,casePending,imagePending]);
   const destinationReview=detail.status==='ready'?projectDestinationReview(detail.saved,detail.draft):null;
   const destinationUnconfirmed=!!destinationReview&&(!!destinationReview.error||
     (destinationReview.key!==null&&destinationReview.key!==reviewedDestinationChange));
@@ -815,6 +823,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         <fieldset disabled={blocked}>
           <legend>Project details</legend>
           <p>Changes remain unsaved until you choose Save changes. Saving changed project content can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
+          {dirty&&<p role="status">Unsaved private overview edits. These are retained in this editor, not saved offline.</p>}
           <label>Project title
             <input maxLength={120} required value={detail.draft.title} onChange={e => edit('title', e.target.value)}/>
           </label>
@@ -1348,6 +1357,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const [uncertain,setUncertain]=useState<{base:number;sections:CaseStudySection[]}|null>(null);
   const [comparison,setComparison]=useState<CaseRevision|null>(null);
   const [confirmRebase,setConfirmRebase]=useState(false);
+  const [previewSource,setPreviewSource]=useState<'draft'|'saved'>('draft');
   const currentOwner=()=>!expired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
   const current=(id:number)=>generation.current===id&&currentOwner();
   const minimumRevision=useRef(knownRevision);
@@ -1366,7 +1376,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
       if(next===ownerEpoch.current||expired.current)return;
       expired.current=true;++generation.current;pending.current=true;
-      setDraft(null);setSavedSections(null);setUncertain(null);setComparison(null);setConfirmRebase(false);setNotice('');
+      setDraft(null);setSavedSections(null);setUncertain(null);setComparison(null);setConfirmRebase(false);setPreviewSource('draft');setNotice('');
       setBusy(false);setLoading(false);setNeedsReload(true);
       setError('Your owner session changed. Reopen this project.');
     });
@@ -1516,6 +1526,8 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     setNotice(keep?'Compared saved sections. Your draft still needs a separate explicit save.':'Loaded the compared saved sections. No write was made.');
   }
 
+  const previewSections=(previewSource==='draft'?draft?.sections:savedSections)??[];
+  const includedPreview=previewSections.filter(section=>section.visible);
   return <form className="ws-project-fields ws-case-form" onSubmit={event => void save(event)}>
     <h2>Case study sections</h2>
     <p>Add and order sections for your draft. Visibility applies to a future release. Saving changed sections can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
@@ -1548,6 +1560,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
       disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
     {draft && stale && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
     {draft && <>
+      {dirty&&<p role="status">Unsaved private section edits. The overview has its own separate draft.</p>}
       {!draft.sections.length && <p>Your case study has no sections yet.</p>}
       {draft.sections.map((section, index) => <fieldset key={section.id} disabled={locked}>
         <legend>{section.title || 'Section ' + (index + 1)}</legend>
@@ -1580,6 +1593,21 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
         }}>Add section</button>
         <button type="submit" className="ws-primary" disabled={locked || stale || !dirty}>{busy ? 'Saving…' : 'Save sections'}</button>
       </div>
+      <section className="ws-project-aside" aria-label="Private case-study preview">
+        <h3>Case-study preview</h3>
+        <p>Owner-only preview of the selected sections, not a public route. Results are self-reported. Hidden sections stay in your draft.</p>
+        <div className="ws-actions" role="group" aria-label="Case-study preview source">
+          <button type="button" className="ws-secondary" aria-pressed={previewSource==='draft'} onClick={()=>setPreviewSource('draft')}>Current section draft</button>
+          <button type="button" className="ws-secondary" aria-pressed={previewSource==='saved'} disabled={!savedSections} onClick={()=>setPreviewSource('saved')}>Last verified saved sections</button>
+        </div>
+        <p>{includedPreview.length} included of {previewSections.length} {previewSource==='saved'?'saved':'draft'} sections.{previewSource==='saved'&&stale?' This saved baseline may be stale.':''}</p>
+        {!includedPreview.length?<p>No included sections yet.</p>:<div className="ws-profile-card">
+          {includedPreview.map((section,index)=><details key={section.id} open={index===0?true:undefined}>
+            <summary>{section.title||'Untitled '+section.kind+' section'}</summary>
+            <p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{section.body||'No section content yet.'}</p>
+          </details>)}
+        </div>}
+      </section>
     </>}
   </form>;
 }
