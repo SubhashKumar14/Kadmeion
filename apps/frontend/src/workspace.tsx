@@ -223,8 +223,8 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
         const selectedStep = choice;
         setSaving(true); setNote('Saving selected step…');
         void onSkip(selectedStep).then(saved => {
-          setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
-            'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying.');
+          setNote(saved ? 'This step is confirmed as skipped in your private account. You can return later.' :
+            'The selected step could not be confirmed as skipped. Reopen Welcome to check the account before retrying.');
         }).catch(() => {
           setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
         }).finally(() => {
@@ -391,19 +391,35 @@ export function WorkspaceApp() {
   }, [route]);
   async function skipChoice(choice: PrivateStep): Promise<boolean> {
     const port=authRef.current;
-    if (!port) return false;
+    if (!port || gate.status !== 'verified') return false;
     const ownerEpoch = port.getOwnerSessionEpoch();
-    const result=await port.setPrivateOnboardingStep(choice,'skipped');
-    if (result.error || !result.data || result.data.step !== choice || result.data.status !== 'skipped')
-      return false;
-    if (authRef.current !== port || port.getOwnerSessionEpoch() !== ownerEpoch) return false;
-    setSnapshot(state=>state.status !== 'ready' ? state : {
-      status:'ready',value:{...state.value,onboarding:[
-        ...state.value.onboarding.filter(item=>item.step!==choice),
-        {step:choice,status:'skipped' as PrivateStepStatus}
-      ]}
-    });
-    return true;
+    const current = () => authRef.current === port && port.getOwnerSessionEpoch() === ownerEpoch;
+    if (ownerEpoch !== gate.epoch || !current()) return false;
+    try {
+      const result=await port.setPrivateOnboardingStep(choice,'skipped');
+      if (!current()) return false;
+      if (!result.error && result.data?.step === choice && result.data.status === 'skipped') {
+        setSnapshot(state=>state.status !== 'ready' ? state : {
+          status:'ready',value:{...state.value,onboarding:[
+            ...state.value.onboarding.filter(item=>item.step!==choice),
+            {step:choice,status:'skipped' as PrivateStepStatus}
+          ]}
+        });
+        return true;
+      }
+    } catch {
+      // An absent acknowledgement does not establish whether the write committed.
+    }
+    if (!current()) return false;
+    try {
+      const read=await port.readOwnerWorkspace();
+      if (!current() || read.error || !read.data) return false;
+      const steps=read.data.onboarding;
+      setSnapshot(state=>state.status !== 'ready' ? state : {
+        status:'ready',value:{...state.value,onboarding:steps}
+      });
+      return steps.some(step=>step.step===choice && step.status==='skipped');
+    } catch { return false; }
   }
   async function signOut() {
     const port = authRef.current;
