@@ -17,7 +17,9 @@ const env={
   SUPABASE_ANON_KEY:'eyJ'+'p'.repeat(100),
   SUPABASE_SERVICE_ROLE_KEY:'eyJ'+'s'.repeat(100)
 };
-const consent={id,portfolio_id:'30000000-0000-4000-8000-000000000003',
+const requestId='40000000-0000-4000-8000-000000000004';
+const operationId='50000000-0000-4000-8000-000000000005';
+const consent={id,portfolio_id:'30000000-0000-4000-8000-000000000003',request_id:requestId,operation_id:operationId,
   status:'AWAITING_HOST',expires_at:'2099-01-01T00:00:00Z'};
 function request(body:unknown={intentId:id},method='POST',origin='https://kadmeion.vercel.app',
                  jwt=bearer) {
@@ -31,7 +33,7 @@ function request(body:unknown={intentId:id},method='POST',origin='https://kadmei
 }
 function fixture(options:{
   intent?:unknown;user?:unknown;providerFail?:boolean;forgedType?:boolean;
-  upstreamEncoding?:string;
+  upstreamEncoding?:string;visibility?:'PUBLIC'|'UNLISTED';frozen?:unknown;
   publish?:()=>Promise<unknown>;settings?:Record<string,string>;
 }={}) {
   const calls:{url:string;method:string;headers:Record<string,string>}[]=[];
@@ -47,6 +49,10 @@ function fixture(options:{
     if(url.includes('/private_unlisted_publication_intents?')){
       return Response.json(options.intent===undefined?[consent]:options.intent);
     }
+    if(url.includes('/private_release_requests?'))return Response.json(options.frozen??[{
+      id:requestId,portfolio_id:consent.portfolio_id,owner_user_id:owner,status:'FROZEN',
+      visibility_intent:options.visibility??'UNLISTED'
+    }]);
     if(url.includes('/rpc/service_prepare_unlisted_release')){
       return Response.json({status:'ACKNOWLEDGED'});
     }
@@ -170,12 +176,13 @@ test('verified release receipt follows Auth/RLS and privileged RPC in that order
   assert.equal(value.accountDeletionAllowed,false);
   assert.equal(value.publicUrl,undefined);
   assert.equal(response.headers.get('cache-control'),'private, no-store, max-age=0');
-  assert.equal(f.calls.length,3);
+  assert.equal(f.calls.length,4);
   assert.ok(f.calls[0].url.endsWith('/auth/v1/user'));
   assert.ok(f.calls[1].url.includes('/private_unlisted_publication_intents?'));
-  assert.ok(f.calls[2].url.endsWith('/rpc/service_prepare_unlisted_release'));
-  assert.equal(f.calls[0].headers.apikey,env.SUPABASE_ANON_KEY);
-  assert.equal(f.calls[2].headers.apikey,env.SUPABASE_SERVICE_ROLE_KEY);
+  assert.ok(f.calls[2].url.includes('/private_release_requests?'));
+  assert.ok(f.calls[3].url.endsWith('/rpc/service_prepare_unlisted_release'));
+  assert.ok(f.calls.slice(0,3).every(x=>x.headers.apikey===env.SUPABASE_ANON_KEY));
+  assert.equal(f.calls[3].headers.apikey,env.SUPABASE_SERVICE_ROLE_KEY);
   assert.equal(f.getPublished(),1);
 });
 test('unverified worker acknowledgment and transport failure never become success',async()=>{
@@ -191,4 +198,25 @@ test('unverified worker acknowledgment and transport failure never become succes
     assert.ok(!text.includes('Provider timeout'));
     assert.ok(!text.includes(env.SUPABASE_SERVICE_ROLE_KEY));
   }
+});
+
+test('C11 PUBLIC requires the exact frozen owner operation and cannot accept a legacy success',async()=>{
+  const publicRequest={intentId:id,expectedPortfolioId:consent.portfolio_id,
+    expectedRequestId:requestId,expectedOperationId:operationId};
+  for(const body of [{intentId:id},{...publicRequest,expectedOperationId:owner}]){
+    const f=fixture({visibility:'PUBLIC'});
+    assert.equal((await handleOwnerPublishRelease(request(body),f.deps)).status,409);
+    assert.equal(f.getPublished(),0);
+    assert.ok(f.calls.every(x=>x.headers.apikey===env.SUPABASE_ANON_KEY));
+  }
+  const legacy=fixture({visibility:'PUBLIC'});
+  const response=await handleOwnerPublishRelease(request(publicRequest),legacy.deps);
+  assert.equal(response.status,409);
+  assert.equal(legacy.getPublished(),1);
+  assert.ok(!(await response.text()).includes('DELIVERY_ACKNOWLEDGED'));
+  const wrongOwner=fixture({visibility:'PUBLIC',frozen:[{
+    id:requestId,portfolio_id:consent.portfolio_id,owner_user_id:id,status:'FROZEN',visibility_intent:'PUBLIC'
+  }]});
+  assert.ok((await handleOwnerPublishRelease(request(publicRequest),wrongOwner.deps)).status>=400);
+  assert.equal(wrongOwner.getPublished(),0);
 });
