@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(23);
+select plan(24);
 select has_table('public','private_moderation_cases','scoped moderation case registry exists');
 select has_table('public','private_moderation_events','immutable moderation event journal exists');
 select ok((select relrowsecurity from pg_class where oid='public.private_moderation_cases'::regclass),
@@ -26,11 +26,18 @@ insert into auth.users(id,instance_id,aud,role,email,created_at,updated_at) valu
  ('00000000-0000-4000-8000-0000000000b1','00000000-0000-0000-0000-000000000000','authenticated','authenticated','mod-operator@testing.invalid',now(),now()),
  ('00000000-0000-4000-8000-0000000000b2','00000000-0000-0000-0000-000000000000','authenticated','authenticated','mod-owner@testing.invalid',now(),now()),
  ('00000000-0000-4000-8000-0000000000b3','00000000-0000-0000-0000-000000000000','authenticated','authenticated','mod-other@testing.invalid',now(),now());
+-- Transaction-local session records model PostgREST authenticated claims.
+-- The separate local HTTP test exercises actual signed GoTrue password JWTs.
+insert into auth.sessions(id,user_id,created_at,updated_at,not_after) values
+ ('a0000000-0000-4000-8000-0000000000b1','00000000-0000-4000-8000-0000000000b1',now(),now(),clock_timestamp()+interval '10 minutes'),
+ ('a0000000-0000-4000-8000-0000000000b2','00000000-0000-4000-8000-0000000000b2',now(),now(),clock_timestamp()+interval '10 minutes'),
+ ('a0000000-0000-4000-8000-0000000000b3','00000000-0000-4000-8000-0000000000b3',now(),now(),clock_timestamp()+interval '10 minutes');
 insert into kadmeion_private.operator_roles(user_id,role)
 values('00000000-0000-4000-8000-0000000000b1','moderator');
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000b3',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b3','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000b3','is_anonymous',false)::text,true);
 do $$
 declare denied boolean:=false;
 begin
@@ -45,6 +52,10 @@ end $$;
 select pass('Regular signed-in user denied operator mutation');
 
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000b1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000b1','is_anonymous',false)::text,true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b1','role','authenticated','is_anonymous',false)::text,true);
+select throws_ok('select public.owner_read_account_sharing_restriction()','42501','LIVE_SESSION_REQUIRED','C14 missing session denied');
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000b1','is_anonymous',false)::text,true);
 do $$
 declare x jsonb;y jsonb;
 begin
@@ -70,6 +81,7 @@ select is((select count(*) from public.private_moderation_cases),0::bigint,
   'Operator does not get client RLS access to target case list');
 
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000b2',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b2','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000b2','is_anonymous',false)::text,true);
 select is((select count(*) from public.private_moderation_cases),1::bigint,
   'Target user can inspect their scoped case');
 select is((select count(*) from public.private_moderation_events),1::bigint,
@@ -91,6 +103,7 @@ end $$;
 select pass('Owner appeal creates an immutable journal event once');
 
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000b3',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b3','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000b3','is_anonymous',false)::text,true);
 select is((select count(*) from public.private_moderation_cases),0::bigint,
   'Unrelated user cannot read moderation cases');
 do $$
@@ -107,6 +120,7 @@ end $$;
 select pass('Cross-account appeal denied');
 
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000b1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000b1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000b1','is_anonymous',false)::text,true);
 select is(public.operator_close_moderation_case(
   current_setting('kadmeion.test_mod_case')::uuid,
   '30000000-0000-4000-8000-0000000000b1',

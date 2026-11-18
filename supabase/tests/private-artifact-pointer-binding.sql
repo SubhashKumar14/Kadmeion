@@ -30,6 +30,10 @@ insert into auth.users(id,instance_id,aud,role,email,created_at,updated_at)
 values('00000000-0000-4000-8000-0000000000c1',
   '00000000-0000-0000-0000-000000000000','authenticated','authenticated',
   'binding@testing.invalid',now(),now());
+-- Transaction-local session records model PostgREST authenticated claims.
+-- The separate local HTTP test exercises actual signed GoTrue password JWTs.
+insert into auth.sessions(id,user_id,created_at,updated_at,not_after) values
+ ('a0000000-0000-4000-8000-0000000000c1','00000000-0000-4000-8000-0000000000c1',now(),now(),clock_timestamp()+interval '10 minutes');
 insert into public.portfolios(id,owner_user_id,slug,title,template_id,head_revision)
  values('10000000-0000-4000-8000-0000000000c1',
   '00000000-0000-4000-8000-0000000000c1','binding-test',
@@ -72,6 +76,7 @@ values('10000000-0000-4000-8000-0000000000c1',
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000c1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000c1','is_anonymous',false)::text,true);
 do $block$
 declare denied boolean:=false;
 begin
@@ -197,6 +202,7 @@ select pass('staging writer requires exact previously verified bound HTML digest
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000c1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000c1','is_anonymous',false)::text,true);
 do $block$
 declare receipt jsonb;
 begin
@@ -227,6 +233,7 @@ select ok(public.read_private_reviewer_stage_artifact(
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000c1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000c1','is_anonymous',false)::text,true);
 select is(public.revoke_private_reviewer_grant(
   current_setting('kd.bind.grant')::uuid)->>'status','REVOKED',
   'owner revoked reviewer credential');
@@ -238,6 +245,7 @@ select ok(public.read_private_reviewer_stage_artifact(
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000c1',true);
+select set_config('request.jwt.claims',jsonb_build_object('sub','00000000-0000-4000-8000-0000000000c1','role','authenticated','session_id','a0000000-0000-4000-8000-0000000000c1','is_anonymous',false)::text,true);
 select is(public.owner_block_private_release_pointer(
   '10000000-0000-4000-8000-0000000000c1',
   '50000000-0000-4000-8000-0000000000c1')->>'status',
