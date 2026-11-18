@@ -377,13 +377,14 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const headers: Record<string, string> = { apikey: this.publishableKey, 'Content-Type': 'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
     const ownerVerification=boundedOwnerGet&&method==='GET'&&path==='/user'&&typeof token==='string';
+    const corePasswordExchange=method==='POST'&&(path.startsWith('/signup?redirect_to=')||path==='/token?grant_type=password');
     const requestUrl=this.origin+'/auth/v1'+path;
     let response: Response;
     try {
       response = await this.fetcher(requestUrl, {
         method,headers,body:body===undefined?undefined:JSON.stringify(body),
         cache:'no-store',credentials:'omit',redirect:'error',
-        ...(ownerVerification?{signal:AbortSignal.timeout(10_000)}:{})
+        ...(ownerVerification?{signal:AbortSignal.timeout(10_000)}:corePasswordExchange?{signal:AbortSignal.timeout(20_000)}:{})
       });
     } catch {
       if(ownerVerification)throw new AuthTransientUserReadError();
@@ -391,9 +392,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }
     if(ownerVerification&&(response.redirected||(response.url&&response.url!==requestUrl)||
        response.status>=500))throw new AuthTransientUserReadError();
+    if(corePasswordExchange&&(response.redirected||(response.url&&response.url!==requestUrl))){
+      void response.body?.cancel().catch(()=>{});
+      throw new Error('Authentication response origin could not be verified.');
+    }
     const strictSignupResend = method === 'POST' && path.startsWith('/resend?redirect_to=') && body?.type === 'signup';
     const strictRecovery = method === 'POST' && path.startsWith('/recover?redirect_to=');
     const payload: unknown = await response.json().catch(() => undefined);
+    if(corePasswordExchange&&response.ok&&(!payload||typeof payload!=='object'||Array.isArray(payload)))
+      throw new Error('Authentication response could not be verified.');
     if(ownerVerification&&response.ok&&(!payload||typeof payload!=='object'||Array.isArray(payload)))
       throw new AuthTransientUserReadError();
     if (response.ok && (strictSignupResend || strictRecovery) &&
@@ -481,6 +488,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signUp({ email, password, options }: { email: string; password: string; options: { data: Record<string, string> } }): Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>> {
     return this.outcome(async () => {
+      this.reconcileOwnerSessionEpoch();
       const attempt=++this.authAttempt;
       const response = await this.request('/signup?redirect_to=' + encodeURIComponent(this.appOrigin + '/auth/callback'), 'POST', {
         email, password, data: options.data
@@ -504,6 +512,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signInWithPassword({ email, password }: { email: string; password: string }): Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>> {
     return this.outcome(async () => {
+      this.reconcileOwnerSessionEpoch();
       const attempt=++this.authAttempt;
       const response = await this.request('/token?grant_type=password', 'POST', { email, password });
       this.assertCurrentAuthAttempt(attempt);
