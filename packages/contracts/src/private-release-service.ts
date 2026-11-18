@@ -76,25 +76,30 @@ function invalidHistory():never{
 function cancelHistory(body:{cancel:()=>Promise<void>}|null|undefined):void{
   try{void body?.cancel().catch(()=>{});}catch{/* best effort */}
 }
-async function historyJson(response:Response,signal:AbortSignal):Promise<unknown>{
-  if(signal.aborted||!response.body||
+async function historyJson(response:Response,signal:AbortSignal,deadline:number):Promise<unknown>{
+  const length=response.headers.get('content-length');
+  const encoding=response.headers.get('content-encoding');
+  const expired=()=>signal.aborted||performance.now()>=deadline;
+  if(expired()||(length!==null&&(!/^\d+$/.test(length)||Number(length)>HISTORY_BYTES))||!response.body||
      !/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type')??''))invalidHistory();
   const reader=response.body.getReader();
   const stop=()=>cancelHistory(reader);
   signal.addEventListener('abort',stop,{once:true});
   const buffer=new Uint8Array(HISTORY_BYTES);
-  let size=0,empty=0;
+  let size=0,empty=0,chunks=0;
   try{
     for(;;){
+      if(expired())invalidHistory();
       const chunk=await reader.read();
-      if(signal.aborted)invalidHistory();
+      if(expired())invalidHistory();
       if(chunk.done)break;
-      if(!(chunk.value instanceof Uint8Array)||size+chunk.value.byteLength>buffer.byteLength)invalidHistory();
+      if(!(chunk.value instanceof Uint8Array)||++chunks>4096||size+chunk.value.byteLength>buffer.byteLength)invalidHistory();
       if(!chunk.value.byteLength){if(++empty>=16)invalidHistory();continue;}
       empty=0;
       buffer.set(chunk.value,size);
       size+=chunk.value.byteLength;
     }
+    if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==size)invalidHistory();
     try{return JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(buffer.subarray(0,size)));}
     catch{invalidHistory();}
   }finally{
@@ -104,6 +109,7 @@ async function historyJson(response:Response,signal:AbortSignal):Promise<unknown
 }
 async function fetchHistory(fetcher:typeof fetch,url:string,headers:Record<string,string>):Promise<unknown>{
   const controller=new AbortController();
+  const expiresAt=performance.now()+HISTORY_TIMEOUT_MS;
   let response:Response|undefined;
   let timer:ReturnType<typeof setTimeout>|undefined;
   const timeout=new Promise<never>((_,reject)=>{
@@ -116,17 +122,52 @@ async function fetchHistory(fetcher:typeof fetch,url:string,headers:Record<strin
     const work=(async()=>{
       const received=await fetcher(url,{method:'GET',headers,credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal});
       response=received;
-      if(controller.signal.aborted){cancelHistory(received.body);invalidHistory();}
+      if(controller.signal.aborted||performance.now()>=expiresAt){cancelHistory(received.body);invalidHistory();}
       if(received.redirected||received.headers.has('location')||(received.url&&received.url!==url))invalidHistory();
       if(received.status===401)throw new PrivateReleaseError('AUTH_EXPIRED','Session expired.');
       if(received.status===403)throw new PrivateReleaseError('FORBIDDEN','Release acknowledgement history is unavailable.');
       if(received.status!==200)throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Release acknowledgement history could not be loaded.');
-      return historyJson(received,controller.signal);
+      return historyJson(received,controller.signal,expiresAt);
     })();
     return await Promise.race([work,timeout]);
   }catch(error){
     if(error instanceof PrivateReleaseError)throw error;
     throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Release acknowledgement history could not be loaded.');
+  }finally{
+    if(timer!==undefined)clearTimeout(timer);
+    controller.abort();
+    if(response?.body&&!response.body.locked)cancelHistory(response.body);
+  }
+}
+
+/**
+ * Shared bounded owner RPC transport for private release/reviewer receipts.
+ * Only parse bounded JSON, including error bodies; never expose provider text.
+ * A timeout is an unknown outcome, not permission to create another operation.
+ */
+export async function fetchBoundedPrivateReleaseRpc(fetcher:typeof fetch,url:string,
+    headers:Record<string,string>,payload:Record<string,unknown>):
+    Promise<{ok:boolean;status:number;body:unknown}> {
+  const controller=new AbortController();
+  const expiresAt=performance.now()+HISTORY_TIMEOUT_MS;
+  let response:Response|undefined;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const unavailable=()=>new Error('Private release RPC was not acknowledged.');
+  const deadline=new Promise<never>((_,reject)=>{
+    timer=setTimeout(()=>{reject(unavailable());controller.abort();},HISTORY_TIMEOUT_MS);
+  });
+  try{
+    const work=(async()=>{
+      const received=await fetcher(url,{method:'POST',headers,credentials:'omit',
+        cache:'no-store',redirect:'error',signal:controller.signal,body:JSON.stringify(payload)});
+      response=received;
+      if(controller.signal.aborted||performance.now()>=expiresAt||received.redirected||received.headers.has('location')||
+         (received.url&&received.url!==url)){cancelHistory(received.body);throw unavailable();}
+      const body=await historyJson(received,controller.signal,expiresAt).catch(()=>null);
+      if(controller.signal.aborted||performance.now()>=expiresAt)throw unavailable();
+      return {ok:received.ok,status:received.status,body};
+    })();
+    return await Promise.race([work,deadline]);
   }finally{
     if(timer!==undefined)clearTimeout(timer);
     controller.abort();
@@ -168,31 +209,19 @@ export class SupabasePrivateReleaseService {
       throw new ContractError('VALIDATION', 'Invalid pinned release request.');
     const jwt = await this.token();
     if (!jwt) throw new PrivateReleaseError('AUTH_EXPIRED', 'Sign in to freeze your private revision.');
-    let response: Response;
+    let response:Awaited<ReturnType<typeof fetchBoundedPrivateReleaseRpc>>;
     try {
-      response = await this.fetcher(this.endpoint + '/rest/v1/rpc/freeze_private_release_request',{
-        method:'POST',
-        headers:{
-          apikey:this.key,
-          Authorization:'Bearer '+jwt,
-          'Content-Type':'application/json',
-          Accept:'application/json'
-        },
-        credentials:'omit',
-        cache:'no-store',
-        redirect:'error',
-        body:JSON.stringify({
-          p_portfolio_id:portfolioId,
-          p_operation_id:operationId,
-          p_revision:revision,
-          p_visibility_intent:visibilityIntent
-        })
-      });
+      response=await fetchBoundedPrivateReleaseRpc(this.fetcher,
+        this.endpoint+'/rest/v1/rpc/freeze_private_release_request',
+        {apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json',Accept:'application/json'},
+        {p_portfolio_id:portfolioId,p_operation_id:operationId,p_revision:revision,p_visibility_intent:visibilityIntent});
     } catch {
       throw new PrivateReleaseError('PROVIDER_UNAVAILABLE', 'Freeze was not acknowledged; retry the same operation ID.');
     }
+    if(await this.token()!==jwt)
+      throw new PrivateReleaseError('AUTH_EXPIRED','Session changed while freezing the private revision.');
     if (!response.ok) {
-      const problem=await response.json().catch(()=>null) as {message?:string}|null;
+      const problem=record(response.body)?response.body:null;
       if (problem?.message==='PRIVATE_REVISION_UNAVAILABLE')
         throw new PrivateReleaseError('REVISION_UNAVAILABLE','That immutable revision does not exist.');
       if (problem?.message==='PRIVATE_FREEZE_QUOTA_REACHED')
@@ -201,13 +230,14 @@ export class SupabasePrivateReleaseService {
       if (response.status===403) throw new PrivateReleaseError('FORBIDDEN','Portfolio is not accessible.');
       throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Freeze could not be confirmed.');
     }
-    const ack=await response.json().catch(()=>null) as PrivateFrozenRequest|null;
-    if (!ack || !UUID.test(ack.requestId) || ack.portfolioId!==portfolioId ||
-        ack.revision!==revision || !SHA256.test(ack.snapshotSha256) ||
+    const ack=response.body;
+    if (!record(ack) || !uuid(ack.requestId) || ack.portfolioId!==portfolioId ||
+        ack.revision!==revision || typeof ack.snapshotSha256!=='string' || !SHA256.test(ack.snapshotSha256) ||
         ack.visibilityIntent!==visibilityIntent || ack.status!=='FROZEN' ||
         ack.publicUrl!==null || typeof ack.alreadyFrozen!=='boolean')
       throw new PrivateReleaseError('INVALID_ACK','Freeze receipt is unverified; do not publish.');
-    return ack;
+    return {requestId:ack.requestId,portfolioId,revision,snapshotSha256:ack.snapshotSha256,
+      visibilityIntent,status:'FROZEN',publicUrl:null,alreadyFrozen:ack.alreadyFrozen};
   }
   /**
    * Metadata-only read of the four existing owner-RLS granted columns.
