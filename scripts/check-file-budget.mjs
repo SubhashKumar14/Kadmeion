@@ -29,6 +29,10 @@ const authorizedAdditionPaths = [
   'supabase/functions/sync-provider-facts/index.ts',
   'apps/frontend/src/portfolio-analytics.tsx',
   'api/portfolio-analytics.mjs',
+  // EVENT-B16-S00-030: S08-002 forward replacement for unused 160300; S1 sole SQL writer.
+  'supabase/migrations/20261117161000_verified_public_directory.sql',
+  // S08-003: exact public discovery transport wrapper; S9 temporary S8 API lease.
+  'api/public-discovery.mjs',
   // S15-013 / S00-016: isolated C13 S12/S13 service and test only.
   'packages/contracts/src/private-analytics-service.ts',
   'tests/contracts/private-analytics.test.ts',
