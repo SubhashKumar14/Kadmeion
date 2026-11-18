@@ -3195,3 +3195,72 @@ test('B16 release pending glyph reflects real owner read, failure and explicit r
   await expect(section.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
   await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toHaveCount(0);
 });
+
+test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposable owner data and downloads authoritative receipt',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Destructive test restricted to disposable loopback Supabase.');
+  test.setTimeout(125_000);
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if(process.env.VITE_SUPABASE_URL!==origin||!key)throw new Error('Refusing nonlocal account exit test.');
+  const owner=await localUser('R6 disposable erasure owner'),foreign=await localUser('R6 erasure foreign owner');
+  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const bucket='kadmeion-private-assets';
+  const login=async(user:{email:string;password:string})=>fetch(origin+'/auth/v1/token?grant_type=password',{
+    method:'POST',redirect:'error',signal:AbortSignal.timeout(15_000),
+    headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email:user.email,password:user.password})
+  });
+  const upload=async(user:{id:string;email:string;password:string})=>{
+    const auth=await login(user);if(!auth.ok)throw new Error('Disposable owner auth failed.');
+    const authBody=await auth.json();if(typeof authBody.access_token!=='string')throw new Error('No owner bearer.');
+    const headers={apikey:key,Authorization:'Bearer '+authBody.access_token};
+    const path=user.id+'/exit/'+randomUUID()+'.png';
+    const write=await fetch(origin+'/storage/v1/object/'+bucket+'/'+path,{
+      headers:{...headers,'Content-Type':'image/png'},method:'POST',body:bytes,redirect:'error',signal:AbortSignal.timeout(15_000)
+    });
+    expect(write.ok).toBe(true);await write.body?.cancel();
+    const read=()=>fetch(origin+'/storage/v1/object/authenticated/'+bucket+'/'+path,{headers,redirect:'error',signal:AbortSignal.timeout(15_000)});
+    const before=await read();expect(before.ok).toBe(true);
+    expect(Buffer.from(await before.arrayBuffer()).equals(bytes)).toBe(true);
+    return {read};
+  };
+  // Real owner JWTs, actual private Storage bytes; no admin Storage write.
+  const target=await upload(owner),untouched=await upload(foreign);
+  await signIn(page,owner);
+  await page.goto('/app/settings/account/delete');
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
+  await page.getByRole('textbox',{name:'Type DELETE MY ACCOUNT to record the request'}).fill('DELETE MY ACCOUNT');
+  await page.getByRole('button',{name:'Record deletion request'}).click();
+  await expect(page.getByText('Deletion request recorded. No data has been erased.',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Permanently erase account and prepare receipt'})).toHaveCount(0);
+  await page.getByLabel('Current password for identity verification').fill(owner.password);
+  await page.getByRole('button',{name:'Verify identity for account exit'}).click();
+  await expect(page.getByText(/Fresh sign-in verified\. Proof expires at/)).toBeVisible();
+  const section=page.getByRole('region',{name:'Irreversible account erasure'});
+  const review=section.getByRole('button',{name:'Review server-gated cleanup readiness'});
+  await review.click();
+  await expect(section.getByText(/Eligible uploads in the next bounded batch: 1\./)).toBeVisible();
+  await expect(section.getByRole('button',{name:'Permanently erase account and prepare receipt'})).toHaveCount(0);
+  const remove=section.getByRole('button',{name:'Remove reviewed private uploads'});
+  await expect(remove).toBeDisabled();
+  await section.getByLabel('Type REMOVE PRIVATE UPLOADS to confirm this batch').fill('REMOVE PRIVATE UPLOADS');
+  await remove.click();
+  await expect(page.getByText(/Removal of 1 reviewed private uploads was acknowledged/)).toBeVisible();
+  expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",owner.id)).toBe('0');
+  const erasedObject=await target.read();expect(erasedObject.ok).toBe(false);await erasedObject.body?.cancel();
+  const foreignObject=await untouched.read();expect(foreignObject.ok).toBe(true);expect(Buffer.from(await foreignObject.arrayBuffer()).equals(bytes)).toBe(true);
+  await review.click();
+  await expect(section.getByText(/Eligible uploads in the next bounded batch: 0\./)).toBeVisible();
+  const execute=section.getByRole('button',{name:'Permanently erase account and prepare receipt'});
+  await expect(execute).toBeDisabled();
+  await section.getByLabel('Type DELETE MY ACCOUNT for final erasure').fill('DELETE MY ACCOUNT');
+  const [download]=await Promise.all([page.waitForEvent('download'),execute.click()]);
+  expect(download.suggestedFilename()).toBe('kadmeion-account-erasure-receipt.json');
+  const file=await download.path();if(!file)throw new Error('Erasure receipt download unavailable.');
+  const receipt=JSON.parse(await readFile(file,'utf8'));
+  expect(receipt).toMatchObject({status:'ACTIVE_ACCOUNT_ERASED',accessTerminated:false,backupErasureVerified:false,externalCopiesErased:false});
+  expect(receipt.receiptId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(runLocalFixtureSql("select (select count(*) from auth.users where id=:'actor_id'::uuid)||':'||(select count(*) from public.profiles where user_id=:'actor_id'::uuid);",owner.id)).toBe('0:0');
+  const denied=await login(owner);expect(denied.ok).toBe(false);await denied.body?.cancel();
+  const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
+  expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
+});
