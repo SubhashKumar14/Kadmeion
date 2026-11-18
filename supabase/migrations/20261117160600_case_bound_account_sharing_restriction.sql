@@ -210,8 +210,8 @@ begin
    or p_expected_version not between 0 and 9007199254740991 or p_action is null
    or p_action not in ('RESTRICT','UPHOLD','RESTORE') or reason is null
    or char_length(reason) not between 20 and 500 or octet_length(reason)>2000
-   or p_confirmation is distinct from case p_action when 'RESTRICT' then 'RESTRICT PUBLIC SHARING'
-       when 'UPHOLD' then 'UPHOLD PUBLIC SHARING RESTRICTION' else 'RESTORE PUBLIC SHARING' end then
+   or p_confirmation is distinct from (case p_action when 'RESTRICT' then 'RESTRICT PUBLIC SHARING'
+       when 'UPHOLD' then 'UPHOLD PUBLIC SHARING RESTRICTION' else 'RESTORE PUBLIC SHARING' end) then
    raise exception using errcode='22023',message='INVALID_ACCOUNT_SHARING_DECISION';
  end if;
  perform 1 from kadmeion_private.operator_roles where user_id=a and role='administrator' for share nowait;
