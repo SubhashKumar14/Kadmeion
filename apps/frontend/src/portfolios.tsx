@@ -8,7 +8,7 @@ import type { FormEvent } from 'react';
 import {
   applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, planSectionLayoutChange, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
-import { portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import { canonicalLibraryComponentSource, portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
@@ -596,7 +596,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       return false;
     }
     try {
-      const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
+      let trustedSources:Readonly<Record<string,string>>={};
+      if(intent.kind==='CUSTOMIZE_COMPONENT'){
+        const pin=head.snapshot.slots[intent.slotKey]?.componentId;
+        const canonical=pin&&canonicalLibraryComponentSource(pin);
+        if(!pin||!canonical||canonical!==intent.copiedSource||!live.owner||!draftCurrent(live)||
+          preview||tool!=='Content'||pendingFields||sourceDirty){
+          setError('A verified, current pinned source copy is required before customization.');return false;
+        }
+        trustedSources={[pin]:canonical};
+      }
+      const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, trustedSources, versions ?? {});
       if(layoutMutation||historyMutation){
         // Raw buffers have already been proven clean; do not reattach a clean
         // inspector cache to a different assignment after an explicit revision.
@@ -734,6 +744,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
+  const canonicalSource=active?.state==='S0'&&active.componentId?canonicalLibraryComponentSource(active.componentId):undefined;
   // Every inspector field, including the primary textarea, uses a per-slot
   // buffer. Selecting another slot cannot silently discard typed content.
   const primaryInputKey = slot && active ? slot + ':' + primaryField(active.componentId) : '';
@@ -1675,6 +1686,19 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
           {active.state!=='EMPTY'&&active.componentId!=='image@1'&&<button type="button" className="ws-secondary"
             disabled={saving||recoveryBusy} onClick={()=>setTool('Components')}>Review compatible replacements</button>}
+          {canonicalSource&&<div className="ws-editor-tool">
+            <h3>Customize source</h3>
+            <p>Copy this pinned block's canonical React reference source into your private owned files. The library remains unchanged. The author canvas does not execute custom code.</p>
+            <button type="button" className="ws-secondary" disabled={!verifiedOwner||saving||recoveryBusy||pendingFields||sourceDirty}
+              onClick={()=>{
+                if(!window.confirm('Create a private editable source copy of this pinned component? Its custom source will not execute or be publicly released. Undo is available.'))return;
+                if(apply({kind:'CUSTOMIZE_COMPONENT',slotKey:slot,copiedSource:canonicalSource})){
+                  setOpenedSource(true);setSourceReset(value=>value+1);setTool('Source');
+                }
+              }}>Create owned source copy</button>
+          </div>}
+          {(active.state==='S1'||active.state==='S2')&&<button type="button" className="ws-secondary"
+            disabled={saving||recoveryBusy} onClick={()=>{setOpenedSource(true);setTool('Source');}}>Edit owned source</button>}
           {canPlacePrivateImage(head.snapshot,slot)&&<div className="ws-editor-tool">
             {active.componentId==='image@1'&&<p>Private image reference · {active.content.alt_text||'No alt text'}.
               {active.content.source_sha256?' Stored pin; release verification required.':' Metadata only; release blocked until trusted byte attestation.'}</p>}
