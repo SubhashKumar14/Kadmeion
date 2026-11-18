@@ -786,6 +786,8 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     return head; // idempotent duplicate; no new version
   }
   assertBaseRevision(command.baseRevision,head.revision);
+  if(!Number.isSafeInteger(head.revision)||head.revision>=Number.MAX_SAFE_INTEGER)
+    throw new ContractError('VALIDATION','Working revision limit reached. Preserve a recovery copy before restarting.');
   let next = structuredClone(head.snapshot);
   const intent = command.intent;
   if (intent.kind==='UNDO' || intent.kind==='REDO') {
@@ -848,23 +850,18 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     const moved=reorderSectionBefore(sections,intent.sectionId,intent.beforeSectionId);
     next.files[PAGE_PATH]=JSON.stringify({...page,sections:moved.map(section=>section.raw)});
   } else if (intent.kind==='MOVE_SECTION') {
-    const path='pages/home.page.json';
-    const original=next.files[path];
-    if(typeof original!=='string'||typeof intent.sectionId!=='string'||
-       !/^[a-z0-9_-]{1,64}$/.test(intent.sectionId)||
-       !['up','down'].includes(intent.direction))
+    // Keyboard and arbitrary destination reorder share the authoritative
+    // manifest guard. Do not reorder only the first of duplicate section IDs.
+    if(typeof intent.sectionId!=='string'||!['up','down'].includes(intent.direction))
       throw new ContractError('VALIDATION','Invalid section reorder request.');
-    validateManagedJson(path,original);
-    const page=JSON.parse(original) as {sections?:Array<{id:string;layout:string}>;[key:string]:unknown};
-    if(!Array.isArray(page.sections))
-      throw new ContractError('VALIDATION','No authored sections can be reordered.');
-    const position=page.sections.findIndex(section=>section.id===intent.sectionId);
+    const {page,sections}=layoutManifest(head.snapshot);
+    const position=sections.findIndex(section=>section.id===intent.sectionId);
     const target=position+(intent.direction==='up'?-1:1);
-    if(position<0||target<0||target>=page.sections.length)
+    if(position<0||target<0||target>=sections.length)
       throw new ContractError('VALIDATION','Selected section cannot move in this direction.');
-    const moved=page.sections.slice();
-    [moved[position],moved[target]]=[moved[target]!,moved[position]!];
-    next.files[path]=JSON.stringify({...page,sections:moved});
+    const before=intent.direction==='up'?sections[target]!.id:sections[target+1]?.id??null;
+    const moved=reorderSectionBefore(sections,intent.sectionId,before);
+    next.files[PAGE_PATH]=JSON.stringify({...page,sections:moved.map(section=>section.raw)});
   } else {
     assertSlotKey(intent.slotKey);
     const slot = Object.hasOwn(next.slots,intent.slotKey) ? next.slots[intent.slotKey] : undefined;
@@ -1052,7 +1049,9 @@ export function savedComponentInputFromOwnedSlot(
   const allowed=new Set(['title','text','cta1','cta2','note','avatar','btn1','btn2',
     'imagea','imageb','project','thumbs','media','image','badge','meta','cta',
     'text1','card','text2','items','entries']);
-  const kind=slotKey.slice(slotKey.lastIndexOf('-')+1);
+  const declaredKind=declaredLayoutSlotKind(snapshot,slotKey);
+  if(declaredKind===null)throw new ContractError('VALIDATION','Only a unique declared slot may supply a saved component.');
+  const kind=declaredKind===undefined?slotKey.slice(slotKey.lastIndexOf('-')+1):declaredKind;
   if(!input.compatibleSlotKinds.includes(kind)||
      input.compatibleSlotKinds.some(k=>!allowed.has(k)))
     throw new ContractError('VALIDATION','My Component must declare compatible layout slots.');
@@ -1071,6 +1070,8 @@ export function savedComponentInputFromOwnedSlot(
 
 /** Undo/redo are new committed heads; old snapshot revisions remain immutable. */
 export function restoreHistoricalSnapshot(head: EditorHead, source: PortfolioSnapshot, operationId: string): EditorHead {
+  if(!Number.isSafeInteger(head.revision)||head.revision<0||head.revision>=Number.MAX_SAFE_INTEGER)
+    throw new ContractError('VALIDATION','Invalid or exhausted working revision. Preserve your current draft.');
   validateSnapshot(source);
   if (typeof operationId!=='string'||!OP_ID.test(operationId) ||
       Object.hasOwn(head.operations,operationId.toLowerCase()) || Object.hasOwn(head.operations,operationId))

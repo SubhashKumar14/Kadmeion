@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { expect, test, type Page } from '@playwright/test';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { chromium, expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
 import { PrivateServerAssetByteAttestor } from '../../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
@@ -157,12 +159,14 @@ test('real owner onboarding and project revision are private across browser sess
     await page.goto(target);
     const expected=page.getByRole('heading',{name:heading,level:1});
     const locked=page.getByRole('heading',{name:'Sign in required.',level:1});
+    const unavailable=page.getByRole('heading',{name:'Owner verification unavailable.',level:1});
     await expect.poll(async()=>{
       if(await expected.isVisible())return 'VERIFIED';
       if(await locked.isVisible())return 'LOCKED';
+      if(await unavailable.isVisible())return 'UNAVAILABLE';
       return 'CHECKING';
     },{timeout:12_000}).not.toBe('CHECKING');
-    if(await locked.isVisible()){
+    if(await locked.isVisible()||await unavailable.isVisible()){
       await expect(page.locator('.ws-shell')).toHaveCount(0);
       const retry=page.getByRole('button',{name:'Retry verification'});
       await expect(retry).toBeVisible();
@@ -1367,6 +1371,12 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
   await expect(drawer.getByLabel('Summary (optional)')).toHaveValue('Preserve this private form on conflict');
   await expect(drawer).toBeVisible();
+  // S2 uncertainty fence: a 409 is not permission for an immediate second insert.
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await drawer.getByRole('button',{name:'Check saved project before retry'}).click();
+  await expect(drawer.getByRole('alert')).toContainText('No matching saved project was found');
+  await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeEnabled();
   await drawer.getByRole('button',{name:'Save project'}).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
@@ -2556,6 +2566,92 @@ test('B16 verified owner and workspace glyph pending states are real, decorative
   }finally{releaseAuth();releaseRecords();}
 });
 
+test('B16 WF-012 real uncertain quick-add checks durable insert and acknowledged readback without duplicate writes',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and S2 uncertainty fence required.');
+  test.setTimeout(115_000);
+  const owner=await localUser('S6 quick-add uncertain owner');
+  await page.setViewportSize({width:1600,height:1000});
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await expect(page.getByRole('heading',{name:'Your first project belongs here.'})).toBeVisible();
+  let mode:'before503'|'lostAck'|'read503'|'real'='before503';
+  let postCount=0,committed=0,readFailures=0;
+  let acknowledgedId:string|null=null;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/projects',async route=>{
+    const method=route.request().method();
+    if(method==='POST'){
+      postCount++;
+      if(mode==='before503'){
+        mode='real';
+        return route.fulfill({status:503,json:{message:'Disposable pre-insert outage'}});
+      }
+      const response=await route.fetch();
+      try{
+        if(response.ok()){
+          const rows=await response.json();
+          if(!Array.isArray(rows)||rows.length!==1||typeof rows[0]?.id!=='string')throw new Error('Real insert receipt missing.');
+          committed++;acknowledgedId=rows[0].id;
+          if(mode==='lostAck'){mode='real';return await route.abort('failed');}
+        }
+        await route.fulfill({response});
+      }finally{await response.dispose();}
+      return;
+    }
+    if(method==='GET'&&mode==='read503'&&acknowledgedId&&new URL(route.request().url()).searchParams.get('id')==='eq.'+acknowledgedId){
+      readFailures++;mode='real';return route.fulfill({status:503,json:{message:'Disposable post-insert read outage'}});
+    }
+    await route.continue();
+  });
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  const title=drawer.getByLabel('Project title');
+  const summary=drawer.getByLabel('Summary (optional)');
+  const slug=drawer.getByLabel('Private URL slug');
+  const repository=drawer.getByLabel('Repository URL (optional)');
+  const live=drawer.getByLabel('Live website URL (optional)');
+  const save=drawer.getByRole('button',{name:'Save project'});
+  const check=drawer.getByRole('button',{name:'Check saved project before retry'});
+  async function open(label:string,privateSlug:string,first=false){
+    await page.getByRole('button',{name:first?'Add first project':'Add project',exact:true}).click();
+    await title.fill(label);
+    // The native details disclosure survives closing and reopening the drawer.
+    if(!await slug.isVisible())await drawer.getByText('Edit private URL slug',{exact:true}).click();
+    await expect(slug).toBeVisible();
+    await slug.fill(privateSlug);await summary.fill('Durable recovery fixture');
+    await repository.fill('https://example.com/repo');await live.fill('https://example.com/live');
+  }
+  async function retain(label:string,privateSlug:string){
+    await expect(drawer).toBeVisible();await expect(check).toBeEnabled();await expect(save).toBeDisabled();
+    await expect(title).toHaveValue(label);await expect(slug).toHaveValue(privateSlug);
+    await expect(summary).toHaveValue('Durable recovery fixture');
+    await expect(repository).toHaveValue('https://example.com/repo');
+    await expect(live).toHaveValue('https://example.com/live');
+  }
+  await open('S6 before insert','s6-before-insert',true);await save.click();
+  await retain('S6 before insert','s6-before-insert');
+  expect(postCount).toBe(1);expect(committed).toBe(0);
+  await check.click();await expect(drawer.getByRole('alert')).toContainText('No matching saved project was found');
+  await expect(save).toBeEnabled();expect(postCount).toBe(1);
+  await save.click();await expect(drawer).toBeHidden();expect(postCount).toBe(2);expect(committed).toBe(1);
+  await expect(page.getByRole('link',{name:'S6 before insert'})).toBeVisible();
+  mode='lostAck';acknowledgedId=null;
+  await open('S6 lost acknowledgement','s6-lost-ack');await save.click();
+  await retain('S6 lost acknowledgement','s6-lost-ack');expect(postCount).toBe(3);expect(committed).toBe(2);
+  await check.click();await expect(drawer).toBeHidden();expect(postCount).toBe(3);
+  await expect(page.getByRole('link',{name:'S6 lost acknowledgement'})).toBeVisible();
+  mode='read503';acknowledgedId=null;
+  await open('S6 acknowledged readback','s6-readback');await save.click();
+  await retain('S6 acknowledged readback','s6-readback');expect(readFailures).toBe(1);
+  expect(postCount).toBe(4);expect(committed).toBe(3);
+  await check.click();await expect(drawer).toBeHidden();expect(postCount).toBe(4);
+  await expect(page.getByText('The acknowledged private project was verified. No additional write was made.',{exact:true})).toBeVisible();
+  await page.reload();
+  for(const label of ['S6 before insert','S6 lost acknowledgement','S6 acknowledged readback']){
+    await expect(page.getByRole('link',{name:label,exact:true})).toHaveCount(1);
+  }
+  const rows=runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug in ('s6-before-insert','s6-lost-ack','s6-readback');",owner.id);
+  expect(rows).toBe('3');expect(postCount).toBe(4);
+});
+
 test('B16 auth confirmation denial, neutral resend failures and explicit retry (injected provider boundary)', async ({page}) => {
   test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Requires disposable local Supabase.');
   test.setTimeout(60_000);
@@ -2999,7 +3095,9 @@ test('B16 WF-043/047 Settings fail-closed gate retries actual session before pri
     }finally{await response.dispose();}
   });
   await page.goto('/app/settings');
-  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('no private records are shown');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toHaveCount(0);
   await expect(page.locator('.ws-shell')).toHaveCount(0);
   await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
   expect(denials).toBeGreaterThan(0);
@@ -3151,6 +3249,152 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
   }
 });
 
+test('B16 WF-044/048 real owner verification distinguishes transport outage from session denial',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase and S14 truthful verification gate.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 transport versus denial');
+  await signIn(page,owner);
+  let mode:'transport'|'real'|'deny'='transport',privateWhileClosed=0,denials=0;
+  page.on('request',request=>{
+    const u=new URL(request.url());
+    if(mode!=='real'&&u.origin===origin&&u.pathname.startsWith('/rest/v1/'))privateWhileClosed++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='deny'){denials++;return route.fulfill({status:401,json:{message:'S6 disposable fixture denial'}});}
+    await route.continue();
+  });
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(privateWhileClosed).toBe(0);
+  mode='real';
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  mode='deny';
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toHaveCount(0);
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(denials).toBeGreaterThan(0);expect(privateWhileClosed).toBe(0);
+  mode='real';
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await signIn(page,owner);
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Account security'})).toBeVisible();
+});
+
+test('B16 C06 real A-B-A owner transition rejects delayed autosave acknowledgement',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Isolated local Supabase; requires latest S2 owner epoch and S1 verified session guard.');
+  test.setTimeout(85_000);
+  const owner=await localUser('S6 autosave epoch A'),other=await localUser('S6 autosave epoch B');
+  await signIn(page,owner);await page.goto('/app/profile');
+  const name=page.getByLabel('Display name',{exact:true});
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(name).toHaveValue('S6 autosave epoch A');
+  let accept!:()=>void,received!:()=>void,finished!:()=>void;
+  const hold=new Promise<void>(r=>{accept=r}),ack=new Promise<void>(r=>{received=r}),settled=new Promise<void>(r=>{finished=r});
+  let saves=0,committed=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    saves++;
+    if(saves!==1)return route.continue();
+    const body=route.request().postDataJSON();
+    expect(body.p_draft.headline).toBe('A committed before epoch switch');
+    expect(body.p_confirm_projection_withdrawal).toBe(false);
+    const result=await route.fetch();
+    try{
+      committed=result.ok();received();await hold;
+      // The earlier request may already have been aborted on owner remount.
+      await route.fulfill({response:result}).catch(()=>{});
+    }finally{await result.dispose();finished();}
+  });
+  const control=await page.context().newPage();
+  try{
+    await auto.check();await headline.fill('A committed before epoch switch');await ack;
+    expect(committed).toBe(true);expect(saves).toBe(1);
+    await control.goto('/app/settings');
+    await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);
+    await expect(page.locator('.ws-shell')).toHaveCount(0);
+    await expect(name).toHaveCount(0);
+    await signIn(control,other);
+    await expect(name).toHaveValue('S6 autosave epoch B');
+    await expect(headline).toHaveValue('');
+    await expect(auto).not.toBeChecked();
+    await expect(page.getByText('A committed before epoch switch',{exact:true})).toHaveCount(0);
+    await control.goto('/app/settings');
+    await control.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(control).toHaveURL(/\/signin$/);
+    await signIn(control,owner);
+    await expect(name).toHaveValue('S6 autosave epoch A');
+    await expect(headline).toHaveValue('A committed before epoch switch');
+    await expect(auto).not.toBeChecked();
+    await headline.fill('New A unsaved buffer');
+    accept();await settled;
+    await expect(headline).toHaveValue('New A unsaved buffer');
+    await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Save profile draft'})).toBeEnabled();
+    expect(saves).toBe(1);
+    await page.getByRole('button',{name:'Save profile draft'}).click();
+    await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+    expect(saves).toBe(2);
+    await page.reload();await expect(headline).toHaveValue('New A unsaved buffer');
+  }finally{accept();await control.close();}
+});
+
+test('B16 WF-048 offline owner verification retries in place without cached authority or private reads',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable Supabase and S14 truthful gate required.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 true offline verification');
+  await signIn(page,owner);
+  let fail=true,verifications=0,privateReads=0,verified=false;
+  page.on('request',req=>{
+    const u=new URL(req.url());
+    if(!verified&&u.origin===origin&&u.pathname.startsWith('/rest/v1/'))privateReads++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    verifications++;
+    if(fail)return route.abort('failed');
+    const response=await route.fetch();
+    try{
+      if(response.ok()){
+        const result=await response.json();
+        if(result?.id===owner.id)verified=true;
+      }
+      await route.fulfill({response});
+    }finally{await response.dispose();}
+  });
+  await page.goto('/app/settings');
+  const unavailable=page.getByRole('heading',{name:'Owner verification unavailable.'});
+  const retry=page.getByRole('button',{name:'Retry verification'});
+  await expect(unavailable).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(privateReads).toBe(0);
+  const before=verifications;
+  await page.context().setOffline(true);
+  try{
+    await expect.poll(()=>page.evaluate(()=>navigator.onLine)).toBe(false);
+    await retry.click();
+    await expect(page.getByRole('alert')).toContainText('Your browser reports offline.');
+    await expect(unavailable).toBeVisible();
+    await expect(page.locator('.ws-shell')).toHaveCount(0);
+    expect(verifications).toBe(before);expect(privateReads).toBe(0);
+  }finally{await page.context().setOffline(false);}
+  await expect.poll(()=>page.evaluate(()=>navigator.onLine)).toBe(true);
+  await expect(unavailable).toBeVisible();await expect(page.locator('.ws-shell')).toHaveCount(0);
+  fail=false;
+  await retry.click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  expect(verified).toBe(true);expect(privateReads).toBe(0);
+  await expect(page.locator('#ws-content')).toBeFocused();
+});
+
 
 test('B16 release pending glyph reflects real owner read, failure and explicit recovery',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S4 release pending UI and disposable local Supabase.');
@@ -3178,7 +3422,8 @@ test('B16 release pending glyph reflects real owner read, failure and explicit r
   try{
     await page.goto(editorPath.replace('/edit','/staging'),{waitUntil:'domcontentloaded'});
     await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toBeVisible();
-    expect(heldReads>0).toBe(true);
+    // The loading glyph can render before verified owner transport dispatches its read.
+    await expect.poll(()=>heldReads,{timeout:10_000}).toBeGreaterThan(0);
     const glyph=section.locator('.glyph-skeleton[aria-hidden="true"]');
     await expect(glyph).toHaveCount(1);
     await expect(glyph.locator('a,button,input,select,textarea,[tabindex="0"]')).toHaveCount(0);
@@ -3194,4 +3439,393 @@ test('B16 release pending glyph reflects real owner read, failure and explicit r
   await expect(section.getByRole('button',{name:'Freeze private revision'})).toBeEnabled();
   await expect(section.getByRole('button',{name:'Copy public link unavailable'})).toBeDisabled();
   await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toHaveCount(0);
+});
+
+test('B16 WF-018 all five curated presets and genuine Blank persist exact authored skeletons',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and mounted private editor only.');
+  test.setTimeout(140_000);
+  await page.setViewportSize({width:1600,height:1000});
+  const owner=await localUser('S6 all preset fixtures');
+  await signIn(page,owner);
+  const cases=[
+    ['Arc','arc',['arc-hero@1','project-showcase@1','editorial-bento@1','skills@1','contact@1']],
+    ['Collage','collage',['collage-hero@1','project-showcase@1','experience@1','contact@1']],
+    ['Editorial','editorial',['editorial-bento@1','project-showcase@1','skills@1','contact@1']],
+    ['Stairs','stairs',['stepped-hero@1','editorial-bento@1','project-showcase@1','contact@1']],
+    ['Studio','studio',['arc-hero@1','project-showcase@1','experience@1','skills@1','contact@1']],
+    ['Blank','blank',[]]
+  ] as const;
+  const ids:string[]=[];
+  for(const [label,preset,layouts] of cases){
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:label,exact:true}).check();
+    await expect(page.getByRole('group',{name:'Selected layout preview'}).getByRole('heading',{name:label,exact:true})).toBeVisible();
+    const title='S6 '+label+' skeleton fixture';
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    const id=new URL(page.url()).pathname.split('/')[3]!;
+    expect(/^[0-9a-f-]{36}$/i.test(id)).toBe(true);
+    ids.push(id);
+    if(preset==='blank'){
+      await expect(page.getByText('This blank draft has no slots.',{exact:true})).toBeVisible();
+      await expect(page.getByText('No authored sections yet.',{exact:true})).toBeVisible();
+    }
+    await page.goto('/app/export');
+    await page.getByLabel('Portfolio to export').selectOption(id,{timeout:10_000});
+    const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+    const downloaded=await download.path();if(!downloaded)throw new Error('Verified private export unavailable.');
+    const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(downloaded)));
+    expect(JSON.parse(snapshot.files['kadmeion.json']).preset).toBe(preset);
+    const document=JSON.parse(snapshot.files['pages/home.page.json']);
+    expect(document.sections.map((section:{layout:string})=>section.layout)).toEqual(layouts);
+    expect(Object.values(snapshot.slots).every(slot=>Object.keys(slot.content).length===0)).toBe(true);
+    if(preset==='blank'){
+      expect(document.header).toBeNull();
+      expect(Object.keys(snapshot.slots)).toHaveLength(0);
+    }
+  }
+  expect(new Set(ids).size).toBe(cases.length);
+});
+
+test('unmounted private analytics stays consent-off without collection after owner navigation and reload',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase CI.');
+  test.setTimeout(90_000);
+  const owner=await localUser('CI Analytics Consent Off');
+  await page.goto('/app/analytics');
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Enable portfolio analytics'})).toHaveCount(0);
+  await signIn(page,owner);
+  const appOrigin=new URL(page.url()).origin;
+  const observed:{classification:string;count:number}[]=[
+    {classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}
+  ];
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(!['http:','https:'].includes(url.protocol))return;
+    if(/analytics|telemetry|tracking|collect_event/i.test(url.pathname)&&
+      !(url.origin===appOrigin&&url.pathname==='/app/analytics'))observed[0].count++;
+    if(url.origin!==appOrigin&&url.origin!==origin)observed[1].count++;
+  });
+  await page.goto('/app/analytics');
+  const verifyOff=async()=>{
+    await expect(page.getByRole('heading',{name:'Tracking remains off.'})).toBeVisible();
+    await expect(page.getByText('No verified visitor analytics are available.')).toBeVisible();
+    await expect(page.getByRole('button',{name:'Enable portfolio analytics'})).toBeDisabled();
+    await expect(page.getByRole('link',{name:'Manage private portfolios'})).toBeVisible();
+  };
+  await verifyOff();
+  await page.reload();
+  await verifyOff();
+  await page.getByRole('link',{name:'Manage private portfolios'}).click();
+  await expect(page).toHaveURL(/\/app\/portfolios(?:[?#].*)?$/);
+  expect(observed).toEqual([{classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}]);
+});
+
+test('B16 WF-001/002 R6 core registration creates exactly one owner and durable private profile without mailbox dependency',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Actual loopback GoTrue and PostgREST only.');
+  test.setTimeout(100_000);
+  const credentials={email:'r6-core-'+randomUUID()+'@testing.invalid',password:'LocalFixture!'+randomUUID()};
+  const handle='r6_'+randomUUID().slice(0,8),displayName='R6 registered owner';
+  const appUrl='http://127.0.0.1:5173';
+  let ownerId:string|null=null,signupPosts=0,verifiedReads=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin===origin&&url.pathname==='/auth/v1/signup'&&request.method()==='POST')signupPosts++;
+  });
+  page.on('response',async response=>{
+    const url=new URL(response.url());
+    if(url.origin!==origin||url.pathname!=='/auth/v1/user'||!response.ok())return;
+    const value=await response.json().catch(()=>null);
+    if(typeof value?.id==='string'&&/^[0-9a-f-]{36}$/i.test(value.id)){
+      ownerId=value.id;verifiedReads++;
+    }
+  });
+  // No admin-created signup fixture: complete the mounted form with a new email.
+  await page.goto('/signup');
+  await page.getByLabel('Display name',{exact:true}).fill(displayName);
+  await page.getByLabel('Preferred handle',{exact:true}).fill(handle);
+  await page.getByLabel('Email address',{exact:true}).fill(credentials.email);
+  await page.getByLabel('Create password',{exact:true}).fill(credentials.password);
+  await page.getByLabel('Confirm password',{exact:true}).fill(credentials.password);
+  await page.getByRole('button',{name:'Create account',exact:true}).click();
+  await expect(page).toHaveURL('/app');
+  await expect(page.getByRole('heading',{name:'A place for what you build next.'})).toBeVisible();
+  await expect.poll(()=>verifiedReads).toBeGreaterThan(0);
+  expect(signupPosts).toBe(1);
+  if(!ownerId)throw new Error('No verified signup owner.');
+  const id:string=ownerId;
+  const bootstrap=runLocalFixtureSql("select (select count(*) from auth.users where id=:'actor_id'::uuid)||':'||(select count(*) from public.profiles where user_id=:'actor_id'::uuid);",id);
+  expect(bootstrap).toBe('1:1');
+  await page.goto('/app/profile');
+  await expect(page.getByLabel('Display name',{exact:true})).toHaveValue(displayName);
+  const headline='R6 private durable headline';
+  await page.getByLabel('Headline',{exact:true}).fill(headline);
+  await page.getByRole('button',{name:'Save profile draft',exact:true}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  expect(runLocalFixtureSql("select headline from public.profiles where user_id=:'actor_id'::uuid;",id)).toBe(headline);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  const fresh=await browser.newPage({baseURL:appUrl});
+  try{
+    await fresh.goto('/signin');
+    await fresh.getByLabel('Email address').fill(credentials.email);
+    await fresh.locator('#signin-password').fill('Incorrect!'+randomUUID());
+    const denial=fresh.waitForResponse(r=>new URL(r.url()).origin===origin&&new URL(r.url()).pathname==='/auth/v1/token'&&r.request().method()==='POST');
+    await fresh.getByRole('button',{name:'Sign in',exact:true}).click();
+    expect((await denial).ok()).toBe(false);
+    await expect(fresh.getByRole('alert')).toContainText('Incorrect credentials or sign-in unavailable.');
+    await fresh.goto('/app/profile');
+    await expect(fresh.locator('.ws-shell')).toHaveCount(0);
+    await expect(fresh.getByLabel('Headline',{exact:true})).toHaveCount(0);
+    await signIn(fresh,credentials);
+    await fresh.goto('/app/profile');
+    await expect(fresh.getByLabel('Display name',{exact:true})).toHaveValue(displayName);
+    await expect(fresh.getByLabel('Headline',{exact:true})).toHaveValue(headline);
+    await fresh.reload();
+    await expect(fresh.getByLabel('Headline',{exact:true})).toHaveValue(headline);
+    await fresh.getByRole('button',{name:'Sign out',exact:true}).click();
+    await expect(fresh).toHaveURL(/\/signin$/);
+  }finally{await fresh.close();}
+  expect(runLocalFixtureSql("select (select count(*) from auth.users where id=:'actor_id'::uuid)||':'||(select count(*) from public.profiles where user_id=:'actor_id'::uuid);",id)).toBe('1:1');
+});
+
+test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreign denial and detach',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local C05 SQL and real mounted avatar consumer.');
+  test.setTimeout(90_000);
+  const owner=await localUser('S6 avatar owner'),other=await localUser('S6 avatar foreign');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if(!key||process.env.VITE_SUPABASE_URL!==origin)throw new Error('C05 requires disposable loopback credentials.');
+  const firstBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const secondBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const avatar=page.getByRole('region',{name:'Private profile avatar'});
+  const file=avatar.getByLabel(/Avatar image/),alt=avatar.getByLabel('Avatar alt text');
+  await expect(file).toBeEnabled();
+  await expect(avatar.getByText('Saved avatar revision 0 · No selected image',{exact:true})).toBeVisible();
+  const ids:string[]=[];let lost=false,dropNext=false,storageRead:string|null=null;
+  page.on('response',response=>{
+    const url=new URL(response.url());
+    if(url.origin===origin&&url.pathname.includes('/storage/v1/object/')&&url.pathname.includes('/profile/')&&
+       response.ok()&&response.request().method()==='GET')storageRead=url.pathname;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/set_private_profile_avatar',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const request=route.request().postDataJSON();
+    if(typeof request.p_asset_id==='string')ids.push(request.p_asset_id);
+    if(!dropNext)return route.continue();
+    dropNext=false;const result=await route.fetch();
+    try{if(result.ok()){lost=true;await route.abort('failed');}else await route.fulfill({response:result});}
+    finally{await result.dispose();}
+  });
+  const choose=async(bytes:Buffer,name:string)=>{
+    await file.setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:bytes});
+    await alt.fill(name);
+    await avatar.getByRole('button',{name:'Save private avatar'}).click();
+  };
+  const check=async(bytes:Buffer,name:string)=>{
+    const image=avatar.getByRole('img',{name,exact:true});
+    await expect(image).toBeVisible();
+    await expect.poll(()=>image.evaluate(async(node,expected)=>{
+      const img=node as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const actual=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&actual.length===expected.length&&actual.every((byte,i)=>byte===expected[i]);
+    },Array.from(bytes))).toBe(true);
+  };
+  await choose(firstBytes,'First private avatar');
+  await expect(avatar.getByText('Private avatar selection saved. Not published.',{exact:true})).toBeVisible();
+  await check(firstBytes,'First private avatar');
+  await expect(file).toBeEnabled();
+  const retiredUrl=await avatar.getByRole('img',{name:'First private avatar'}).getAttribute('src');
+  dropNext=true;await choose(secondBytes,'Replacement private avatar');
+  await expect(avatar.getByRole('button',{name:'Check saved avatar selection'})).toBeEnabled();
+  expect(lost).toBe(true);expect(ids.length).toBe(2);expect(ids[0]!==ids[1]).toBe(true);
+  await avatar.getByRole('button',{name:'Check saved avatar selection'}).click();
+  await expect(avatar.getByText('Requested avatar matches the current saved selection. No additional write was made.',{exact:true})).toBeVisible();
+  await check(secondBytes,'Replacement private avatar');
+  expect(ids.length).toBe(2);
+  if(!retiredUrl)throw new Error('Old private image object URL missing.');
+  expect(await page.evaluate(async url=>{try{await fetch(url);return false;}catch{return true;}},retiredUrl)).toBe(true);
+  await page.reload();await check(secondBytes,'Replacement private avatar');
+  expect(storageRead!==null).toBe(true);
+  const isolated=await browser.newPage({baseURL:new URL(page.url()).origin});
+  try{
+    await signIn(isolated,other);await isolated.goto('/app/profile');
+    const foreign=isolated.getByRole('region',{name:'Private profile avatar'});
+    await expect(foreign.getByText('Saved avatar revision 0 · No selected image',{exact:true})).toBeVisible();
+    await expect(foreign.getByRole('img',{name:'Replacement private avatar'})).toHaveCount(0);
+    const signed=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',
+      headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email:other.email,password:other.password})});
+    if(!signed.ok)throw new Error('Local foreign owner authentication failed.');
+    const receipt=await signed.json();
+    if(typeof receipt.access_token!=='string')throw new Error('Local foreign owner token absent.');
+    const leak=await fetch(origin+storageRead!,{headers:{apikey:key,Authorization:'Bearer '+receipt.access_token},redirect:'error'});
+    expect(leak.ok).toBe(false);expect([400,401,403,404]).toContain(leak.status);await leak.body?.cancel();
+  }finally{await isolated.close();}
+  const remove=avatar.getByRole('button',{name:'Remove avatar selection'});
+  await expect(remove).toBeDisabled();
+  await avatar.getByRole('checkbox',{name:/Detach current avatar/}).check();await remove.click();
+  await expect(avatar.getByText('Avatar detached. Stored private assets have not been permanently deleted.',{exact:true})).toBeVisible();
+  await expect(avatar.getByRole('img')).toHaveCount(0);
+  await page.reload();await expect(avatar.getByText(/Saved avatar revision 3 · No selected image/)).toBeVisible();
+});
+
+test('B16 WF-020/021/023/025 R5 native pinned placement, EMPTY undo, device favorites and section reorder persist',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and paired S3/S7 placement panel required.');
+  test.setTimeout(115_000);
+  const owner=await localUser('S6 R5 placement owner');
+  await page.setViewportSize({width:2200,height:1500});
+  await signIn(page,owner);await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 native placement fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 native placement fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:/arc hero title Starter/i}).click();
+  await page.getByLabel('Text content').fill('R5 preserved outgoing title');
+  await page.getByRole('button',{name:'Apply text',exact:true}).click();
+  await page.getByRole('button',{name:'Components',exact:true}).click();
+  await page.getByText('Component placement, Favorites and ordering',{exact:true}).click();
+  const board=page.getByRole('region',{name:'Pinned component placement'});
+  const order=page.getByRole('region',{name:'Section ordering controls'});
+  const target=board.getByRole('combobox',{name:'Placement target',exact:true});
+  const heading=board.getByRole('button',{name:'Heading · title-stacked@1',exact:true});
+  const empty=board.getByRole('button',{name:'L1 · title (arc-hero) · EMPTY',exact:true});
+  const starter=board.getByRole('button',{name:'L1 · title (arc-hero) · S0',exact:true});
+  await target.selectOption('arc-hero-title');
+  await board.getByRole('button',{name:'Favorite · Heading',exact:true}).click();
+  await board.getByRole('checkbox',{name:'Device favorites only'}).check();
+  await expect(heading).toBeVisible();
+  await expect(board.getByRole('button',{name:'Paragraph · body-copy@1',exact:true})).toHaveCount(0);
+  await board.getByRole('checkbox',{name:'Device favorites only'}).uncheck();
+  await board.getByRole('button',{name:'Move selected assignment to Unplaced'}).click();
+  const review=board.getByRole('region',{name:'Pinned placement impact'});
+  await expect(review.getByRole('heading',{name:'Review placement impact'})).toBeFocused();
+  await expect(starter).toBeVisible();
+  await review.getByRole('button',{name:'Cancel placement review'}).click();
+  await expect(starter).toBeVisible();
+  await board.getByRole('button',{name:'Move selected assignment to Unplaced'}).click();
+  await review.getByRole('button',{name:'Confirm move to Unplaced'}).click();
+  await expect(empty).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(starter).toBeVisible();
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(empty).toBeVisible();
+  // Exercise genuine browser drag events, not a fabricated transaction or serialized edit payload.
+  // Keep both live controls in view; Chromium requires a second mouse move
+  // over the destination to dispatch dragover reliably. Never synthesize Drop
+  // or call the editor transaction from the test.
+  await board.getByLabel('Search placement library').fill('title-stacked@1');
+  await expect(heading).toHaveAttribute('draggable','true');
+  await expect(heading).toBeEnabled();
+  await expect(empty).toBeVisible();
+  await heading.hover();
+  await page.mouse.down();
+  try{
+    await empty.hover();
+    await empty.hover();
+    await expect(empty.locator('..')).toHaveAttribute('data-drop-fit','compatible');
+  }finally{await page.mouse.up();}
+  await expect(starter).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(empty).toBeVisible();
+  // The keyboard-equivalent selection must use the same declared assignment transaction.
+  await heading.focus();await heading.press('Enter');
+  await target.selectOption('arc-hero-title');
+  await board.getByRole('button',{name:'Place selected pinned block'}).press('Enter');
+  await expect(starter).toBeVisible();
+  await order.getByLabel('Section to move').selectOption('contact');
+  await order.getByLabel('Move before').selectOption('arc-hero');
+  await order.getByRole('button',{name:'Move section to chosen position'}).press('Enter');
+  await expect(order.locator('ol li').first()).toContainText('contact');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(order.locator('ol li').first()).toContainText('arc-hero');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await expect(order.locator('ol li').first()).toContainText('contact');
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'Components',exact:true}).click();
+  await page.getByText('Component placement, Favorites and ordering',{exact:true}).click();
+  await expect(board.getByRole('button',{name:'Remove favorite · Heading',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(order.locator('ol li').first()).toContainText('contact');
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const path=await download.path();if(!path)throw new Error('Private export missing.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(path)));
+  expect(JSON.parse(snapshot.files['pages/home.page.json']).sections.map((row:{id:string})=>row.id))
+    .toEqual(['contact','arc-hero','project-showcase','editorial-bento','skills']);
+  expect(snapshot.slots['arc-hero-title']).toMatchObject({state:'S0',componentId:'title-stacked@1',content:{}});
+  expect(JSON.stringify(snapshot.stashes['arc-hero-title'])).toContain('R5 preserved outgoing title');
+  expect(Object.values(snapshot.files).join('')).not.toContain('Optional supporting text');
+});
+
+test('B16 WF-019/027 R6 cold browser profile preserves individual editor transaction history',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local GoTrue only; actual persistent Chromium process restart.');
+  test.setTimeout(150_000);
+  const owner=await localUser('R6 cold history owner');
+  const profile=await mkdtemp(join(tmpdir(),'kadmeion-s6-cold-profile-'));
+  const start=()=>chromium.launchPersistentContext(profile,{
+    executablePath:process.env.KADMEION_CHROME_PATH||'/usr/bin/google-chrome',
+    headless:true,baseURL:'http://127.0.0.1:5173',viewport:{width:1600,height:1000}
+  });
+  let context:BrowserContext|null=null;
+  const saved='R6 cold saved',first='R6 first independent transaction',second='R6 second independent transaction';
+  const title='R6 cold recovery portfolio';
+  let editorPath='';
+  try{
+    context=await start();let page=context.pages()[0]??await context.newPage();
+    await signIn(page,owner);
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:'Arc',exact:true}).check();
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    editorPath=new URL(page.url()).pathname;
+    const field=()=>page.getByLabel('Text content');
+    const apply=async(value:string)=>{
+      await field().fill(value);
+      await page.getByRole('button',{name:'Apply text',exact:true}).click();
+      await expect(field()).toHaveValue(value);
+    };
+    const undo=()=>page.getByRole('button',{name:'Undo',exact:true});
+    const redo=()=>page.getByRole('button',{name:'Redo',exact:true});
+    await apply(saved);await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await apply(first);await apply(second);
+    await undo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    const details=()=>page.locator('details.ws-editor-safety').filter({hasText:'Browser recovery & Keep Both'});
+    const expand=async()=>{
+      await expect(details()).toBeVisible();
+      if(await details().getAttribute('open')===null)await details().locator('summary').click();
+    };
+    await expand();
+    await details().getByRole('button',{name:'Save browser recovery copy',exact:true}).click();
+    await expect(details().getByText('Recovery copy saved on this browser only. Cloud draft unchanged.',{exact:true})).toBeVisible();
+    await expect(details().getByRole('button',{name:'Open recovery copy',exact:true})).toHaveCount(1);
+    // Actual Chrome exit. No storage-state export, IDB injection, mocked auth, or page.reload substitute.
+    await context.close();context=null;
+    context=await start();page=context.pages()[0]??await context.newPage();
+    await page.goto(editorPath);
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    await expect(field()).toHaveValue(saved);
+    await expand();
+    await details().getByRole('button',{name:'Open recovery copy',exact:true}).click();
+    await expect(details().getByText('Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.',{exact:true})).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    // Snapshot-only restore would jump directly to saved; that is not persistent history (UI-054).
+    await undo().click();await expect(field(),'cold restart must restore preceding individual edit, not just the saved snapshot').toHaveValue(first);
+    await undo().click();await expect(field()).toHaveValue(saved);
+    await redo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(field()).toHaveValue(second);
+  }finally{
+    await context?.close().catch(()=>undefined);
+    await rm(profile,{recursive:true,force:true});
+  }
 });
