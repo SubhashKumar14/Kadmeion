@@ -1913,6 +1913,22 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   };
   const first=await register(owner,project), other=await register(owner,sibling),
     outsider=await register(stranger,foreign);
+  // C04: execute the real owner RPC before and after independent trusted attestation.
+  const pinInput={p_scope:'PROJECT',p_asset_id:first.id,p_project_id:project.id};
+  const unpinned=successful(await rpc('read_owner_private_asset_pin',pinInput),'C04 unpinned owner read');
+  assert.deepEqual(Object.keys(unpinned).sort(),['scope','assetId','ownerUserId','projectId','objectId','version','mimeType','byteSize','status','expectedSha256','publicDeliveryAllowed'].sort());
+  assert.equal(unpinned.status,'UNPINNED');assert.equal(unpinned.expectedSha256,null);
+  assert.equal(unpinned.publicDeliveryAllowed,false);assert.equal(unpinned.ownerUserId,owner.id);
+  for(const [args,actor] of [[pinInput,stranger],[{...pinInput,p_project_id:sibling.id},owner],
+    [{...pinInput,p_asset_id:randomUUID()},owner],[{...pinInput,p_scope:'PROFILE',p_project_id:null},owner]]){
+    const r=await rpc('read_owner_private_asset_pin',args,actor);
+    assert.ok(!r.ok);assert.equal(r.data?.code,'42501');assert.equal(r.data?.message,'PRIVATE_ASSET_NOT_FOUND');
+  }
+  assert.ok(!(await anonymousRpc('read_owner_private_asset_pin',pinInput)).ok);
+  const attestor=new PrivateServerAssetByteAttestor(cfg.origin,cfg.anon,cfg.service);
+  assert.deepEqual(await attestor.attest(first.id,owner.token),{assetId:first.id,status:'WRITE_ONCE_ATTESTED'});
+  const pinned=successful(await rpc('read_owner_private_asset_pin',pinInput),'C04 trusted owner pin');
+  assert.deepEqual(pinned,{...unpinned,status:'SERVER_HASH_PINNED',expectedSha256:createHash('sha256').update(first.bytes).digest('hex')});
   const input={p_project_id:project.id,p_base_revision:before.revision,
     p_asset_id:first.id,p_operation_id:randomUUID()};
   const set=(body,actor=owner)=>rpc('set_private_project_thumbnail',body,actor);
