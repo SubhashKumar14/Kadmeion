@@ -2298,3 +2298,259 @@ test('C08 physical terminal ledger, privacy reduction, tombstone and expired-ses
       assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1',[actor.id])).rows[0].n,0);
     }finally{await pg.end();}
   });
+
+test('C14 real owner session, competing restriction decisions, outward denial, explicit restore and physical cascade',
+  {timeout:120_000},async()=>{
+  // This fixture is intentionally a real disposable Supabase/Postgres transaction,
+  // never a hosted moderation operation. Requires the C11 and C14 migrations.
+  const actor=await adminUser('c14-administrator');
+  const owner=await adminUser('c14-restricted-owner');
+  const other=await adminUser('c14-unrelated-owner');
+  const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+  const match=raw.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(match,'Disposable local Postgres URL missing');
+  const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+  assert.equal(db.pathname,'/postgres');
+  const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false,
+    connectionTimeoutMillis:3000,query_timeout:10000});
+  const rpc=(who,name,body={})=>send('/rest/v1/rpc/'+name,{...json(who),method:'POST',body});
+  try{
+    await pg.connect();
+    await pg.query("INSERT INTO kadmeion_private.operator_roles(user_id,role) VALUES($1,'administrator')",[actor.id]);
+    const opened=successful(await rpc(actor,'operator_open_moderation_case',{
+      p_target_user_id:owner.id,p_operation_id:randomUUID(),p_reason_code:'SECURITY',
+      p_summary:'Evidence-supported local security review of public sharing behavior'
+    }),'Open real case with administrator');
+    assert.equal(opened.status,'OPEN');
+    const caseId=opened.caseId;
+    const baseline=successful(await rpc(owner,'owner_read_account_sharing_restriction'),
+      'Read original owner restriction');
+    assert.equal(baseline.status,'CLEAR');assert.equal(baseline.version,0);
+    assert.ok(!(await rpc(other,'operator_change_account_sharing_restriction',{
+      p_case_id:caseId,p_action:'RESTRICT',p_expected_version:0,
+      p_operation_id:randomUUID(),p_rationale:'Unrelated actor cannot restrict this account',
+      p_confirmation:'RESTRICT PUBLIC SHARING'})).ok);
+    const decision=(action,version,operationId=randomUUID())=>rpc(actor,
+      'operator_change_account_sharing_restriction',{
+        p_case_id:caseId,p_action:action,p_expected_version:version,
+        p_operation_id:operationId,
+        p_rationale:'Reviewed scoped evidence for controlled publication restriction',
+        p_confirmation:action==='RESTRICT'?'RESTRICT PUBLIC SHARING':
+          action==='RESTORE'?'RESTORE PUBLIC SHARING':'UPHOLD PUBLIC SHARING RESTRICTION'
+      });
+    // Two independent real requests compete for version zero. Exactly one
+    // may commit; a loser must neither create an event nor increment version.
+    const pair=await Promise.all([decision('RESTRICT',0),decision('RESTRICT',0)]);
+    assert.equal(pair.filter(x=>x.ok).length,1,'Exactly one competing restriction may commit');
+    assert.ok(pair.some(x=>!x.ok),'The stale concurrent restriction must fail');
+    const accepted=successful(pair.find(x=>x.ok),'Winner restriction');
+    assert.equal(accepted.status,'ACTIVE');assert.equal(accepted.version,1);
+    assert.equal(accepted.applicationSharingRestricted,true);
+    assert.equal(accepted.publicRepublished,false);
+    const current=successful(await rpc(owner,'owner_read_account_sharing_restriction'),
+      'Owner sees active restriction');
+    assert.equal(current.status,'ACTIVE');assert.equal(current.version,1);
+    const foreign=successful(await rpc(other,'owner_read_account_sharing_restriction'),
+      'Other owner reads own clear status');
+    assert.equal(foreign.status,'CLEAR');assert.equal(foreign.version,0);
+    const denied=await setPreferenceFixture(owner,'sharing',visibleSharing);
+    assert.ok(!denied.ok,'Restricted account must not enable outward sharing');
+    successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+      ...json(owner),method:'PATCH',body:{headline:'Private authoring remains available'}
+    }),'Private authoring remains available while restricted');
+    assert.equal((await pg.query('select count(*)::int n from kadmeion_private.account_sharing_restriction_events where owner_user_id=$1',[owner.id])).rows[0].n,1);
+    const stale=await decision('RESTORE',0);
+    assert.ok(!stale.ok,'Stale restore cannot clear active restriction');
+    const restored=successful(await decision('RESTORE',1),'Explicit administrator restore');
+    assert.equal(restored.status,'CLEAR');assert.equal(restored.version,2);
+    assert.equal(restored.publicRepublished,false);
+    assert.equal(successful(await rpc(owner,'owner_read_account_sharing_restriction'),'Restored owner read').status,'CLEAR');
+    assert.equal((await pg.query('select count(*)::int n from kadmeion_private.account_sharing_restriction_events where owner_user_id=$1',[owner.id])).rows[0].n,2);
+    // Restore only lifts the guard; it never silently republishes anything.
+    assert.equal((await pg.query('select count(*)::int n from kadmeion_private.profile_publications where user_id=$1',[owner.id])).rows[0].n,0);
+    assert.equal((await pg.query('delete from auth.users where id=$1 returning id',[owner.id])).rowCount,1);
+    const counts=(await pg.query('select '+
+      '(select count(*)::int from public.profiles where user_id=$1) profiles,'+
+      '(select count(*)::int from kadmeion_private.account_sharing_restrictions where owner_user_id=$1) restrictions,'+
+      '(select count(*)::int from kadmeion_private.account_sharing_restriction_events where owner_user_id=$1) events,'+
+      '(select count(*)::int from public.private_moderation_cases where owner_user_id=$1) cases,'+
+      '(select count(*)::int from auth.users where id=$2) foreign_users',
+      [owner.id,other.id])).rows[0];
+    assert.deepEqual(counts,{profiles:0,restrictions:0,events:0,cases:0,foreign_users:1});
+  }finally{await pg.end().catch(()=>{});}
+});
+
+
+test('R9 guarded project RPC: actual password sessions, atomic CAS and explicit public withdrawal',
+  {timeout:120_000},async t=>{
+    const owner=await adminUser('guarded-project-owner'),foreign=await adminUser('guarded-project-foreign');
+    const second=successful(await send('/auth/v1/token?grant_type=password',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:{email:owner.email,password:owner.password}
+    }),'Second live owner password session');
+    assert.equal(second.user.id,owner.id);
+    const tab={id:owner.id,token:second.access_token};
+    assert.notEqual(tab.token,owner.token);
+    const handle='guarded_'+randomUUID().slice(0,8),slug='guarded-'+randomUUID().slice(0,8);
+    successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+      ...json(owner),method:'PATCH',body:{handle}
+    }),'Claim private owner handle');
+    const [project]=successful(await send('/rest/v1/projects?select=id,revision,title,summary,description,repository_url,live_url',{
+      ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{owner_user_id:owner.id,slug,title:'Guarded original'}
+    }),'Create real guarded project');
+    const endpoint='owner_save_private_project_draft';
+    const rpc=(who,name,body)=>send('/rest/v1/rpc/'+name,{...json(who),method:'POST',body});
+    const read=async()=>{
+      const rows=successful(await send('/rest/v1/projects?select=id,revision,title,summary,description,repository_url,live_url&id=eq.'+project.id,
+        bearer(owner)),'Read actual owner project');
+      assert.equal(rows.length,1);return rows[0];
+    };
+    const draft=(title,revision,confirm=false)=>({p_project_id:project.id,p_base_revision:revision,
+      p_title:title,p_summary:project.summary,p_description:project.description,
+      p_repository_url:project.repository_url,p_live_url:project.live_url,
+      p_confirm_projection_withdrawal:confirm});
+    const denied=(result,code)=>{assert.equal(result.ok,false);assert.equal(result.data?.code,code);};
+    denied(await rpc(foreign,endpoint,draft('Foreign attempted write',project.revision)),'42501');
+    const noOp=successful(await rpc(owner,endpoint,draft(project.title,project.revision)),'No-op CAS');
+    assert.equal(noOp.revision,project.revision);
+    successful(await send('/rest/v1/project_exposure_intents',{
+      ...json(owner),method:'POST',
+      body:{project_id:project.id,owner_user_id:owner.id,show_case_study:true}
+    }),'Explicit case exposure');
+    successful(await rpc(owner,'owner_publish_case_study_projection',{
+      p_project_id:project.id,p_expected_revision:project.revision,p_confirmation:'PUBLISH CASE STUDY'
+    }),'Publish original case locally');
+    const server=createServer((req,res)=>void handlePublishedIdentity(req,res,{env:{
+      KADMEION_PUBLIC_IDENTITY_ENABLED:'true',KADMEION_LOCAL_INTEGRATION:'1',
+      KADMEION_SUPABASE_URL:cfg.origin,KADMEION_SUPABASE_SERVICE_ROLE_KEY:cfg.service
+    }}));
+    server.listen(0,'127.0.0.1');
+    t.after(()=>new Promise((resolve,reject)=>server.close(e=>e?reject(e):resolve())));
+    await once(server,'listening');
+    const path='http://127.0.0.1:'+server.address().port+'/u/'+handle+'/projects/'+slug;
+    assert.equal((await fetch(path)).status,200);
+    const refused=await rpc(owner,endpoint,draft('Must not withdraw silently',project.revision));
+    denied(refused,'P0001');assert.equal(refused.data?.message,'PROJECT_WITHDRAWAL_CONFIRMATION_REQUIRED');
+    assert.equal((await read()).revision,project.revision);
+    assert.equal((await fetch(path)).status,200);
+    const confirmed=successful(await rpc(owner,endpoint,draft('Explicitly reviewed change',project.revision,true)),'Confirmed guarded write');
+    assert.equal(confirmed.revision,project.revision+1);
+    assert.equal((await read()).title,'Explicitly reviewed change');
+    for(const method of ['GET','HEAD'])assert.equal((await fetch(path,{method})).status,404,'No automatic republication');
+    const competing=await Promise.all([
+      rpc(owner,endpoint,draft('Tab A revision',confirmed.revision)),
+      rpc(tab,endpoint,draft('Tab B revision',confirmed.revision))
+    ]);
+    assert.equal(competing.filter(r=>r.ok).length,1,'Exactly one real CAS write wins');
+    denied(competing.find(r=>!r.ok),'40001');
+    const final=await read();assert.equal(final.revision,confirmed.revision+1);
+    assert.ok(['Tab A revision','Tab B revision'].includes(final.title));
+    const stale=await rpc(owner,endpoint,draft('Stale confirmation must not overwrite',confirmed.revision,true));
+    denied(stale,'40001');
+    assert.equal((await read()).title,final.title);
+    const signedOut=await send('/auth/v1/logout?scope=local',{...bearer(tab),method:'POST'});
+    assert.ok(signedOut.ok,'Revoke second local session');
+    const dead=await rpc(tab,endpoint,draft('Revoked session write',final.revision));
+    assert.equal(dead.ok,false,'Revoked session cannot write');
+    assert.equal((await read()).revision,final.revision);
+  });
+
+test('160700 guarded project autosave: two real owner sessions, no silent withdrawal, exact CAS and explicit confirmation',
+  {timeout:120_000},async()=>{
+  // Only the pre-existing disposable local Auth/HTTP helpers are used.
+  // This test intentionally requires the registered 160700 migration.
+  const owner=await adminUser('guarded-draft-owner');
+  const outsider=await adminUser('guarded-draft-foreign');
+  const second=successful(await send('/auth/v1/token?grant_type=password',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:{email:owner.email,password:owner.password}
+  }),'Second independent owner password session');
+  assert.equal(second.user.id,owner.id);
+  const tab={...owner,token:second.access_token};
+  const sid=token=>JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8')).session_id;
+  assert.notEqual(sid(owner.token),sid(tab.token),'The competing write must use another real session');
+  const handle='guard_'+randomUUID().slice(0,8);
+  const slug='guarded-'+randomUUID().slice(0,8);
+  successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+    ...json(owner),method:'PATCH',body:{handle}
+  }),'Set canonical fixture handle');
+  const rows=successful(await send('/rest/v1/projects?select=id,revision,title,summary,description,repository_url,live_url',{
+    ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug,title:'Original project',summary:'Original public summary',description:'Owner draft'}
+  }),'Create actual private project');
+  assert.equal(rows.length,1);
+  const project=rows[0],id=project.id;
+  successful(await send('/rest/v1/project_exposure_intents',{
+    ...json(owner),method:'POST',body:{project_id:id,owner_user_id:owner.id,show_case_study:true}
+  }),'Explicit public case-study intent');
+  const rpc=(who,name,body)=>send('/rest/v1/rpc/'+name,{
+    ...json(who),method:'POST',body
+  });
+  successful(await rpc(owner,'owner_publish_case_study_projection',{
+    p_project_id:id,p_expected_revision:project.revision,p_confirmation:'PUBLISH CASE STUDY'
+  }),'Publish exact current case-study projection');
+  const publicRead=()=>send('/rest/v1/rpc/service_read_published_case_study_projection',{
+    key:cfg.service,bearer:cfg.service,method:'POST',headers:{'Content-Type':'application/json'},
+    body:{p_handle:handle,p_slug:slug}
+  });
+  const read=async()=>successful(await send('/rest/v1/projects?id=eq.'+id+
+    '&select=id,revision,title,summary,description,repository_url,live_url',bearer(owner)),
+    'Read durable actual project')[0];
+  const draft=(source,patch={})=>({
+    p_project_id:id,p_base_revision:source.revision,p_title:source.title,
+    p_summary:source.summary,p_description:source.description,
+    p_repository_url:source.repository_url,p_live_url:source.live_url,
+    p_confirm_projection_withdrawal:false,...patch
+  });
+  const save=(who,body)=>rpc(who,'owner_save_private_project_draft',body);
+  const projected=successful(await publicRead(),'Read original public projection');
+  assert.equal(projected.title,project.title);assert.equal(projected.summary,project.summary);
+  const unchanged=successful(await save(owner,draft(project)),'No-op autosave preserves revision');
+  assert.equal(unchanged.id,id);assert.equal(unchanged.revision,project.revision);
+  assert.deepEqual(successful(await publicRead(),'No-op retained original projection'),projected);
+  const changed=draft(project,{p_summary:'Private unsent draft summary'});
+  const denial=await save(tab,changed);
+  assert.equal(denial.ok,false);
+  assert.equal(denial.data?.code,'P0001');
+  assert.equal(denial.data?.message,'PROJECT_WITHDRAWAL_CONFIRMATION_REQUIRED');
+  assert.deepEqual(await read(),project);
+  assert.deepEqual(successful(await publicRead(),'Blocked autosave retains old public bytes'),projected);
+  assert.ok(!(await save(outsider,{...changed,p_confirm_projection_withdrawal:true})).ok,
+    'Foreign owner cannot confirm withdrawal or save our project');
+  assert.ok(!(await send('/rest/v1/rpc/owner_save_private_project_draft',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:changed
+  })).ok,'Anonymous draft write must be denied');
+  assert.ok(!(await send('/rest/v1/rpc/owner_save_private_project_draft',{
+    key:cfg.service,bearer:cfg.service,method:'POST',
+    headers:{'Content-Type':'application/json'},body:changed
+  })).ok,'Service role cannot impersonate owner through autosave');
+  const confirmed=successful(await save(owner,{...changed,p_confirm_projection_withdrawal:true}),
+    'Explicitly confirmed atomic save and withdrawal');
+  assert.equal(confirmed.id,id);assert.equal(confirmed.revision,project.revision+1);
+  assert.equal(successful(await publicRead(),'Explicit withdrawal removed old public bytes'),null);
+  const after=await read();
+  assert.equal(after.summary,changed.p_summary);assert.equal(after.revision,confirmed.revision);
+  const stale=await save(tab,changed);
+  assert.equal(stale.ok,false);assert.equal(stale.data?.code,'40001');
+  const competing=await Promise.all([
+    save(owner,draft(after,{p_title:'Owner session wins A'})),
+    save(tab,draft(after,{p_title:'Other session wins B'}))
+  ]);
+  assert.equal(competing.filter(x=>x.ok).length,1,'Only one same-revision owner writes may commit');
+  const loser=competing.find(x=>!x.ok);
+  assert.equal(loser.data?.code,'40001');
+  const winner=await read();
+  assert.equal(winner.revision,after.revision+1);
+  assert.ok(['Owner session wins A','Other session wins B'].includes(winner.title));
+  const reverted=successful(await save(tab,draft(winner,{p_title:project.title,p_summary:project.summary})),
+    'Restore same original field values with a new revision');
+  assert.equal(reverted.revision,winner.revision+1);
+  const aba=await save(owner,changed);
+  assert.equal(aba.ok,false);assert.equal(aba.data?.code,'40001','ABA field values cannot authorize stale revision');
+  assert.equal(successful(await publicRead(),'Reverted draft is never automatically republished'),null);
+});
