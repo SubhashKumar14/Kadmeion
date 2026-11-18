@@ -114,7 +114,7 @@ test('B5 locally bundled Edge handler checks real gateway, origin and input',
 });
 
 test('C05 real local standalone PROFILE storage, registration, avatar CAS and request-bound v2 inventory',
-  {timeout:120000},async()=>{
+  {timeout:180000},async t=>{
     const service=env.get('SERVICE_ROLE_KEY');
     assert.ok(typeof service==='string'&&service.startsWith('eyJ')&&service.length>70);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
@@ -179,7 +179,44 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
     wantDenied(await rpc('record_private_profile_asset_content_attestation',attest));
     const trusted=body=>call('/rest/v1/rpc/record_private_profile_asset_content_attestation',
       {body,token:service,key:service});
-    const attestation=success(await trusted(attest),'Trusted fixture hashes verified actual bytes');
+    // Use the actual owner-JWT gateway before the privileged replay assertion.
+    // The existing direct service RPC fixture remains only an idempotency/ACL check.
+    const folder=await mkdtemp(join(tmpdir(),'kadmeion-profile-edge-'));
+    const config=join(folder,'function.env');
+    await writeFile(config,'KADMEION_ASSET_ATTESTATION_ENABLED=true\n'+
+      'KADMEION_LOCAL_INTEGRATION=1\n'+
+      'KADMEION_ALLOWED_ATTEST_ORIGINS=http://localhost:3000\n');
+    const worker=spawn('supabase',['functions','serve','complete-private-asset','--env-file',config],
+      {stdio:['ignore','pipe','pipe'],env:{...process.env,KADMEION_LOCAL_INTEGRATION:'1'}});
+    worker.stdout?.resume();worker.stderr?.resume();
+    t.after(async()=>{
+      if(worker.exitCode===null)worker.kill('SIGTERM');
+      await rm(folder,{recursive:true,force:true});
+    });
+    let ready=false;
+    for(let i=0;i<60;i++){
+      if(worker.exitCode!==null)break;
+      try{
+        const res=await request({assetId:'invalid'});
+        const status=res.status;await res.body?.cancel();
+        if(status===400){ready=true;break;}
+      }catch{}
+      await delay(300);
+    }
+    assert.ok(ready,'Local PROFILE attestation Edge must be ready');
+    const gateway=(actor,body)=>call('/functions/v1/complete-private-asset',{token:actor.token,body});
+    const body={assetId:registry.assetId,scope:'PROFILE'};
+    wantDenied(await gateway(foreign,body));
+    wantDenied(await gateway(owner,{assetId:registry.assetId}));
+    wantDenied(await gateway(owner,{...body,expectedSha256:digest}));
+    assert.deepEqual(success(await rpc('read_owner_private_asset_pin',pin),'No foreign or legacy pin'),unpinned);
+    const receipt=success(await gateway(owner,body),'Actual PROFILE owner Edge computes trusted pin');
+    assert.deepEqual(receipt,{assetId:registry.assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',
+      publicPublishingAllowed:false,accountDeletionAllowed:false});
+    assert.deepEqual(success(await gateway(owner,body),'Exact owner Edge replay'),receipt);
+    const actualPin=success(await rpc('read_owner_private_asset_pin',pin),'Read actual Edge digest');
+    assert.equal(actualPin.status,'SERVER_HASH_PINNED');assert.equal(actualPin.expectedSha256,digest);
+    const attestation=success(await trusted(attest),'Trusted exact service replay after owner Edge');
     assert.deepEqual(attestation,{assetId:registry.assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',providerSigned:false,deletionAllowed:false});
     assert.deepEqual(success(await trusted(attest),'Pin exact replay'),attestation);
     wantDenied(await trusted({...attest,p_expected_sha256:'0'.repeat(64)}),'23505');
