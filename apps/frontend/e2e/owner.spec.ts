@@ -4056,3 +4056,104 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
+
+
+test('C13 mounted analytics uses actual owner consent and persisted local aggregate lifecycle',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase CI.');
+  test.setTimeout(120_000);
+  const owner=await localUser('CI Analytics Owner');
+  const portfolioId=randomUUID();
+  const serviceKey=process.env.KADMEION_TEST_SERVICE_ROLE_KEY!;
+  if(process.env.VITE_SUPABASE_URL!==origin||!serviceKey)throw new Error('Requires disposable local stack');
+  // Seed the same verified C11 frozen-public prerequisites used by PostgreSQL
+  // authority tests. Consent and metrics are NOT seeded: actual browser owner
+  // RPCs and one trusted service event below exercise the dynamic workflow.
+  const fixture=runLocalFixtureSql(`
+    select set_config('kd.c13.req',gen_random_uuid()::text,false);
+    select set_config('kd.c13.intent',gen_random_uuid()::text,false);
+    select set_config('kd.c13.handle','analytics_'||replace(left(:'actor_id',8),'-',''),false);
+    select set_config('kd.c13.html','<!doctype html><html><head><meta name="robots" content="noindex,nofollow,noarchive"></head><body><h1>Analytics fixture</h1></body></html>',false);
+    select set_config('kd.c13.hash',encode(sha256(convert_to(current_setting('kd.c13.html'),'UTF8')),'hex'),false);
+    update public.profiles set handle=current_setting('kd.c13.handle'),display_name='CI Analytics Owner'
+      where user_id=:'actor_id'::uuid;
+    insert into public.portfolios(id,owner_user_id,slug,title,template_id,head_revision)
+      values(:'item_id'::uuid,:'actor_id'::uuid,'analytics-fixture','Analytics fixture','starter',1);
+    insert into public.portfolio_revisions(portfolio_id,owner_user_id,revision,base_revision,operation_id,snapshot,snapshot_sha256)
+      values(:'item_id'::uuid,:'actor_id'::uuid,1,0,gen_random_uuid(),
+      '{"formatVersion":1,"files":{},"slots":{},"stashes":{}}'::jsonb,
+      encode(sha256(convert_to('{"formatVersion":1,"files":{},"slots":{},"stashes":{}}'::jsonb::text,'UTF8')),'hex'));
+    insert into public.private_release_requests(id,portfolio_id,owner_user_id,operation_id,revision,snapshot_sha256,visibility_intent)
+      select current_setting('kd.c13.req')::uuid,portfolio_id,owner_user_id,gen_random_uuid(),1,snapshot_sha256,'PUBLIC'
+      from public.portfolio_revisions where portfolio_id=:'item_id'::uuid;
+    insert into public.private_release_visibility_pointers(portfolio_id,owner_user_id,status,candidate_request_id,candidate_manifest_sha256,generation,revocation_generation)
+      values(:'item_id'::uuid,:'actor_id'::uuid,'PREPARED_PRIVATE',current_setting('kd.c13.req')::uuid,repeat('a',64),1,0);
+    insert into kadmeion_private.private_artifact_bindings(portfolio_id,owner_user_id,request_id,pointer_generation,manifest_sha256,html_sha256,html_byte_length)
+      values(:'item_id'::uuid,:'actor_id'::uuid,current_setting('kd.c13.req')::uuid,1,repeat('a',64),current_setting('kd.c13.hash'),octet_length(current_setting('kd.c13.html')));
+    insert into kadmeion_private.private_reviewer_stage_artifacts(portfolio_id,owner_user_id,request_id,pointer_generation,html,html_sha256)
+      values(:'item_id'::uuid,:'actor_id'::uuid,current_setting('kd.c13.req')::uuid,1,current_setting('kd.c13.html'),current_setting('kd.c13.hash'));
+    insert into public.private_unlisted_publication_intents(id,portfolio_id,owner_user_id,request_id,operation_id,expected_pointer_generation,public_handle,public_slug,status)
+      values(current_setting('kd.c13.intent')::uuid,:'item_id'::uuid,:'actor_id'::uuid,current_setting('kd.c13.req')::uuid,gen_random_uuid(),1,current_setting('kd.c13.handle'),'analytics-fixture','USED');
+    insert into kadmeion_private.unlisted_release_routes(portfolio_id,owner_user_id,request_id,intent_id,stage_generation,release_generation,status,verified_at,html_sha256)
+      values(:'item_id'::uuid,:'actor_id'::uuid,current_setting('kd.c13.req')::uuid,current_setting('kd.c13.intent')::uuid,1,1,'LIVE',clock_timestamp(),current_setting('kd.c13.hash'));
+  `,owner.id,portfolioId);
+  void fixture;
+  const rpc=async(name:string,body:Record<string,unknown>)=>{
+    const r=await fetch(origin+'/rest/v1/rpc/'+name,{method:'POST',redirect:'error',
+      headers:{apikey:serviceKey,Authorization:'Bearer '+serviceKey,'Content-Type':'application/json'},
+      body:JSON.stringify(body),signal:AbortSignal.timeout(10_000)});
+    if(!r.ok)throw new Error('Local analytics worker RPC failed: '+r.status);
+    return await r.json();
+  };
+  const count=()=>Number(runLocalFixtureSql(
+    "select coalesce(sum(views),0) from kadmeion_private.aggregate_daily where portfolio_id=:'item_id'::uuid;",
+    owner.id,portfolioId));
+  try{
+    await signIn(page,owner);
+    await page.goto('/app/analytics');
+    await expect(page.getByRole('heading',{name:'Portfolio analytics',level:1})).toBeVisible();
+    await page.getByRole('checkbox',{name:'Analytics fixture',exact:true}).check();
+    await page.getByRole('button',{name:'Load analytics',exact:true}).click();
+    await expect(page.getByText('Consent: Off · Eligible release')).toBeVisible();
+    expect(count()).toBe(0);
+    await page.getByRole('button',{name:'Enable portfolio analytics',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm enable',exact:true}).click();
+    await expect(page.getByText('Consent: On · Eligible release')).toBeVisible();
+    const handle='analytics_'+owner.id.slice(0,8);
+    const envelope=await rpc('service_read_public_portfolio_with_analytics',{p_handle:handle,p_slug:'analytics-fixture'});
+    const receipt=envelope.analytics;
+    expect(receipt.consentVersion).toBe(1);
+    const args={p_portfolio_id:receipt.portfolioId,p_intent_id:receipt.intentId,
+      p_release_generation:receipt.releaseGeneration,p_stage_generation:receipt.stageGeneration,
+      p_delivery_epoch:receipt.deliveryEpoch,p_html_sha256:receipt.htmlSha256,
+      p_consent_version:receipt.consentVersion,p_bucket:'SEARCH'};
+    expect((await rpc('collect_portfolio_analytics_view',args)).status).toBe('COUNTED');
+    expect(count()).toBe(1);
+    await page.getByRole('button',{name:'Load analytics',exact:true}).click();
+    await expect(page.getByText(/1 recorded requests, partial data/)).toBeVisible();
+    await page.getByRole('radio',{name:'30 days'}).check();
+    await page.getByRole('button',{name:'Load analytics',exact:true}).click();
+    await expect(page.getByText(/1 recorded requests, partial data/)).toBeVisible();
+    await page.getByRole('button',{name:'Clear analytics',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm clear',exact:true}).click();
+    await expect(page.getByText('Consent: On · Eligible release')).toBeVisible();
+    expect(count()).toBe(0);
+    expect((await rpc('collect_portfolio_analytics_view',args)).status).toBe('IGNORED');
+    await page.getByRole('button',{name:'Load analytics',exact:true}).click();
+    await expect(page.getByText(/Unavailable — no confirmed counts/)).toBeVisible();
+    await page.getByRole('button',{name:'Disable analytics',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm disable',exact:true}).click();
+    await expect(page.getByText('Consent: Off · Eligible release')).toBeVisible();
+    await page.reload();
+    await page.getByRole('checkbox',{name:'Analytics fixture',exact:true}).check();
+    await page.getByRole('button',{name:'Load analytics',exact:true}).click();
+    await expect(page.getByText('Consent: Off · Eligible release')).toBeVisible();
+    expect(count()).toBe(0);
+  }finally{
+    const response=await fetch(origin+'/auth/v1/admin/users/'+owner.id,{
+      method:'DELETE',headers:{apikey:serviceKey,Authorization:'Bearer '+serviceKey},redirect:'error',
+      signal:AbortSignal.timeout(10_000)});
+    if(!response.ok)throw new Error('Disposable analytics fixture cleanup failed: '+response.status);
+  }
+  // No hosted user/database operation; all source data must cascade locally.
+  expect(count()).toBe(0);
+});
