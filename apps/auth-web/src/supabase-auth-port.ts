@@ -2371,15 +2371,35 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   /** Owner-scoped manual Goals + LINK_ONLY profiles. No external provider sync or analytics. */
   async ownerGrowth() {
     return this.outcome(async () => {
-      const {userId,epoch} = await this.ownerSession();
+      const {session,userId,epoch}=await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
       const token=this.ownerEpochToken(userId,epoch);
       const [goalModule,linkModule] = await Promise.all([
         import('../../../packages/contracts/src/private-goals-service.ts'),
         import('../../../packages/contracts/src/private-platform-links-service.ts')
       ]);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private growth.');
+      const local=['http://127.0.0.1:54321','http://localhost:54321'].includes(this.origin)&&
+        ['127.0.0.1','localhost'].includes(new URL(this.appOrigin).hostname);
+      const providerFacts=local?await (async()=>{
+        const {SupabasePrivateProviderFactsService}=await import('../../../packages/contracts/src/private-provider-facts-service.ts');
+        if(!isCurrentOwner())throw new Error('Owner session changed while preparing private provider facts.');
+        // The wrapper is bounded to the configured local origin; provider egress,
+        // secrets and upstream injection belong exclusively to the server.
+        const http:typeof fetch=(input,init)=>{
+          const destination=new URL(input instanceof Request?input.url:String(input));
+          if(destination.origin!==this.origin||!isCurrentOwner())
+            return Promise.reject(new Error('Private local provider transport denied.'));
+          return this.fetcher(input,init);
+        };
+        return new SupabasePrivateProviderFactsService(this.origin,this.publishableKey,userId,token,isCurrentOwner,http);
+      })():undefined;
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private growth.');
       return {
         goals: new goalModule.SupabasePrivateGoalsService(this.origin,this.publishableKey,token,this.fetcher,userId),
-        links: new linkModule.SupabasePrivatePlatformLinksService(this.origin,this.publishableKey,userId,token,this.fetcher)
+        links: new linkModule.SupabasePrivatePlatformLinksService(this.origin,this.publishableKey,userId,token,this.fetcher),
+        ...(providerFacts?{providerFacts}:{})
       };
     });
   }
