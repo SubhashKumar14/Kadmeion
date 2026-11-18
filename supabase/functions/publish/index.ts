@@ -3,7 +3,7 @@
  * host passes independent revocation and cost proofs. No public writes on import.
  * Privileged RPCs are invoked only AFTER a live owner JWT and owner-RLS consent.
  */
-import {publishConsentedUnlistedRelease} from '../../../packages/storage-adapters/src/unlisted-release-verification.ts';
+import {publishConsentedUnlistedRelease,type FrozenPublicationConsent,type PublicAuthorityRpc} from '../../../packages/storage-adapters/src/unlisted-release-verification.ts';
 
 type Env=Readonly<Record<string,string|undefined>>;
 type Dependencies={
@@ -155,6 +155,20 @@ async function getJson(url:string,headers:Record<string,string>,http:typeof fetc
     return bounded(response,MAX_RPC_BYTES,signal);
   });
 }
+// C11 cutover: owner-visible frozen request is the source of visibility intent.
+ // This prevents a missing/renamed PUBLIC address from downgrading to UNLISTED.
+export function boundFrozenPublicationConsent(ownerId:string,intent:Record<string,unknown>,rows:unknown):FrozenPublicationConsent {
+  if(typeof intent.request_id!=='string'||!UUID.test(intent.request_id)||
+     typeof intent.portfolio_id!=='string'||!UUID.test(intent.portfolio_id)||
+     !Array.isArray(rows)||rows.length!==1)
+    throw Error('Frozen publication consent unavailable');
+  const frozen=rows[0];
+  if(!record(frozen)||frozen.id!==intent.request_id||frozen.portfolio_id!==intent.portfolio_id||
+     frozen.owner_user_id!==ownerId||frozen.status!=='FROZEN'||
+     (frozen.visibility_intent!=='PUBLIC'&&frozen.visibility_intent!=='UNLISTED'))
+    throw Error('Frozen publication consent unavailable');
+  return Object.freeze({portfolioId:intent.portfolio_id,requestId:intent.request_id,visibility:frozen.visibility_intent});
+}
 export async function handleOwnerPublishRelease(request:Request,deps:Dependencies={}):Promise<Response> {
   const env=deps.env??serverEnv();
   if(env.KADMEION_RELEASE_WORKER_ENABLED!=='true')return error(404,'Not found');
@@ -194,7 +208,7 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
     if(!record(who)||typeof who.id!=='string'||!UUID.test(who.id))
       return error(401,'Owner session required',origin,permitted);
     // RLS projects only this owner's consent, never another user's request.
-    const path='/rest/v1/private_unlisted_publication_intents?select=id,portfolio_id,status,expires_at&id=eq.'+
+    const path='/rest/v1/private_unlisted_publication_intents?select=id,portfolio_id,request_id,status,expires_at&id=eq.'+
       encodeURIComponent(data.intentId)+'&limit=2';
     const intents=await getJson(base+path,ownerHeaders,http);
     if(!Array.isArray(intents)||intents.length>1)
@@ -203,11 +217,17 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
     const intent=intents[0];
     if(!record(intent)||intent.id!==data.intentId||
        typeof intent.portfolio_id!=='string'||!UUID.test(intent.portfolio_id)||
+       typeof intent.request_id!=='string'||!UUID.test(intent.request_id)||
        !['AWAITING_HOST','USED'].includes(String(intent.status))||
        typeof intent.expires_at!=='string'||!Number.isFinite(Date.parse(intent.expires_at)))
       return error(503,'Release consent cannot be verified',origin,permitted);
     if(intent.status==='AWAITING_HOST'&&Date.parse(intent.expires_at)<=Date.now())
       return error(409,'Release intent expired',origin,permitted);
+
+    const frozenPath='/rest/v1/private_release_requests?select=id,portfolio_id,owner_user_id,visibility_intent,status&id=eq.'+
+      encodeURIComponent(intent.request_id)+'&limit=2';
+    const expectedConsent=boundFrozenPublicationConsent(who.id,intent,
+      await getJson(base+frozenPath,ownerHeaders,http));
 
     const rpc=async(name:string,input:Record<string,unknown>):Promise<unknown>=>{
       if(!['service_prepare_unlisted_release','service_probe_unlisted_release',
@@ -218,13 +238,32 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
         apikey:config.secret,Authorization:'Bearer '+config.secret
       },http,input);
     };
+    // This source is the paired C11 cutover candidate. Do not deploy it before
+    // the service-only SQL receipt/epoch/ACK/recovery and legacy PUBLIC closure.
+    // No browser-specified operation, no fallback on authority RPC failure.
+    const publicAuthority:PublicAuthorityRpc=async(name,input)=>{
+      if(!['service_read_current_public_delivery_receipt','service_acknowledge_public_delivery',
+           'service_recover_failed_public_delivery'].includes(name))
+        throw Error('Unknown public delivery operation');
+      return getJson(base+'/rest/v1/rpc/'+name,{
+        apikey:config.secret,Authorization:'Bearer '+config.secret
+      },http,input);
+    };
     const result=deps.publish
       ?await deps.publish(data.intentId,config.host,rpc)
       :await publishConsentedUnlistedRelease(data.intentId,{origin:config.host,
         rpc:rpc as Parameters<typeof publishConsentedUnlistedRelease>[1]['rpc'],http,
-        requirePublicAliasProof:true});
+        requirePublicAliasProof:true,expectedConsent,publicAuthority});
     if(!record(result)||result.status!=='DELIVERY_ACKNOWLEDGED'||
        typeof result.htmlSha256!=='string'||!/^[0-9a-f]{64}$/.test(result.htmlSha256))
+      return error(409,'Publication was not verified',origin,permitted);
+    // PUBLIC cannot advertise success on a legacy acknowledgement alone.
+    if(expectedConsent.visibility==='PUBLIC'&&
+       (!record(result.authoritativePublicReceipt)||
+        result.authoritativePublicReceipt.portfolioId!==expectedConsent.portfolioId||
+        result.authoritativePublicReceipt.requestId!==expectedConsent.requestId||
+        result.authoritativePublicReceipt.intentId!==data.intentId||
+        result.authoritativePublicReceipt.storedHtmlSha256!==result.htmlSha256))
       return error(409,'Publication was not verified',origin,permitted);
     return Response.json({status:'DELIVERY_ACKNOWLEDGED',
       htmlSha256:result.htmlSha256,
