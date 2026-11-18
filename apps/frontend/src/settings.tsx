@@ -746,13 +746,63 @@ async function exportDigest(bytes:Uint8Array):Promise<string>{
   const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
   return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
 }
+// Independently requested owner annexes, never a replacement for the
+// request-bound V2 archive. They do not authorize analytics or provider sync.
+function OwnerDataAnnexes({port,data,blocked,providerBlocked,providerExport}:{port:SupabaseBrowserAuthPort;data:Services['data'];blocked:boolean;
+  providerBlocked:boolean;providerExport:()=>ReturnType<Services['data']['exportProviderFactsAnnex']>}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false),running=useRef(false);
+  const [busy,setBusy]=useState<'analytics'|'provider'|null>(null);
+  const [message,setMessage]=useState<Message>(null);
+  const [receipt,setReceipt]=useState<{filename:string;bytes:number;sha256:string;records:number}|null>(null);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+  async function download(kind:'analytics'|'provider'){
+    if(blocked||(kind==='provider'&&providerBlocked)||running.current||!current())return;
+    running.current=true;setBusy(kind);setMessage(null);setReceipt(null);
+    try{
+      const artifact=kind==='analytics'?await data.exportAnalyticsAnnex():await providerExport();
+      if(!current())return;
+      if(artifact.status!=='BOUNDED_OWNER_ANNEX'||artifact.completeAccountExport!==false||artifact.deletionAllowed!==false||
+        artifact.filename!==(kind==='analytics'?'kadmeion-portfolio-analytics-annex.json':'kadmeion-github-facts-annex.json')||
+        artifact.mime!=='application/json'||artifact.bytes.byteLength===0||await exportDigest(artifact.bytes)!==artifact.sha256)
+        throw new Error('The annex bytes or receipt could not be verified.');
+      if(!current())return;
+      downloadPrivateFile(artifact.filename,artifact.bytes,artifact.mime);
+      setReceipt({filename:artifact.filename,bytes:artifact.bytes.byteLength,sha256:artifact.sha256,records:artifact.records});
+      setMessage({error:false,text:'Private data annex download prepared.'});
+    }catch(error){
+      if(current()){
+        const code=error&&typeof error==='object'&&'code' in error?error.code:null;
+        setMessage({error:true,text:code==='AUTH_EXPIRED'?'The current owner session changed. Sign in again.':
+          code==='QUOTA_EXCEEDED'?'The durable inventory quota is exhausted. Use an acknowledged version 2 inventory if available. No file was downloaded.':
+          code==='LIMIT_EXCEEDED'?'The annex exceeds its supported limit. No file was downloaded.':
+          'The current owner annex could not be verified or is unavailable. No file was downloaded.'});
+      }
+    }finally{running.current=false;if(current())setBusy(null);}
+  }
+  return <SettingsCard title="Provider and analytics data annexes">
+    <p>Download retained Kadmeion records separately from the bounded account archive. These actions do not connect to GitHub, enable tracking, or request external provider data. A GitHub facts download explicitly captures a version 2 inventory if none is acknowledged in this session, subject to the shared quota. Retained analytics is a separate current-state read.</p>
+    <div className="ws-actions">
+      <button type="button" className="ws-secondary" disabled={blocked||providerBlocked||busy!==null} onClick={()=>void download('provider')}>{busy==='provider'?'Preparing retained facts…':'Download retained GitHub facts JSON'}</button>
+      <button type="button" className="ws-secondary" disabled={blocked||busy!==null} onClick={()=>void download('analytics')}>{busy==='analytics'?'Preparing retained analytics…':'Download retained analytics JSON'}</button>
+    </div>
+    <Status message={message}/>
+    {receipt&&<div aria-label="Private annex download receipt"><dl>
+      <dt>Filename</dt><dd>{receipt.filename}</dd><dt>Size</dt><dd>{formatExportBytes(receipt.bytes)}</dd>
+      <dt>Retained records</dt><dd>{receipt.records}</dd><dt>SHA-256</dt><dd style={{overflowWrap:'anywhere'}}><code>{receipt.sha256}</code></dd>
+    </dl></div>}
+    <p>Analytics is limited to retained, consented aggregate records; provider data is limited to retained GitHub facts, including any explicitly unconfirmed candidate. A zero count is not proof of universal deletion or complete visitor coverage.</p>
+  </SettingsCard>;
+}
+
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch] = useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
   useEffect(()=>{alive.current=true;return ()=>{alive.current=false;};},[]);
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const [message, setMessage] = useState<Message>(emptyMessage);
-  const [busy, setBusy] = useState<ExportKind|'reconcile-v2'|null>(null);
+  const [busy, setBusy] = useState<ExportKind|'reconcile-v2'|'provider-annex'|null>(null);
   const operation=useRef<string|null>(null);
   const running=useRef(false);
   const [failedKind,setFailedKind]=useState<ExportKind|null>(null);
@@ -940,6 +990,26 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     }
   }
 
+  async function exportProviderAnnex(){
+    if(running.current||busy||!current()||(quotaBlocked&&!v2Inventory))
+      throw new Error('The current owner inventory is unavailable.');
+    running.current=true;setBusy('provider-annex');setMessage(null);
+    try{
+      if(!v2Inventory)v2Operation.current??=crypto.randomUUID();
+      const scope=v2Inventory??await services.account.captureInventoryV2(v2Operation.current!,null);
+      if(!current())throw new Error('The owner session changed.');
+      if(scope.schemaVersion!==2||scope.requestId!==null)
+        throw new Error('The provider inventory scope was not confirmed.');
+      v2Operation.current=null;setV2Inventory(scope);
+      const artifact=await services.data.exportProviderFactsAnnex(scope.snapshotId,scope.requestId);
+      if(!current())throw new Error('The owner session changed.');
+      return artifact;
+    }catch(error){
+      if(current()&&error&&typeof error==='object'&&'code' in error&&error.code==='QUOTA_EXCEEDED')setQuotaBlocked(true);
+      throw error;
+    }finally{running.current=false;if(current())setBusy(null);}
+  }
+
   async function checkV2Storage(){
     if(running.current||busy||!current()||!v2Inventory)return;
     const scope=v2Inventory;
@@ -1059,6 +1129,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         ? <a href={'/app/portfolios/'+selectedPortfolio.id+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
+    <OwnerDataAnnexes port={port} data={services.data} blocked={busy!==null} providerBlocked={quotaBlocked&&!v2Inventory} providerExport={exportProviderAnnex}/>
     <SettingsCard title="Coverage and exclusions">
       <p>Keep downloads private. They may contain personal information and editable source. Provider credentials, session tokens, restricted admin data, external platform records, backups, caches and third-party copies are not exported.</p>
       <p>Inventory quotas and provider availability may prevent preparation. Downloading an archive does not revoke public links, validate independent hosting, restore account access, or authorize deletion. External release/retention proof remains separate.</p>
@@ -1106,6 +1177,8 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
   const [exitStorage,setExitStorage]=useState<AccountExitStorageReconciliationV2|null>(null);
   const [exitExport,setExitExport]=useState<{requestId:string;snapshotId:string;filename:string;sha256:string;bytes:number}|null>(null);
   const [exitQuotaBlocked,setExitQuotaBlocked]=useState(false);
+  type DomainReview=Awaited<ReturnType<Services['data']['reviewExitRetainedDomains']>>;
+  const [domainReview,setDomainReview]=useState<{requestId:string;receipt:DomainReview}|null>(null);
   const exitCapture=useRef<{requestId:string;operationId:string}|null>(null);
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
@@ -1185,6 +1258,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     return () => { active = false; };
   }, [port,service,epoch,recoveryAttempt]);
 
+  useEffect(()=>{setDomainReview(null);},[activeRequest?.id,recoveryAttempt]);
   useEffect(()=>{
     if(!requests)return;
     if(exitScope&&!sameExitScope(exitScope,activeRequest?.id??'')){
@@ -1192,6 +1266,30 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     }
     if(exitCapture.current&&exitCapture.current.requestId!==activeRequest?.id)exitCapture.current=null;
   },[requests,activeRequest?.id,exitScope]);
+
+  async function checkRetainedDomains(){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!activeScope||!current()||executionUncertain)return;
+    const requestId=activeRequest.id,scope=activeScope;
+    inFlight.current=true;setBusy(true);setMessage(null);setDomainReview(null);
+    try{
+      const verifyRequest=async()=>{
+        const history=await service.list();
+        if(!current())throw new Error('The owner session changed.');
+        setRequests(history);
+        const pending=history.filter(row=>row.status==='REQUESTED_BLOCKED');
+        if(pending.length!==1||pending[0]?.id!==requestId)
+          throw new Error('The current deletion request changed. Review the request again.');
+      };
+      await verifyRequest();
+      const receipt=await services.data.reviewExitRetainedDomains(scope.snapshotId,requestId);
+      if(!current())return;
+      await verifyRequest();
+      if(!current())return;
+      if(receipt.postErasureVerified!==false)throw new Error('Invalid retained-data review receipt.');
+      setDomainReview({requestId,receipt});
+    }catch(error){if(current())setMessage(failure(error));}
+    finally{inFlight.current=false;if(current())setBusy(false);}
+  }
 
   async function prepareExitExport(action:'capture'|'reconcile'|'metadata'|'json'|'zip'){
     if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current())return;
@@ -1581,6 +1679,26 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
           {activeExport&&<div aria-label="Request-bound export receipt"><p>{activeExport.filename} · {formatExportBytes(activeExport.bytes)}</p><p>SHA-256: <code>{activeExport.sha256}</code></p></div>}
         </>}
       </section>}
+      {activeRequest&&<section aria-label="Retained provider and analytics review">
+        <h3>Retained data before erasure</h3>
+        <p>Review retained processing and aggregates for this pending request. Capture the request-bound inventory above before reviewing. This is a read-only point-in-time check, not proof of erasure or a substitute for the final server checks.</p>
+        <button type="button" className="ws-secondary" disabled={busy||executionUncertain||recovery!=='ready'||!activeScope} onClick={()=>void checkRetainedDomains()}>Review retained provider and analytics data</button>
+        {domainReview?.requestId===activeRequest.id&&<div aria-label="Retained data review receipt">
+          <p>Read at <time dateTime={domainReview.receipt.checkedAt}>{new Date(domainReview.receipt.checkedAt).toLocaleString()}</time>.</p>
+          {domainReview.receipt.provider.status==='READ'?<dl>
+            <dt>GitHub links read</dt><dd>{domainReview.receipt.provider.links}</dd>
+            <dt>Enabled provider consent</dt><dd>{domainReview.receipt.provider.enabled}</dd>
+            <dt>Links with retained facts</dt><dd>{domainReview.receipt.provider.facts}</dd>
+            <dt>Links with pending candidates</dt><dd>{domainReview.receipt.provider.candidates}</dd>
+          </dl>:<p>Provider data could not be verified.</p>}
+          {domainReview.receipt.analytics.status==='READ'?<dl>
+            <dt>Portfolio consent records read</dt><dd>{domainReview.receipt.analytics.portfolios}</dd>
+            <dt>Enabled analytics consent</dt><dd>{domainReview.receipt.analytics.enabled}</dd>
+            <dt>Retained daily aggregate buckets</dt><dd>{domainReview.receipt.analytics.aggregates}</dd>
+          </dl>:<p>Analytics data could not be verified.</p>}
+          <p>These counts may change after this read. No physical deletion, external copy or backup erasure has been established by this review.</p>
+        </div>}
+      </section>}
       <a href="/app/export">Open export center</a>
     </SettingsCard>
     <SettingsCard title="Account deletion request">
@@ -1634,6 +1752,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
           </section>
         </>}
       </>}
+      {requests&&!activeRequest&&<p>Before recording a deletion request, <a href="/app/export">download any needed retained GitHub facts and analytics annexes</a>. Ending processing may remove retained data before final erasure. The separate account-erasure receipt does not prove external platform or backup deletion.</p>}
       {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
         <label className="ws-export-select">Type DELETE MY ACCOUNT to record the request
           <input autoComplete="off" value={confirmation} disabled={busy}
