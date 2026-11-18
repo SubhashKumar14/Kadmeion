@@ -36,6 +36,15 @@ function validProjectPage(page:ProjectPage, ownerId:string, previous:ProjectCurs
 const freshDraft=():NewPrivateProject=>({
   title:'',slug:'',summary:'',repositoryUrl:null,liveUrl:null
 });
+function matchesCreatedProject(record:OwnerProject,submitted:NewPrivateProject):boolean {
+  try {
+    const normalizedUrl=(value:string|null)=>value?new URL(value).href:null;
+    return record.revision===0&&record.slug===submitted.slug.trim()&&
+      record.title===submitted.title.trim()&&record.summary===submitted.summary.trim()&&
+      record.description===''&&record.repositoryUrl===normalizedUrl(submitted.repositoryUrl)&&
+      record.liveUrl===normalizedUrl(submitted.liveUrl);
+  }catch{return false;}
+}
 function suggestSlug(title:string):string {
   const derived=title.normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
     .toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
@@ -69,12 +78,13 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const creationAttempt=useRef(0);
   const [unconfirmed,setUnconfirmed]=useState<NewPrivateProject|null>(null);
   const uncertainCreate=useRef<NewPrivateProject|null>(null);
+  const acknowledgedCreateId=useRef<string|null>(null);
   const scanCursor=useRef<ProjectCursor|null>(null);
   const scanSeen=useRef(new Set<string>());
   const [confirmedProject,setConfirmedProject]=useState<string|null>(null);
   const [existingProject,setExistingProject]=useState<string|null>(null);
-  function clearUncertain(){uncertainCreate.current=null;setUnconfirmed(null);scanCursor.current=null;scanSeen.current.clear();setExistingProject(null);}
-  function markUncertain(value:NewPrivateProject){clearUncertain();uncertainCreate.current=value;setUnconfirmed(value);}
+  function clearUncertain(){uncertainCreate.current=null;acknowledgedCreateId.current=null;setUnconfirmed(null);scanCursor.current=null;scanSeen.current.clear();setExistingProject(null);}
+  function markUncertain(value:NewPrivateProject,id:string|null=null){clearUncertain();uncertainCreate.current=value;acknowledgedCreateId.current=id;setUnconfirmed(value);}
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const modal=useRef<HTMLDialogElement>(null);
@@ -271,7 +281,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     const submitted={...draft};
     const stillCurrent=()=>attempt===creationAttempt.current&&currentOwner();
     setSaving(true);setError('');setNotice('');setConfirmedProject(null);
-    let dispatched=false;
+    let dispatched=false, acknowledgedId:string|null=null;
     try {
       const identity=await port.getUser();
       if(!stillCurrent())return;
@@ -285,6 +295,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       dispatched=true;
       const saved=await port.createPrivateProject(submitted);
       if(!stillCurrent())return;
+      if(saved.data&&!saved.error)acknowledgedId=saved.data.id;
       if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
       const current=await port.getUser();
       if(!stillCurrent())return;
@@ -297,13 +308,26 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         setError(saved.error?.message||'Private project save was not confirmed. Check saved projects before another write.');
         return;
       }
-      // Reload the owner-bound first page after a confirmed create. Do not
-      // mix an optimistic record with a stale cursor or a previous owner.
-      completeCreate(saved.data.id,'Saved privately in your account. This did not publish or connect a repository.');
+      // An acknowledged insert is not a second write authorization. Verify
+      // the stored record itself before offering Continue editing.
+      const readback=await port.readOwnerProject(saved.data.id);
+      if(!stillCurrent())return;
+      const verifiedOwner=await port.getUser();
+      if(!stillCurrent())return;
+      if(verifiedOwner.error||verifiedOwner.data?.user?.id!==expectedOwner){invalidateOwner();return;}
+      if(readback.error||!readback.data||readback.data.id!==saved.data.id){
+        markUncertain(submitted,saved.data.id);
+        setError('The private insert was acknowledged, but its saved record could not be verified. Check the saved project without repeating the insert.');return;
+      }
+      if(!matchesCreatedProject(readback.data,submitted)){
+        markUncertain(submitted,saved.data.id);setExistingProject(saved.data.id);
+        setError('The acknowledged project exists but its saved fields differ. Review it before creating a different project.');return;
+      }
+      completeCreate(readback.data.id,'Saved privately in your account. This did not publish or connect a repository.');
     } catch {
       if(stillCurrent()) {
         if(port.getOwnerSessionEpoch()!==sessionEpoch) invalidateOwner();
-        else {if(dispatched)markUncertain(submitted);setError('Project creation could not be verified. Your form values are retained.');}
+        else {if(dispatched)markUncertain(submitted,acknowledgedId);setError('Project creation could not be verified. Your form values are retained.');}
       }
     } finally {
       if(stillCurrent()) {
@@ -328,6 +352,20 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     try{
       const identity=await port.getUser();if(!valid())return;
       if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      const acknowledgedId=acknowledgedCreateId.current;
+      if(acknowledgedId){
+        const result=await port.readOwnerProject(acknowledgedId);if(!valid())return;
+        const owner=await port.getUser();if(!valid())return;
+        if(owner.error||owner.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(result.error||!result.data||result.data.id!==acknowledgedId){
+          setError('The acknowledged project could not be read securely. Retry this check; another insert is not allowed.');return;
+        }
+        if(matchesCreatedProject(result.data,submitted)){
+          completeCreate(result.data.id,'The acknowledged private project was verified. No additional write was made.');return;
+        }
+        setExistingProject(result.data.id);
+        setError('The acknowledged project has different current fields. Review it or choose a different unique slug.');return;
+      }
       for(let index=0;index<10;index++){
         const cursor:ProjectCursor|null=scanCursor.current;
         const key=cursor?JSON.stringify([cursor.updatedAt,cursor.id]):'first';
@@ -342,12 +380,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         const page:ProjectPage=response.data;
         const existing=page.items.find(item=>item.slug===submitted.slug.trim());
         if(existing){
-          const normalizedUrl=(value:string|null)=>value?new URL(value).href:null;
-          let same=false;
-          try{same=existing.revision===0&&existing.title===submitted.title.trim()&&
-            existing.summary===submitted.summary.trim()&&existing.description===''&&
-            existing.repositoryUrl===normalizedUrl(submitted.repositoryUrl)&&existing.liveUrl===normalizedUrl(submitted.liveUrl);}catch{/* do not infer a match */}
-          if(same){completeCreate(existing.id,'The requested private project matches a saved record. No additional write was made.');return;}
+          if(matchesCreatedProject(existing,submitted)){completeCreate(existing.id,'The requested private project matches a saved record. No additional write was made.');return;}
           setExistingProject(existing.id);setError('This private slug is already in use but the saved record differs. Review that record or choose another slug.');return;
         }
         scanSeen.current.add(key);scanCursor.current=page.nextCursor;
@@ -499,7 +532,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         {saving&&<p role="status">{unconfirmed?'Checking saved private projects…':'Saving your private project…'}</p>}
         {unconfirmed&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={saving} onClick={()=>void checkCreatedProject()}>Check saved project before retry</button>
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{scanCursor.current=null;scanSeen.current.clear();setError('Lookup reset. Check the saved project again.');}}>Restart lookup</button>
-          {existingProject&&<><a href={'/app/projects/'+existingProject}>Review existing private project</a><button type="button" className="ws-secondary" disabled={saving} onClick={()=>{clearUncertain();setCustomSlug(true);setError('Choose a different unique private slug before saving.');}}>Edit a different slug</button></>}</div>}
+          {existingProject&&<><a href={'/app/projects/'+existingProject}>Review existing private project</a><button type="button" className="ws-secondary" disabled={saving} onClick={()=>{clearUncertain();setDraft(old=>({...old,slug:''}));setCustomSlug(true);setError('Choose a different unique private slug before saving.');}}>Edit a different slug</button></>}</div>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>Cancel</button>
