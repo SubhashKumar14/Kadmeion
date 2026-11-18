@@ -554,6 +554,95 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.match(await canonicalResponse.text(), /content="index,follow"/);
     assert.equal((await publicHostRead()).statusCode, 404);
     assert.equal((await fetch(canonical + '/assets/secret.png')).status, 404);
+    // C13 must be composed with the registered analytics migration and the real
+    // C11 authoritative publication above. Never infer events from fixture counts.
+    await t.test('C13 real consented canonical collection, 7/30-day read, retention and late receipt fence',async()=>{
+      const ownerRpc=(name,body={})=>api('/rest/v1/rpc/'+name,{method:'POST',jwt:owner.jwt,body});
+      const serviceRpc=(name,body)=>api('/rest/v1/rpc/'+name,{method:'POST',jwt:cfg.service,key:cfg.service,body});
+      const state=()=>ownerRpc('read_owner_analytics_state',{p_portfolio_id:portfolioId});
+      const change=(action,version,op=randomUUID())=>ownerRpc('change_owner_analytics',{
+        p_portfolio_id:portfolioId,p_action:action,p_expected_version:version,
+        p_operation_id:op,p_policy_version:1
+      });
+      const canonicalReceipt=()=>serviceRpc('service_read_public_portfolio_with_analytics',{p_handle:handle,p_slug:slug});
+      const query=(window)=>ownerRpc('read_owner_analytics',{p_portfolio_ids:[portfolioId],p_window_days:window});
+      const fromReceipt=(r,bucket='SEARCH')=>({
+        p_portfolio_id:r.portfolioId,p_intent_id:r.intentId,p_release_generation:r.releaseGeneration,
+        p_stage_generation:r.stageGeneration,p_delivery_epoch:r.deliveryEpoch,p_html_sha256:r.htmlSha256,
+        p_consent_version:r.consentVersion,p_bucket:bucket
+      });
+      const actual=await import('../../api/portfolio-analytics.mjs');
+      const initial=ok(await state(),'Read physical default analytics consent');
+      assert.equal(initial.enabled,false);assert.equal(initial.version,0);assert.equal(initial.eligible,true);
+      const before=ok(await canonicalReceipt(),'Canonical trusted delivery before consent');
+      assert.equal(before.analytics,null);assert.equal(before.release.indexable,true);
+      const authority=ok(await serviceRpc('service_read_current_public_delivery_receipt',{p_portfolio_id:portfolioId,p_intent_id:publicConsent.intentId}),'Read C11 authoritative verified receipt');
+      const hypothetical={portfolioId,intentId:publicConsent.intentId,releaseGeneration:authority.releaseGeneration,
+        stageGeneration:authority.stageGeneration,deliveryEpoch:authority.deliveryEpoch,
+        htmlSha256:authority.storedHtmlSha256,consentVersion:1};
+      const collectRaw=(r,bucket)=>serviceRpc('collect_portfolio_analytics_view',fromReceipt(r,bucket));
+      assert.equal(ok(await collectRaw(hypothetical),'Attempt collection before consent').status,'IGNORED');
+      assert.ok(!(await api('/rest/v1/rpc/read_owner_analytics_state',{
+        method:'POST',jwt:outsider.jwt,body:{p_portfolio_id:portfolioId}
+      })).ok,'Foreign owner cannot read analytics state');
+      assert.ok(!(await api('/rest/v1/rpc/collect_portfolio_analytics_view',{
+        method:'POST',jwt:owner.jwt,body:fromReceipt(hypothetical)
+      })).ok,'Owner cannot forge collector receipt');
+      const enableOp=randomUUID();
+      const enabled=ok(await change('ENABLE',0,enableOp),'Actual owner opts in');
+      assert.equal(enabled.status,'APPLIED');assert.equal(enabled.enabled,true);assert.equal(enabled.version,1);
+      assert.equal(ok(await change('ENABLE',0,enableOp),'Identical replay').status,'REPLAYED');
+      const live=ok(await canonicalReceipt(),'Read exact trusted canonical analytics receipt').analytics;
+      assert.equal(live.consentVersion,enabled.version);assert.equal(live.deliveryEpoch,authority.deliveryEpoch);
+      assert.equal(live.htmlSha256,authority.storedHtmlSha256);
+      const collect=actual.createLocalAnalyticsRpcCollector({
+        localIntegration:true,endpoint:cfg.origin,serviceRoleKey:cfg.service
+      });
+      const context=(receipt,headers={},method='GET')=>({
+        canonicalIngressVerified:true,localIntegration:true,enabled:true,renderedSuccessfully:true,
+        method,receipt,headers,canonicalOrigin:deliveryOrigin,frozenHtmlSha256:receipt.htmlSha256
+      });
+      assert.deepEqual(await actual.collectEligiblePublicView(context(live,{},'HEAD'),{collect}),{status:'IGNORED'});
+      assert.deepEqual(await actual.collectEligiblePublicView(context(live,{'sec-gpc':'1'}),{collect}),{status:'IGNORED'});
+      assert.deepEqual(await actual.collectEligiblePublicView(context(live,{'user-agent':'headless crawler'}),{collect}),{status:'IGNORED'});
+      assert.deepEqual(await actual.collectEligiblePublicView({...context(live),canonicalIngressVerified:false},{collect}),{status:'IGNORED'});
+      assert.deepEqual(await actual.collectEligiblePublicView(context(live,{referer:'https://www.google.com/path?private=never-retain'}),{collect}),{status:'COUNTED'});
+      assert.equal(ok(await collectRaw(live,'DIRECT_OR_UNKNOWN'),'Real second durable count').status,'COUNTED');
+      for(const window of [7,30]){
+        const data=ok(await query(window),'Read actual owner aggregate window');
+        assert.equal(data.portfolios.length,1);
+        assert.equal(data.portfolios[0].days.length,window);
+        assert.equal(data.portfolios[0].days.reduce((n,d)=>n+(d.views??0),0),2);
+        const populated=data.portfolios[0].days.find(d=>d.views===2);
+        assert.ok(populated);assert.equal(populated.buckets.SEARCH,1);
+        assert.equal(populated.buckets.DIRECT_OR_UNKNOWN,1);
+      }
+      const annex=ok(await ownerRpc('owner_export_portfolio_analytics_annex'),'Actual owner analytics export annex');
+      assert.equal(annex.ownerUserId,owner.id);
+      assert.equal(annex.aggregates.reduce((n,row)=>n+row.views,0),2);
+      assert.doesNotMatch(JSON.stringify(annex),/private=never-retain|google\.com/);
+      // Deliberately insert one old disposable row through the test database,
+      // rather than falsifying a client clock or waiting thirty days.
+      dbQuery("insert into kadmeion_private.aggregate_daily(portfolio_id,utc_day,referrer_bucket,views) values (:'pid'::uuid,(clock_timestamp() at time zone 'UTC')::date-31,'INTERNAL',1);",{vars:{pid:portfolioId}});
+      assert.equal(ok(await collectRaw(live,'INTERNAL'),'Overdue retention blocks collection').status,'IGNORED');
+      const purged=ok(await serviceRpc('service_purge_expired_portfolio_analytics',{p_limit:1000}),'Run real bounded retention purge');
+      assert.ok(purged.aggregateRowsDeleted>=1);
+      assert.equal(dbQuery("select count(*) from kadmeion_private.aggregate_daily where portfolio_id=:'pid'::uuid and utc_day<(clock_timestamp() at time zone 'UTC')::date-29;",{vars:{pid:portfolioId}}),'0');
+      const cleared=ok(await change('CLEAR',enabled.version),'Clear analytics while keeping consent');
+      assert.equal(cleared.enabled,true);assert.equal(cleared.version,enabled.version+1);
+      assert.equal(dbQuery("select count(*) from kadmeion_private.aggregate_daily where portfolio_id=:'pid'::uuid;",{vars:{pid:portfolioId}}),'0');
+      assert.equal(ok(await collectRaw(live,'SEARCH'),'Old consent receipt after clear').status,'IGNORED');
+      const fresh=ok(await canonicalReceipt(),'Read renewed consent receipt after clear').analytics;
+      assert.equal(fresh.consentVersion,cleared.version);
+      assert.equal(ok(await collectRaw(fresh,'SOCIAL'),'Count with fresh consent receipt').status,'COUNTED');
+      const disabled=ok(await change('DISABLE',cleared.version),'Disable consent and delete aggregates');
+      assert.equal(disabled.enabled,false);assert.equal(disabled.version,cleared.version+1);
+      assert.equal(ok(await canonicalReceipt(),'Canonical after disable').analytics,null);
+      assert.equal(ok(await collectRaw(fresh,'SOCIAL'),'Late disabled receipt').status,'IGNORED');
+      assert.equal(dbQuery("select count(*) from kadmeion_private.aggregate_daily where portfolio_id=:'pid'::uuid;",{vars:{pid:portfolioId}}),'0');
+      assert.ok(!(await query(7)).ok,'Disabled owner analytics may not return an enabled window');
+      assert.equal(ok(await ownerRpc('owner_export_portfolio_analytics_annex'),'Export after disable').aggregates.length,0);
+    });
     const updateSnapshot=structuredClone(snapshot);
     updateSnapshot.slots.hero.content.title='Replacement verified content';
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');
