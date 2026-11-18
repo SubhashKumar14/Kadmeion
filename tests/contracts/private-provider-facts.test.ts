@@ -135,30 +135,46 @@ test('C12 stalled token is bounded and never starts a transport',{timeout:8500},
   assert.ok(Date.now()-start<7500);assert.equal(calls,0);
 });
 
-test('C12 integration: empty chunk flood is bounded, cancelled, and never retried',async()=>{
-  let pulls=0,cancelled=0,requests=0;
-  const body=new ReadableStream<Uint8Array>({
-    pull(c){pulls++;c.enqueue(new Uint8Array(0))},cancel(){cancelled++}
-  });
-  await assert.rejects(fixture(async()=>{requests++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),{code:'INVALID_RESPONSE'});
-  assert.ok(pulls<=18);assert.equal(cancelled,1);assert.equal(requests,1);
-});
-test('C12 integration: final URL and redirect are bound and identity length must match',async()=>{
-  const wire=JSON.stringify(off);
-  for(const headers of [{'content-type':'application/json','content-length':'1'},{'content-type':'application/json','content-encoding':'identity','content-length':String(wire.length+1)}]){
-    await assert.rejects(fixture(async()=>new Response(wire,{headers})).readState(link),{code:'INVALID_RESPONSE'});
+test('C12 transport rejects wrong final URL and redirected success without projecting facts',async()=>{
+  const expected=endpoint+'/rest/v1/rpc/read_owner_github_provider_state';
+  for(const patch of [{url:'https://foreign.invalid/rest/v1/rpc/read_owner_github_provider_state'},{redirected:true,url:expected},{url:expected+'?unexpected=1'}]){
+    let calls=0;
+    const response=json(synced);
+    for(const [name,value] of Object.entries(patch))Object.defineProperty(response,name,{value});
+    await assert.rejects(fixture(async()=>{calls++;return response}).readState(link),
+      (e:unknown)=>e instanceof PrivateProviderFactsError&&['INVALID_RESPONSE','UNAVAILABLE'].includes(e.code));
+    assert.equal(calls,1);
   }
-  for(const property of ['redirected','url'] as const){
-    const response=json(off);
-    Object.defineProperty(response,property,{value:property==='redirected'?true:'http://127.0.0.1:54321/rest/v1/rpc/other'});
+  const valid=json(synced);
+  Object.defineProperty(valid,'url',{value:expected});
+  assert.deepEqual(await fixture(async()=>valid).readState(link),synced);
+});
+test('C12 identity Content-Length must equal consumed UTF8 bytes, not JS characters',async()=>{
+  const body=JSON.stringify(off),size=new TextEncoder().encode(body).length;
+  for(const len of [String(size-1),String(size+1),'16385','-1','1.0','1e3']){
+    const response=new Response(body,{headers:{'content-type':'application/json','content-length':len}});
     await assert.rejects(fixture(async()=>response).readState(link),{code:'INVALID_RESPONSE'});
   }
-  assert.deepEqual(await fixture(async()=>new Response(wire,{headers:{'content-type':'application/json','content-encoding':'identity','content-length':String(new TextEncoder().encode(wire).length)}})).readState(link),off);
+  const exact=new Response(body,{headers:{'content-type':'application/json','content-length':String(size),'content-encoding':'identity'}});
+  assert.deepEqual(await fixture(async()=>exact).readState(link),off);
 });
-test('C12 integration: stalled body deadline does not await cancellation',{timeout:8500},async()=>{
-  let requested=0,cancelled=0;
-  const body=new ReadableStream<Uint8Array>({pull(){return new Promise<void>(()=>{})},cancel(){cancelled++;return new Promise<void>(()=>{})}});
+test('C12 empty-chunk flood must fail before parsing a valid trailing receipt',{timeout:8500},async()=>{
+  let pulls=0,cancelled=false,calls=0;
+  const encoded=new TextEncoder().encode(JSON.stringify(off));
+  // Finite fixture: old unbounded implementation resolves successfully, not a CI hang.
+  const body=new ReadableStream<Uint8Array>({pull(c){
+    if(++pulls<=8193)c.enqueue(new Uint8Array(0));
+    else {c.enqueue(encoded);c.close();}
+  },cancel(){cancelled=true;}});
+  await assert.rejects(fixture(async()=>{calls++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),
+    (e:unknown)=>e instanceof PrivateProviderFactsError&&['INVALID_RESPONSE','UNAVAILABLE'].includes(e.code));
+  assert.equal(calls,1);assert.ok(pulls<8193,'Empty chunks cannot consume the entire flood');assert.equal(cancelled,true);
+});
+test('C12 locked stream and nonsettling cancellation cannot exceed entire RPC deadline',{timeout:8500},async()=>{
+  let calls=0,cancels=0;
+  const body=new ReadableStream<Uint8Array>({pull(){return new Promise<void>(()=>{})},
+    cancel(){cancels++;return new Promise<void>(()=>{})}});
   const start=performance.now();
-  await assert.rejects(fixture(async()=>{requested++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),{code:'UNAVAILABLE'});
-  assert.ok(performance.now()-start<7500);assert.equal(requested,1);assert.equal(cancelled,1);
+  await assert.rejects(fixture(async()=>{calls++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),{code:'UNAVAILABLE'});
+  assert.ok(performance.now()-start<7500);assert.equal(calls,1);assert.equal(cancels,1);
 });

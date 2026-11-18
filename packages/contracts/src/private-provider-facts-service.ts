@@ -74,42 +74,39 @@ export class SupabasePrivateProviderFactsService {
   private current(){let ok=false;try{ok=this.guard()===true}catch{}if(this.retired||!ok){this.retired=true;fail('AUTH_EXPIRED')}}
   private async request(path:string,body:Record<string,unknown>):Promise<unknown>{
     this.current();const serialized=JSON.stringify(body);if(new TextEncoder().encode(serialized).length>1024)fail('LIMIT');
-    const target=this.origin+path,timeout=path==='/functions/v1/sync-provider-facts'?15000:5000;
-    const deadline=performance.now()+timeout;
-    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
-    const expired=()=>controller.signal.aborted||performance.now()>=deadline;
-    const cancel=(body:{cancel:()=>Promise<void>}|null|undefined)=>{try{void body?.cancel().catch(()=>{})}catch{}};
-    const closeReader=()=>{const active=reader;reader=undefined;if(active){cancel(active);try{active.releaseLock()}catch{}}};
-    const check=()=>{if(expired())fail('UNAVAILABLE');this.current()};
+    const url=this.origin+path,timeout=path==='/functions/v1/sync-provider-facts'?15000:5000;
+    const deadline=performance.now()+timeout,controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+    let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+    const cancelBody=(r:Response)=>{try{void r.body?.cancel().catch(()=>{})}catch{}};
+    const cancelReader=()=>{const held=reader;reader=undefined;if(held){try{void held.cancel().catch(()=>{})}catch{}try{held.releaseLock()}catch{}}};
+    const check=()=>{this.current();if(controller.signal.aborted||performance.now()>=deadline)fail('UNAVAILABLE')};
     const timed=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new PrivateProviderFactsError('UNAVAILABLE'))},timeout)});
     const work=async()=>{
       let jwt:string|null;try{jwt=await this.token()}catch{return fail('UNAVAILABLE')}
       check();if(typeof jwt!=='string'||!jwt||jwt.length>8192||/\s/.test(jwt))return fail('AUTH_EXPIRED');
-      let r:Response;try{r=await this.http(target,{method:'POST',headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json',Accept:'application/json'},body:serialized,cache:'no-store',credentials:'omit',redirect:'error',signal:controller.signal})}catch{return fail('UNAVAILABLE')}
-      try{check()}catch(e){cancel(r.body);throw e}
-      // Empty URL is the native synthetic Response value for this injected-only adapter.
-      if(r.redirected||(r.url!==''&&r.url!==target)){cancel(r.body);return fail('INVALID_RESPONSE')}
-      if(!r.ok){cancel(r.body);if(r.status===401)this.retired=true;return fail(({401:'AUTH_EXPIRED',403:'FORBIDDEN',409:'CONFLICT',413:'LIMIT',429:'RATE_LIMITED'} as Record<number,ProviderErrorCode>)[r.status]??'UNAVAILABLE')}
+      let r:Response;try{r=await this.http(url,{method:'POST',headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json',Accept:'application/json'},body:serialized,cache:'no-store',credentials:'omit',redirect:'error',signal:controller.signal})}catch{return fail('UNAVAILABLE')}
+      if(!(r instanceof Response))return fail('INVALID_RESPONSE');
+      try{check()}catch(e){cancelBody(r);throw e}
+      // Constructed fixture Responses have no URL (type default). Real responses must match the exact request.
+      if(r.redirected||(r.url!==url&&!(r.url===''&&r.type==='default'))){cancelBody(r);return fail('INVALID_RESPONSE')}
+      if(!r.ok){cancelBody(r);if(r.status===401)this.retired=true;return fail(({401:'AUTH_EXPIRED',403:'FORBIDDEN',409:'CONFLICT',413:'LIMIT',429:'RATE_LIMITED'} as Record<number,ProviderErrorCode>)[r.status]??'UNAVAILABLE')}
       const len=r.headers.get('content-length'),encoding=r.headers.get('content-encoding');
-      if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(r.headers.get('content-type')??'')||len!==null&&(!/^\d+$/.test(len)||!Number.isSafeInteger(Number(len))||Number(len)>LIMIT)||!r.body){cancel(r.body);return fail('INVALID_RESPONSE')}
-      try{reader=r.body.getReader()}catch{return fail('UNAVAILABLE')}
-      const bytes=new Uint8Array(LIMIT);let size=0,chunks=0,empty=0;
-      try{
-        for(;;){
-          check();
-          let part:ReadableStreamReadResult<Uint8Array>;try{part=await reader.read()}catch{return fail('UNAVAILABLE')}
-          check();if(part.done)break;
-          if(!(part.value instanceof Uint8Array)||++chunks>16384||size+part.value.byteLength>LIMIT)return fail('INVALID_RESPONSE');
-          if(part.value.byteLength===0){if(++empty>=16)return fail('INVALID_RESPONSE');continue}
-          empty=0;bytes.set(part.value,size);size+=part.value.byteLength;
-        }
-        if(len!==null&&(!encoding||encoding.trim().toLowerCase()==='identity')&&Number(len)!==size)return fail('INVALID_RESPONSE');
+      if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(r.headers.get('content-type')??'')||len!==null&&(!/^(?:0|[1-9]\d*)$/.test(len)||Number(len)>LIMIT)||!r.body){cancelBody(r);return fail('INVALID_RESPONSE')}
+      const identity=encoding===null||encoding.trim().toLowerCase()==='identity';
+      const bytes=new Uint8Array(LIMIT);let size=0;
+      let held:ReadableStreamDefaultReader<Uint8Array>;try{held=r.body.getReader()}catch{cancelBody(r);return fail('INVALID_RESPONSE')}
+      reader=held;
+      try{for(;;){check();let part:ReadableStreamReadResult<Uint8Array>;try{part=await held.read()}catch{return fail('UNAVAILABLE')}check();if(part.done)break;
+        // Each successful iteration consumes at least one byte; fixed buffer bounds allocations and iteration count.
+        if(!(part.value instanceof Uint8Array)||part.value.length===0||part.value.length>LIMIT-size)return fail('INVALID_RESPONSE');
+        bytes.set(part.value,size);size+=part.value.length;
+      }
+        if(identity&&len!==null&&size!==Number(len))return fail('INVALID_RESPONSE');
         let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size))}catch{return fail('INVALID_RESPONSE')}
-        const result=parse(text);check();return result;
-      }finally{closeReader()}
+        check();return parse(text);
+      }finally{cancelReader()}
     };
-    try{const result=await Promise.race([work(),timed]);check();return result}
-    finally{clearTimeout(timer);controller.abort();closeReader()}
+    try{const result=await Promise.race([work(),timed]);check();return result}finally{clearTimeout(timer);controller.abort();cancelReader()}
   }
   async readState(linkId:string):Promise<ProviderState>{if(!uuid(linkId))return fail('INVALID');return parseProviderState(await this.request('/rest/v1/rpc/read_owner_github_provider_state',{p_link_id:linkId}),this.owner,linkId)}
   private receipt(raw:unknown,input:ProviderOperation,action:'ENABLE'|'DISABLE'|'CONFIRM'|'LOOKUP'|'SYNC'):ProviderReceipt{
