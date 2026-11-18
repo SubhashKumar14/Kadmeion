@@ -2374,7 +2374,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         </div>
         <p className="ws-preview-caution" role="status">{view==='visitor'
           ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
-          : 'Private author preview of the saved revision. Verified owner-private images may be shown; empty slots may be indicated. No draft is published from this page.'}</p>
+          : 'Private author preview. Showing the saved revision. Verified owner-private images may be shown; empty slots may be indicated. No draft is published from this page.'}</p>
       </div>
       <aside className="ws-preview-checklist" aria-label="Private release checklist">
         <p className="ws-kicker">PREVIEW CHECKLIST</p>
