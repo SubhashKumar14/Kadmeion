@@ -236,7 +236,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   },[port,id,mode,frozen,pinReadRetry]);
 
   async function downloadStaticPreview(){
-    if (busy || !frozen || result?.status!=='PREVIEW_ONLY') return;
+    if (busy || !frozen || historySelection!==null || result?.status!=='PREVIEW_ONLY' || !result.previewHtml) return;
+    const reviewedHtml=result.previewHtml;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
     setBusy(true);setError('');setNotice('');setStaticArchiveSha(null);
@@ -246,7 +247,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       const {data}=await port.loadOwnerFrozenRelease(frozen.requestId);
       if (!current()) return;
       if (frozen.portfolioId!==id||!matchesFrozenPin(data,frozen)) throw new Error('Invalid frozen revision receipt.');
-      const archive=await exportStandaloneStaticPreview({...data,plan:buildPlan(data.snapshot)});
+      const archive=await exportStandaloneStaticPreview({...data,plan:buildPlan(data.snapshot)},reviewedHtml);
       if (!current()) return;
       downloadPrivateFile('kadmeion-static-preview-revision-'+data.loadedRevision+'.zip',archive.zip,'application/zip');
       setStaticArchiveSha({requestId:frozen.requestId,sha256:archive.archiveSha256,htmlSha256:archive.htmlSha256});
