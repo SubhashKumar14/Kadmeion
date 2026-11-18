@@ -157,12 +157,14 @@ test('real owner onboarding and project revision are private across browser sess
     await page.goto(target);
     const expected=page.getByRole('heading',{name:heading,level:1});
     const locked=page.getByRole('heading',{name:'Sign in required.',level:1});
+    const unavailable=page.getByRole('heading',{name:'Owner verification unavailable.',level:1});
     await expect.poll(async()=>{
       if(await expected.isVisible())return 'VERIFIED';
       if(await locked.isVisible())return 'LOCKED';
+      if(await unavailable.isVisible())return 'UNAVAILABLE';
       return 'CHECKING';
     },{timeout:12_000}).not.toBe('CHECKING');
-    if(await locked.isVisible()){
+    if(await locked.isVisible()||await unavailable.isVisible()){
       await expect(page.locator('.ws-shell')).toHaveCount(0);
       const retry=page.getByRole('button',{name:'Retry verification'});
       await expect(retry).toBeVisible();
@@ -2999,7 +3001,9 @@ test('B16 WF-043/047 Settings fail-closed gate retries actual session before pri
     }finally{await response.dispose();}
   });
   await page.goto('/app/settings');
-  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('no private records are shown');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toHaveCount(0);
   await expect(page.locator('.ws-shell')).toHaveCount(0);
   await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
   expect(denials).toBeGreaterThan(0);
@@ -3149,4 +3153,42 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
     const resolved=resolveScopedTheme(snapshot,{mode:'light',sectionId:'arc-hero',slotKey:'arc-hero-title',widthPx});
     expect(resolved.status).toBe('resolved');expect(resolved.tokens.text).toBe(text);
   }
+});
+
+test('B16 WF-044/048 real owner verification distinguishes transport outage from session denial',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase and S14 truthful verification gate.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 transport versus denial');
+  await signIn(page,owner);
+  let mode:'transport'|'real'|'deny'='transport',privateWhileClosed=0,denials=0;
+  page.on('request',request=>{
+    const u=new URL(request.url());
+    if(mode!=='real'&&u.origin===origin&&u.pathname.startsWith('/rest/v1/'))privateWhileClosed++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='deny'){denials++;return route.fulfill({status:401,json:{message:'S6 disposable fixture denial'}});}
+    await route.continue();
+  });
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(privateWhileClosed).toBe(0);
+  mode='real';
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  mode='deny';
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Owner verification unavailable.'})).toHaveCount(0);
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  expect(denials).toBeGreaterThan(0);expect(privateWhileClosed).toBe(0);
+  mode='real';
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await signIn(page,owner);
+  await page.goto('/app/settings/security');
+  await expect(page.getByRole('heading',{name:'Account security'})).toBeVisible();
 });
