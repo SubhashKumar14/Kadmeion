@@ -2078,6 +2078,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** Private owner service factory only; no collector activation or schema assumption. */
+  async ownerAnalytics(){
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const token=this.ownerEpochToken(userId,epoch);
+      const {SupabasePrivateAnalyticsService}=await import('../../../packages/contracts/src/private-analytics-service.ts');
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private analytics.');
+      const service=new SupabasePrivateAnalyticsService(this.origin,this.publishableKey,userId,token,isCurrentOwner,this.fetcher);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private analytics.');
+      return {service,ownerId:userId,adapterEpoch:epoch,isCurrentOwner};
+    });
+  }
+
   async ownerSettings() {
     return this.outcome(async () => {
       const {userId,epoch} = await this.ownerSession();
@@ -2227,13 +2242,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Bounded initial owner-private library. 100 is a page size, not a total. */
-  async listOwnerProjects():Promise<AuthOutcome<OwnerProject[]>> {
+  async listOwnerProjects(expectedEpoch = this.getOwnerSessionEpoch()):Promise<AuthOutcome<OwnerProject[]>> {
     return this.outcome(async()=>{
-      const {session,userId}=await this.ownerSession();
+      if(this.getOwnerSessionEpoch()!==expectedEpoch)throw new Error('Owner session changed before project loading.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(epoch!==expectedEpoch||this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))
+        throw new Error('Owner session changed before project loading.');
       const result=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS+
         '&owner_user_id=eq.'+encodeURIComponent(userId)+
         '&trashed_at=is.null&order=updated_at.desc&limit=100',session.access_token);
-      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project loading.');
+      if (this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))throw new Error('Owner session changed during project loading.');
       if (!Array.isArray(result)||result.length>100)throw new Error('Invalid owner project list response.');
       const items=result.map(row=>this.parsePrivateProject(row,userId));
       if (new Set(items.map(item=>item.id)).size!==items.length)
@@ -2242,14 +2260,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  async readOwnerProject(projectId: string): Promise<AuthOutcome<OwnerProject>> {
+  async readOwnerProject(projectId: string, expectedEpoch = this.getOwnerSessionEpoch()): Promise<AuthOutcome<OwnerProject>> {
     return this.outcome(async () => {
       if (!PROJECT_ID_PATTERN.test(projectId)) throw new Error('Project is unavailable.');
-      const {session, userId} = await this.ownerSession();
+      if (this.getOwnerSessionEpoch() !== expectedEpoch) throw new Error('Owner session changed before the private request.');
+      const {session, userId, epoch} = await this.ownerSession();
+      if (epoch !== expectedEpoch || this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session)) throw new Error('Owner session changed before the private request.');
       const rows = await this.ownerRest('projects?select=' + OWNER_PROJECT_FIELDS +
         '&id=eq.' + projectId + '&owner_user_id=eq.' + encodeURIComponent(userId) +
         '&trashed_at=is.null&limit=1', session.access_token);
-      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
+      if (this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
         throw new Error('Project is unavailable.');
       const project = this.parsePrivateProject(rows[0], userId);
       if (project.id !== projectId.toLowerCase()) throw new Error('Project is unavailable.');
@@ -2288,19 +2308,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  async saveOwnerProject(projectId: string, revision: number, input: PrivateProjectDraft):
+  async saveOwnerProject(projectId: string, revision: number, input: PrivateProjectDraft, expectedEpoch = this.getOwnerSessionEpoch()):
     Promise<AuthOutcome<Pick<OwnerProject, 'id' | 'revision' | 'updatedAt'> & PrivateProjectDraft>> {
     return this.outcome(async () => {
       if (!PROJECT_ID_PATTERN.test(projectId) || !Number.isSafeInteger(revision) || revision < 0)
         throw new Error('Invalid project revision.');
       const draft = normalizeProjectDraft(input);
-      const {session} = await this.ownerSession();
+      if (this.getOwnerSessionEpoch() !== expectedEpoch) throw new Error('Owner session changed before the private request.');
+      const {session, epoch} = await this.ownerSession();
+      if (epoch !== expectedEpoch || this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session)) throw new Error('Owner session changed before the private request.');
       const receipt = await this.ownerRest('rpc/update_private_project', session.access_token, 'POST', {
         p_project_id: projectId, p_base_revision: revision, p_title: draft.title,
         p_summary: draft.summary, p_description: draft.description,
         p_repository_url: draft.repositoryUrl, p_live_url: draft.liveUrl
       });
-      if (!this.isCurrentSession(session) || !receipt || typeof receipt !== 'object' ||
+      if (this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session) || !receipt || typeof receipt !== 'object' ||
           !('id' in receipt) || receipt.id !== projectId.toLowerCase() ||
           !('revision' in receipt) || !Number.isSafeInteger(receipt.revision) || receipt.revision !== revision + 1 ||
           !('updated_at' in receipt) || typeof receipt.updated_at !== 'string' ||
@@ -2311,7 +2333,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Creates an owner-private draft, never a shared or published project. */
-  async createPrivateProject(input:NewPrivateProject):Promise<AuthOutcome<OwnerProject>> {
+  async createPrivateProject(input:NewPrivateProject, expectedEpoch = this.getOwnerSessionEpoch()):Promise<AuthOutcome<OwnerProject>> {
     return this.outcome(async()=>{
       if (!input || typeof input.title!=='string' ||
         typeof input.slug!=='string' || typeof input.summary!=='string')
@@ -2332,12 +2354,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         } catch {throw new Error('A project link must be a valid HTTPS URL.');}
       }
       const repositoryUrl=urlOption(input.repositoryUrl),liveUrl=urlOption(input.liveUrl);
-      const {session,userId}=await this.ownerSession();
+      if(this.getOwnerSessionEpoch()!==expectedEpoch)throw new Error('Owner session changed before project creation.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(epoch!==expectedEpoch||this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))
+        throw new Error('Owner session changed before project creation.');
       const data=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS,session.access_token,'POST',{
         owner_user_id:userId,title,slug,summary,description:'',
         repository_url:repositoryUrl,live_url:liveUrl
       },true);
-      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
+      if (this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
       if(!Array.isArray(data)||data.length!==1)
         throw new Error('The private insert was not confirmed.');
       const created=this.parsePrivateProject(data[0],userId);

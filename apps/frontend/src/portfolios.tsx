@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { IndexedDbEditorDraftStore, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
+import { IndexedDbEditorDraftStore, MAX_RECOVERY_BYTES, recoverEditorHistory, validateRecoveryPayload, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
 import { JournaledEditorFolderStore, FolderCommitError, type FolderDirectory } from '../../../packages/storage-adapters/src/journaled-editor-folder.ts';
 import { exportPortableSnapshot, importPortableSnapshot } from '../../../packages/storage-adapters/src/portable-editor-snapshot.ts';
 import { unappliedSourceBufferCount } from './behavior.ts';
@@ -500,6 +500,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const sourceDirty=!!head&&unappliedSourceBufferCount(sourceDrafts,head.snapshot.files)>0;
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
   const [recoveryNotice,setRecoveryNotice]=useState('');
+  const [savedHistoryNotice,setSavedHistoryNotice]=useState('');
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
@@ -525,22 +526,37 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryBusy,setRecoveryBusy]=useState(false);
   const recoveryLock=useRef(false);
   const recoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
+  const importedRecoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
   const [sourceReset,setSourceReset]=useState(0);
   useEffect(() => {
-    const key = id + ':' + attempt;
-    if (!allowed || loaded.current === key) return;
+    if(!allowed||!verifiedOwner)return;
+    const key=verifiedOwner.id+':'+verifiedOwner.epoch+':'+id+':'+attempt;
+    if(loaded.current===key)return;
     const epoch=port.reconcileOwnerSessionEpoch();
-    if(verifiedOwner&&verifiedOwner.epoch!==epoch)return;
+    if(verifiedOwner.epoch!==epoch)return;
     let active = true;
     const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
-    void port.readOwnerPortfolio(id).then(result => {
+    void port.readOwnerPortfolio(id).then(async result => {
       if(!current())return;
       if(!result.data||result.data.id!==id){
         setError(result.error?.message??'Portfolio unavailable.');return;
       }
       const snapshot=result.data.snapshot;
-      const nextHead=snapshot?createEditorHead(snapshot):null;
+      let nextHead=snapshot?createEditorHead(snapshot):null;
+      let historyNotice='';
+      if(snapshot){
+        try{
+          const cached=await new IndexedDbEditorDraftStore().loadCommittedHistory(
+            verifiedOwner.id,id,result.data.revision,snapshot);
+          if(!current())return;
+          if(cached){nextHead=cached;historyNotice='Saved Undo/Redo history restored from this browser.';}
+        }catch{
+          if(!current())return;
+          historyNotice='Saved cloud draft loaded; browser Undo/Redo history could not be read.';
+        }
+      }
       if(!current())return;
+      setSavedHistoryNotice(historyNotice);
       loaded.current = key;
       setRecord(result.data);
       setHead(nextHead);
@@ -570,18 +586,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }, [port,id,attempt,allowed,verifiedOwner?.id,verifiedOwner?.epoch,initialLink]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
-    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current || lastAppliedHead.current===head) return false;
+    if (!allowed || !verifiedOwner || !head || preview || saving || saveFlight.current || recoveryLock.current || lastAppliedHead.current===head) return false;
     const live=latestRecovery.current;
-    if(!live||live.head!==head||live.id!==id||live.port!==port||
-       (verifiedOwner&&!scopeCurrent(live)))return false;
+    if(!live||live.head!==head||live.id!==id||live.port!==port||!scopeCurrent(live))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
     const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE'||intent.kind==='MOVE_SECTION';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
-    if(layoutMutation||themeMutation||sectionOrderMutation){
+    const addSectionMutation=intent.kind==='ADD_SECTION';
+    if(layoutMutation||themeMutation||sectionOrderMutation||addSectionMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         preview||(layoutMutation?tool!=='Components':themeMutation?tool!=='Theme':!canReorderSection())){
+         preview||(layoutMutation?tool!=='Components':themeMutation?tool!=='Theme':sectionOrderMutation?!canReorderSection():['Source','Assets','History'].includes(tool))){
         setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
       if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
@@ -593,7 +609,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((layoutMutation||themeMutation||historyMutation||sectionOrderMutation) && (pendingFields || sourceDirty))||
+    if (((layoutMutation||themeMutation||historyMutation||sectionOrderMutation||addSectionMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -611,6 +627,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           setError('A verified, current pinned source copy is required before customization.');return false;
         }
         trustedSources={[pin]:canonical};
+      }
+      if(intent.kind==='REUSE_SAVED_COMPONENT'){
+        const version=versions&&Object.hasOwn(versions,intent.componentVersionId)?versions[intent.componentVersionId]:undefined;
+        if(!version||version.id!==intent.componentVersionId||tool!=='My Components'||
+           !draftCurrent(live)||pendingFields||sourceDirty){
+          setError('Reuse requires the current verified private component catalogue and applied buffers.');return false;
+        }
+        // The fetched version is not authority for pristine library bytes.
+        // Supply only the application's immutable canonical pin, allowing the
+        // engine to distinguish byte-identical owned copies from custom code.
+        const canonical=canonicalLibraryComponentSource(version.base_component_pin);
+        if(canonical)trustedSources={[version.base_component_pin]:canonical};
       }
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, trustedSources, versions ?? {});
       if(layoutMutation||historyMutation){
@@ -643,15 +671,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   function restore(snapshot: PortfolioSnapshot): boolean {
-    if (!head || !allowed || saving || saveFlight.current || recoveryLock.current) return false;
+    const view=latestRecovery.current;
+    if (!head || !allowed || !verifiedOwner || preview || tool!=='History' || saving || saveFlight.current || recoveryLock.current ||
+        lastAppliedHead.current===head||!view||view.head!==head||!draftCurrent(view)) return false;
     if (pendingFields || sourceDirty) {
       setError('Apply or discard unapplied content and source buffers before restoring a saved checkpoint.');
       return false;
     }
     try {
       const next = restoreHistoricalSnapshot(head, snapshot, crypto.randomUUID());
+      lastAppliedHead.current=head;
       setHead(next);
-      setSlot('');
+      setSlot(resolveInitialEditorSlot(next.snapshot,null).key);
       setOperation(crypto.randomUUID());
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       // A formerly clean source explorer must not carry an old snapshot's
@@ -667,15 +698,27 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   async function save() {
-    if(!allowed||!record||!head||!operation||saving||saveFlight.current||recoveryLock.current||sourceDirty||pendingFields)return;
+    if(!allowed||!verifiedOwner||!record||!head||!operation||saving||saveFlight.current||recoveryLock.current||sourceDirty||pendingFields)return;
     const view=latestRecovery.current;
-    if(!view||view.record!==record||view.head!==head||(view.owner&&!scopeCurrent(view)))return;
+    if(!view||view.record!==record||view.head!==head||!scopeCurrent(view))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     const currentSave=()=>{
       const current=latestRecovery.current;
       return !!current&&current.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
-        (!view.owner||scopeCurrent(view))&&current.record===record&&current.head===head&&current.operation===operation;
+        scopeCurrent(view)&&current.record===record&&current.head===head&&current.operation===operation;
     };
+    async function persistAcknowledgedHistory(revision:number){
+      if(!currentSave())return;
+      try{
+        const accepted=await new IndexedDbEditorDraftStore().saveCommittedHistory(
+          verifiedOwner!.id,id,revision,head!);
+        if(currentSave())setSavedHistoryNotice(accepted?
+          'Undo/Redo history saved on this browser.':
+          'Cloud draft saved; a different or newer browser history was retained.');
+      }catch{
+        if(currentSave())setSavedHistoryNotice('Cloud draft saved; browser history not confirmed. Export a working recovery copy before leaving.');
+      }
+    }
     saveFlight.current=true;
     setSaving(true);setError('');setNotice('');
     try{
@@ -690,6 +733,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         if(!currentSave())return;
       }
       if(confirmed!==null){
+        await persistAcknowledgedHistory(confirmed);
+        if(!currentSave())return;
         setRecord({...record,revision:confirmed,snapshot:head.snapshot});
         setOperation('');setNotice('Private portfolio draft saved.');return;
       }
@@ -702,6 +747,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         if(!currentSave())return;
         if(fresh.data?.id===id&&fresh.data.revision===record.revision+1&&
            sameDraftSnapshot(fresh.data.snapshot,head.snapshot)){
+          await persistAcknowledgedHistory(fresh.data.revision);
+          if(!currentSave())return;
           setRecord(fresh.data);setOperation('');
           setNotice('Saved private revision verified by readback.');return;
         }
@@ -718,15 +765,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       saveFlight.current=false;
       const current=latestRecovery.current;
       if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
-         (!view.owner||scopeCurrent(view)))setSaving(false);
+         scopeCurrent(view))setSaving(false);
     }
   }
 
   async function initialize() {
     const preset = presets.find(item => item.id === record?.templateId);
-    if(!allowed||!record||record.id!==id||!preset||saving||setupFlight.current||head)return;
+    if(!allowed||!verifiedOwner||!record||record.id!==id||!preset||saving||setupFlight.current||head)return;
     const view=latestRecovery.current;
-    if(!view||view.record!==record||(verifiedOwner&&!scopeCurrent(view)))return;
+    if(!view||view.record!==record||!scopeCurrent(view))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     let pending=setupAttempt.current;
     if(!pending||pending.id!==id||pending.preset!==preset.id||pending.epoch!==epoch){
@@ -736,7 +783,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const current=()=>{
       const live=latestRecovery.current;
       return !!live&&live.port===port&&live.id===id&&live.record===record&&
-        port.reconcileOwnerSessionEpoch()===epoch&&(!view.owner||scopeCurrent(view));
+        port.reconcileOwnerSessionEpoch()===epoch&&scopeCurrent(view);
     };
     setupFlight.current=true;setSaving(true);setError('');
     try{
@@ -856,7 +903,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!canDropCanvasComponent(key))return false;
     const drag=componentDrag.current!;
     componentDrag.current=null;
-    return placeComponent(drag.pin,key);
+    const placed=placeComponent(drag.pin,key);
+    if(placed)setPickedComponent(drag.pin);
+    return placed;
   }
   function canDropCanvasSection(before:string|null):boolean{
     const drag=sectionDrag.current,view=latestRecovery.current;
@@ -889,7 +938,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
   const recoveryRecordId=record?.id;
   useEffect(()=>{
-    setRecoveryCopies(null);setRecoveryNotice('');setRecoveryComparison(null);recoveryAttempt.current=null;
+    setRecoveryCopies(null);setRecoveryNotice('');setRecoveryComparison(null);recoveryAttempt.current=null;importedRecoveryAttempt.current=null;
     const request=++catalogueRequest.current;
     const view=latestRecovery.current;
     if(!view?.owner||!view.record||view.record.id!==id||!scopeCurrent(view))return;
@@ -917,8 +966,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!view.record||!view.head)throw new Error('Working draft unavailable.');
     return {formatVersion:1,cloudBaseRevision:view.record.revision,localRevision:view.head.revision,
       cloudOperationId:view.operation||null,snapshot:view.head.snapshot,fieldDrafts:view.fieldDrafts,
+      ...((view.head.undo.length||view.head.redo.length)?{history:{undo:view.head.undo,redo:view.head.redo}}:{}),
       sourceDrafts:view.sourceDrafts,seoDraft:view.seoDraft};
   }
+  const hasHistory=!!head&&(head.undo.length>0||head.redo.length>0);
+  const canPreserveWorking=!!operation||pendingFields||sourceDirty||hasHistory;
   // A checkpoint is optional and bound to this verified mounted editor only.
   // It never authenticates a new session, replaces another tab, or writes cloud.
   useLayoutEffect(()=>{
@@ -926,7 +978,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     return ()=>{checkpointEnabled.current=false;};
   },[autoRecovery]);
   useEffect(()=>{
-    if(!autoRecovery||!verifiedOwner||!head||!record||!(operation||pendingFields||sourceDirty)||saving||recoveryBusy)return;
+    if(!autoRecovery||!verifiedOwner||!head||!record||!canPreserveWorking||saving||recoveryBusy)return;
     const view=latestRecovery.current;
     if(!view||!scopeCurrent(view))return;
     const payload=recoveryPayload(view);
@@ -968,7 +1020,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   },[autoRecovery,verifiedOwner?.id,verifiedOwner?.epoch,port,id,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,recoveryBusy,checkpointRetry]);
   function retryCheckpoint(){
     const view=captureRecovery();
-    if(!view||!view.dirty||!checkpointEnabled.current||checkpointFlight.current||recoveryLock.current)return;
+    if(!view||(!view.dirty&&!view.head?.undo.length&&!view.head?.redo.length)||!checkpointEnabled.current||checkpointFlight.current||recoveryLock.current)return;
     const writer=checkpointWriter.current;
     // Only an explicit owner retry may abandon a rejected sequence. Ordinary I/O
     // failures retain the ID and sequence for an idempotent acknowledgement retry.
@@ -985,9 +1037,24 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
     setSourceReset(value=>value+1);setError('');setNotice('');
   }
+  async function forgetSavedHistory(){
+    const view=captureRecovery();
+    if(!view?.record||!view.head||view.dirty||recoveryLock.current)return;
+    if(!window.confirm('Forget the saved Undo/Redo cache on this browser? Your current working stack, browser recovery copies and cloud draft will not be changed.'))return;
+    if(!draftCurrent(view))return;
+    recoveryLock.current=true;setRecoveryBusy(true);
+    try{
+      const removed=await new IndexedDbEditorDraftStore().forgetCommittedHistory(
+        view.owner!.id,view.id,view.record.revision);
+      if(scopeCurrent(view))setSavedHistoryNotice(removed?
+        'Saved history removed from this browser. Current editor history and cloud draft remain unchanged.':
+        'A newer saved history exists in another tab. Nothing was removed.');
+    }catch{if(scopeCurrent(view))setSavedHistoryNotice('Browser history removal was not confirmed.');}
+    finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
   async function preserveRecovery(keepBoth:boolean){
     const view=captureRecovery();
-    if(!view||!view.dirty||recoveryLock.current||!view.record||!view.head)return;
+    if(!view||!view.record||!view.head||recoveryLock.current||(!view.dirty&&(keepBoth||(!view.head.undo.length&&!view.head.redo.length))))return;
     recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
     let acknowledged=false;
     try{
@@ -1082,18 +1149,25 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           'A separate Save is required and will be rejected if the cloud advances again.');
         if(!accepted||!draftCurrent(view)){setRecoveryNotice('Recovery restore cancelled. Both versions remain unchanged.');return;}
       }
-      const next=restoreHistoricalSnapshot(createEditorHead(saved),recovered.snapshot,crypto.randomUUID());
+      // Reopen same-base history losslessly; stale restore is a deliberate new
+      // transaction against current cloud, never resurrect an old replay ID.
+      const recoveredHistory=stale?null:recoverEditorHistory(recovered);
+      const next=recoveredHistory??restoreHistoricalSnapshot(createEditorHead(saved),recovered.snapshot,crypto.randomUUID());
       const issues:Record<string,string>={};
       for(const [key,value] of Object.entries(recovered.fieldDrafts)){
         if(key.endsWith(':url')){const warning=ownerLinkError(value);if(warning)issues[key]=warning;}
       }
       installCloudDraft(fresh.data);
-      setHead(next);setOperation(crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
+      setHead(next);setOperation(sameDraftSnapshot(saved,next.snapshot)?'':crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
       setFieldIssues(issues);setSeoDraft(recovered.seoDraft);setSourceDrafts(recovered.sourceDrafts);
       if(Object.keys(recovered.sourceDrafts).length)setOpenedSource(true);
+      const recoveredEdits=!sameDraftSnapshot(saved,next.snapshot)||Object.keys(recovered.fieldDrafts).length>0||
+        Object.keys(recovered.sourceDrafts).length>0||recovered.seoDraft!==null;
       setRecoveryNotice(action==='restore'?
         'Older recovery copy restored into an unsaved working draft. Both saved versions remain intact; review buffers before an explicit CAS Save.':
-        'Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.');
+        recoveredEdits?'Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.':
+        recoveredHistory?'Recovery copy reopened with its exact local Undo/Redo history. Original copy and cloud revision unchanged.':
+        'Recovery copy opened as a working draft. Original copy and cloud revision unchanged.');
     }catch{
       if(scopeCurrent(view))setRecoveryNotice('Recovery operation not completed. No working or cloud draft was replaced.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
@@ -1111,10 +1185,25 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const response=await view.port.listOwnerAssets();
       if(!draftCurrent(view)||latestRecovery.current?.tool!=='Assets'||latestRecovery.current.preview)return false;
       const asset=response.data?.find(row=>row.id===assetId);
-      if(!asset){setError('Current owner asset registration could not be verified. No slot was changed.');return false;}
+      if(response.error||!asset||!['image/png','image/jpeg','image/webp'].includes(asset.mime)||
+         !Number.isSafeInteger(asset.size)||asset.size<1||asset.size>5*1024*1024){
+        setError('Current owner image registration could not be verified. No slot was changed.');return false;
+      }
+      // Validate physical owner-private bytes through the authenticated port.
+      // This is still a draft reference, never a public asset or a new digest pin.
+      const read=await view.port.readOwnerPrivateAsset(asset.projectId,asset.id,view.owner!.epoch);
+      if(!draftCurrent(view)||latestRecovery.current?.tool!=='Assets'||latestRecovery.current.preview)return false;
+      const data=read.data;
+      if(read.error||!data||data.asset.id!==asset.id||data.asset.projectId!==asset.projectId||
+         data.asset.mime!==asset.mime||data.asset.size!==asset.size||!(data.bytes instanceof Blob)||
+         data.bytes.type!==asset.mime||data.bytes.size!==asset.size||
+         data.integrity.status!=='OWNER_BYTES_VERIFIED'||!/^[a-f0-9]{64}$/.test(data.integrity.computedSha256)||
+         !['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation)||data.publicDeliveryAllowed!==false){
+        setError('Owner-private image bytes could not be verified. Retry from Assets; existing assignment was kept.');return false;
+      }
       recoveryLock.current=false;
       if(!apply({kind:'PLACE_PRIVATE_IMAGE',slotKey:target,assetId:asset.id,altText}))return false;
-      setSlot(target);setNotice('Private image reference applied to working draft. Save draft to persist it. Verified media bytes are still required for release.');
+      setSlot(target);setNotice('Private image reference applied after owner-byte verification. Save draft to persist it; no publication pin or release authority was granted.');
       return true;
     }catch{
       if(scopeCurrent(view))setError('Asset validation failed. No slot was changed.');
@@ -1267,19 +1356,73 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON or editable source ZIP; your draft remains intact.');}
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
-  function exportWorkingRecovery(){
+  function exportWorkingRecovery(includeHistory=true){
     // This exports only bytes currently visible to an already verified,
     // mounted owner. It never loads local copies or bypasses the gate.
     const view=captureRecovery();
-    if(!view||!view.dirty||recoveryLock.current)return;
+    if(!view||(!view.dirty&&!view.head?.undo.length&&!view.head?.redo.length)||recoveryLock.current)return;
     try{
-      const url=URL.createObjectURL(new Blob([JSON.stringify(recoveryPayload(view),null,2)],{type:'application/json'}));
+      const payload=recoveryPayload(view);
+      if(!includeHistory)delete payload.history;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(payload)],{type:'application/json'}));
       const link=document.createElement('a');
       link.href=url;link.download='kadmeion-working-recovery-'+view.id+'.json';
       try{if(!scopeCurrent(view))return;document.body.append(link);link.click();}
       finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
-      setRecoveryNotice('Working recovery export requested. No browser or cloud save is implied. Keep this private file safe.');
+      setRecoveryNotice(includeHistory?'Working recovery export requested. No browser or cloud save is implied. Keep this private file safe.':
+        'Draft and buffer export requested without Undo/Redo history. Your current history is unchanged. Keep this private file safe.');
     }catch{if(scopeCurrent(view))setRecoveryNotice('Working recovery export could not be prepared. Your current edits remain.');}
+  }
+  /** Import a private working-recovery JSON as a separate local copy, never
+   * directly as current working state. Exported v1 files contain no identity
+   * assertion; the selected owner must explicitly review the target. */
+  async function importWorkingRecovery(file:File){
+    const view=captureRecovery();
+    if(!view||!view.record||!view.head||recoveryLock.current)return;
+    if(file.size<1||file.size>MAX_RECOVERY_BYTES){
+      setRecoveryNotice('Choose a working recovery JSON within 8 MiB. No recovery copy was added.');return;
+    }
+    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
+    try{
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!draftCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
+         !sameDraftSnapshot(fresh.data.snapshot,view.record.snapshot)){
+        setRecoveryNotice('Current cloud revision changed or is unavailable. Reload and compare before importing a recovery copy.');return;
+      }
+      const bytes=await file.arrayBuffer();
+      if(!draftCurrent(view))return;
+      if(bytes.byteLength<1||bytes.byteLength>MAX_RECOVERY_BYTES)throw new Error('Invalid recovery byte length.');
+      const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+      const payload=JSON.parse(text) as EditorRecoveryPayload;
+      validateRecoveryPayload(payload);
+      const {changedFiles,changedSlots}=portableDifference(fresh.data.snapshot,payload.snapshot);
+      const buffers=Object.keys(payload.fieldDrafts).length+Object.keys(payload.sourceDrafts).length+(payload.seoDraft?1:0);
+      if(!window.confirm('Import this private working recovery into '+view.record.title+
+        '? The file claims base revision '+payload.cloudBaseRevision+'; current cloud revision '+fresh.data.revision+
+        '. '+changedFiles.length+' different file paths, '+changedSlots.length+' different slots or stashes, '+
+        buffers+' unapplied buffers. Only import a file you recognize as belonging to this project. '+
+        'It will be stored as a separate browser copy, not opened or saved to cloud. No source or media trust is granted.')){
+        setRecoveryNotice('Working recovery import cancelled. Current draft and cloud are unchanged.');return;
+      }
+      if(!draftCurrent(view))return;
+      const signature=JSON.stringify(payload);
+      let attempt=importedRecoveryAttempt.current;
+      if(!attempt||attempt.signature!==signature){
+        attempt={signature,copyId:crypto.randomUUID()};importedRecoveryAttempt.current=attempt;
+      }
+      const store=new IndexedDbEditorDraftStore();
+      const receipt=await store.saveRecoveryCopy(view.owner!.id,view.id,attempt.copyId,payload);
+      if(!scopeCurrent(view))return;
+      if(receipt.copyId!==attempt.copyId||receipt.cloudBaseRevision!==payload.cloudBaseRevision||
+         receipt.checkpointSequence!==undefined)throw new Error('Unconfirmed recovery import receipt.');
+      setRecoveryNotice('Working recovery JSON saved as a separate browser copy. Compare or open it explicitly. Current draft and cloud unchanged.');
+      try{await refreshRecovery(view,store);}
+      catch{if(scopeCurrent(view))setRecoveryNotice('Working recovery import acknowledged; the catalogue refresh failed. Reopen the editor to inspect the copy.');}
+    }catch(cause){
+      if(scopeCurrent(view))setRecoveryNotice(cause instanceof ContractError?cause.message:
+        'Working recovery file rejected or storage not confirmed. Your current draft and original file remain intact.');
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   async function reloadSavedDraft(){
     // Never erase buffers or the current head until the read has succeeded.
@@ -1324,6 +1467,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         checkpointConflict.current=null;setCheckpointState('idle');
       }
       recoveryAttempt.current=null;setRecoveryComparison(null);
+      if(importedRecoveryAttempt.current?.copyId===copyId)importedRecoveryAttempt.current=null;
       if(frozenCheckpoint.current?.id===copyId){frozenCheckpoint.current=null;setCheckpointRetry(n=>n+1);}
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
       await refreshRecovery(view,store);
@@ -1341,15 +1485,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
   },[operation,pendingFields,sourceDirty]);
-  // Additive S7 props: never create a private-byte context for a simulated
-  // visitor, an unverified owner, or a device that cannot author.
-  const canvasOwner=verifiedOwner&&allowed&&!preview&&record?.id===id&&
+  // An author preview is still the private, verified editor. Never provide
+  // this context to standalone/simulated visitor or unverified owner views.
+  const canvasOwner=verifiedOwner&&allowed&&record?.id===id&&
     port.getOwnerSessionEpoch()===verifiedOwner.epoch?
     {port,ownerKey:JSON.stringify([verifiedOwner.id,verifiedOwner.epoch,id])}:undefined;
   const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth,privateMedia:canvasOwner,
-    dropTargets:canvasOwner?{canDropComponent:canDropCanvasComponent,dropComponent:dropCanvasComponent,
+    dropTargets:canvasOwner&&!preview?{canDropComponent:canDropCanvasComponent,dropComponent:dropCanvasComponent,
       canDropSection:canDropCanvasSection,dropSection:dropCanvasSection}:undefined,
-    onAddFirstSection:canvasOwner&&!saving&&!recoveryBusy?()=>{
+    onAddFirstSection:canvasOwner&&!preview&&!saving&&!recoveryBusy?()=>{
       const view=latestRecovery.current;
       if(!view||!draftCurrent(view)||view.preview)return;
       setTool('Content');setSectionPicker(true);
@@ -1398,27 +1542,38 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       onToggle={event=>setRecoveryExpanded(event.currentTarget.open)}>
       <summary>Browser recovery &amp; Keep Both</summary>
       <p>Copies stay on this device, separate from the saved cloud draft. Browser storage can be cleared; export important work. Opening requires a verified owner and fresh cloud read.</p>
+      <p>Confirmed cloud saves also keep a bounded Undo/Redo history on this browser. It is restored only when the exact saved cloud revision and snapshot match, and is not synced to other devices. Unsaved automatic checkpoints remain optional.</p>
+      {savedHistoryNotice&&<p role="status">{savedHistoryNotice}</p>}
+      <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+        onClick={()=>void forgetSavedHistory()}>Forget saved history on this browser</button>
       <label><input type="checkbox" checked={autoRecovery} onChange={event=>{
         checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
         if(!event.target.checked)setCheckpointState('idle');
       }}/> Automatically checkpoint unsaved edits on this browser during this editor session</label>
-      {autoRecovery&&<p role="status">{!(operation||pendingFields||sourceDirty)?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
+      {autoRecovery&&<p role="status">{!canPreserveWorking?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
         checkpointState==='saved'?'Latest captured working edits acknowledged by browser storage only.':
         checkpointState==='failed'?'Browser checkpoint failed or storage is full; your current edits remain.':
         'Automatic browser checkpoints enabled; waiting for unsaved edits.'}
-        {checkpointState==='failed'&&!!(operation||pendingFields||sourceDirty)&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
+        {checkpointState==='failed'&&canPreserveWorking&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
       </p>}
-      <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit, never prune another copy, and are retained until explicitly removed.</p>
+      <p>When enabled, automatic checkpoints also preserve Undo/Redo history after a confirmed cloud Save. Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit and 8 MiB per-copy bound, never prune another copy, and are retained until explicitly removed. Opening a same-base copy restores its acknowledged Undo/Redo history. Restoring an older copy creates one new undoable draft against the current cloud revision; the original history remains in that copy.</p>
       <div className="ws-actions">
-        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!canPreserveWorking}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
           onClick={()=>void preserveRecovery(false)}>Save browser recovery copy</button>
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
           onClick={()=>void preserveRecovery(true)}>Keep Both and load latest cloud draft</button>
-        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!(operation||pendingFields||sourceDirty)}
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!canPreserveWorking}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
-          onClick={exportWorkingRecovery}>Export current working recovery</button>
+          onClick={()=>exportWorkingRecovery()}>Export current working recovery</button>
+        {hasHistory&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>exportWorkingRecovery(false)}>Export draft and buffers without history</button>}
+        <label>Import working recovery JSON
+          <input type="file" accept=".json,application/json" disabled={saving||recoveryBusy}
+            onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(file)void importWorkingRecovery(file);}}/>
+        </label>
       </div>
       {recoveryBusy&&<p>Working with browser recovery storage…</p>}
       {recoveryNotice&&<p role="status">{recoveryNotice}</p>}
@@ -1515,7 +1670,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         onClick={()=>{setFieldDrafts({});setFieldIssues({});setSeoDraft(null);}}>
         Discard all unapplied inspector edits</button>
     </div>}
-    {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
+    {sourceDirty&&<div role="status" className="ws-editor-safety"><span>STALE preview: unapplied owned-source text is not reflected in the last applied draft. Apply, preserve or discard the buffer before leaving or saving. Arbitrary source is not executed in this preview.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
     {!record && !error && <><p role="status">Loading portfolio…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
@@ -1560,10 +1715,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             onDragStart={event=>{
               const view=latestRecovery.current;
               if(!hasTarget||!head||!view||!draftCurrent(view)){event.preventDefault();return;}
+              // Keep layout stable during native drag. Selection/target lists
+              // must not reflow under the pointer before the actual drop.
               componentDrag.current={head,pin:item.id};
               event.dataTransfer.effectAllowed='copy';
               event.dataTransfer.setData('application/x-kadmeion-component','pinned');
-              setPickedComponent(item.id);
             }}
             onDragEnd={()=>{componentDrag.current=null;}}
             onClick={()=>setPickedComponent(item.id)}>
@@ -1611,7 +1767,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <label>Section layout<select value={sectionLayout} onChange={event => setSectionLayout(event.target.value)}>
             {sectionLayouts.map(([pin, label]) => <option key={pin} value={pin}>{label}</option>)}
           </select></label>
-          <button type="button" className="ws-secondary" disabled={saving}
+          <button type="button" className="ws-secondary" disabled={!verifiedOwner||saving||recoveryBusy||pendingFields||sourceDirty}
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
         <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}
@@ -1729,7 +1885,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
         </section>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null}
-          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={!verifiedOwner||saving||recoveryBusy||sourceDirty||pendingFields}
           {...{onReuseTarget:(target:string)=>{
             if(layerGroups.flatMap(group=>group.slots).filter(item=>item.key===target).length===1)setSlot(target);
           }}}/>}
