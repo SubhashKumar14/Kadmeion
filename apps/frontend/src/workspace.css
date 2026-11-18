@@ -1197,6 +1197,25 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   padding:14px 0;border-bottom:1px solid var(--line);font-size:.875rem}
 .ws-release-unrun-checks li>span:last-child{color:var(--body);font-weight:650;white-space:nowrap}
 .ws-release-preflight-gates .ws-release-diagnostics h4{font-size:.97rem}
+
+/* R9: real preflight axe target-size regression (jump and remediation links).
+ * Keep all immutable diagnostics and destinations; make each keyboard/touch
+ * target individually large and wrap long codes without horizontal scrolling. */
+.ws-release-preflight-gates nav[aria-label="Preflight issue navigation"] ul{margin-block:8px 14px;padding-inline-start:22px}
+.ws-release-preflight-gates nav[aria-label="Preflight issue navigation"] li{margin-block:4px;min-width:0}
+.ws-release-preflight-gates :is(nav[aria-label="Preflight issue navigation"],.ws-release-diagnostics) a{
+  display:inline-flex;align-items:center;min-block-size:32px;min-inline-size:24px;
+  max-inline-size:100%;padding:4px 6px;vertical-align:middle;line-height:1.5;
+  overflow-wrap:anywhere;white-space:normal;text-decoration:underline;text-underline-offset:3px;
+  color:var(--blue);border-radius:4px
+}
+.ws-release-preflight-gates :is(nav[aria-label="Preflight issue navigation"],.ws-release-diagnostics) a:focus-visible{
+  outline:3px solid var(--focus);outline-offset:2px
+}
+@media(pointer:coarse){
+  .ws-release-preflight-gates :is(nav[aria-label="Preflight issue navigation"],.ws-release-diagnostics) a{min-block-size:44px}
+}
+
 .ws-release-preflight-gates .ws-private-static-preview{min-height:320px;max-height:72dvh}
 @media(max-width:500px){.ws-release-unrun-checks li{align-items:start;flex-direction:column;gap:5px}}
 
