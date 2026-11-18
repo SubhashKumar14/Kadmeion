@@ -1,4 +1,4 @@
-import { normalizeHandle, ContractError, isSafeSupabaseClientKey } from './project.ts';
+import { normalizeHandle, isSafeSupabaseClientKey } from './project.ts';
 import { normalizeIdentityDraft, type SharingPreferences } from './identity.ts';
 import type { TokenSupplier } from './project-data-service.ts';
 
@@ -64,8 +64,98 @@ function verifiedPlatformLink(value:unknown,owner:string):value is PrivatePlatfo
 }
 
 
+export interface ProfileSharingState {
+  ownerUserId:string;
+  version:number;
+  preferences:SharingPreferences|null;
+}
+export interface ProfileSharingChange {
+  expected:ProfileSharingState;
+  desired:SharingPreferences;
+  operationId:string;
+}
+export interface ProfileSharingReceipt extends ProfileSharingState {
+  status:'APPLIED'|'REPLAYED'|'NO_CHANGE';
+}
+const M=Number.MAX_SAFE_INTEGER;
+const sharingKeys=['shareDisplayName','shareHeadline','shareBio','publicationRequested'] as const;
+const exact=(value:Record<string,unknown>,keys:readonly string[]) =>
+  Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+function validSharing(value:unknown):value is SharingPreferences {
+  return record(value)&&exact(value,sharingKeys)&&sharingKeys.every(key=>typeof value[key]==='boolean')&&
+    (!value.publicationRequested||!!(value.shareDisplayName||value.shareHeadline||value.shareBio));
+}
+function sameSharing(a:SharingPreferences|null,b:SharingPreferences|null):boolean {
+  return a===null||b===null?a===b:sharingKeys.every(key=>a[key]===b[key]);
+}
+function validSharingState(value:unknown,owner:string,receipt=false):value is ProfileSharingState {
+  if(!record(value)||!exact(value,receipt?['ownerUserId','version','preferences','status']:['ownerUserId','version','preferences'])||
+    value.ownerUserId!==owner||typeof value.version!=='number'||!Number.isSafeInteger(value.version)||value.version<0||
+    (value.preferences!==null&&!validSharing(value.preferences)))return false;
+  if(value.version===M&&value.preferences!==null&&value.preferences.publicationRequested)return false;
+  return !receipt||value.status==='APPLIED'||value.status==='REPLAYED'||value.status==='NO_CHANGE';
+}
+// JSON.parse silently accepts repeated keys; reject ambiguous acknowledgement
+// fields even when differently escaped. Parse syntax first, then walk tokens.
+function parseUniqueSharingJson(raw:string):unknown {
+  const parsed:unknown=JSON.parse(raw);
+  const tokens=raw.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]/g)??[];
+  const stack:(Set<string>|null)[]=[];
+  for(let i=0;i<tokens.length;i++){
+    const token=tokens[i];
+    if(token==='{')stack.push(new Set<string>());
+    else if(token==='[')stack.push(null);
+    else if(token==='}'||token===']')stack.pop();
+    else if(token?.startsWith('"')&&tokens[i+1]===':'){
+      const keys=stack[stack.length-1];
+      const key=JSON.parse(token) as string;
+      if(!keys||keys.has(key))throw new Error('Duplicate response key');
+      keys.add(key);
+    }
+  }
+  return parsed;
+}
+async function readSharingJson(response:Response,signal:AbortSignal,expired:()=>boolean):Promise<unknown>{
+  const reader=response.body?.getReader();
+  if(!reader)throw new PrivateIdentityError('INVALID_ACK','Missing sharing response.');
+  const decoder=new TextDecoder('utf-8',{fatal:true});
+  const cancel=()=>{void reader.cancel().catch(()=>{});};
+  signal.addEventListener('abort',cancel,{once:true});
+  let bytes=0,chunks=0,raw='';
+  try{
+    const type=response.headers.get('content-type');
+    if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
+      throw new Error('Invalid response type');
+    const length=response.headers.get('content-length');
+    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>16*1024))
+      throw new Error('Invalid response length');
+    for(;;){
+      if(expired())throw new Error('Request expired');
+      const next=await reader.read();
+      if(expired())throw new Error('Request expired');
+      if(next.done)break;
+      if(++chunks>1024||!(next.value instanceof Uint8Array))throw new Error('Invalid response chunks');
+      bytes+=next.value.byteLength;
+      if(next.value.byteLength===0)continue;
+      if(bytes>16*1024)throw new Error('Response too large');
+      raw+=decoder.decode(next.value,{stream:true});
+    }
+    const encoding=response.headers.get('content-encoding');
+    if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==bytes)
+      throw new Error('Response length mismatch');
+    raw+=decoder.decode();
+    return parseUniqueSharingJson(raw);
+  }catch{
+    cancel();
+    throw new PrivateIdentityError('INVALID_ACK','Sharing response could not be verified.');
+  }finally{
+    signal.removeEventListener('abort',cancel);
+    reader.releaseLock();
+  }
+}
+
 export class PrivateIdentityError extends Error {
-  readonly code: 'AUTH_EXPIRED'|'HANDLE_CONFLICT'|'PLATFORM_CONFLICT'|'VALIDATION'|'PROVIDER_UNAVAILABLE';
+  readonly code: 'AUTH_EXPIRED'|'HANDLE_CONFLICT'|'PLATFORM_CONFLICT'|'VALIDATION'|'PROVIDER_UNAVAILABLE'|'CONFLICT'|'INVALID_ACK';
   constructor(code: PrivateIdentityError['code'], message: string) {
     super(message);
     this.code=code;
@@ -78,8 +168,11 @@ export class SupabasePrivateIdentityService {
   private readonly publishableKey: string;
   private readonly tokenSupplier: TokenSupplier;
   private readonly fetcher: typeof fetch;
+  private readonly sharingOwnerId: string|undefined;
+  private readonly isCurrentOwner: (()=>boolean)|undefined;
 
-  constructor(baseUrl:string,publishableKey:string,tokenSupplier:TokenSupplier,fetcher:typeof fetch=fetch) {
+  constructor(baseUrl:string,publishableKey:string,tokenSupplier:TokenSupplier,fetcher:typeof fetch=fetch,
+    sharingOwnerId?:string,isCurrentOwner?:()=>boolean) {
     const u=new URL(baseUrl);
     if ((u.protocol!=='https:' && !(u.protocol==='http:' &&
          ['localhost','127.0.0.1'].includes(u.hostname)))||
@@ -93,6 +186,8 @@ export class SupabasePrivateIdentityService {
     this.publishableKey=publishableKey;
     this.tokenSupplier=tokenSupplier;
     this.fetcher=fetcher;
+    this.sharingOwnerId=sharingOwnerId;
+    this.isCurrentOwner=isCurrentOwner;
   }
 
   private async request(path:string,method:string,body?:unknown,upsert=false):Promise<unknown> {
@@ -146,24 +241,120 @@ export class SupabasePrivateIdentityService {
     return profile;
   }
 
-  async requestPublicIdentity(preferences:SharingPreferences):Promise<'saved_private_intent'> {
-    const {userId}=await this.verifiedCurrentUser();
-    if (!preferences || Object.values(preferences).some(v=>typeof v!=='boolean') ||
-        (preferences.publicationRequested &&
-         !preferences.shareDisplayName && !preferences.shareHeadline && !preferences.shareBio))
-      throw new ContractError('VALIDATION','Choose eligible visible fields first.');
-    const rows=await this.request('/rest/v1/profile_sharing_preferences?on_conflict=user_id','POST',{
-      user_id:userId,
-      share_display_name:preferences.shareDisplayName,
-      share_headline:preferences.shareHeadline,
-      share_bio:preferences.shareBio,
-      publication_requested:preferences.publicationRequested,
-      requested_at:preferences.publicationRequested?new Date().toISOString():null
-    },true) as Array<{user_id:string}>;
-    if (!Array.isArray(rows) || rows.length!==1 || rows[0]?.user_id!==userId)
-      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not acknowledged.');
-    // NEVER imply the public route is active; publication has a separate B4 gate.
-    return 'saved_private_intent';
+  private requireSharingOwner():string {
+    if(!this.sharingOwnerId||!UUID.test(this.sharingOwnerId)||!this.isCurrentOwner)
+      throw new PrivateIdentityError('AUTH_EXPIRED','Verify the current owner first.');
+    let current=false;
+    try{current=this.isCurrentOwner();}catch{/* fail closed */}
+    if(!current)throw new PrivateIdentityError('AUTH_EXPIRED','The owner session changed.');
+    return this.sharingOwnerId;
+  }
+
+  // Dedicated CAS transport: no REST upsert, no generic handle-conflict mapper.
+  private async sharingRpc(name:'read_owner_profile_sharing_state'|'change_owner_profile_sharing',
+    body:Record<string,unknown>):Promise<unknown>{
+    const owner=this.requireSharingOwner();
+    const signal=AbortSignal.timeout(10000);
+    const expiresAt=performance.now()+10000;
+    const expired=()=>signal.aborted||performance.now()>=expiresAt;
+    let abort:()=>void=()=>{};
+    const deadline=new Promise<never>((_,reject)=>{
+      abort=()=>reject(new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.'));
+      signal.addEventListener('abort',abort,{once:true});
+    });
+    const work=async()=>{
+      let token:string|null;
+      try{token=await this.tokenSupplier();}
+      catch{throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');}
+      this.requireSharingOwner();
+      if(!token)throw new PrivateIdentityError('AUTH_EXPIRED','Sign in first.');
+      if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
+      const url=this.baseUrl+'/rest/v1/rpc/'+name;
+      let response:Response;
+      try{response=await this.fetcher(url,{
+        method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+token,'Content-Type':'application/json'},
+        body:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal
+      });}catch{throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');}
+      try{
+        this.requireSharingOwner();
+        if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
+        if(response.redirected||(response.url&&response.url!==url))
+          throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
+        if(response.status===401||response.status===403)
+          throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+      }catch(error){
+        void response.body?.cancel().catch(()=>{});
+        throw error;
+      }
+      let raw:unknown;
+      try{raw=await readSharingJson(response,signal,expired);}
+      catch(error){
+        this.requireSharingOwner();
+        if(!response.ok)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
+        throw error;
+      }
+      if(this.requireSharingOwner()!==owner||expired())
+        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
+      if(!response.ok){
+        if((response.status===409||response.status===500)&&record(raw)&&raw.code==='40001')
+          throw new PrivateIdentityError('CONFLICT','Sharing preferences changed. Reload and confirm again.');
+        if(response.status===400&&record(raw)&&raw.code==='22023')
+          throw new PrivateIdentityError('VALIDATION','Invalid sharing request.');
+        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
+      }
+      return raw;
+    };
+    try{
+      const raw=await Promise.race([deadline,work()]);
+      this.requireSharingOwner();
+      return raw;
+    }catch(error){
+      this.requireSharingOwner();
+      if(error instanceof PrivateIdentityError)throw error;
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
+    }finally{signal.removeEventListener('abort',abort);}
+  }
+
+  async readProfileSharingState():Promise<ProfileSharingState>{
+    const owner=this.requireSharingOwner();
+    const raw=await this.sharingRpc('read_owner_profile_sharing_state',{});
+    this.requireSharingOwner();
+    if(!validSharingState(raw,owner))
+      throw new PrivateIdentityError('INVALID_ACK','Sharing state could not be verified.');
+    return raw;
+  }
+
+  /** Acknowledges only saved private intent, not publication or live delivery. */
+  async requestPublicIdentity(change:ProfileSharingChange):Promise<ProfileSharingReceipt>{
+    const owner=this.requireSharingOwner();
+    if(!record(change)||!exact(change,['expected','desired','operationId'])||
+      !validSharingState(change.expected,owner)||!validSharing(change.desired)||
+      typeof change.operationId!=='string'||!UUID.test(change.operationId))
+      throw new PrivateIdentityError('VALIDATION','Invalid sharing change.');
+    const expected={...change.expected,preferences:change.expected.preferences===null?null:{...change.expected.preferences}};
+    const desired={...change.desired};
+    const operationId=change.operationId;
+    const same=sameSharing(expected.preferences,desired);
+    if(expected.version===M){
+      const previous=expected.preferences;
+      if(previous===null||sharingKeys.some(key=>!previous[key]&&desired[key]))
+        throw new PrivateIdentityError('VALIDATION','Terminal sharing state cannot be re-enabled.');
+    }else if(expected.version===M-1&&!same&&(desired.publicationRequested||
+      sharingKeys.some(key=>expected.preferences?.[key]!==true&&desired[key]))){
+      throw new PrivateIdentityError('VALIDATION','Terminal sharing state cannot increase sharing.');
+    }
+    const raw=await this.sharingRpc('change_owner_profile_sharing',{
+      p_expected_version:expected.version,p_expected:expected.preferences,p_desired:desired,p_operation_id:operationId
+    });
+    this.requireSharingOwner();
+    if(!validSharingState(raw,owner,true)||!sameSharing(raw.preferences,desired))
+      throw new PrivateIdentityError('INVALID_ACK','Sharing change was not confirmed.');
+    const receipt=raw as ProfileSharingReceipt;
+    if(receipt.status==='NO_CHANGE'&&same&&receipt.version===expected.version)return receipt;
+    const next=Math.min(expected.version+1,M);
+    if(!same&&receipt.version===next&&
+      (receipt.status==='APPLIED'||(receipt.status==='REPLAYED'&&next<M)))return receipt;
+    throw new PrivateIdentityError('INVALID_ACK','Sharing change was not confirmed.');
   }
 
   /**

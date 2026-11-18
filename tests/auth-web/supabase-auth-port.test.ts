@@ -1402,3 +1402,49 @@ test('OWNER-AUTH ordinary recovery and fallback resend accept only neutral GoTru
     }
   }
 });
+
+test('C13 owner analytics factory requires fresh verified identity and retires old service across A-B-A',async()=>{
+  const portfolio='10000000-0000-4000-8000-000000000002';
+  const state={portfolioId:portfolio,enabled:false,eligible:true,version:0,policyVersion:1,
+    enabledAt:null,coverageStartedAt:null,updatedAt:null,retentionDays:30};
+  let rpcCalls=0,authCalls=0;
+  let current=tokens;
+  const {port}=mock(async(url,init)=>{
+    const path=String(url);
+    if(path.includes('grant_type=password')){
+      const login=JSON.parse(String(init?.body));
+      current=login.email===secondUser.email?secondTokens:tokens;
+      return json(current);
+    }
+    if(path.endsWith('/auth/v1/user')){
+      authCalls++;
+      assert.equal(new Headers(init?.headers).get('authorization'),'Bearer '+current.access_token);
+      return json(current.user);
+    }
+    if(path.endsWith('/rpc/read_owner_analytics_state')){
+      rpcCalls++;
+      assert.equal(new Headers(init?.headers).get('authorization'),'Bearer '+current.access_token);
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_portfolio_id:portfolio});
+      return json(state);
+    }
+    return json({},404);
+  });
+  const absent=await port.ownerAnalytics();
+  assert.ok(absent.error);assert.equal(rpcCalls,0);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  const held=await port.ownerAnalytics();
+  assert.equal(held.error,null);assert.ok(held.data);
+  assert.equal(held.data.ownerId,user.id);assert.ok(held.data.isCurrentOwner());
+  assert.ok(authCalls>0);assert.equal(rpcCalls,0);
+  assert.deepEqual(await held.data.service.getOwnerAnalyticsState(portfolio),state);
+  assert.equal(rpcCalls,1);
+  assert.equal((await port.signInWithPassword({email:secondUser.email,password:'fixture'})).error,null);
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  assert.equal(held.data.isCurrentOwner(),false);
+  await assert.rejects(held.data.service.getOwnerAnalyticsState(portfolio),{code:'NOT_FOUND_OR_FORBIDDEN'});
+  assert.equal(rpcCalls,1);
+  const latest=await port.ownerAnalytics();
+  assert.equal(latest.error,null);assert.ok(latest.data);
+  assert.deepEqual(await latest.data.service.getOwnerAnalyticsState(portfolio),state);
+  assert.equal(rpcCalls,2);
+});

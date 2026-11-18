@@ -124,7 +124,7 @@ function parseReceipt(text:string,strictNumbers:boolean):unknown {
       if(!/^(?:0|[1-9]\d*)$/.test(token)||!Number.isSafeInteger(Number(token)))return fail('INVALID_RESPONSE');
     }else if(token[0]==='"'){
       let next=tokens.lastIndex;
-      while(next<text.length&&/[\x20\t\r\n]/.test(text[next]))next++;
+      while(next<text.length&&/[\x20\t\r\n]/.test(text.charAt(next)))next++;
       if(text[next]!==':')continue;
       const keys=stack[stack.length-1],key=JSON.parse(token) as string;
       if(!keys||keys.has(key))return fail('INVALID_RESPONSE');

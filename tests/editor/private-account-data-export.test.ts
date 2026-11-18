@@ -412,7 +412,7 @@ test('export accepts Fetch-decoded compressed JSON and rejects truncated identit
         assert.ok(init?.signal instanceof AbortSignal);
         paths.push(new URL(String(input)).pathname);
         if(paths.length===1)return new Response(user,{headers:{
-          'Content-Encoding':encoding,'Content-Length':String(user.length-1)
+          'Content-Type':'application/json','Content-Encoding':encoding,'Content-Length':String(user.length-1)
         }});
         return json(reconciliation,503);
       });
@@ -837,4 +837,15 @@ test('C08 audit quota and reconciled inventory limit stop byte export on the sam
   const blocked=fixture({reconcile:{...reconciliation,status:'LIMIT_EXCEEDED',limitExceeded:true}});
   await assert.rejects(blocked.service.export(snapshot),{code:'LIMIT_EXCEEDED'});
   assert.ok(!blocked.paths.some(p=>p.includes('/storage/v1/')||p.includes('create_private_account_exit_inventory')));
+});
+
+test('export rejects successful non-JSON owner receipts before any other private read',async()=>{
+  for(const type of ['text/plain','text/html','application/octet-stream']){
+    let reads=0;
+    const user=JSON.stringify({id:owner,email:'owner@example.test'});
+    const exporter=new SupabasePrivateAccountDataExporter(origin,'publishable',async()=> 'owner-jwt',
+      async()=>{reads++;return new Response(user,{headers:{'Content-Type':type}});});
+    await assert.rejects(exporter.export(snapshot),{code:'INTEGRITY'});
+    assert.equal(reads,1);
+  }
 });

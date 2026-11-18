@@ -178,3 +178,19 @@ test('C12 locked stream and nonsettling cancellation cannot exceed entire RPC de
   await assert.rejects(fixture(async()=>{calls++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),{code:'UNAVAILABLE'});
   assert.ok(performance.now()-start<7500);assert.equal(calls,1);assert.equal(cancels,1);
 });
+
+test('C12 persisted provider failures are distinct from private transport errors',async()=>{
+  for(const lastError of ['NOT_FOUND','RATE_LIMITED','PROVIDER_UNAVAILABLE','INVALID_SOURCE','IDENTITY_CHANGED'] as const){
+    const state:ProviderState={...ready,status:'UNAVAILABLE',lastAttemptAt:instant,lastError};
+    assert.deepEqual(parseProviderState(state,owner,link),state);
+    assert.deepEqual(await fixture(async()=>json(state)).readState(link),state);
+  }
+  for(const lastError of ['UNAVAILABLE','AUTH_EXPIRED','FORBIDDEN','CONFLICT','LIMIT','INVALID_RESPONSE','INVALID', '', {code:'PROVIDER_UNAVAILABLE'}]){
+    const state={...ready,status:'UNAVAILABLE',lastAttemptAt:instant,lastError};
+    assert.throws(()=>parseProviderState(state,owner,link),{code:'INVALID_RESPONSE'});
+    await assert.rejects(fixture(async()=>json(state)).readState(link),{code:'INVALID_RESPONSE'});
+  }
+  let calls=0;
+  await assert.rejects(fixture(async()=>{calls++;return json({message:'PROVIDER_UNAVAILABLE'},503)}).readState(link),{code:'UNAVAILABLE'});
+  assert.equal(calls,1);
+});

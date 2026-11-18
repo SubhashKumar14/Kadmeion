@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public, extensions;
-select plan(32);
+select plan(44);
 select has_table('public', 'profiles', 'owner profiles exist');
 select has_table('public', 'profile_sharing_preferences', 'private sharing intent exists');
 select has_table('kadmeion_private', 'operator_roles', 'operator grants live outside public API');
@@ -11,7 +11,7 @@ select ok((select relrowsecurity from pg_class where oid='public.profiles'::regc
 select ok((select relrowsecurity from pg_class where oid='public.profile_sharing_preferences'::regclass), 'sharing RLS enabled');
 select ok((select relrowsecurity from pg_class where oid='kadmeion_private.operator_roles'::regclass), 'operator table RLS enabled');
 select is((select count(*)::integer from pg_policies where schemaname='public' and tablename='profiles'), 3, 'three owner policies on profiles');
-select is((select count(*)::integer from pg_policies where schemaname='public' and tablename='profile_sharing_preferences'), 3, 'three owner policies on sharing');
+select is((select count(*)::integer from pg_policies where schemaname='public' and tablename='profile_sharing_preferences'), 1, 'one read-only owner policy on sharing');
 select ok(not has_table_privilege('anon','public.profiles','SELECT'), 'anon cannot read private profiles');
 select ok(not has_table_privilege('anon','public.profile_sharing_preferences','SELECT'), 'anon cannot read sharing intents');
 select ok(not has_schema_privilege('authenticated','kadmeion_private','USAGE'), 'client has no operator schema usage');
@@ -60,5 +60,29 @@ select ok(not has_function_privilege('anon','public.owner_acknowledge_notificati
   'anonymous cannot acknowledge alerts');
 select ok(not has_any_column_privilege('authenticated','public.private_notification_preferences','UPDATE'),
   'notification preference changes require the scoped RPC');
+-- C08: real privileges, including column-level grants; no legacy writer escape.
+select has_table('kadmeion_private','owner_preference_cas_state','private CAS ledger exists');
+select ok((select relrowsecurity from pg_class where oid='kadmeion_private.owner_preference_cas_state'::regclass),'CAS ledger has RLS');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  where has_any_column_privilege(r,'kadmeion_private.owner_preference_cas_state','SELECT,INSERT,UPDATE,REFERENCES')
+     or has_table_privilege(r,'kadmeion_private.owner_preference_cas_state','DELETE,TRUNCATE,TRIGGER')),'no API role can read or mutate the ledger');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  where has_any_column_privilege(r,'public.profile_sharing_preferences','INSERT,UPDATE,REFERENCES')
+     or has_table_privilege(r,'public.profile_sharing_preferences','DELETE,TRUNCATE,TRIGGER')),'sharing direct writes including column grants revoked');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  where has_any_column_privilege(r,'public.private_notification_preferences','INSERT,UPDATE,REFERENCES')
+     or has_table_privilege(r,'public.private_notification_preferences','DELETE,TRUNCATE,TRIGGER')),'notification direct writes revoked');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  where has_function_privilege(r,'public.owner_set_notification_preferences(boolean,boolean,boolean)','EXECUTE')),'legacy notification setter denied to every API role');
+select ok(has_function_privilege('authenticated','public.read_owner_profile_sharing_state()','EXECUTE'),'authenticated may read own sharing CAS');
+select ok(has_function_privilege('authenticated','public.change_owner_profile_sharing(bigint,jsonb,jsonb,uuid)','EXECUTE'),'authenticated may change own sharing CAS');
+select ok(has_function_privilege('authenticated','public.read_owner_notification_preferences_state()','EXECUTE'),'authenticated may read own notification CAS');
+select ok(has_function_privilege('authenticated','public.change_owner_notification_preferences(bigint,jsonb,jsonb,uuid)','EXECUTE'),'authenticated may change own notification CAS');
+select ok(not exists(select 1 from unnest(array['anon','service_role']) r
+  cross join unnest(array['public.read_owner_profile_sharing_state()','public.change_owner_profile_sharing(bigint,jsonb,jsonb,uuid)',
+    'public.read_owner_notification_preferences_state()','public.change_owner_notification_preferences(bigint,jsonb,jsonb,uuid)']) p
+  where has_function_privilege(r,p,'EXECUTE')),'CAS endpoints unavailable to anonymous or service role');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  where has_function_privilege(r,'kadmeion_private.change_owner_preference(text,bigint,jsonb,jsonb,uuid)','EXECUTE')),'private CAS helper cannot be invoked by API roles');
 select * from finish();
 rollback;
