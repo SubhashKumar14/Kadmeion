@@ -1,4 +1,4 @@
-import { ContractError, isSafeSupabaseClientKey } from './project.ts';
+import { ContractError, isSafeSupabaseClientKey, HANDLE_PATTERN, RESERVED_HANDLES } from './project.ts';
 
 /**
  * B4 private candidate pointer client. It never activates a public URL.
@@ -90,6 +90,60 @@ function receipt(raw:unknown,portfolioId:string,kind:'PREPARE'|'BLOCK',
     publicServingEnabled:false,publicUrl:null,hostRevocationVerified:false
   };
 }
+/**
+ * Owner-visible point-in-time receipt from the C11 publish worker. This is
+ * not authority for a future request: read/check again before using it as
+ * current. The expected IDs are from explicit owner consent and frozen rows.
+ */
+export type OwnerPublicDeliveryExpectation=Readonly<{
+  portfolioId:string;requestId:string;intentId:string;operationId:string;
+}>;
+export type OwnerPublicDeliveryAcknowledgement=Readonly<{
+  visibility:'PUBLIC';portfolioId:string;requestId:string;intentId:string;operationId:string;
+  releaseGeneration:number;stageGeneration:number;pointerGeneration:number;
+  revocationGeneration:number;deliveryEpoch:number;canonicalPath:string;publicUrl:string;
+  storedHtmlSha256:string;servedHtmlSha256:string;mediaManifest:string|null;
+  assetHashes:readonly string[];observedHttpRequests:number;verifiedAt:string;
+}>;
+const publicAckKeys=['visibility','portfolioId','requestId','intentId','operationId',
+  'releaseGeneration','stageGeneration','pointerGeneration','revocationGeneration','deliveryEpoch',
+  'canonicalPath','publicUrl','storedHtmlSha256','servedHtmlSha256','mediaManifest',
+  'assetHashes','observedHttpRequests','verifiedAt'] as const;
+const publicAckError=()=>new PrivatePointerError('INVALID_ACK','Public delivery was not independently acknowledged.');
+const safePublicExpectation=(x:OwnerPublicDeliveryExpectation):boolean=>
+  !!x&&uuid(x.portfolioId)&&uuid(x.requestId)&&uuid(x.intentId)&&uuid(x.operationId);
+export function parseOwnerPublicDelivery(raw:unknown,expected:OwnerPublicDeliveryExpectation,
+    allowLocal=false):OwnerPublicDeliveryAcknowledgement{
+  if(!safePublicExpectation(expected)||!record(raw)||
+     Object.keys(raw).length!==publicAckKeys.length||!publicAckKeys.every(k=>Object.hasOwn(raw,k))||
+     raw.visibility!=='PUBLIC'||raw.portfolioId!==expected.portfolioId||raw.requestId!==expected.requestId||
+     raw.intentId!==expected.intentId||raw.operationId!==expected.operationId||
+     !generation(raw.releaseGeneration)||raw.releaseGeneration<1||!generation(raw.stageGeneration)||raw.stageGeneration<1||
+     !generation(raw.pointerGeneration)||!generation(raw.revocationGeneration)||
+     !generation(raw.deliveryEpoch)||raw.deliveryEpoch<1||raw.deliveryEpoch>=Number.MAX_SAFE_INTEGER||
+     raw.stageGeneration>raw.releaseGeneration||raw.releaseGeneration>raw.pointerGeneration||
+     raw.stageGeneration<=raw.revocationGeneration||!sha(raw.storedHtmlSha256)||!sha(raw.servedHtmlSha256)||
+     !Array.isArray(raw.assetHashes)||raw.assetHashes.length>8||![...raw.assetHashes].every(sha)||
+     new Set(raw.assetHashes).size!==raw.assetHashes.length||
+     (raw.assetHashes.length===0?raw.mediaManifest!==null:!sha(raw.mediaManifest))||
+     raw.observedHttpRequests!==4+2*raw.assetHashes.length||
+     typeof raw.verifiedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(raw.verifiedAt)||!Number.isFinite(Date.parse(raw.verifiedAt))||
+     typeof raw.canonicalPath!=='string'||typeof raw.publicUrl!=='string')throw publicAckError();
+  const [root,handle,slug,...rest]=raw.canonicalPath.split('/');
+  if(root!==''||rest.length!==0||!HANDLE_PATTERN.test(handle??'')||RESERVED_HANDLES.has(handle??'')||
+     !/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug??''))throw publicAckError();
+  try{
+    const u=new URL(raw.publicUrl);
+    const secure=u.protocol==='https:'&&u.hostname.includes('.')&&
+      !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(u.hostname)&&
+      !/(?:\.local|\.internal|\.localhost|\.test|\.invalid)$/.test(u.hostname);
+    const local=allowLocal&&u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname);
+    if(!(secure||local)||u.username||u.password||u.search||u.hash||
+       u.pathname!==raw.canonicalPath||u.href!==raw.publicUrl)throw publicAckError();
+  }catch{throw publicAckError();}
+  return Object.freeze({...raw,assetHashes:Object.freeze([...raw.assetHashes])}) as OwnerPublicDeliveryAcknowledgement;
+}
+const PUBLIC_DELIVERY_TIMEOUT_MS=120_000;
 const POINTER_RPC_TIMEOUT_MS=10_000;
 const MAX_POINTER_RPC_BYTES=16_384;
 function cancelPointerBody(body:{cancel:()=>Promise<void>}|null|undefined):void{
@@ -276,6 +330,67 @@ export class SupabasePrivateReleasePointerService {
       intentId:raw.intentId,status:raw.status,alreadyRecorded:raw.alreadyRecorded,
       publicServingEnabled:false,publicUrl:null
     };
+  }
+  /**
+   * C11-only action and readback. Caller must hold explicit approved consent.
+   * Do not mount until paired SQL authority, live-host gate and owner wrapper
+   * are verified. The read-only check NEVER prepares or activates a release.
+   */
+  async executePublicDelivery(expected:OwnerPublicDeliveryExpectation):Promise<OwnerPublicDeliveryAcknowledgement>{
+    return this.publicDelivery(expected,false);
+  }
+  async checkPublicDelivery(expected:OwnerPublicDeliveryExpectation):Promise<OwnerPublicDeliveryAcknowledgement>{
+    return this.publicDelivery(expected,true);
+  }
+  private async publicDelivery(expected:OwnerPublicDeliveryExpectation,checkOnly:boolean):Promise<OwnerPublicDeliveryAcknowledgement>{
+    if(!safePublicExpectation(expected))throw new PrivatePointerError('VALIDATION','A frozen owner publication consent is required.');
+    const identity=Object.freeze({...expected});
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const unavailable=()=>new PrivatePointerError('PROVIDER_UNAVAILABLE','Public delivery was not confirmed. Check the same intent before retrying; do not create a duplicate.');
+    const attempt=(async()=>{
+      const jwt=await this.token();
+      if(controller.signal.aborted)throw unavailable();
+      if(!jwt)throw new PrivatePointerError('AUTH_EXPIRED','Sign in to verify public delivery.');
+      const target=this.origin+'/functions/v1/publish';
+      const response=await this.http(target,{
+        method:'POST',headers:{apikey:this.key,Authorization:'Bearer '+jwt,
+          'Content-Type':'application/json',Accept:'application/json'},
+        body:JSON.stringify({intentId:identity.intentId,
+          expectedPortfolioId:identity.portfolioId,expectedRequestId:identity.requestId,
+          expectedOperationId:identity.operationId,...(checkOnly?{action:'CHECK_PUBLIC'}:{})}),
+        credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
+      });
+      if(controller.signal.aborted||response.redirected||(response.url!==''&&response.url!==target)){
+        cancelPointerBody(response.body);throw unavailable();
+      }
+      if(response.status!==200){
+        cancelPointerBody(response.body);
+        if(response.status===401)throw new PrivatePointerError('AUTH_EXPIRED','Session expired.');
+        if(response.status===403||response.status===404)throw new PrivatePointerError('FORBIDDEN','Public delivery is not available.');
+        if(response.status===409)throw new PrivatePointerError('CONFLICT','Publication was not confirmed. Check the same intent.');
+        throw unavailable();
+      }
+      const raw=await readPointerJson(response,controller.signal);
+      // Use the owner's captured epoch-aware callback again. The action may
+      // have committed, but a late receipt from a departed owner must not render.
+      if(controller.signal.aborted||await this.token()!==jwt||controller.signal.aborted)throw unavailable();
+      if(!record(raw)||Object.keys(raw).sort().join(',')!=='accountDeletionAllowed,hostRevocationVerified,htmlSha256,ownerPublicDelivery,providerRetentionVerified,status'||
+         raw.status!=='DELIVERY_ACKNOWLEDGED'||raw.hostRevocationVerified!==false||
+         raw.providerRetentionVerified!==false||raw.accountDeletionAllowed!==false||!sha(raw.htmlSha256))
+        throw publicAckError();
+      const origin=new URL(this.origin);
+      const acknowledgement=parseOwnerPublicDelivery(raw.ownerPublicDelivery,identity,
+        origin.protocol==='http:'&&['localhost','127.0.0.1'].includes(origin.hostname));
+      if(acknowledgement.storedHtmlSha256!==raw.htmlSha256)throw publicAckError();
+      return acknowledgement;
+    })();
+    const deadline=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>{reject(unavailable());controller.abort();},PUBLIC_DELIVERY_TIMEOUT_MS);
+    });
+    try{return await Promise.race([attempt,deadline]);}
+    catch(error){if(error instanceof PrivatePointerError)throw error;throw unavailable();}
+    finally{clearTimeout(timer);controller.abort();}
   }
   async block(portfolioId:string,operationId:string):Promise<PrivatePointerReceipt>{
     if(!uuid(portfolioId)||!uuid(operationId))
