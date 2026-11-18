@@ -2607,7 +2607,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Creates an owner-private draft, never a shared or published project. */
-  async createPrivateProject(input:NewPrivateProject):Promise<AuthOutcome<OwnerProject>> {
+  async createPrivateProject(input:NewPrivateProject, expectedEpoch = this.getOwnerSessionEpoch()):Promise<AuthOutcome<OwnerProject>> {
     return this.outcome(async()=>{
       if (!input || typeof input.title!=='string' ||
         typeof input.slug!=='string' || typeof input.summary!=='string')
@@ -2628,12 +2628,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         } catch {throw new Error('A project link must be a valid HTTPS URL.');}
       }
       const repositoryUrl=urlOption(input.repositoryUrl),liveUrl=urlOption(input.liveUrl);
-      const {session,userId}=await this.ownerSession();
+      if(this.getOwnerSessionEpoch()!==expectedEpoch)throw new Error('Owner session changed before project creation.');
+      const {session,userId,epoch}=await this.ownerSession();
+      if(epoch!==expectedEpoch||this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))
+        throw new Error('Owner session changed before project creation.');
       const data=await this.ownerRest('projects?select='+OWNER_PROJECT_FIELDS,session.access_token,'POST',{
         owner_user_id:userId,title,slug,summary,description:'',
         repository_url:repositoryUrl,live_url:liveUrl
       },true);
-      if (!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
+      if (this.getOwnerSessionEpoch()!==expectedEpoch||!this.isCurrentSession(session))throw new Error('Owner session changed during project creation.');
       if(!Array.isArray(data)||data.length!==1)
         throw new Error('The private insert was not confirmed.');
       const created=this.parsePrivateProject(data[0],userId);
