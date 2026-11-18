@@ -158,6 +158,15 @@ const STUDIO = '/app/portfolios';
 const editorPath = (id: string) => STUDIO + '/' + id + '/edit';
 const authoringQuery = '(min-width: 900px) and (pointer: fine) and (hover: hover)';
 type PortfolioRecord = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['readOwnerPortfolio']>>['data']>;
+/** JSONB may reorder object keys on readback. Keep arrays and exact source
+ * strings ordered, but never confuse insertion order with a content change. */
+function stableDraftValue(value:unknown):string|undefined{
+  return JSON.stringify(value,(_key,v:unknown)=>v&&typeof v==='object'&&!Array.isArray(v)?
+    Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0)):v);
+}
+function sameDraftSnapshot(a:PortfolioSnapshot|null,b:PortfolioSnapshot|null):boolean{
+  return !!a&&!!b&&stableDraftValue(a)===stableDraftValue(b);
+}
 
 export function portfolioIdFromRoute(path: string): string | undefined {
   return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:edit|preview(?:\/fullscreen)?)$/i.exec(path)?.[1]?.toLowerCase();
@@ -898,7 +907,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'||(action==='open'&&stale)||view.dirty){
         const paths=new Set([...Object.keys(saved.files),...Object.keys(recovered.snapshot.files)]);
         const changedFiles=[...paths].filter(path=>saved.files[path]!==recovered.snapshot.files[path]).sort();
-        const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots)]);
+        const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots),
+          ...Object.keys(saved.stashes),...Object.keys(recovered.snapshot.stashes)]);
         const stable=(value:unknown)=>JSON.stringify(value,(_key,v:unknown)=>
           v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
         const changedSlots=[...keys].filter(key=>stable(saved.slots[key])!==stable(recovered.snapshot.slots[key])||
@@ -1002,7 +1012,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const fresh=await view.port.readOwnerPortfolio(view.id);
       if(!draftCurrent(view))return;
       if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
-         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+         !sameDraftSnapshot(fresh.data.snapshot,view.record.snapshot)){
         setFolderComparison(null);setFolderNotice('Current cloud revision could not be verified or has changed. Reload the saved draft before comparing a folder.');return;
       }
       const recovered=await store.load();
@@ -1014,7 +1024,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setFolderNotice('Compared the verified folder snapshot with the current cloud draft. Both remain separate.');return;
       }
       if(!previewed||previewed.cloudRevision!==fresh.data.revision||
-        JSON.stringify(previewed.folderHead)!==JSON.stringify(recovered)){
+        stableDraftValue(previewed.folderHead)!==stableDraftValue(recovered)){
         setFolderComparison(null);setFolderNotice('Folder or cloud version changed after comparison. Compare again; no draft was replaced.');return;
       }
       if(!window.confirm('Restore the compared folder snapshot as an unsaved working draft? The folder and currently saved cloud revision remain separate. Review private asset references before a separate Save.'))return;
@@ -1060,7 +1070,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const fresh=await view.port.readOwnerPortfolio(view.id);
       if(!draftCurrent(view))return;
       if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
-         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+         !sameDraftSnapshot(fresh.data.snapshot,view.record.snapshot)){
         setPortableComparison(null);setPortableNotice('Current cloud revision changed or could not be verified. Reload the saved draft and compare again.');return;
       }
       if(action==='compare'){
