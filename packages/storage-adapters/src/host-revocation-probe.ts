@@ -162,6 +162,9 @@ function canonicalPathValid(path:unknown):boolean {
   return root===''&&rest.length===0&&HANDLE_PATTERN.test(handle??'')&&
     !RESERVED_HANDLES.has(handle)&&PORTFOLIO_SLUG.test(slug??'');
 }
+function hasStaleDeliveryMetadata(h:Headers):boolean {
+  return h.has('link')||h.has('x-kadmeion-served-sha256')||h.has('last-modified');
+}
 async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void> {
   if(response.status!==404&&response.status!==410){
     cancelProbeBody(response.body);
@@ -171,6 +174,7 @@ async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void>
   const robots=(h.get('x-robots-tag')??'').toLowerCase().split(',').map(x=>x.trim());
   if(response.redirected||!isUncacheable(h)||!robots.includes('noindex')||
      robots.includes('index')||h.has('location')||h.has('etag')||
+     hasStaleDeliveryMetadata(h)||
      !/^text\/plain(?:;|$)/i.test(h.get('content-type')??'')){
     cancelProbeBody(response.body);
     throw new HostRevocationProbeError('UNSAFE_HEADERS');
