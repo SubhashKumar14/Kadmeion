@@ -43,21 +43,21 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [projectionLoading,setProjectionLoading]=useState(false);
   const projectionAttempt=useRef(0);
   const projectionPending=useRef(false);
-  const projectionEpoch=useRef(port.getOwnerSessionEpoch());
   useEffect(()=>()=>{projectionAttempt.current++;projectionPending.current=false;},[port]);
   function invalidateProjection(){
     projectionAttempt.current++;projectionPending.current=false;setProjectionLoading(false);
     setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
   }
   async function readProjection(){
-    if(projectionPending.current||operationPending.current)return;
+    if(projectionPending.current||operationPending.current||!validEpoch())return;
     projectionPending.current=true;
-    const attempt=++projectionAttempt.current,epoch=projectionEpoch.current;
-    const current=()=>attempt===projectionAttempt.current&&epoch===port.getOwnerSessionEpoch();
+    const attempt=++projectionAttempt.current,epoch=profileEpoch.current,lifetime=profileLifetime.current;
+    const current=()=>attempt===projectionAttempt.current&&lifetime===profileLifetime.current&&
+      epoch===profileEpoch.current&&validEpoch();
     setProjectionLoading(true);setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
     try{
       if(!current())return;
-      const [result,profile]=await Promise.all([port.ownerSharingPreferences(),port.readOwnerProfile()]);
+      const [result,profile]=await Promise.all([port.ownerSharingPreferences(),port.readOwnerProfile(epoch)]);
       if(!current())return;
       if(result.error||!result.data||profile.error||!profile.data){
         setProjectionError('Saved profile and sharing preferences could not both be verified. Retry to preview them.');return;
@@ -68,8 +68,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
         ...(prefs.shareHeadline?['headline' as const]:[]),...(prefs.shareBio?['bio' as const]:[])]);
       setProjectionRequested(prefs.publicationRequested);
     }catch{if(current())setProjectionError('Saved sharing preferences are unavailable. Retry securely.');}
-    finally{if(attempt===projectionAttempt.current){projectionPending.current=false;setProjectionLoading(false);
-      if(!current()){setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('Your session changed. Reopen your profile.');}}}
+    finally{if(current()){projectionPending.current=false;setProjectionLoading(false);}}
   }
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
@@ -93,13 +92,14 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const profileLifetime=useRef(0);
   const autoTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const autoEnabled=useRef(false);
+  const pendingSkill=useRef(false);
   function cancelScheduledSave(){
     if(autoTimer.current!==null)clearTimeout(autoTimer.current);
     autoTimer.current=null;
   }
   function stopAutosave(){autoEnabled.current=false;cancelScheduledSave();setAutosave(false);}
   function expireProfile(){
-    stopAutosave();invalidateProjection();setSaved(null);setDraft(null);setSkill('');setSkillError('');
+    stopAutosave();invalidateProjection();pendingSkill.current=false;setSaved(null);setDraft(null);setSkill('');setSkillError('');
     setLatestProfile(null);setUncertainSave(null);setConfirmRebase(false);setWithdrawal(false);
     setBusy(false);setActiveSaveMode(null);setLoadingProfile(false);setCheckingLatest(false);
     setNeedsReload(true);setSessionExpired(true);setNotice('');setError('Your owner session changed. Reopen your profile.');
@@ -138,6 +138,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       if (!data || error) { failRead(error?.message ?? 'Private profile is unavailable.'); return; }
       setSaved(data);
       setDraft(data);
+      pendingSkill.current=false;
       setSkill('');
       setSkillError('');
       setError('');
@@ -189,6 +190,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       return;
     }
     setDraft({...draft, skills: [...draft.skills, value]});
+    pendingSkill.current=false;
     setSkill('');
     setSkillError('');
     setWithdrawal(false);
@@ -204,6 +206,10 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   async function persistProfile(mode:'manual'|'auto'){
     cancelScheduledSave();
     if(!saved||!draft||operationPending.current||needsReload||!validEpoch())return;
+    if(pendingSkill.current){
+      if(mode==='manual'){setError('Add or clear the unfinished skill before saving the profile.');setPanel('Skills & links');}
+      return;
+    }
     if(mode==='auto'&&(!autoEnabled.current||withdrawal))return;
     const validation=profileDraftError(draft);
     if(validation){if(mode==='manual'){setError(validation);setPanel('Profile');}return;}
@@ -277,6 +283,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   function resolveProfileComparison(keepDraft:boolean){
     if(operationPending.current||!latestProfile||!validEpoch()||(keepDraft&&!confirmRebase))return;
     stopAutosave();setSaved(latestProfile);setDraft(current=>keepDraft&&current?{...current,handle:latestProfile.handle}:latestProfile);
+    if(!keepDraft){pendingSkill.current=false;setSkill('');setSkillError('');}
     setLatestProfile(null);setConfirmRebase(false);setUncertainSave(null);setNeedsReload(false);setReloadFailed(false);
     setError('');setWithdrawal(false);
     setNotice(keepDraft?'Latest saved fields loaded as the comparison baseline. Your edits still need an explicit save.':
@@ -292,10 +299,10 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   useEffect(()=>{
     cancelScheduledSave();
     if(!autosave||!autoEnabled.current||!dirty||!draft||locked||needsReload||withdrawal||latestProfile||
-      profileDraftError(draft)||!validEpoch())return;
+      skill.trim()||pendingSkill.current||profileDraftError(draft)||!validEpoch())return;
     autoTimer.current=setTimeout(()=>{autoTimer.current=null;void persistProfile('auto');},1200);
     return cancelScheduledSave;
-  },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port]);
+  },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port,skill]);
   useEffect(()=>{
     if(!dirty&&!skill.trim()&&!busy&&!checkingLatest)return;
     const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
@@ -314,7 +321,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           <h1 id="profile-title">Your developer profile.</h1>
           <p>Edit your draft and preview the fields visitors could see.</p>
         </div>
-        <button type="submit" className="ws-primary" disabled={locked || needsReload || !draft || !dirty}>{busy ? activeSaveMode==='auto'?'Autosaving…':'Saving…' : 'Save profile draft'}</button>
+        <button type="submit" className="ws-primary" disabled={locked || needsReload || !draft || !dirty || !!skill.trim()}>{busy ? activeSaveMode==='auto'?'Autosaving…':'Saving…' : 'Save profile draft'}</button>
       </div>
       <div className="ws-profile-tabs" role="group" aria-label="Profile sections">
         {['Profile', 'Skills & links', 'Visibility', 'Public preview'].map(item =>
@@ -330,14 +337,16 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             else stopAutosave();
           }}/> Autosave private profile fields</label>
         <p>Off by default each time this editor opens. Only name, headline, bio and skills are saved after a short pause; links save separately. Autosave never confirms publication withdrawal. Unsaved edits stay in this editor, not offline storage.</p>
-        {autosave&&dirty&&!busy&&<p>{profileDraftError(draft)||'Unsaved private edits will be saved after you stop editing.'}</p>}
+        {skill.trim()?<p>Add or clear the unfinished skill before saving. {autosave?'Autosave is paused.':''}</p>:
+          autosave&&dirty&&!busy&&<p>{needsReload?'Check the latest saved draft before saving again.':withdrawal?'Save manually to confirm withdrawal.':profileDraftError(draft)||'Unsaved private edits will be saved after you stop editing.'}</p>}
       </div>}
-      {dirty && <div className="ws-unsaved-line" role="status">
+      {(dirty||!!skill.trim()) && <div className="ws-unsaved-line" role="status">
         <span>Unsaved private changes</span>
         <button type="button" className="ws-text-action" disabled={locked} onClick={() => {
           if (operationPending.current||!validEpoch()) return;
           cancelScheduledSave();setLatestProfile(null);setConfirmRebase(false);
           if (saved) setDraft({...saved, skills:[...saved.skills]});
+          pendingSkill.current=false;setSkill('');setSkillError('');
           setWithdrawal(false); if (!needsReload) setError(''); setNotice('');
         }}>Discard changes</button>
       </div>}
@@ -392,7 +401,12 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
                 }}>{item} ×</button></li>)}</ul>
             <label>Add skill<input value={skill} maxLength={40}
               aria-invalid={!!skillError} aria-describedby={skillError ? 'profile-skill-error' : undefined}
-              onChange={event => {if (!operationPending.current) {setSkill(event.target.value); setSkillError('');}}}
+              onChange={event => {
+                if(operationPending.current||!validEpoch())return;
+                cancelScheduledSave();
+                pendingSkill.current=!!event.target.value.trim();
+                setSkill(event.target.value);setSkillError('');setNotice('');
+              }}
               onKeyDown={event => {if (event.key === 'Enter') {event.preventDefault(); addSkill();}}}/></label>
             {skillError && <p id="profile-skill-error" role="alert" className="ws-inline-alert">{skillError}</p>}
             <p>{draft.skills.length} of 20 skills added to this private draft.</p>
