@@ -1490,7 +1490,14 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
         downloadPrivateFile('kadmeion-account-erasure-receipt.json',
           new TextEncoder().encode(JSON.stringify(receipt)),'application/json');
       }catch{/* The authoritative erasure receipt is not invalidated by a browser download failure. */}
-      if(current())await port.signOut({scope:'local'});
+      // The confirmed erasure and this device's local sign-out are separate
+      // outcomes. Never reinterpret a confirmed receipt as an unknown write.
+      if(current()){
+        try{
+          await port.signOut({scope:'local'});
+        }catch{/* Local sign-out failure must not invalidate the erasure receipt. */}
+        if(current())setMessage({error:true,text:'Active account erasure was acknowledged. Local sign-out could not be confirmed; close this session. Backup and external copies remain unverified.'});
+      }
     }catch(error){
       if(!current())return;
       const code=typeof error==='object'&&error!==null&&'code' in error?error.code:null;
