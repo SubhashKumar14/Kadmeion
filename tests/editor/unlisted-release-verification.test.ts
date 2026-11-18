@@ -20,32 +20,63 @@ const releaseHeaders={
 const base={portfolioId,htmlSha256:sha,releaseGeneration:7,
   publicServingEnabled:false,publicUrl:null,
   publicHandle:'release_owner',publicSlug:'release-fixture'};
+const requestId='30000000-0000-4000-8000-000000000003';
+const operationId='40000000-0000-4000-8000-000000000004';
+const alias='/api/public-portfolio?handle=release_owner&slug=release-fixture';
+const canonical='/release_owner/release-fixture';
 type State='ACKNOWLEDGED'|'AWAITING_VERIFICATION'|'PROBE_PENDING';
-function fixture(state:State,{response,prepare,probe,activation,recovery,unlisted=false}:{
+function fixture(state:State,{response,prepare,probe,activation,recovery,unlisted=false,
+  mediaManifest=null,assetHashes=[]}:{
   response?:Response;prepare?:Record<string,unknown>;probe?:Record<string,unknown>;
   activation?:Record<string,unknown>;recovery?:Record<string,unknown>;unlisted?:boolean;
+  mediaManifest?:string|null;assetHashes?:string[];
 }={}) {
   const calls:{op:string;body:Record<string,string|number>}[]=[];
+  const authorityCalls:string[]=[];
   const visits:string[]=[];
   const methods:string[]=[];
   let responseBytes:Promise<ArrayBuffer>|undefined;
-  let acknowledged=state==='ACKNOWLEDGED';
-  const object={...base,status:state,...(unlisted?{
-    publicHandle:null,publicSlug:null}:{}),...prepare};
+  let acknowledged=state==='ACKNOWLEDGED',active=state!=='PROBE_PENDING',epoch=10;
+  const object={...base,status:state,...(unlisted?{publicHandle:null,publicSlug:null}:{}),...prepare};
+  const receipt=()=>active?{
+    portfolioId,intentId:id,requestId,operationId,releaseGeneration:7,stageGeneration:7,
+    pointerGeneration:7,revocationGeneration:0,deliveryEpoch:epoch,visibility:'PUBLIC',
+    handle:'release_owner',slug:'release-fixture',storedHtmlSha256:object.htmlSha256,
+    mediaManifest,assetHashes:[...assetHashes],verifiedAt:acknowledged?'2026-11-18T00:00:00Z':null
+  }:null;
   const rpc=async(op:string,body:Record<string,string|number>):Promise<unknown>=>{
     calls.push({op,body});
     if(op==='service_prepare_unlisted_release')return object;
     if(op==='service_probe_unlisted_release')
       return probe??{status:'PROBE_PENDING',intentId:id,
         releaseGeneration:7,htmlSha256:sha,publicServingEnabled:false,html};
-    if(op==='service_activate_unlisted_release')
+    if(op==='service_activate_unlisted_release'){
+      active=true;
       return activation??{status:'ACTIVATED_NEEDS_EXTERNAL_HTTP_VERIFICATION',
-        portfolioId,releaseGeneration:7,htmlSha256:sha,publicUrl:null,
-        hostRevocationVerified:false};
+        portfolioId,releaseGeneration:7,htmlSha256:sha,publicUrl:null,hostRevocationVerified:false};
+    }
+    assert.equal(unlisted,true,'PUBLIC must never use legacy UNLISTED ACK/recover');
     if(op==='service_acknowledge_unlisted_release'){acknowledged=true;return true;}
     if(op==='service_recover_failed_unlisted_release')
       return recovery??{portfolioId,status:'REVOKED',releaseGeneration:null};
     throw Error('Unsupported trusted RPC');
+  };
+  const publicAuthority:import('../../packages/storage-adapters/src/unlisted-release-verification.ts').PublicAuthorityRpc=async(op,body)=>{
+    assert.equal(unlisted,false);
+    authorityCalls.push(op);
+    if(op==='service_read_current_public_delivery_receipt'){
+      assert.deepEqual(body,{p_portfolio_id:portfolioId,p_intent_id:id});
+      return receipt();
+    }
+    assert.deepEqual(body.p_expected_receipt,receipt(),'Exact current receipt is required');
+    epoch++;
+    if(op==='service_acknowledge_public_delivery'){acknowledged=true;return receipt();}
+    if(op==='service_recover_failed_public_delivery'){
+      active=false;
+      return {portfolioId,status:'REVOKED',releaseGeneration:null,deliveryEpoch:epoch,
+        hostRevocationVerified:false,publicUrl:null};
+    }
+    throw Error('Unsupported authority operation');
   };
   const http:typeof fetch=async(input,options)=>{
     const method=options?.method;
@@ -54,29 +85,41 @@ function fixture(state:State,{response,prepare,probe,activation,recovery,unliste
     if(method==='GET')visits.push(String(input));
     assert.equal(options?.credentials,'omit');
     assert.equal(options?.redirect,'error');
-    // Ordinary fixtures never tee a stream into an unread original branch.
     if(response)return new Response(method==='HEAD'?null:await (responseBytes??=response.arrayBuffer()),
       {status:response.status,headers:response.headers});
     return new Response(method==='HEAD'?null:unlisted||!acknowledged?html:publicHtml,{
-      status:200,headers:{
-        ...releaseHeaders,
-        'X-Robots-Tag':unlisted||!acknowledged?'noindex, nofollow, noarchive':'index, follow'
+      status:200,headers:{...releaseHeaders,
+        'X-Robots-Tag':unlisted||!acknowledged?'noindex, nofollow, noarchive':'index, follow',
+        ...(!unlisted&&acknowledged?{Link:'<'+canonical+'>; rel="canonical"'}:{})
       }
     });
   };
-  return {
-    ports:{origin:'https://kadmeion.vercel.app',rpc,http},
-    calls,visits,methods
-  };
+  return {ports:{origin:'https://kadmeion.vercel.app',rpc,http,
+    ...(!unlisted?{expectedConsent:{portfolioId,requestId,operationId,visibility:'PUBLIC' as const},
+      publicAuthority}:{})},
+    calls,authorityCalls,visits,methods,receipt};
+}
+function assertPublicAck(value:Awaited<ReturnType<typeof publishConsentedUnlistedRelease>>,
+    expectedSha=sha){
+  assert.equal(value.status,'DELIVERY_ACKNOWLEDGED');
+  if(value.status!=='DELIVERY_ACKNOWLEDGED')throw Error('No acknowledgement');
+  assert.equal(value.htmlSha256,expectedSha);
+  assert.equal(value.authoritativePublicReceipt?.requestId,requestId);
+  assert.equal(value.authoritativePublicReceipt?.operationId,operationId);
+  assert.equal(value.authoritativePublicReceipt?.storedHtmlSha256,expectedSha);
+  assert.ok(value.authoritativePublicReceipt?.verifiedAt);
+  assert.equal(value.observedPublicDelivery?.canonicalPath,canonical);
+  assert.equal(value.observedPublicDelivery?.apiPath,alias);
 }
 test('acknowledged public release must re-fetch the same exact HTTP bytes',async()=>{
   const f=fixture('ACKNOWLEDGED');
   const result=await publishConsentedUnlistedRelease(id,f.ports);
-  assert.deepEqual(result,{status:'DELIVERY_ACKNOWLEDGED',htmlSha256:sha});
-  assert.deepEqual(f.methods,['GET','HEAD']);
+  assertPublicAck(result);
+  assert.deepEqual(f.methods,['GET','HEAD','GET','HEAD']);
   assert.equal(f.calls.length,1);
   assert.equal(f.calls[0].op,'service_prepare_unlisted_release');
-  assert.deepEqual(f.visits,['https://kadmeion.vercel.app/release_owner/release-fixture']);
+  assert.deepEqual(f.visits,['https://kadmeion.vercel.app'+canonical,'https://kadmeion.vercel.app'+alias]);
+  assert.ok(f.authorityCalls.every(op=>op==='service_read_current_public_delivery_receipt'));
 });
 test('acknowledged release replay fails on stale or corrupted host without rollback',async()=>{
   for(const response of [
@@ -90,7 +133,7 @@ test('acknowledged release replay fails on stale or corrupted host without rollb
   ]) {
     const f=fixture('ACKNOWLEDGED',{response});
     await assert.rejects(publishConsentedUnlistedRelease(id,f.ports),
-      /Acknowledged release failed/);
+      /Authoritative public delivery was not verified/);
     assert.deepEqual(f.calls.map(x=>x.op),['service_prepare_unlisted_release'],
       'An already-verified live release must not auto-roll back due to transient HTTP failure');
   }
@@ -98,12 +141,11 @@ test('acknowledged release replay fails on stale or corrupted host without rollb
 test('newly activated publication must get a fresh host digest then database ack',async()=>{
   const f=fixture('AWAITING_VERIFICATION');
   const value=await publishConsentedUnlistedRelease(id,f.ports);
-  assert.deepEqual(value,{status:'DELIVERY_ACKNOWLEDGED',htmlSha256:sha});
-  assert.deepEqual(f.calls.map(x=>x.op),[
-    'service_prepare_unlisted_release','service_acknowledge_unlisted_release'
-  ]);
-  assert.equal(f.visits.length,2,'Verify private canary and post-ack indexable delivery');
-  assert.deepEqual(f.methods,['GET','HEAD','GET','HEAD']);
+  assertPublicAck(value);
+  assert.deepEqual(f.calls.map(x=>x.op),['service_prepare_unlisted_release']);
+  assert.equal(f.authorityCalls.filter(op=>op==='service_acknowledge_public_delivery').length,1);
+  assert.equal(f.visits.length,4,'Verify private canary and post-ack canonical + API delivery');
+  assert.deepEqual(f.methods,['GET','HEAD','GET','HEAD','GET','HEAD','GET','HEAD']);
 });
 test('a matching digest cannot acknowledge unsafe cache, search or script headers',async()=>{
   for(const extra of [
@@ -120,7 +162,9 @@ test('a matching digest cannot acknowledge unsafe cache, search or script header
     }});
     const f=fixture('AWAITING_VERIFICATION',{response});
     assert.deepEqual(await publishConsentedUnlistedRelease(id,f.ports),{status:'DELIVERY_REVOKED'});
-    assert.equal(f.calls.at(-1)?.op,'service_recover_failed_unlisted_release');
+    assert.equal(f.calls.at(-1)?.op,'service_prepare_unlisted_release');
+    assert.ok(f.authorityCalls.includes('service_recover_failed_public_delivery'));
+    assert.ok(!f.authorityCalls.includes('service_acknowledge_public_delivery'));
   }
 });
 test('public release cannot claim success if the host stays noindex after the DB acknowledgment',async()=>{
@@ -135,10 +179,11 @@ test('public release cannot claim success if the host stays noindex after the DB
   };
   await assert.rejects(publishConsentedUnlistedRelease(id,{
     ...initial.ports,http:http as typeof fetch,rpc
-  }),/indexable HTTP verification/);
-  assert.deepEqual(calls,[
-    'service_prepare_unlisted_release','service_acknowledge_unlisted_release'
-  ],'Do not report success or issue a destructive rollback after the DB acknowledgment');
+  }),/Authoritative public delivery was not verified/);
+  assert.deepEqual(calls,['service_prepare_unlisted_release']);
+  assert.ok(initial.authorityCalls.includes('service_acknowledge_public_delivery'));
+  assert.ok(!initial.authorityCalls.includes('service_recover_failed_public_delivery'),
+    'Do not issue a destructive rollback after the DB acknowledgment');
 });
 
 test('unverified new host delivery is revoked, not acknowledged',async()=>{
@@ -146,19 +191,17 @@ test('unverified new host delivery is revoked, not acknowledged',async()=>{
   const f=fixture('AWAITING_VERIFICATION',{response:bad});
   assert.deepEqual(await publishConsentedUnlistedRelease(id,f.ports),
     {status:'DELIVERY_REVOKED'});
-  assert.deepEqual(f.calls.map(x=>x.op),[
-    'service_prepare_unlisted_release','service_recover_failed_unlisted_release'
-  ]);
+  assert.deepEqual(f.calls.map(x=>x.op),['service_prepare_unlisted_release']);
+  assert.ok(f.authorityCalls.includes('service_recover_failed_public_delivery'));
 });
 test('private probe requires pinned HTML digest before activation and visitor fetch',async()=>{
   const f=fixture('PROBE_PENDING');
-  assert.deepEqual(await publishConsentedUnlistedRelease(id,f.ports),
-    {status:'DELIVERY_ACKNOWLEDGED',htmlSha256:sha});
+  assertPublicAck(await publishConsentedUnlistedRelease(id,f.ports));
   assert.deepEqual(f.calls.map(x=>x.op),[
-    'service_prepare_unlisted_release','service_probe_unlisted_release',
-    'service_activate_unlisted_release','service_acknowledge_unlisted_release'
+    'service_prepare_unlisted_release','service_probe_unlisted_release','service_activate_unlisted_release'
   ]);
-  assert.equal(f.visits.length,2);
+  assert.ok(f.authorityCalls.includes('service_acknowledge_public_delivery'));
+  assert.equal(f.visits.length,4);
 });
 test('probe byte tampering fails before activation or visitor exposure',async()=>{
   const f=fixture('PROBE_PENDING',{probe:{status:'PROBE_PENDING',
@@ -195,44 +238,34 @@ test('invalid owner-consent routes and invalid transport origin never activate',
   assert.equal(f.calls.length,0);
 });
 
-test('image-backed release requires exact scoped PNG bytes before acknowledgement',async()=>{
-  const png=Buffer.from('89504e470d0a1a0a','hex');
+test('image-backed PUBLIC release requires exact scoped PNG, canonical and API bytes before acknowledgement',async()=>{
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
   const imageSha=createHash('sha256').update(png).digest('hex');
-  const frozen=html.replace('</main>',
-    '<img loading="lazy" decoding="async" src="./assets/'+imageSha+
+  const frozen=html.replace('</main>','<img loading="lazy" decoding="async" src="./assets/'+imageSha+
     '.png" alt="Evidence" width="1" height="1"></main>');
   const frozenSha=createHash('sha256').update(frozen).digest('hex');
-  const asset='/api/public-portfolio?handle=release_owner&slug=release-fixture&manifest='+
-    'a'.repeat(64)+'&asset='+imageSha;
+  const manifest='a'.repeat(64),asset=alias+'&manifest='+manifest+'&asset='+imageSha;
   for(const valid of [false,true]){
-    let ack=false, visits=0;
+    const f=fixture('AWAITING_VERIFICATION',{prepare:{htmlSha256:frozenSha},mediaManifest:manifest,assetHashes:[imageSha]});
     const assetMethods:string[]=[];
-    const result=await publishConsentedUnlistedRelease(id,{origin:'https://release.example',
-      rpc:async operation=>{
-        if(operation==='service_prepare_unlisted_release')
-          return {...base,htmlSha256:frozenSha,status:'AWAITING_VERIFICATION'};
-        if(operation==='service_acknowledge_unlisted_release'){ack=true;return true;}
-        if(operation==='service_recover_failed_unlisted_release')
-          return {portfolioId,status:'REVOKED',releaseGeneration:null};
-        assert.fail(operation);
-      },
-      http:async (input,options)=>{
-        const target=new URL(String(input));
-        if(target.pathname==='/api/public-portfolio'){
-          assert.equal(target.pathname+target.search,asset);
-          assetMethods.push(options?.method??'');
-          if(options?.method==='GET')visits++;
-          return new Response(options?.method==='HEAD'?null:valid?png:Buffer.from('wrong'),{
-            headers:{'cache-control':'private, no-store','content-type':'image/png'}});
-        }
-        const body=frozen.replace('./assets/'+imageSha+'.png',asset.replaceAll('&','&amp;'));
-        return new Response(options?.method==='HEAD'?null:ack?body.replace(marker,'<meta name="robots" content="index,follow">'):body,
-          {headers:{...releaseHeaders,'X-Robots-Tag':ack?'index, follow':'noindex, nofollow, noarchive'}});
+    const http:typeof fetch=async(input,options)=>{
+      const target=new URL(String(input));
+      if(target.searchParams.has('asset')){
+        assert.equal(target.pathname+target.search,asset);
+        assetMethods.push(options?.method??'');
+        return new Response(options?.method==='HEAD'?null:valid?png:Buffer.from('wrong'),{
+          headers:{'cache-control':'private, no-store','content-type':'image/png'}});
       }
-    });
-    assert.equal(result.status,valid?'DELIVERY_ACKNOWLEDGED':'DELIVERY_REVOKED');
-    assert.equal(ack,valid);
-    assert.equal(visits,valid?2:1);
+      assert.ok([canonical,alias].includes(target.pathname+target.search));
+      const ack=f.receipt()?.verifiedAt!==null;
+      const body=frozen.replace('./assets/'+imageSha+'.png',asset.replaceAll('&','&amp;'));
+      return new Response(options?.method==='HEAD'?null:ack?body.replace(marker,'<meta name="robots" content="index,follow">'):body,
+        {headers:{...releaseHeaders,'X-Robots-Tag':ack?'index, follow':'noindex, nofollow, noarchive',
+          ...(ack?{Link:'<'+canonical+'>; rel="canonical"'}:{})}});
+    };
+    const result=await publishConsentedUnlistedRelease(id,{...f.ports,http});
+    if(valid)assertPublicAck(result,frozenSha);else assertRevokedWithoutAck(f,result);
+    assert.equal(f.authorityCalls.includes('service_acknowledge_public_delivery'),valid);
     assert.deepEqual(assetMethods,valid?['GET','HEAD','GET','HEAD']:['GET']);
   }
 });
@@ -258,6 +291,8 @@ test('method-aware canonical HEAD fails closed on inconsistent delivery policy',
     assert.equal(heads,1,variant+' must independently probe HEAD');
     assert.deepEqual(result,{status:'DELIVERY_REVOKED'},variant);
     assert.equal(f.calls.some(x=>x.op==='service_acknowledge_unlisted_release'),false);
+    assert.ok(f.authorityCalls.includes('service_recover_failed_public_delivery'));
+    assert.ok(!f.authorityCalls.includes('service_acknowledge_public_delivery'));
   }
 });
 
@@ -272,7 +307,11 @@ async function within<T>(promise:Promise<T>,milliseconds=7000):Promise<T>{
 }
 function assertRevokedWithoutAck(f:ReturnType<typeof fixture>,result:unknown){
   assert.deepEqual(result,{status:'DELIVERY_REVOKED'});
-  assert.deepEqual(f.calls.map(x=>x.op),[
+  if(f.ports.publicAuthority){
+    assert.deepEqual(f.calls.map(x=>x.op),['service_prepare_unlisted_release']);
+    assert.ok(f.authorityCalls.includes('service_recover_failed_public_delivery'));
+    assert.ok(!f.authorityCalls.includes('service_acknowledge_public_delivery'));
+  }else assert.deepEqual(f.calls.map(x=>x.op),[
     'service_prepare_unlisted_release','service_recover_failed_unlisted_release'
   ]);
 }
@@ -429,4 +468,37 @@ test('C03 oversized GET with nonsettling cancellation cannot block recovery',asy
     assertRevokedWithoutAck(f,await within(publishConsentedUnlistedRelease(id,{...f.ports,http})));
     assert.equal(cancelAttempted,true);
   }finally{resolveCancel?.();}
+});
+
+test('C11 PUBLIC cannot use the legacy acknowledgement or implicit operation identity',async()=>{
+  const f=fixture('PROBE_PENDING');
+  const {publicAuthority,expectedConsent,...legacy}=f.ports;
+  await assert.rejects(publishConsentedUnlistedRelease(id,legacy),/Authoritative public publication consent is required/);
+  assert.deepEqual(f.calls.map(x=>x.op),['service_prepare_unlisted_release']);
+  assert.equal(f.visits.length,0);
+  const bad=fixture('AWAITING_VERIFICATION');
+  await assert.rejects(publishConsentedUnlistedRelease(id,{...bad.ports,expectedConsent:{
+    portfolioId,requestId,visibility:'PUBLIC'
+  }}));
+  assert.equal(bad.calls.length,0);
+  assert.equal(bad.visits.length,0);
+});
+test('C11 terminal recovery requires exact epoch+1 and null current readback',async()=>{
+  for(const variant of ['epoch','readback','restore'] as const){
+    const f=fixture('AWAITING_VERIFICATION',{response:new Response('unavailable',{status:503})});
+    const authority=f.ports.publicAuthority!;
+    let stale:unknown=null;
+    await assert.rejects(publishConsentedUnlistedRelease(id,{...f.ports,publicAuthority:async(op,body)=>{
+      if(op==='service_read_current_public_delivery_receipt'&&stale!==null)return stale;
+      const original=await authority(op,body);
+      if(op!=='service_recover_failed_public_delivery')return original;
+      assert.ok(original&&typeof original==='object');
+      const result=original as Record<string,unknown>;
+      if(variant==='epoch')return {...result,deliveryEpoch:Number(result.deliveryEpoch)+1};
+      if(variant==='restore')return {...result,status:'RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION',releaseGeneration:6};
+      stale=body.p_expected_receipt;
+      return result;
+    }}),/Authoritative public delivery was not verified/);
+    assert.ok(!f.authorityCalls.includes('service_acknowledge_public_delivery'));
+  }
 });
