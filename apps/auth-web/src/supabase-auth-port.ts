@@ -1505,26 +1505,50 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Parse one bounded JSON stream; distinguish invalid data from interrupted transport. */
-  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+  private async readBoundedOwnerMedia(response:Response,session:StoredSession,epoch:number,max:number,timeoutMs:number):Promise<Uint8Array>{
+    if(!Number.isSafeInteger(max)||max<1||max>5242880)
+      throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
     const reader=response.body?.getReader();
     if(!reader)throw mediaError('INTEGRITY','Private media response could not be verified.');
-    const parts:Uint8Array[]=[];let size=0;
+    const buffer=new Uint8Array(max);
+    let size=0,empty=0,chunks=0,timer:ReturnType<typeof setTimeout>|undefined;
+    const deadline=performance.now()+timeoutMs;
+    const expiry=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.')),timeoutMs);
+    });
     try{
       for(;;){
+        if(performance.now()>=deadline)throw mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.');
         let part:ReadableStreamReadResult<Uint8Array>;
-        try{part=await reader.read();}
-        catch{throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');}
+        try{part=await Promise.race([reader.read(),expiry]);}
+        catch(error){
+          if(error instanceof OwnerMediaError)throw error;
+          throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');
+        }
         this.assertOwnerImageEpoch(session,epoch);
+        if(performance.now()>=deadline)throw mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.');
         if(part.done)break;
-        size+=part.value.byteLength;
-        if(size>max)throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
-        parts.push(part.value);
+        if(!(part.value instanceof Uint8Array)||++chunks>16384||part.value.byteLength>max-size)
+          throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
+        if(part.value.byteLength===0){
+          if(++empty>=16)throw mediaError('INTEGRITY','Private media response made no progress.');
+          continue;
+        }
+        empty=0;buffer.set(part.value,size);size+=part.value.byteLength;
       }
-      const bytes=new Uint8Array(size);let offset=0;
-      for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
-      try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
-      catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
-    }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+      return buffer.subarray(0,size);
+    }finally{
+      if(timer!==undefined)clearTimeout(timer);
+      try{void reader.cancel().catch(()=>{});}catch{/* best effort */}
+      try{reader.releaseLock();}catch{/* pending read cancelled */}
+    }
+  }
+
+  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+    const bytes=await this.readBoundedOwnerMedia(response,session,epoch,max,15000);
+    this.assertOwnerImageEpoch(session,epoch);
+    try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+    catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
   }
 
   private async mediaResponseError(response:Response,session:StoredSession,epoch:number,attestation=false,storage=false):Promise<OwnerMediaError>{
@@ -1550,6 +1574,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }catch{throw mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE','Private media service is unavailable.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==this.origin+path))
+        throw mediaError('INTEGRITY','Private media response origin could not be verified.');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,attestation,path.startsWith('/storage/v1/'));
       const raw=await this.readMediaJsonBody(response,session,epoch,65536);
       this.assertOwnerImageEpoch(session,epoch);
@@ -1614,35 +1640,26 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    * Bound streamed bytes before constructing a Blob, and reject stale sessions. */
   private async readOwnerImageBytes(session:StoredSession,epoch:number,path:string,mime:OwnerPrivateImageMime,size:number):Promise<Blob> {
     this.assertOwnerImageEpoch(session,epoch);
+    const url=this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path;
     let response:Response;
     try{
-      response=await this.fetcher(this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path,{
+      response=await this.fetcher(url,{
         headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token},
         credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
       });
     }catch{throw mediaError('PROVIDER_UNAVAILABLE','Private image bytes could not be read. Retry or use the folder cover.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==url))
+        throw mediaError('INTEGRITY','Private image response origin could not be verified.');
       const declared=response.headers.get('content-length');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,false,true);
       if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
         (declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==size))||!response.body)
         throw mediaError('INTEGRITY','Private image readback was not verified.');
-      const reader=response.body.getReader();
-      const chunks:BlobPart[]=[];
-      let total=0;
-      try{
-        while(true){
-          const part=await reader.read();
-          this.assertOwnerImageEpoch(session,epoch);
-          if(part.done)break;
-          total+=part.value.byteLength;
-          if(total>size||total>5242880)throw mediaError('INTEGRITY','Private image exceeds its verified size.');
-          chunks.push(new Uint8Array(part.value));
-        }
-      }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
-      if(total!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
-      const blob=new Blob(chunks,{type:mime});
+      const bytes=await this.readBoundedOwnerMedia(response,session,epoch,size,60000);
+      if(bytes.byteLength!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
+      const blob=new Blob([new Uint8Array(bytes)],{type:mime});
       await this.validateOwnerRaster(blob,true);
       this.assertOwnerImageEpoch(session,epoch);
       return blob;
