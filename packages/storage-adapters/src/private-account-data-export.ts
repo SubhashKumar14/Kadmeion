@@ -687,8 +687,18 @@ export class SupabasePrivateAccountDataExporter {
         receipt=await this.json('/functions/v1/complete-private-asset',65536,
           asset.scope==='PROFILE'?{assetId:asset.assetId,scope:'PROFILE'}:{assetId:asset.assetId});
       }catch(error){
-        if(error instanceof PrivateAccountExportError&&error.code!=='PROVIDER_UNAVAILABLE')throw error;
-        throw new PrivateAccountExportError('UNVERIFIED','Trusted private media attestation is unavailable; no recovery file was produced.');
+        // A lost transport response can follow a successful write-once pin.
+        // Reconcile only an unavailable transport, never a malformed receipt,
+        // authorization denial, rate limit or a changed object identity.
+        if(!(error instanceof PrivateAccountExportError)||error.code!=='PROVIDER_UNAVAILABLE')throw error;
+        const recovered=await read(asset);
+        requireCondition(recovered.objectId===before.objectId&&recovered.version===before.version,
+          'INTEGRITY','Private object identity changed during trusted attestation.');
+        requireCondition(recovered.status==='SERVER_HASH_PINNED',
+          'UNVERIFIED','Trusted private media attestation is unavailable; no recovery file was produced. Retry the export.');
+        // The normal aggregate, object version and byte SHA-256 checks still
+        // run before download. No retry write or client-provided digest.
+        continue;
       }
       requireCondition(object(receipt)&&exactFields(receipt,asset.scope==='PROFILE'?
         ['assetId','scope','status','publicPublishingAllowed','accountDeletionAllowed']:
