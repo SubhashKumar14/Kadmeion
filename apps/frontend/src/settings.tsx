@@ -746,6 +746,54 @@ async function exportDigest(bytes:Uint8Array):Promise<string>{
   const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
   return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
 }
+// Independently requested owner annexes, never a replacement for the
+// request-bound V2 archive. They do not authorize analytics or provider sync.
+function OwnerDataAnnexes({port,data,blocked}:{port:SupabaseBrowserAuthPort;data:Services['data'];blocked:boolean}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false),running=useRef(false);
+  const [busy,setBusy]=useState<'analytics'|'provider'|null>(null);
+  const [message,setMessage]=useState<Message>(null);
+  const [receipt,setReceipt]=useState<{filename:string;bytes:number;sha256:string;records:number}|null>(null);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+  async function download(kind:'analytics'|'provider'){
+    if(blocked||running.current||!current())return;
+    running.current=true;setBusy(kind);setMessage(null);setReceipt(null);
+    try{
+      const artifact=kind==='analytics'?await data.exportAnalyticsAnnex():await data.exportProviderFactsAnnex();
+      if(!current())return;
+      if(artifact.status!=='BOUNDED_OWNER_ANNEX'||artifact.completeAccountExport!==false||artifact.deletionAllowed!==false||
+        artifact.filename!==(kind==='analytics'?'kadmeion-portfolio-analytics-annex.json':'kadmeion-github-facts-annex.json')||
+        artifact.mime!=='application/json'||artifact.bytes.byteLength===0||await exportDigest(artifact.bytes)!==artifact.sha256)
+        throw new Error('The annex bytes or receipt could not be verified.');
+      if(!current())return;
+      downloadPrivateFile(artifact.filename,artifact.bytes,artifact.mime);
+      setReceipt({filename:artifact.filename,bytes:artifact.bytes.byteLength,sha256:artifact.sha256,records:artifact.records});
+      setMessage({error:false,text:'Private data annex download prepared.'});
+    }catch(error){
+      if(current()){
+        const code=error&&typeof error==='object'&&'code' in error?error.code:null;
+        setMessage({error:true,text:code==='AUTH_EXPIRED'?'The current owner session changed. Sign in again.':
+          code==='LIMIT_EXCEEDED'?'The annex exceeds its supported limit. No file was downloaded.':
+          'The current owner annex could not be verified or is unavailable. No file was downloaded.'});
+      }
+    }finally{running.current=false;if(current())setBusy(null);}
+  }
+  return <SettingsCard title="Provider and analytics data annexes">
+    <p>Download retained Kadmeion records separately from the bounded account archive. These actions do not connect to GitHub, enable tracking, or request external provider data.</p>
+    <div className="ws-actions">
+      <button type="button" className="ws-secondary" disabled={blocked||busy!==null} onClick={()=>void download('provider')}>{busy==='provider'?'Preparing retained facts…':'Download retained GitHub facts JSON'}</button>
+      <button type="button" className="ws-secondary" disabled={blocked||busy!==null} onClick={()=>void download('analytics')}>{busy==='analytics'?'Preparing retained analytics…':'Download retained analytics JSON'}</button>
+    </div>
+    <Status message={message}/>
+    {receipt&&<div aria-label="Private annex download receipt"><dl>
+      <dt>Filename</dt><dd>{receipt.filename}</dd><dt>Size</dt><dd>{formatExportBytes(receipt.bytes)}</dd>
+      <dt>Retained records</dt><dd>{receipt.records}</dd><dt>SHA-256</dt><dd style={{overflowWrap:'anywhere'}}><code>{receipt.sha256}</code></dd>
+    </dl></div>}
+    <p>Analytics is limited to retained, consented aggregate records; provider data is limited to retained GitHub facts, including any explicitly unconfirmed candidate. A zero count is not proof of universal deletion or complete visitor coverage.</p>
+  </SettingsCard>;
+}
+
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch] = useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -1059,6 +1107,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         ? <a href={'/app/portfolios/'+selectedPortfolio.id+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
+    <OwnerDataAnnexes port={port} data={services.data} blocked={busy!==null}/>
     <SettingsCard title="Coverage and exclusions">
       <p>Keep downloads private. They may contain personal information and editable source. Provider credentials, session tokens, restricted admin data, external platform records, backups, caches and third-party copies are not exported.</p>
       <p>Inventory quotas and provider availability may prevent preparation. Downloading an archive does not revoke public links, validate independent hosting, restore account access, or authorize deletion. External release/retention proof remains separate.</p>
@@ -1634,6 +1683,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
           </section>
         </>}
       </>}
+      {requests&&!activeRequest&&<p>Before recording a deletion request, <a href="/app/export">download any needed retained GitHub facts and analytics annexes</a>. Ending processing may remove retained data before final erasure. The separate account-erasure receipt does not prove external platform or backup deletion.</p>}
       {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
         <label className="ws-export-select">Type DELETE MY ACCOUNT to record the request
           <input autoComplete="off" value={confirmation} disabled={busy}
