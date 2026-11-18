@@ -34,6 +34,8 @@ type PendingAccountExitContinuation = AccountExitContinuation & {epoch:number;au
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+export type OwnerRecoveryBinding=Readonly<{ownerId:string;epoch:number}>;
+type PendingRecoveryBinding=OwnerRecoveryBinding & {session:StoredSession;attempt:number};
 
 /** Auth-state invalidation broadcasts never carry access tokens or identity claims. */
 type OwnerSessionWriteNotice = (storage: StorageLike, source: SupabaseBrowserAuthPort, notice:object) => void;
@@ -207,6 +209,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
   private ownerSessionEpoch = 0;
+  private pendingRecovery:PendingRecoveryBinding|null=null;
+  private recoveryWrite:object|null=null;
   private accountExitContinuation:PendingAccountExitContinuation|null = null;
   private accountExitGeneration=0;
   private accountExitRecovery:{
@@ -259,6 +263,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   private invalidateOwnerSessionEpoch(continuation:AccountExitContinuation|null=null):void {
+    this.pendingRecovery=null;
+    this.recoveryWrite=null;
     this.clearAccountExitContinuation();
     ++this.ownerSessionEpoch;
     // Only an explicitly verified account-exit password rotation can carry a
@@ -750,6 +756,57 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       this.clearAccountExitContinuation();
   }
 
+  private installRecoveryBinding(kind:string,session:StoredSession,attempt:number):void{
+    this.pendingRecovery=null;
+    if(kind!=='recovery'&&kind!=='invite')return;
+    this.assertCurrentAuthAttempt(attempt);
+    if(!this.isCurrentSession(session))throw new Error('Recovery session changed.');
+    this.pendingRecovery={ownerId:session.user.id,epoch:this.ownerSessionEpoch,session,attempt};
+  }
+
+  private currentRecovery(binding:OwnerRecoveryBinding):PendingRecoveryBinding{
+    const grant=this.pendingRecovery;
+    const epoch=this.reconcileOwnerSessionEpoch();
+    if(!grant||this.pendingRecovery!==grant||grant.attempt!==this.authAttempt||
+      epoch!==grant.epoch||binding.ownerId!==grant.ownerId||binding.epoch!==grant.epoch||
+      !this.isCurrentSession(grant.session))
+      throw new Error('Recovery session changed. Request a new link.');
+    return grant;
+  }
+
+  readVerifiedRecoveryBinding():OwnerRecoveryBinding|null{
+    const grant=this.pendingRecovery;
+    if(!grant)return null;
+    try{this.currentRecovery(grant);return {ownerId:grant.ownerId,epoch:grant.epoch};}
+    catch{return null;}
+  }
+
+  /** Use the initiating grant's verified bearer, not a replacement session.
+   * Refresh/owner change/another Auth action invalidates this continuation. */
+  updateRecoveryPassword(password:string,binding:OwnerRecoveryBinding):Promise<AuthOutcome<{user:AuthUser}>>{
+    const expected={...binding};
+    return this.outcome(async()=>{
+      if(typeof password!=='string'||!password)throw new Error('A new password is required.');
+      const grant=this.currentRecovery(expected);
+      if(this.recoveryWrite)throw new Error('A recovery password update is already pending.');
+      const flight={};
+      this.recoveryWrite=flight;
+      try{
+        const checked=await this.verifyLiveSession();
+        if(this.currentRecovery(expected)!==grant||checked.session!==grant.session||
+          checked.user.id!==grant.ownerId||checked.epoch!==grant.epoch||this.recoveryWrite!==flight)
+          throw new Error('Recovery session changed. Request a new link.');
+        const payload=await this.request('/user','PUT',{password},grant.session.access_token);
+        const updated=userFrom(payload.user??payload);
+        if(this.currentRecovery(expected)!==grant||this.recoveryWrite!==flight||
+          !updated||updated.id!==grant.ownerId)
+          throw new Error('Password update could not be confirmed for the recovery account.');
+        this.pendingRecovery=null;
+        return {user:updated};
+      }finally{if(this.recoveryWrite===flight)this.recoveryWrite=null;}
+    });
+  }
+
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
     return this.outcome(async () => {
       // Password updates must not silently adopt a different persisted owner.
@@ -871,8 +928,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.assertCurrentAuthAttempt(attempt);
     const user = userFrom(userPayload);
     if (!user) throw new Error('Could not validate the invitation session.');
-    this.storeEmailSession({ access_token, refresh_token,
-      expires_at: Math.floor(Date.now() / 1000) + expires_in, user });
+    const session={access_token,refresh_token,expires_at:Math.floor(Date.now()/1000)+expires_in,user};
+    this.storeEmailSession(session);
+    this.installRecoveryBinding(kind,session,attempt);
     return kind === 'invite' ? 'invite' : kind === 'recovery' ? 'recovery' : 'confirmation';
   }
 
@@ -891,7 +949,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.assertCurrentAuthAttempt(attempt);
     if (!verified || verified.id !== session.user.id)
       throw new Error('Email link was not verified for the active account.');
-    this.storeEmailSession({...session, user:verified});
+    const verifiedSession={...session,user:verified};
+    this.storeEmailSession(verifiedSession);
+    this.installRecoveryBinding(type,verifiedSession,attempt);
     return type === 'invite' ? 'invite' : type === 'recovery' ? 'recovery' : 'confirmation';
   }
 
