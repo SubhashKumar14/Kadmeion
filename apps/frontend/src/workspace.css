@@ -1386,3 +1386,25 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-home .ws-recent-grid>nav li a{width:100%;justify-content:space-between}
 .ws-home .ws-recent-grid li:last-child{border-bottom:0}
 @media(max-width:720px){.ws-home .ws-recent-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* C13 owner-only analytics: real comparison controls and tabular fallback.
+ * Scoped to the verified analytics route, not public author portfolios. */
+.ws-analytics-route .ws-growth-layout{min-inline-size:0}
+.ws-analytics-route .ws-growth-layout>.ws-project-aside{min-inline-size:0;overflow-wrap:anywhere}
+.ws-analytics-route fieldset{min-inline-size:0;margin-block:14px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
+.ws-analytics-route fieldset legend{max-inline-size:100%;padding-inline:4px;overflow-wrap:anywhere}
+.ws-analytics-route fieldset>label{
+  display:flex;align-items:center;gap:10px;min-block-size:44px;min-inline-size:0;
+  padding:8px 4px;overflow-wrap:anywhere;cursor:pointer
+}
+.ws-analytics-route fieldset>label>input{
+  flex:0 0 auto;inline-size:20px;block-size:20px;accent-color:var(--accent-strong)
+}
+.ws-analytics-route fieldset>label:focus-within{outline:3px solid var(--focus);outline-offset:2px;border-radius:4px}
+.ws-analytics-route :is(button,a){max-inline-size:100%;white-space:normal;overflow-wrap:anywhere}
+.ws-analytics-route .ws-project-aside table{inline-size:100%;border-collapse:collapse}
+.ws-analytics-route .ws-project-aside :is(th,td){padding:8px;text-align:start;vertical-align:top}
+.ws-analytics-route .ws-project-aside th{color:var(--ink)}
+.ws-analytics-route .ws-project-aside figure{min-inline-size:0;margin:12px 0}
+@media(max-width:1100px){.ws-analytics-route .ws-growth-layout{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:440px){.ws-analytics-route .ws-project-aside{padding-inline:12px}}
