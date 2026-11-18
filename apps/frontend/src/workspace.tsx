@@ -306,6 +306,7 @@ export function WorkspaceApp() {
   const [verificationAttempt, setVerificationAttempt] = useState(0);
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
   const portGenerationRef = useRef(0);
+  const retryRecordsRef = useRef<(() => void) | null>(null);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
@@ -349,6 +350,7 @@ export function WorkspaceApp() {
         attempt === seq && port.getOwnerSessionEpoch() === epoch;
       const verify = () => {
         const seq = ++attempt;
+        retryRecordsRef.current = null;
         const epoch = port.getOwnerSessionEpoch();
         setGate({status:'checking'});
         setSnapshot({status:'loading'});
@@ -374,14 +376,29 @@ export function WorkspaceApp() {
           setGate({status:'verified',owner,epoch,portGeneration:generation});
           if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') ||
               isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
-          void port.readOwnerWorkspace().then(read => {
-            if (!stillCurrent(seq,epoch)) return;
-            if (read.error || !read.data) {
-              setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
-            } else setSnapshot({status:'ready',value:read.data});
-          }).catch(() => {
-            if (stillCurrent(seq,epoch)) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
-          });
+          // The owner gate stays mounted while only its overview records retry.
+          // Never reuse a callback after the initiating port/owner epoch changes.
+          let reading = false;
+          const readRecords = async () => {
+            if (reading || !stillCurrent(seq,epoch)) return;
+            if (!navigator.onLine) {
+              setSnapshot({status:'error',message:'Your browser reports offline. Reconnect and retry these private records; no cached records are shown.'});
+              return;
+            }
+            reading = true;
+            setSnapshot({status:'loading'});
+            try {
+              const read=await port.readOwnerWorkspace();
+              if (!stillCurrent(seq,epoch)) return;
+              if (read.error || !read.data) {
+                setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
+              } else setSnapshot({status:'ready',value:read.data});
+            } catch {
+              if (stillCurrent(seq,epoch)) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
+            } finally { reading = false; }
+          };
+          retryRecordsRef.current=()=>{void readRecords();};
+          void readRecords();
         }).catch(() => {
           if (stillCurrent(seq,epoch)) setGate({status:'unavailable',message:'Owner session verification could not be completed. Retry verification or sign in again; no private records are shown.'});
         });
@@ -401,7 +418,7 @@ export function WorkspaceApp() {
     } catch {
       setGate({ status: 'locked', message: 'Secure browser storage or the authentication configuration is unavailable.' });
     }
-    return () => { cancelled = true; ++attempt; unsubscribe(); authRef.current = null; };
+    return () => { cancelled = true; ++attempt; unsubscribe(); retryRecordsRef.current = null; authRef.current = null; };
   }, [route, verificationAttempt]);
   async function skipChoice(choice: PrivateStep): Promise<boolean> {
     const port=authRef.current;
@@ -514,7 +531,10 @@ export function WorkspaceApp() {
       </div>
     </section> : snapshot.status === 'error' ? <section className="ws-error">
       <h1>Private records unavailable.</h1><p role="alert">{snapshot.message}</p>
-      <button type="button" className="ws-secondary" onClick={()=>window.location.reload()}>Retry securely</button>
+      <button type="button" className="ws-secondary" onClick={event=>{
+        event.currentTarget.closest<HTMLElement>('main')?.focus();
+        retryRecordsRef.current?.();
+      }}>Retry securely</button>
     </section> : route === '/app/onboarding' ?
       <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
       <Home snapshot={snapshot.value}/>}
