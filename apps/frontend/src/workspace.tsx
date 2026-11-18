@@ -17,6 +17,7 @@ type Owner = { id: string; email?: string };
 type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'unavailable'; message: string } | { status: 'verified'; owner: Owner; epoch: number; portGeneration: number };
 type SnapshotState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; value: OwnerWorkspaceSnapshot };
 type StartChoice = PrivateStep;
+type SkipOutcome = 'confirmed' | 'unconfirmed' | 'offline' | 'completed';
 
 /** Transport errors never establish logout; all nonverified outcomes stay private. */
 function ownerVerificationUnavailable(message: string | undefined, online: boolean): boolean {
@@ -199,11 +200,20 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   </div>;
 }
 
-function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<boolean> }) {
+function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<SkipOutcome> }) {
   const [choice, setChoice] = useState<StartChoice>('portfolio');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const skipFlight = useRef(false);
+  const selectedStatus = steps.find(step=>step.step===choice)?.status;
+  const [offline, setOffline] = useState(() => !navigator.onLine);
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+    return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
+  }, []);
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Private portfolio chooser available' },
@@ -235,13 +245,16 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
     <p role="status" className={note ? "ws-onboarding-note ws-inline-alert" : "ws-onboarding-note"}>{note}</p>
     <div className="ws-actions">
       <button type="button" className="ws-primary" disabled={saving} onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
-      <button type="button" className="ws-secondary" aria-disabled={saving} onClick={() => {
-        if (skipFlight.current) return;
+      <button type="button" className="ws-secondary" aria-disabled={saving || offline || selectedStatus === 'completed' || selectedStatus === 'skipped'} onClick={() => {
+        if (skipFlight.current || selectedStatus === 'completed' || selectedStatus === 'skipped') return;
+        if (offline || !navigator.onLine) return;
         skipFlight.current = true;
         const selectedStep = choice;
         setSaving(true); setNote('Saving selected step…');
-        void onSkip(selectedStep).then(saved => {
-          setNote(saved ? 'The current private account record is saved as skipped. You can return later.' :
+        void onSkip(selectedStep).then(outcome => {
+          setNote(outcome === 'confirmed' ? 'The current private account record is saved as skipped. You can return later.' :
+            outcome === 'offline' ? 'Browser reports offline. No skip request was sent. You can open the workspace without saving.' :
+            outcome === 'completed' ? 'The current private account record is completed. No skipped state was confirmed.' :
             'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying; the write outcome may be uncertain.');
         }).catch(() => {
           setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
@@ -252,6 +265,9 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
       <a href="/app" className="ws-secondary">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
     </div>
+    {offline && <p className="ws-footnote">Saving a skipped step requires a connection. You can still open the workspace without saving; private records there require owner verification.</p>}
+    {selectedStatus === 'completed' && <p className="ws-footnote">This step was marked completed in the loaded account records. You can open it again without changing its status.</p>}
+    {selectedStatus === 'skipped' && <p className="ws-footnote">This step was already marked skipped in the loaded account records. You can open it again whenever you are ready.</p>}
     <p className="ws-footnote">You can get started without connecting a developer account.</p>
   </section>;
 }
@@ -309,6 +325,7 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
         <ul>
           <li><a href="/app/profile">Complete your profile <Icon name="arrow" size={15}/></a></li>
           <li><a href="/app/projects">Add a project <Icon name="arrow" size={15}/></a></li>
+          <li><a href="/app/integrations">Connect developer accounts <Icon name="arrow" size={15}/></a></li>
           <li><a href="/app/onboarding">Open welcome steps <Icon name="arrow" size={15}/></a></li>
         </ul>
       </nav>
@@ -403,8 +420,9 @@ export function WorkspaceApp() {
           }
           const owner = { id: result.data.user.id, email: result.data.user.email };
           setGate({status:'verified',owner,epoch,portGeneration:generation});
-          if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') ||
-              isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
+          // Every feature route owns its own verified data-loading contract.
+          // Only Overview and Welcome consume the aggregate workspace records.
+          if (route !== '/app' && route !== '/app/onboarding') return;
           // The owner gate stays mounted while only its overview records retry.
           // Never reuse a callback after the initiating port/owner epoch changes.
           let reading = false;
@@ -449,15 +467,19 @@ export function WorkspaceApp() {
     }
     return () => { cancelled = true; ++attempt; unsubscribe(); retryRecordsRef.current = null; authRef.current = null; };
   }, [route, verificationAttempt]);
-  async function skipChoice(choice: PrivateStep): Promise<boolean> {
+  async function skipChoice(choice: PrivateStep): Promise<SkipOutcome> {
     const port=authRef.current;
-    if (!port || gate.status !== 'verified') return false;
+    if (!port || gate.status !== 'verified') return 'unconfirmed';
     const ownerEpoch = port.getOwnerSessionEpoch();
     const current = () => authRef.current === port && port.getOwnerSessionEpoch() === ownerEpoch;
-    if (ownerEpoch !== gate.epoch || !current()) return false;
+    if (ownerEpoch !== gate.epoch || !current()) return 'unconfirmed';
+    if (!navigator.onLine) return 'offline';
+    // This protects a loaded completed record, not a server-side CAS guarantee.
+    if (snapshot.status !== 'ready') return 'unconfirmed';
+    if (snapshot.value.onboarding.some(step=>step.step===choice && step.status==='completed')) return 'completed';
     try {
       const result=await port.setPrivateOnboardingStep(choice,'skipped');
-      if (!current()) return false;
+      if (!current()) return 'unconfirmed';
       if (!result.error && result.data?.step === choice && result.data.status === 'skipped') {
         setSnapshot(state=>state.status !== 'ready' ? state : {
           status:'ready',value:{...state.value,onboarding:[
@@ -465,21 +487,22 @@ export function WorkspaceApp() {
             {step:choice,status:'skipped' as PrivateStepStatus}
           ]}
         });
-        return true;
+        return 'confirmed';
       }
     } catch {
       // An absent acknowledgement does not establish whether the write committed.
     }
-    if (!current()) return false;
+    if (!current() || !navigator.onLine) return 'unconfirmed';
     try {
       const read=await port.readOwnerWorkspace();
-      if (!current() || read.error || !read.data) return false;
+      if (!current() || read.error || !read.data) return 'unconfirmed';
       const steps=read.data.onboarding;
       setSnapshot(state=>state.status !== 'ready' ? state : {
         status:'ready',value:{...state.value,onboarding:steps}
       });
-      return steps.some(step=>step.step===choice && step.status==='skipped');
-    } catch { return false; }
+      const status=steps.find(step=>step.step===choice)?.status;
+      return status==='skipped' ? 'confirmed' : status==='completed' ? 'completed' : 'unconfirmed';
+    } catch { return 'unconfirmed'; }
   }
   async function signOut() {
     const port = authRef.current;
