@@ -1,5 +1,5 @@
 import { normalizeExternalHttpsUrl } from '../../contracts/src/project.ts';
-import { validateSnapshot, type PortfolioSnapshot } from './portfolio-revision-transactions.ts';
+import { validateSnapshot, parseScopedTheme, resolveScopedTheme, scopedThemeCssVariables, type ScopedThemeTarget, type PortfolioSnapshot } from './portfolio-revision-transactions.ts';
 import {portfolioLayout} from './managed-project-files.ts';
 
 /** Trusted, TEXT-ONLY private preview; not a release renderer or public access proof. */
@@ -338,8 +338,6 @@ export function prepareSafeStaticPreview(
   const themeFile=valid?input.snapshot.files['theme/tokens.json']:undefined;
   if(themeFile!==undefined){
     const tokens:unknown=JSON.parse(themeFile);
-    if(record(tokens)&&Object.hasOwn(tokens,'scopedTokens'))
-      block('SCOPED_THEME_RENDER_PENDING','theme/tokens.json','Scoped theme rendering requires the compatible renderer.');
     if(record(tokens)&&themeKeys.some(key=>Object.hasOwn(tokens,key))){
       if(theme&&themeKeys.some(key=>tokens[key]!==theme?.[key]))
         block('FROZEN_THEME_MISMATCH','theme/tokens.json','Frozen portfolio tokens and render settings disagree.');
@@ -350,6 +348,59 @@ export function prepareSafeStaticPreview(
      !themeColors.every(k=>typeof theme[k]==='string'&&
        /^#[0-9a-fA-F]{6}$/.test(theme[k]))))
     block('INVALID_PORTFOLIO_THEME','theme/tokens.json','Unsafe portfolio color tokens.');
+
+
+  // Legacy HTML stays byte-identical. Scoped documents alone opt in to
+  // ordinal trusted wrappers and content-box container queries.
+  let scopedStyle='',scopedRoot=false;
+  if(themeFile!==undefined&&Object.hasOwn(JSON.parse(themeFile),'scopedTokens')){
+    const parsed=parseScopedTheme(input.snapshot);
+    if(parsed.status!=='valid'||!parsed.mode||!sections){
+      block('INVALID_SCOPED_THEME','theme/tokens.json','Unsupported scoped theme or missing trusted layout grouping.');
+    }else{
+      const mode=parsed.mode;
+      const nodes:Array<{selector:string;target:Omit<ScopedThemeTarget,'widthPx'>}>=[
+        {selector:'.k-theme-root',target:{mode}}
+      ];
+      let ordinal=0;
+      renderedContent=sections.map((section,index)=>{
+        const sectionSelector='k-theme-section-'+index;
+        nodes.push({selector:'.'+sectionSelector,target:{mode,sectionId:section.id}});
+        const slots=section.slotKeys.map(key=>{
+          const html=rendered.get(key);
+          if(!html)return '';
+          const slotSelector='k-theme-slot-'+ordinal++;
+          nodes.push({selector:'.'+slotSelector,target:{mode,sectionId:section.id,slotKey:key}});
+          return '<div class="k-theme-node '+slotSelector+'">'+html+'</div>';
+        }).join('');
+        return '<section class="k-theme-node '+sectionSelector+' k-layout k-'+section.layout.toLowerCase()+
+          '" data-layout="'+section.layout+'" data-section="'+section.id+'">'+slots+'</section>';
+      }).join('');
+      // All selectors are generated ordinals and all values pass the same
+      // typed validation used by the editor. Never serialize user CSS.
+      const rules=(widthPx:number):string=>{
+        let css='';
+        for(const node of nodes){
+          const resolved=resolveScopedTheme(input.snapshot,{...node.target,widthPx});
+          if(resolved.status!=='resolved'){
+            block('UNSUPPORTED_SCOPED_TARGET','theme/tokens.json','A trusted scoped theme target cannot be resolved.');
+            return '';
+          }
+          const values=scopedThemeCssVariables(resolved.tokens);
+          css+=node.selector+'{'+Object.entries(values).map(([key,value])=>key+':'+value).join(';')+'}';
+        }
+        return css;
+      };
+      scopedRoot=true;
+      scopedStyle='.k-theme-container{container-name:k-portfolio-width;container-type:inline-size;width:100%;min-width:0;writing-mode:horizontal-tb}'+
+        '.k-theme-root,.k-theme-node{background:var(--k-theme-surface);color:var(--k-theme-text);font-size:var(--k-theme-font-size,inherit);line-height:var(--k-theme-line-height,inherit);font-weight:var(--k-theme-font-weight,inherit);border-radius:var(--k-theme-radius,0);padding:var(--k-theme-spacing,0)}'+
+        '.k-theme-root.k-theme-root,.k-theme-node.k-layout{border-color:var(--k-theme-accent)}'+
+        '.k-theme-root a{color:var(--k-theme-accent)}'+
+        '@container k-portfolio-width (width <= 600px){'+rules(390)+'}'+
+        '@container k-portfolio-width (600px < width <= 950px){'+rules(768)+'}'+
+        '@container k-portfolio-width (width > 950px){'+rules(1440)+'}';
+    }
+  }
 
   // This cannot be overridden by any caller-provided feature flag.
   block('PUBLIC_DELIVERY_UNVERIFIED','hosting','No verified public host, cache or revocation adapter exists.');
@@ -368,8 +419,8 @@ export function prepareSafeStaticPreview(
     (sections?'80rem':'70ch')+';margin:2rem auto;padding:0 1rem}section{margin:2rem 0}p{white-space:pre-line}a:focus-visible{outline:3px solid currentColor}.k-badge{display:inline-block;border:1px solid currentColor;border-radius:.3rem;padding:.15rem .55rem}.k-project-card{border:1px solid currentColor;border-radius:.65rem;padding:1rem}dt{font-size:.85rem}dd{margin:0;font-size:1.5rem;font-weight:650}'+
     (sections?'main{display:grid;gap:clamp(1rem,3vw,2.5rem)}.k-layout{min-width:0;padding:clamp(1rem,3vw,2rem);border-block-start:2px solid '+(theme?.accent??'#737373')+'}.k-l1,.k-l5{min-height:20rem;display:grid;align-content:center}.k-l2,.k-l4{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.k-l2>section:first-child,.k-l4>section:first-child{grid-column:1/-1}.k-l3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.k-l3>section:first-child{grid-column:1/-1}.k-l8{border-block-end:2px solid currentColor}@media(max-width:48rem){.k-l2,.k-l3,.k-l4{grid-template-columns:1fr}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}':'')+
     (images?'.k-image{margin:0}.k-image img{display:block;max-width:100%;height:auto}':'')+
-    '</style>'+
-    '</head><body><main id="content">'+renderedContent+'</main></body></html>';
+    scopedStyle+'</style>'+
+    '</head><body>'+(scopedRoot?'<div class="k-theme-container"><main id="content" class="k-theme-root">'+renderedContent+'</main></div>':'<main id="content">'+renderedContent+'</main>')+'</body></html>';
   if(encoder.encode(html).byteLength>750000){
     block('PREVIEW_SIZE_EXCEEDED','preview','Static preview is oversized.');
     return {status:'BLOCKED',blockers,warnings,passed,previewHtml:null,publicationReady:false};
