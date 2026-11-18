@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { AuthService } from '../../../packages/contracts/src/auth-service.ts';
+import { AuthFlowError, AuthService } from '../../../packages/contracts/src/auth-service.ts';
 import { isSafeSupabaseClientKey } from '../../../packages/contracts/src/project.ts';
 import { parseAuthRedirect } from '../../auth-web/src/auth-redirect.ts';
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
@@ -279,8 +279,13 @@ export function AuthApp(){
             <p className="auth-description">Access your workspace, portfolios, and projects. Your drafts and work stay private and in sync.</p>
             <form className="auth-fields" onSubmit={event=>void submit(event,async()=>{
               if(!auth)throw new Error(config.error);
-              const who=await auth.service.login(email,password);
-              await signedIn(who.email??null);
+              try {
+                const who=await auth.service.login(email,password);
+                await signedIn(who.email??null);
+              } catch (reason) {
+                if (!(reason instanceof AuthFlowError) || reason.code !== 'EMAIL_CONFIRMATION_REQUIRED') throw reason;
+                result('registered', reason.message);
+              }
             })}>
               <AuthInput id="signin-email" label="Email address">
                 <input id="signin-email" autoComplete="username" type="email" required value={email}
@@ -338,9 +343,9 @@ export function AuthApp(){
               result('email-requested','If the account exists, the provider accepted a recovery request. Delivery is not confirmed.');
             })}>
               <AuthInput id="forgot-email" label="Email address"><input id="forgot-email" required type="email" autoComplete="email" value={email} onChange={event=>setEmail(event.target.value)}/></AuthInput>
-              <button type="submit" className="auth-submit" disabled={pending||!auth?.emailAvailable}>Request recovery link <span aria-hidden="true">→</span></button>
+              <button type="submit" className="auth-submit" disabled={pending||!auth}>Request recovery link <span aria-hidden="true">→</span></button>
             </form>
-            {!auth?.emailAvailable&&<p className="auth-field-hint">Email recovery is not available until provider delivery is verified.</p>}
+            {auth&&!auth.emailAvailable&&<p className="auth-field-hint">Email delivery is not verified. You can still request a recovery link.</p>}
             <p className="auth-switch"><button type="button" className="auth-text-button" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in</button></p>
           </section>}
           {mode==='set-password' && <section aria-labelledby="auth-heading">
@@ -373,7 +378,7 @@ export function AuthApp(){
               </aside>}
             {identity&&<p className="auth-identity">Signed in as {identity}</p>}
             {identity&&<a className="auth-submit" href="/app">Open private workspace <span aria-hidden="true">→</span></a>}
-            {outcome==='registered'&&auth?.emailAvailable&&<button type="button" className="auth-text-button" disabled={pending}
+            {outcome==='registered'&&auth&&<button type="button" className="auth-text-button" disabled={pending}
               onClick={()=>{
                 if(!auth||pending)return;
                 setPending(true);setError('');setNotice('');
@@ -382,8 +387,6 @@ export function AuthApp(){
                   .catch(reason=>setError(readError(reason)))
                   .finally(()=>setPending(false));
               }}>{pending?'Requesting…':'Request another confirmation link'}</button>}
-            {outcome==='registered'&&!auth?.emailAvailable&&
-              <p className="auth-field-hint">Confirmation delivery is not verified in this environment. This page cannot resend a link until email delivery is configured.</p>}
             <button type="button" className="auth-submit" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in <span aria-hidden="true">→</span></button>
             {(outcome === 'email-requested' || (error && !identity)) &&
               <button type="button" className="auth-text-button" disabled={pending}

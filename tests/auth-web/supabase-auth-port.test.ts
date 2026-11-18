@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SupabaseBrowserAuthPort } from '../../apps/auth-web/src/supabase-auth-port.ts';
+import { SupabaseBrowserAuthPort, normalizeOwnerProfileLinks } from '../../apps/auth-web/src/supabase-auth-port.ts';
 
 const user = { id: '6d9e2f11-4f2e-4792-8401-7c4f1d61e233', email: 'dev@example.com' };
 function storage() {
@@ -1095,4 +1095,310 @@ test('S6 account-exit recovery single flight, transient retry and discard', asyn
   assert.equal(cleared.error,null);
   assert.equal(cleared.data,null);
   assert.equal(completions,2);
+});
+
+/** B16 C01/C04: requires composed S1 typed-media implementation. No feature-absent skip. */
+const c01Project='11111111-1111-4111-8111-111111111111';
+const c01Asset='22222222-2222-4222-8222-222222222222';
+const c01Operation='33333333-3333-4333-8333-333333333333';
+const c01Object='44444444-4444-4444-8444-444444444444';
+const c01Png=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64'));
+const c01Time='2026-11-17T00:00:00Z';
+const c01Path=user.id+'/'+c01Project+'/'+c01Operation+'.img';
+const c01Thumbnail={projectId:c01Project,ownerUserId:user.id,revision:8,publicDeliveryAllowed:false,
+  asset:{id:c01Asset,projectId:c01Project,mime:'image/png',size:c01Png.length,
+    altText:'Synthetic cover',createdAt:c01Time,objectPath:c01Path}};
+async function c01Port(http:typeof fetch){
+  const {port}=mock(async(url,init)=>{
+    const u=String(url);
+    if(u.includes('grant_type=password'))return json(tokens);
+    if(u.endsWith('/auth/v1/user'))return json(user);
+    return http(url,init);
+  });
+  assert.equal((await port.signInWithPassword({email:user.email,password:'fixture'})).error,null);
+  return {port,epoch:port.getOwnerSessionEpoch()};
+}
+test('C01 typed thumbnail RPC distinguishes SQLSTATE from transport status and redacts provider messages',async()=>{
+  for(const [status,payload,code] of [
+    [500,{code:'40001',message:'REVISION_CONFLICT'},'CONFLICT'],
+    [409,{code:'40001',message:'THUMBNAIL_OPERATION_CONFLICT'},'CONFLICT'],
+    [500,{code:'XX000',message:'private provider diagnostic'},'PROVIDER_UNAVAILABLE'],
+    [403,{code:'42501',message:'private provider diagnostic'},'DENIED'],
+    [400,{code:'22023',message:'PRIVATE_THUMBNAIL_UNAVAILABLE'},'INTEGRITY'],
+    [400,{code:'22023',message:'private provider diagnostic'},'VALIDATION'],
+    [429,{message:'private provider diagnostic'},'RATE_LIMITED'],
+    [413,{message:'private provider diagnostic'},'LIMIT_EXCEEDED']
+  ] as const){
+    let count=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      assert.ok(String(url).endsWith('/rpc/set_private_project_thumbnail'));
+      assert.deepEqual(JSON.parse(String(init?.body)),{
+        p_project_id:c01Project,p_base_revision:7,p_asset_id:c01Asset,p_operation_id:c01Operation
+      });
+      count++;return json(payload,status);
+    });
+    const r=await port.setOwnerProjectThumbnail(c01Project,7,c01Asset,c01Operation,epoch);
+    assert.equal(r.data,null);assert.equal(r.error?.code,code);
+    assert.equal(r.error?.status,status);assert.equal(count,1,'no implicit CAS retry or readback on denial');
+    assert.doesNotMatch(r.error?.message??'',/private provider diagnostic|REVISION_CONFLICT|THUMBNAIL_OPERATION_CONFLICT/);
+  }
+});
+test('C01 legacy and typed Storage denials and quotas cannot register, retry or silently fall back',async()=>{
+  for(const [payload,expected] of [
+    [{statusCode:'403',message:'private provider diagnostic'},'DENIED'],
+    [{statusCode:404},'DENIED'],[{statusCode:'413'},'LIMIT_EXCEEDED'],
+    [{statusCode:'429'},'RATE_LIMITED'],[{code:'AccessDenied'},'DENIED'],
+    [{code:'NoSuchKey'},'DENIED'],[{code:'InvalidJWT'},'DENIED'],
+    [{code:'EntityTooLarge'},'LIMIT_EXCEEDED']
+  ] as const){
+    let uploads=0,unexpected=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      const u=String(url);
+      if(u.includes('/rest/v1/projects?'))return json([{id:c01Project,owner_user_id:user.id}]);
+      if(u.endsWith('/kadmeion-private-assets/'+c01Path)&&init?.method==='POST'){
+        uploads++;return json(payload,400);
+      }
+      unexpected++;return json({},503);
+    });
+    const r=await port.uploadOwnerProjectImage(c01Project,new File([c01Png],'cover.png',{type:'image/png'}),
+      'Synthetic cover',{operationId:c01Operation,expectedEpoch:epoch});
+    assert.equal(r.data,null);assert.equal(r.error?.code,expected);
+    assert.equal(r.error?.status,400);assert.equal(uploads,1);assert.equal(unexpected,0);
+    assert.doesNotMatch(r.error?.message??'',/private provider diagnostic/);
+  }
+});
+test('C01 ambiguous upload reuses exact object and bytes; changed bytes cannot register',async()=>{
+  for(const variant of ['exact','different','missing'] as const){
+    const bytes=variant==='different'?Uint8Array.from(c01Png.map((v,i)=>i===20?v^1:v)):c01Png;
+    let uploads=0,reads=0,registrations=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      const u=String(url);
+      if(u.includes('/rest/v1/projects?'))return json([{id:c01Project,owner_user_id:user.id}]);
+      if(u.endsWith('/object/kadmeion-private-assets/'+c01Path)&&init?.method==='POST'){
+        uploads++;throw Error('simulated lost response');
+      }
+      if(u.endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path)){
+        reads++;
+        if(variant==='missing')return json({code:'NoSuchKey'},400);
+        return new Response(bytes,{headers:{'content-type':'image/png','content-length':String(bytes.length)}});
+      }
+      if(u.endsWith('/rpc/register_private_project_image')){
+        registrations++;
+        assert.deepEqual(JSON.parse(String(init?.body)),{p_project_id:c01Project,p_object_path:c01Path,
+          p_mime_type:'image/png',p_byte_size:c01Png.length,p_alt_text:'Synthetic cover'});
+        return json({id:c01Asset,object_path:c01Path,storage_metadata_matched:true});
+      }
+      if(u.includes('/rest/v1/project_assets?'))return json([{id:c01Asset,owner_user_id:user.id,
+        project_id:c01Project,object_path:c01Path,mime_type:'image/png',byte_size:c01Png.length,alt_text:'Synthetic cover'}]);
+      return json({},404);
+    });
+    const result=await port.uploadOwnerProjectImage(c01Project,new File([c01Png],'cover.png',{type:'image/png'}),
+      'Synthetic cover',{operationId:c01Operation,expectedEpoch:epoch});
+    assert.equal(uploads,1);assert.equal(reads,1);
+    if(variant==='exact'){
+      assert.equal(result.error,null);assert.equal(result.data?.id,c01Asset);assert.equal(registrations,1);
+      assert.equal(result.data?.publicDeliveryAllowed,false);
+    }else{
+      assert.equal(result.data,null);assert.equal(registrations,0);
+      assert.equal(result.error?.code,variant==='different'?'CONFLICT':'PROVIDER_UNAVAILABLE');
+    }
+  }
+});
+test('C01 correct typed failures for interrupted, malformed and oversized successful response streams',async()=>{
+  for(const variant of ['interrupted','malformed','oversized'] as const){
+    const {port,epoch}=await c01Port(async()=>{
+      if(variant==='interrupted')return new Response(new ReadableStream<Uint8Array>({
+        start(c){c.error(new Error('private provider diagnostic'));}
+      }),{headers:{'content-type':'application/json'}});
+      return new Response(variant==='malformed'?'not JSON':'x'.repeat(65537),
+        {headers:{'content-type':'application/json'}});
+    });
+    const r=await port.readOwnerProjectThumbnail(c01Project,epoch);
+    assert.equal(r.data,null);
+    assert.equal(r.error?.code,variant==='interrupted'?'PROVIDER_UNAVAILABLE':'INTEGRITY');
+    assert.doesNotMatch(r.error?.message??'',/private provider diagnostic/);
+  }
+});
+test('C01 exact CAS receipt needs authoritative readback; selected bytes cannot escape after replacement',async()=>{
+  for(const variant of ['confirmed','wrong-ack','later-change'] as const){
+    let writes=0,reads=0;
+    const {port,epoch}=await c01Port(async(url)=>{
+      if(String(url).endsWith('/rpc/set_private_project_thumbnail')){
+        writes++;return json(variant==='wrong-ack'?{...c01Thumbnail,revision:9}:c01Thumbnail);
+      }
+      reads++;return json(variant==='later-change'?{...c01Thumbnail,revision:9,asset:null}:c01Thumbnail);
+    });
+    const r=await port.setOwnerProjectThumbnail(c01Project,7,c01Asset,c01Operation,epoch);
+    assert.equal(writes,1);assert.equal(reads,variant==='wrong-ack'?0:1);
+    if(variant==='confirmed'){
+      assert.equal(r.error,null);assert.equal(r.data?.revision,8);assert.equal(r.data?.asset?.id,c01Asset);
+    }else{
+      assert.equal(r.data,null);assert.equal(r.error?.code,variant==='wrong-ack'?'INTEGRITY':'CONFLICT');
+    }
+  }
+  let reads=0,downloads=0;
+  const {port,epoch}=await c01Port(async(url)=>{
+    if(String(url).endsWith('/rpc/read_private_project_thumbnail')){
+      reads++;return json(reads===1?c01Thumbnail:{...c01Thumbnail,revision:9,asset:null});
+    }
+    assert.ok(String(url).endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path));
+    downloads++;return new Response(c01Png,{headers:{'content-type':'image/png'}});
+  });
+  const bytes=await port.readOwnerProjectThumbnailImage(c01Project,c01Asset,epoch);
+  assert.equal(bytes.data,null);assert.equal(bytes.error?.code,'CONFLICT');
+  assert.equal(reads,2);assert.equal(downloads,1);
+});
+test('C04 owner private bytes are bound to scope and immutable object identity, and independent trusted hash pin',async()=>{
+  for(const variant of ['valid','wrong-owner','wrong-project-path','version-race','wrong-mime','short-bytes','missing-version','pinned','digest-mismatch','pin-drift','pin-owner','pin-version','pin-extra','pin-public'] as const){
+    let metadataReads=0,downloads=0,pinReads=0;
+    const hash=Buffer.from(await crypto.subtle.digest('SHA-256',c01Png)).toString('hex');
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      const u=String(url);
+      const headers=init?.headers as Record<string,string>;
+      assert.equal(headers.Authorization,'Bearer '+tokens.access_token);
+      assert.equal(init?.redirect,'error');
+      if(u.includes('/rest/v1/projects?'))return json([{id:c01Project,owner_user_id:user.id}]);
+      if(u.includes('/rest/v1/project_assets?'))return json([{id:c01Asset,project_id:c01Project,
+        owner_user_id:variant==='wrong-owner'?secondUser.id:user.id,
+        object_path:variant==='wrong-project-path'?user.id+'/'+c01Asset+'/'+c01Operation+'.img':c01Path,
+        mime_type:'image/png',byte_size:c01Png.length,alt_text:'Synthetic cover',created_at:c01Time}]);
+      if(u.endsWith('/object/info/authenticated/kadmeion-private-assets/'+c01Path)){
+        metadataReads++;
+        return json({id:c01Object,name:c01Path,bucket_id:'kadmeion-private-assets',owner_id:user.id,
+          version:variant==='missing-version'?null:variant==='version-race'&&metadataReads===2?'v2':'v1',
+          last_modified:c01Time,size:c01Png.length,content_type:'image/png'});
+      }
+      if(u.endsWith('/rpc/read_owner_private_asset_pin')){
+        pinReads++;
+        assert.deepEqual(JSON.parse(String(init?.body)),{p_scope:'PROJECT',p_asset_id:c01Asset,p_project_id:c01Project});
+        const pinned=['pinned','digest-mismatch','pin-drift'].includes(variant);
+        return json({scope:'PROJECT',assetId:c01Asset,ownerUserId:variant==='pin-owner'?secondUser.id:user.id,
+          projectId:c01Project,objectId:c01Object,version:variant==='pin-version'?'v9':'v1',
+          mimeType:'image/png',byteSize:c01Png.length,status:pinned?'SERVER_HASH_PINNED':'UNPINNED',
+          expectedSha256:pinned?(variant==='digest-mismatch'||(variant==='pin-drift'&&pinReads===2)?'0'.repeat(64):hash):null,
+          publicDeliveryAllowed:variant==='pin-public',...(variant==='pin-extra'?{extra:true}:{})});
+      }
+      if(u.endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path)){
+        downloads++;
+        return new Response(variant==='short-bytes'?c01Png.slice(0,-1):c01Png,{
+          headers:{'content-type':variant==='wrong-mime'?'text/plain':'image/png'}});
+      }
+      return json({},404);
+    });
+    const result=await port.readOwnerPrivateAsset(c01Project,c01Asset,epoch);
+    if(variant==='valid'||variant==='pinned'){
+      assert.equal(result.error,null);assert.equal(result.data.serverAttestation,variant==='pinned'?'SERVER_HASH_PINNED':'NOT_VERIFIED');
+      assert.equal(result.data.publicDeliveryAllowed,false);
+      assert.equal(result.data.integrity.status,'OWNER_BYTES_VERIFIED');
+      const expected=Buffer.from(await crypto.subtle.digest('SHA-256',c01Png)).toString('hex');
+      assert.equal(result.data.integrity.computedSha256,expected);
+      assert.deepEqual(new Uint8Array(await result.data.bytes.arrayBuffer()),c01Png);
+      assert.equal(metadataReads,2);assert.equal(downloads,1);assert.equal(pinReads,2);
+    }else{
+      assert.equal(result.data,null);
+      assert.equal(result.error?.code,variant==='wrong-owner'||variant==='wrong-project-path'?'DENIED':'INTEGRITY');
+      if(['wrong-owner','wrong-project-path','missing-version','pin-owner','pin-version','pin-extra','pin-public'].includes(variant))assert.equal(downloads,0);
+    }
+  }
+});
+
+/** B16 C06: authored links are owner-private, never provider facts or website fetches. */
+test('C06 authored profile links are bounded, canonical HTTPS and exact shape',()=>{
+  const link={label:' Portfolio ',url:'https://Example.com'};
+  assert.deepEqual(normalizeOwnerProfileLinks([link]),[{label:'Portfolio',url:'https://example.com/'}]);
+  for(const input of [
+    [link,{label:'Duplicate',url:'https://example.com/'}],
+    Array.from({length:13},(_,i)=>({label:'Link',url:'https://example.com/'+i})),
+    [{label:'X',url:'http://example.com/'}],
+    [{label:'X',url:'javascript:alert(1)'}],
+    [{label:'X',url:'https://secret@example.com/'}],
+    [{label:'X',url:'https://example.com:8443/'}],
+    [{label:'X',url:'https://example.com/a b'}],
+    [{label:'X',url:'https://example.com/',verified:true}],
+    [{label:'',url:'https://example.com/'}],
+    [{label:'a'.repeat(81),url:'https://example.com/'}],
+    [{label:'X',url:'https://example.com/'+ 'a'.repeat(2048)}]
+  ])assert.throws(()=>normalizeOwnerProfileLinks(input));
+});
+test('C06 owner link save submits exact expected/desired and refuses stale or forged receipts',async()=>{
+  const expected=[{label:'Old',url:'https://example.com/old'}];
+  const desired=[{label:'Work',url:'https://example.com/work'}];
+  for(const variant of ['confirmed','stale','foreign','wrong-links','noncanonical'] as const){
+    let calls=0;
+    const {port,epoch}=await c01Port(async(url,init)=>{
+      assert.ok(String(url).endsWith('/rpc/owner_save_private_profile_links'));
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_expected:expected,p_links:desired});
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer '+tokens.access_token);
+      calls++;
+      if(variant==='stale')return json({code:'40001',message:'PROFILE_LINKS_CONFLICT'},500);
+      return json({user_id:variant==='foreign'?secondUser.id:user.id,
+        private_links:variant==='wrong-links'?expected:variant==='noncanonical'?[{label:' Work ',url:desired[0].url}]:desired});
+    });
+    const r=await port.saveOwnerProfileLinks(expected,desired,epoch);
+    if(variant==='confirmed'){
+      assert.equal(r.error,null);assert.deepEqual(r.data,{links:desired,publicDeliveryAllowed:false});
+    }else{assert.equal(r.data,null);assert.ok(r.error);}
+    assert.equal(calls,1);
+  }
+});
+test('profile draft read and save reject an obsolete initiating owner epoch before private requests',async()=>{
+  let requests=0;
+  const {port,epoch}=await c01Port(async()=>{requests++;return json({});});
+  const draft={displayName:'Private owner',headline:'Draft',bio:'Private',skills:['Java']};
+  const read=await port.readOwnerProfile(epoch+1);
+  const save=await port.saveOwnerProfile(draft,draft,false,epoch+1);
+  assert.equal(read.data,null);assert.ok(read.error);
+  assert.equal(save.data,null);assert.ok(save.error);
+  assert.equal(requests,0);
+});
+
+test('C06 owner link read rejects cross-owner result, extra evidence claims and noncanonical link records',async()=>{
+  const desired=[{label:'Work',url:'https://example.com/work'}];
+  for(const variant of ['valid','foreign','extra','noncanonical'] as const){
+    const {port,epoch}=await c01Port(async(url)=>{
+      const q=new URL(String(url));assert.ok(q.pathname.endsWith('/profiles'));
+      assert.equal(q.searchParams.get('user_id'),'eq.'+user.id);
+      assert.equal(q.searchParams.get('select'),'user_id,private_links');
+      return json([{user_id:variant==='foreign'?secondUser.id:user.id,
+        private_links:variant==='extra'?[{...desired[0],verified:true}]:
+          variant==='noncanonical'?[{label:' Work ',url:desired[0].url}]:desired}]);
+    });
+    const r=await port.readOwnerProfileLinks(epoch);
+    if(variant==='valid')assert.deepEqual(r.data,{links:desired,publicDeliveryAllowed:false});
+    else{assert.equal(r.data,null);assert.ok(r.error);}
+  }
+});
+
+test('OWNER-AUTH ordinary recovery and fallback resend accept only neutral GoTrue HTTP 200 JSON acknowledgements',async()=>{
+  for(const kind of ['recover','resend'] as const){
+    const redirect=kind==='recover'?'http://localhost:3000/reset-password':'http://localhost:3000/auth/callback';
+    const valid=()=>json({});
+    const fixtures:Array<{response:()=>Response;success:boolean}>=[
+      {response:valid,success:true},
+      ...[null,[],false,'ok',{user},{access_token:tokens.access_token}].map(payload=>({response:()=>json(payload),success:false})),
+      {response:()=>new Response('<html>not JSON</html>',{status:200}),success:false},
+      {response:()=>new Response(null,{status:204}),success:false},
+      {response:()=>json({},201),success:false},
+      {response:()=>json({message:'private provider diagnostic'},429),success:false},
+      {response:()=>json({message:'private provider diagnostic'},500),success:false}
+    ];
+    for(const fixture of fixtures){
+      let calls=0;
+      const {port,saved}=mock(async(url,init)=>{
+        calls++;
+        assert.equal(String(url),'https://project.supabase.co/auth/v1/'+kind+'?redirect_to='+encodeURIComponent(redirect));
+        assert.equal(init?.method,'POST');
+        const headers=new Headers(init?.headers);
+        assert.equal(headers.get('authorization'),null);
+        assert.deepEqual(JSON.parse(String(init?.body)),kind==='recover'?{email:user.email}:{type:'signup',email:user.email});
+        return fixture.response();
+      });
+      const result=kind==='recover'?await port.resetPasswordForEmail(user.email,{redirectTo:redirect}):
+        await port.resend({type:'signup',email:user.email,options:{emailRedirectTo:redirect}});
+      if(fixture.success){assert.equal(result.error,null);assert.deepEqual(result.data,{});}
+      else {assert.ok(result.error);assert.equal(result.data,null);assert.doesNotMatch(result.error!.message,/private provider diagnostic/);}
+      assert.equal(calls,1);
+      assert.equal(saved.data.size,0,'Recovery submission must not install a session');
+    }
+  }
 });

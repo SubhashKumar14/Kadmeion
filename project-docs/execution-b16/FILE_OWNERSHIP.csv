@@ -1,0 +1,432 @@
+path,last_known_owner,planned_sole_writer,activation,restriction
+.env.example,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+.github/workflows/ci.yml,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+.github/workflows/frontend.yml,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+.github/workflows/trash-expiry.yml,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+.gitignore,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+.nvmrc,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+README.md,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+api/_bounded-rpc-json.mjs,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+api/public-portfolio.mjs,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+api/published-identity.mjs,S1,S8,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+api/reviewer.mjs,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+api/unlisted.mjs,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/dev-server.mjs,S0,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/index.html,S0,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/src/auth-redirect.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/src/form-helpers.ts,S5,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/src/main.ts,S5,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/src/supabase-auth-port.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/src/theme-preference.ts,S5,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/styles.css,S5,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/auth-web/tsconfig.json,S0,S1,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/e2e/accessibility.ts,S6,S6,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/e2e/owner.spec.ts,S6,S6,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/e2e/public.spec.ts,S6,S6,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/e2e/settings-owner.spec.ts,S6,S6,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/index.html,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/package-lock.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/package.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/playwright.config.ts,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/public/brand/kadmeion-mark.svg,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/public/brand/kadmeion-open-folio.svg,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/public/brand/kadmeion-wordmark.svg,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/auth.css,S5,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/auth.tsx,S5,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/behavior.test.ts,S6,S6,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/behavior.ts,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/explore.tsx,S2,S8,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/growth.tsx,S5,S10,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/landing.tsx,S2,S8,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/main.tsx,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/operations.tsx,S5,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/portfolio-tools.tsx,S3,S7,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/portfolios.tsx,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/profile.tsx,S2,S2,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/projects.tsx,S2,S2,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/release.tsx,S4,S4,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/settings.tsx,S5,S5,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/styles.css,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/templates.tsx,S2,S8,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/workspace.css,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/src/workspace.tsx,S0,S14,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/tsconfig.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+apps/frontend/vite.config.ts,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+package-lock.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+package.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/package.json,S1,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/auth-service.ts,S1,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/identity.ts,S1,S8,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/index.ts,S1,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/operations.ts,S1,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-account-erasure-service.ts,S1,S5,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-goals-service.ts,S1,S10,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-identity-service.ts,S1,S8,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-moderation-service.ts,S1,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-my-components-service.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-notifications-service.ts,S1,S5,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-onboarding-service.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-platform-links-service.ts,S1,S10,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-project-case-studies.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-release-service.ts,S1,S4,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-release-visibility-service.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-reviewer-service.ts,S1,S4,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/private-trash-service.ts,S1,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/project-data-service.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/project.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/projects.ts,S1,S1,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/contracts/src/releases.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/editor-core/package.json,S3,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/editor-core/src/index.ts,S3,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/editor-core/src/isolated-owned-preview.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/editor-core/src/managed-project-files.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/editor-core/src/portfolio-revision-transactions.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/editor-core/src/publish-preflight.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/package.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/editor-save-coordinator.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/host-revocation-probe.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/index.ts,S1,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/indexeddb-editor-drafts.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/journaled-editor-folder.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/portable-editor-snapshot.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/portable-source-archive.ts,S3,S4,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-account-data-export.ts,S1,S5,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-artifact-direct-sql-writer.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-artifact-pg-worker.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-artifact-pointer-binding.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-asset-registration-completion.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-delivery-denial-gate.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-frozen-revision-loader.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-immutable-artifact.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-reviewer-staging.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/private-server-asset-byte-attestor.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/public-delivery-policy.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/safe-png-publication.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/static-preview-export.ts,S4,S4,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/supabase-portfolio-revisions.ts,S3,S3,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+packages/storage-adapters/src/unlisted-release-verification.ts,S4,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+project-docs/B07_B11_VERIFIED_HANDOFF_2026-11-15.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/B07_HOSTED_DEPLOYMENT_EVIDENCE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/B1-local-auth-test.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/BACKEND_CURRENT_STATUS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/D01_D90_AUDIT_METHOD.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/DOCUMENTATION_FILE_TREE.txt,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/F0_PHASE_AUDIT_2026-11-16.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FILE_COUNT_REPORT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FRONTEND_F1_IMPLEMENTATION_NOTES_2026-11-15.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FRONTEND_F3_IMPLEMENTATION_NOTES_2026-11-16.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FRONTEND_UIUX_BRAND_MASTER_EXECUTION_2026-11-15.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FULL_REPOSITORY_FILE_MANIFEST.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FULL_REPOSITORY_FILE_TREE.txt,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/FULL_REPOSITORY_STRUCTURE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/IMPLEMENTATION_STATUS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/MASTER_EXECUTION_PROMPT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/NEXT_SESSION_HANDOFF.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/PHASE_AND_MODULE_OWNERSHIP.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/PROPOSED_FUTURE_REPOSITORY_TREE.txt,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/README.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/REPO_ROOT_README_TO_COMMIT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/SCREEN_TO_SOURCE_MAP.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/SESSION0_COORDINATION_2026-11-17.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/assets/reference-derived/kadmeion-original-k-raster-trace.svg,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/assets/reference-derived/kadmeion-phase-b-pattern-vector.svg,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/assets/reference/approved_brand_pattern_crop.png,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/assets/reference/kadmeion_aether_drift_ui_concept_board.png,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/assets/reference/kadmeion_glyph_loading_system.png,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/design.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/00_governance/AUTHORITY_AND_SUPERSESSION.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/00_governance/CONFLICT_REGISTER.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/00_governance/DECISION_TRACEABILITY_GUIDE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/00_governance/GLOSSARY.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/00_governance/PRODUCT_SCOPE_AND_PHASES.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/01_product/INFORMATION_ARCHITECTURE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/01_product/NONFUNCTIONAL_REQUIREMENTS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/01_product/PRODUCT_REQUIREMENTS_PRD.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/01_product/USE_CASE_CATALOG.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/SCREEN_CATALOG.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/auth_01_sign_in.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/auth_02_sign_up.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/auth_03_oauth_callback.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/auth_04_password_recovery_request.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/auth_05_password_reset.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/auth_06_recovery_outcome.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_01_portfolio_editor_workbench.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_02_content_inspector.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_03_components_and_sections.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_04_my_components.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_05_theme_and_responsive_inspector.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_06_asset_manager.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_07_advanced_source.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_08_revision_history_and_problems.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/edit_09_preview_modes.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/growth_01_personal_growth_hub.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/growth_02_developer_activity.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/growth_03_private_devscore.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/growth_04_goals.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/growth_05_portfolio_analytics.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/growth_06_platform_connections.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/ops_01_admin_users.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/ops_02_portfolio_moderation.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/ops_03_appeals_and_case_history.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/pub_01_landing.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/pub_02_explore_portfolios.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/pub_03_public_template_explorer.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/public_01_developer_identity_hub.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/public_02_published_case_study.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/public_03_published_portfolio.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/public_04_public_share_controls.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/publish_01_reviewer_staging.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/publish_02_reviewer_only_preview.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/publish_03_publish_preflight.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/publish_04_releases_and_rollback.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_01_settings_hub.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_02_privacy_sharing.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_03_notifications.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_04_account_security.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_05_trash.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_06_export_center.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/set_07_account_exit.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/sys_01_not_found_private_expired_offline.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/sys_02_unsupported_authoring_device.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_01_welcome_and_onboarding.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_02_workspace_home.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_03_developer_profile_editor.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_04_project_library.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_05_project_quick_add_drawer.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_06_project_detailed_editor.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_07_owned_portfolio_library.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/02_design/screens/work_08_template_choice_new_portfolio.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/01_AUTHENTICATION.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/04_EDITOR_AND_COMPONENTS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/03_workflows/README.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/API_COMMANDS_EVENTS_AND_ERRORS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/COST_OPERATIONS_AND_DEPLOYMENT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/EDITOR_CORE_AND_FILE_CONTRACT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/OFFLINE_RECOVERY_AND_DATA_PORTABILITY.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/PROPOSED_REPOSITORY_STRUCTURE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/PROVIDER_DATA_AND_SCREENSHOT_FEASIBILITY.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/SECURITY_AND_PRIVACY.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/STATIC_RELEASE_HOSTING_AND_EXPORT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/04_engineering/SYSTEM_ARCHITECTURE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/ACCESSIBILITY_RESPONSIVE_TEST_PLAN.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/DESIGN_REVIEW_CHECKLIST.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/PLANNED_USER_ACCEPTANCE_TESTS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/TECHNICAL_VERIFICATION_GATES.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/TEST_REPORT_TEMPLATE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/05_quality/TEST_STRATEGY_AND_PLAN.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/ABSTRACT_AND_PROBLEM_FORMULATION.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/CAPSTONE_REPORT_DRAFT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/DELIVERY_PLAN.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/DEMONSTRATION_RUNBOOK.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/DIAGRAMS_AND_MODELS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/FEASIBILITY_STUDY.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/PRESENTATION_OUTLINE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/PROJECT_CHARTER_AND_PROPOSAL.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/PROJECT_RISK_REGISTER.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/REQUIREMENTS_ANALYSIS_AND_USER_STORIES.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/RESEARCH_AND_REFERENCES.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/SUBMISSION_AND_RESEARCH_INTEGRITY_CHECKLIST.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/SYSTEM_REQUIREMENTS_AND_ENVIRONMENT.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/VIVA_QUESTIONS_AND_RESPONSES.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/docs/06_capstone/WEEKLY_WORK_LOG_TEMPLATE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/CONFLICTS.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/D01_D90_BACKEND_TRACEABILITY.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/DECISIONS_UI_001_115.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/F0_SCREEN_SOURCE_MATRIX_2026-11-16.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/F6_AUTOMATED_ACCESSIBILITY_RESULTS.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/F6_FRONTEND_UAT_EVIDENCE.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/FEATURE_TRACEABILITY.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/FRONTEND_BACKEND_CONTRACT_INVENTORY_2026-11-17.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/MANIFEST_SHA256.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/SCREENS.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_2026-11-17.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_SUMMARY_2026-11-17.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/SESSION0_SOURCE_AND_DOCUMENT_INVENTORY_2026-11-17.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/SOURCE_INVENTORY.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/TECHNICAL_PROOFS.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/TECHNICAL_PROOFS_BACKEND_EVIDENCE_2026-11-15.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/TEST_CASES.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/TEST_CASES_BACKEND_EVIDENCE_2026-11-15.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/UI_001_115_BACKEND_EVIDENCE_2026-11-15.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/WORKFLOWS.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/registers/WORKFLOWS_BACKEND_EVIDENCE_2026-11-15.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,ONE_WRITER; no new permission inferred before activation
+project-docs/sources/APPROVED_BRAND_DESIGN_SNAPSHOT_NEEDS_REFERENCE_CHECK.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/BRANDING_SNAPSHOT_APPROVED_DIRECTION.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/EDITOR_FINAL_BLUEPRINT_v1_ORIGINAL_UNMODIFIED.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/HISTORICAL_V2_333_PATH_COUNT_SUPERSEDED.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/HISTORICAL_V2_333_PATH_MANIFEST_SUPERSEDED.csv,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/OLD_31_SCREEN_INVENTORY_SUPERSEDED.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/PHASE2_DESIGN_SNAPSHOT_SUPERSEDED.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+project-docs/sources/README.md,S0,S0,KEEP_AFTER_B16_ACTIVATION,READ_ONLY_HISTORICAL_OR_APPROVED_REFERENCE
+scripts/audit-public-bundle.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/check-file-budget.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/prepare-auth-preview.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/publish-unlisted.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/smoke-auth-server.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/verify-approved-light-references.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/verify-auth-preview.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/verify-backend-traceability.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+scripts/verify-host-revocation.mjs,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/config.toml,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/functions/complete-private-asset/index.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/functions/publish/index.ts,S1,S9,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/functions/purge-expired-trash/index.ts,S1,S11,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/migrations/20261112181522_private_profiles_and_rls.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112182015_identity_sharing_and_operator_roles.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112182855_private_projects_and_assets.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112184701_project_optimistic_concurrency_and_profile_permissions.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112184732_portfolio_revision_journal_and_atomic_transactions.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112184818_portfolio_snapshot_file_count_compatibility.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112190817_portfolio_snapshot_managed_and_owned_path_allowlist.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112190910_portfolio_snapshot_required_field_validation.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112191349_private_project_case_study_revision_control.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112191527_least_privilege_authenticated_table_grants.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112194519_restrict_project_and_portfolio_creation_columns.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261112195717_allow_versioned_custom_component_source_paths.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261113081140_private_onboarding_progress_and_owner_rpc.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261113082110_verified_private_asset_registration.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261113163000_private_item_trash_and_restore.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261113170000_private_frozen_release_requests.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114000500_private_reviewer_grants.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114003000_private_moderation_case_appeals.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114010000_private_frozen_revision_atomic_read.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114021500_frozen_snapshot_canonical_attestation.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114033000_private_account_erasure_request_journal.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114063500_private_account_exit_preflight.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114064500_private_exit_reauth_challenge.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114080000_private_release_visibility_pointer.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114084000_private_delivery_denial_gate.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114091000_private_artifact_pointer_binding.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114095000_case_bound_operator_private_block.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114110000_private_account_exit_inventory_snapshots.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114123000_private_account_exit_storage_reconciliation.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114140000_private_storage_immutable_uploads.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114150000_private_asset_content_attestations.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114161539_verified_profile_projection.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114162101_published_case_study_projection.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114162436_account_erasure_execution.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114163228_expired_trash_purge.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114170000_private_unlisted_release_delivery.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114235500_project_privacy_release_invalidation.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261114235910_private_trigger_execute_acl.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115001000_reserved_portfolio_route_handles.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115002000_project_exposure_immutable_identity.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115041204_private_notification_inbox.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115043831_portfolio_abuse_intake.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115100000_private_goals_and_manual_history.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115110000_private_platform_links.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115121000_public_release_indexing_ack_gate.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115122000_public_projection_content_privacy_invalidation.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130000_erasure_public_release_revocation_gate.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130001_private_frozen_media_candidates.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130002_account_exit_storage_revocation_gate.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130003_frozen_media_delivery.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130004_account_exit_withdraw_owned_public_content.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130005_account_exit_scoped_host_receipts.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130006_guarded_public_portfolio_rollback.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115130007_atomic_account_metadata_export.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115133000_account_erasure_jwt_truthful_receipt.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115140000_owner_my_components_library.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261115154500_owner_profile_draft_save.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261116134114_operator_appeal_evidence.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/migrations/20261117083520_owner_private_project_thumbnails.sql,S1,S1,KEEP_AFTER_B16_ACTIVATION,IMMUTABLE_IF_DEPLOYED; new migration reserved separately
+supabase/tests/account-erasure-jwt-receipt.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/case-bound-operator-private-block.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/consented-public-delivery.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/global-privileged-rpc-audit.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/owner-isolation-and-transactional-revisions.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/portfolio-private-revisions.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-account-erasure-requests.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-account-exit-inventory.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-account-exit-preflight.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-account-exit-reauth.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-account-exit-storage-reconciliation.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-artifact-pointer-binding.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-asset-content-attestations.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-delivery-denial-gate.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-frozen-release-requests.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-goals-and-manual-progress.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-moderation-cases.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-my-components.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-onboarding-progress.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-release-visibility-pointer.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-reviewer-grants.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-trash-lifecycle.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/private-trash-owner-isolation.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/project-exposure-identity-immutability.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/projects-and-assets.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/restricted-creation-privileges.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/rls-and-roles.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+supabase/tests/verified-private-asset-registration.sql,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/auth-web/auth-redirect.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/auth-web/form-helpers.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/auth-web/public-bundle-audit.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/auth-web/supabase-auth-port.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/auth-web/theme-preference.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/auth-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/identity.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/operations.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-account-erasure-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-asset-edge-handler.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-asset-registration-completion.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-goals-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-identity-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-moderation-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-my-components-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-notifications-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-onboarding-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-platform-links-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-project-case-studies.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-project-workflows.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-release-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-release-visibility-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-reviewer-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/private-trash-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/project-data-service.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/project-schema.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/projects.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/public-http-security.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/publish-edge-handler.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/reviewer-preview-handler.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/contracts/unlisted-delivery-handler.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/editor-save-coordinator.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/host-revocation-cli.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/host-revocation-probe.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/journaled-editor-folder.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/portable-source-archive.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/portfolio-revision-transactions.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-account-data-export.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-artifact-direct-sql-writer.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-artifact-pg-worker.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-artifact-pointer-binding.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-delivery-denial-gate.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-frozen-revision-loader.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-immutable-artifact.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/private-server-asset-byte-attestor.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/public-delivery-policy.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/publish-preflight.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/safe-png-publication.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/snapshot-recovery-integrity.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/static-preview-export.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/supabase-portfolio-revisions.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/editor/unlisted-release-verification.test.ts,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/integration/local-auth-email.test.mjs,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/integration/local-moderation-binding-race.test.mjs,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/integration/local-postgres-binding.test.mjs,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/integration/local-private-asset-edge.test.mjs,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/integration/local-publish-edge.test.mjs,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tests/integration/local-supabase-http.test.mjs,S6,S13,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+tsconfig.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation
+vercel.json,S0,S15,RELEASED_SHA_AND_S0_GRANT_AND_NEW_OWNER_ACK_REQUIRED,ONE_WRITER; no new permission inferred before activation

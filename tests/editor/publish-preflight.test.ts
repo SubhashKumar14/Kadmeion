@@ -287,3 +287,49 @@ test('infinite execution and memory growth terminate without corrupting later pr
   }
   assert.equal((await evaluateOwnedPreview('return [{kind:"heading",text:"ready"}]',{})).status,'PREVIEW_ONLY');
 });
+
+test('C10 R4 frozen static scoped theme generates only trusted ordinal rules at exact content widths',()=>{
+  const snapshot=createPortfolioPresetDraft('stairs');
+  const manifest=JSON.parse(snapshot.files['kadmeion.json']);
+  snapshot.files['kadmeion.json']=JSON.stringify({...manifest,seo:{title:'Developer page',description:'Developer projects'}});
+  const page=JSON.parse(snapshot.files['pages/home.page.json']);
+  snapshot.files['pages/home.page.json']=JSON.stringify({...page,sections:[page.sections[0]]});
+  for(const [key,slot] of Object.entries(snapshot.slots))
+    if(!key.startsWith('stepped-hero-')&&slot.state==='S0')snapshot.slots[key]={state:'EMPTY',content:{}};
+  snapshot.slots['stepped-hero-title']=fixture.snapshot.slots.hero;
+  snapshot.slots['stepped-hero-cta']=fixture.snapshot.slots.link;
+  const plan=[{...fixture.plan[0],slotKey:'stepped-hero-title'},{...fixture.plan[2],slotKey:'stepped-hero-cta'}];
+  const palette={mode:'light',surface:'#ffffff',text:'#222222',accent:'#111111'};
+  const theme={...palette,scopedTokens:{version:1,light:[
+    {scope:{kind:'global'},base:{spacingPx:12},breakpoints:{phone:{spacingPx:16}}},
+    {scope:{kind:'section',id:'stepped-hero'},base:{accent:'#123456'},breakpoints:{tablet:{accent:'#abcdef'}}},
+    {scope:{kind:'component',id:'stepped-hero-title'},base:{fontSizePx:24},breakpoints:{desktop:{fontSizePx:42}}},
+    {scope:{kind:'component',id:'orphan-private'},base:{unknownPrivate:'PRIVATE_ORPHAN_MARKER'}}
+  ]}};
+  snapshot.files['theme/tokens.json']=JSON.stringify(palette);
+  const legacy=prepareSafeStaticPreview(edit({snapshot,plan}));
+  assert.equal(legacy.status,'PREVIEW_ONLY');assert.doesNotMatch(legacy.previewHtml??'',/k-theme-container/);
+  snapshot.files['theme/tokens.json']=JSON.stringify(theme);
+  const before=structuredClone(snapshot);
+  const result=prepareSafeStaticPreview(edit({snapshot,plan}));
+  assert.equal(result.status,'PREVIEW_ONLY');
+  assert.equal(result.publicationReady,false);assert.ok(has(result,'PUBLIC_DELIVERY_UNVERIFIED'));
+  const html=result.previewHtml!;
+  assert.match(html,/class="k-theme-container"/);
+  assert.match(html,/container-name:k-portfolio-width/);
+  assert.match(html,/\.k-theme-root\{[^}]*--k-theme-spacing:12px/);
+  assert.match(html,/@container k-portfolio-width \(width <= 600px\)/);
+  assert.match(html,/@container k-portfolio-width \(600px < width <= 950px\)/);
+  assert.match(html,/@container k-portfolio-width \(width > 950px\)/);
+  assert.match(html,/\.k-theme-slot-0\{[^}]*--k-theme-font-size:42px/);
+  assert.match(html,/\.k-theme-section-0\{[^}]*--k-theme-accent:#abcdef/);
+  assert.doesNotMatch(html,/PRIVATE_ORPHAN_MARKER|orphan-private|<script\b/);
+  assert.deepEqual(snapshot,before);
+  assert.equal(prepareSafeStaticPreview(edit({snapshot,plan})).previewHtml,html);
+  snapshot.files['theme/tokens.json']=JSON.stringify({...palette,scopedTokens:{version:1,light:[
+    {scope:{kind:'global'},base:{accent:'url(https://unsafe.invalid)'}}
+  ]}});
+  const blocked=prepareSafeStaticPreview(edit({snapshot,plan}));
+  assert.equal(blocked.previewHtml,null);
+  assert.ok(has(blocked,'INVALID_SCOPED_THEME'));
+});

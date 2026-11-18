@@ -1,6 +1,6 @@
 import { ContractError, normalizeHandle } from './project.ts';
 
-export type AuthFailure = { message: string; status?: number | undefined };
+export type AuthFailure = { message: string; providerCode?: 'email_not_confirmed'; status?: number | undefined };
 export type AuthOutcome<T> = { data: T; error: AuthFailure | null };
 export type AuthUser = { id: string; email?: string; email_confirmed_at?: string | null };
 export type AuthSession = { access_token: string; user: AuthUser };
@@ -25,8 +25,8 @@ export interface AuthPort {
 }
 
 export class AuthFlowError extends Error {
-  readonly code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED';
-  constructor(code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED', message: string) {
+  readonly code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED' | 'EMAIL_CONFIRMATION_REQUIRED';
+  constructor(code: 'VALIDATION' | 'PROVIDER_UNAVAILABLE' | 'AUTH_FAILED' | 'AUTH_EXPIRED' | 'EMAIL_CONFIRMATION_REQUIRED', message: string) {
     super(message); this.name = 'AuthFlowError'; this.code=code;
   }
 }
@@ -118,6 +118,8 @@ export class AuthService {
     const attempt = await authProviderCall(
       ()=>this.auth.signInWithPassword({ email, password }),
       'Sign-in service is temporarily unavailable.');
+    if (attempt?.error?.providerCode === 'email_not_confirmed')
+      throw new AuthFlowError('EMAIL_CONFIRMATION_REQUIRED', 'Open the confirmation link in your email, then sign in. Check your spam folder or request another link below.');
     if (attempt?.error || !attempt?.data?.session?.access_token)
       throw new AuthFlowError('AUTH_FAILED', 'Incorrect credentials or sign-in unavailable.');
     const check = await authProviderCall(
@@ -133,26 +135,33 @@ export class AuthService {
   }
 
   async requestPasswordReset(emailInput: unknown): Promise<void> {
-    if (!this.config.emailDeliveryVerified)
-      throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Password recovery is unavailable until email delivery is verified.');
+    // Delivery verification is not a prerequisite to submitting a recovery request.
+    // The provider still enforces abuse controls and the recovery session is verified separately.
     const email = validateAuthEmail(emailInput);
-    const { error } = await authProviderCall(
+    const outcome = await authProviderCall(
       ()=>this.auth.resetPasswordForEmail(email, {
         redirectTo: this.config.siteOrigin + '/reset-password'
       }), 'Unable to submit the recovery request.');
-    if (error) throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to submit the recovery request.');
+    if (!outcome || outcome.error !== null || !outcome.data ||
+        typeof outcome.data !== 'object' || Array.isArray(outcome.data) ||
+        Object.keys(outcome.data).length !== 0)
+      throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Unable to submit the recovery request.');
     // Do not claim a message was delivered or an account exists.
   }
 
   async resendSignupConfirmation(emailInput:unknown):Promise<void>{
     const resend=this.auth.resend;
-    if(!this.config.emailDeliveryVerified||!resend)
+    if(!resend)
       throw new AuthFlowError('PROVIDER_UNAVAILABLE','Confirmation email is temporarily unavailable.');
     const email=validateAuthEmail(emailInput);
     const outcome=await authProviderCall(()=>resend.call(this.auth,{
       type:'signup',email,options:{emailRedirectTo:this.config.siteOrigin+'/auth/callback'}
     }),'Unable to submit the confirmation request.');
-    if(!outcome||outcome.error)
+    // A successful email resend acknowledges a request, not an identity or delivery.
+    // Reject malformed envelopes and unexpected session/user payloads.
+    if(!outcome || outcome.error !== null || !outcome.data ||
+       typeof outcome.data !== 'object' || Array.isArray(outcome.data) ||
+       Object.keys(outcome.data).length !== 0)
       throw new AuthFlowError('PROVIDER_UNAVAILABLE','Unable to submit the confirmation request.');
   }
 

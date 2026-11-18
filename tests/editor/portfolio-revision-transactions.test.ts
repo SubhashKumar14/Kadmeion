@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, savedComponentInputFromOwnedSlot, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
+import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, savedComponentInputFromOwnedSlot, planSectionLayoutChange, type LayoutMappingRequest, type ChangeSectionLayoutIntent, type RestoreLayoutStashIntent, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
+
+import {parseScopedTheme,resolveScopedTheme,scopedThemeBreakpoint,scopedThemeCssVariables,type EditScopedThemeIntent} from '../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 const make = (): EditorHead => createEditorHead({
   formatVersion:1,
@@ -371,4 +373,214 @@ test('owner section reorder preserves slot ownership, is undoable, and rejects i
     kind:'MOVE_SECTION',sectionId:'not-present',direction:'down'})),{code:'VALIDATION'});
   assert.throws(()=>applyEditorTransaction(original,op(original,{
     kind:'MOVE_SECTION',sectionId:first,direction:'sideways' as never})),{code:'VALIDATION'});
+});
+
+/** C10 mandatory independent tests against actual S3 engine types. */
+type C10Request=LayoutMappingRequest;
+type C10Intent=ChangeSectionLayoutIntent|RestoreLayoutStashIntent;
+const c10Apply=(head:EditorHead,intent:C10Intent,operationId='75000000-0000-4000-8000-000000000001')=>
+  applyEditorTransaction(head,{operationId,baseRevision:head.revision,intent});
+const c10Fixture=()=>{
+  const draft=createPortfolioPresetDraft('arc');
+  const page=JSON.parse(draft.files['pages/home.page.json']);
+  page.privateUnknown={preserve:'opaque'};
+  page.sections[0].privateUnknown={preserve:'section metadata'};
+  draft.files['pages/home.page.json']=JSON.stringify(page,null,2);
+  const p='arc-hero-';
+  const source='\uFEFFimport {x} from "./relative";\r\nexport const link=x;\r\n';
+  const original='export const link="Original";';
+  const sourcePath='slots/arc-hero-cta1/index.tsx';
+  draft.files[sourcePath]=source;
+  draft.slots[p+'cta1']={state:'S2',componentId:'external-link@1',
+    content:{label:'Private CTA',url:'https://example.com/',unknown:'preserve field'},sourcePath,originalSource:original};
+  draft.slots[p+'text'].content={text:'Body goes to Unplaced'};
+  draft.stashes[p+'cta1']=[{state:'S0',componentId:'external-link@1',content:{label:'Older stash'}}];
+  const head=createEditorHead(draft);
+  const request:C10Request={sectionId:'arc-hero',expectedLayout:'arc-hero@1',targetLayout:'stepped-hero@1',
+    mappings:[
+      {fromSlotKey:p+'title',toSlotKey:p+'title'},
+      {fromSlotKey:p+'text',toSlotKey:null},
+      {fromSlotKey:p+'cta1',toSlotKey:p+'cta'},
+      {fromSlotKey:p+'cta2',toSlotKey:null},
+      {fromSlotKey:p+'note',toSlotKey:null}
+    ]};
+  const intent:ChangeSectionLayoutIntent={kind:'CHANGE_SECTION_LAYOUT',...request,expectedRevision:0,
+    confirmStash:true,confirmOwnedRelocation:true};
+  return {head,request,intent,p,source,original,sourcePath};
+};
+test('C10 atomic layout preview and apply preserve opaque source, stashes and unrelated sections; Undo exact',async()=>{
+  const {head,request,intent,p,source,original,sourcePath}=c10Fixture();
+  const before=structuredClone(head);
+  const receipt=planSectionLayoutChange(head,request);
+  assert.equal(receipt.requiresStashConfirmation,true);
+  assert.equal(receipt.requiresOwnedRelocationConfirmation,true);
+  assert.equal(receipt.expectedRevision,head.revision);
+  assert.deepEqual(receipt.targetKeys,[p+'title',p+'cta']);
+  assert.equal(receipt.addedFiles,1);
+  assert.equal(receipt.addedStashAssignments,4);
+  assert.deepEqual(head,before,'Pure preview must not modify the working head');
+  const changed=c10Apply(head,intent);
+  assert.equal(changed.revision,1);assert.equal(changed.undo.length,1);
+  const page=JSON.parse(changed.snapshot.files['pages/home.page.json']);
+  const oldPage=JSON.parse(before.snapshot.files['pages/home.page.json']);
+  assert.equal(page.sections[0].id,'arc-hero');assert.equal(page.sections[0].layout,'stepped-hero@1');
+  assert.deepEqual(page.sections[0].slotKeys,['title','cta']);
+  assert.deepEqual(page.sections.slice(1),oldPage.sections.slice(1));
+  assert.deepEqual(page.privateUnknown,oldPage.privateUnknown);
+  assert.deepEqual(page.sections[0].privateUnknown,oldPage.sections[0].privateUnknown);
+  assert.deepEqual(changed.snapshot.slots[p+'title'],before.snapshot.slots[p+'title']);
+  assert.equal(Object.hasOwn(changed.snapshot.slots,p+'text'),false);
+  assert.deepEqual(changed.snapshot.stashes[p+'text'].at(-1),before.snapshot.slots[p+'text']);
+  assert.deepEqual(changed.snapshot.stashes[p+'cta1'][0],before.snapshot.stashes[p+'cta1'][0]);
+  assert.deepEqual(changed.snapshot.stashes[p+'cta1'].at(-1),before.snapshot.slots[p+'cta1']);
+  const relocated=changed.snapshot.slots[p+'cta'];
+  assert.equal(relocated.state,'S2');assert.equal(relocated.originalSource,original);
+  assert.deepEqual(relocated.content,before.snapshot.slots[p+'cta1'].content);
+  assert.equal(relocated.sourcePath,'slots/arc-hero-cta/owned/75000000-0000-4000-8000-000000000001/component-source.tsx');
+  assert.equal(changed.snapshot.files[sourcePath],source);
+  assert.equal(changed.snapshot.files[relocated.sourcePath!],source);
+  assert.deepEqual(head,before);
+  assert.deepEqual(applyEditorTransaction(changed,{operationId:'75000000-0000-4000-8000-000000000001',
+    baseRevision:0,intent}),changed,
+    'Identical operation replay does not advance revision');
+  const undone=applyEditorTransaction(changed,op(changed,{kind:'UNDO'}));
+  assert.deepEqual(undone.snapshot,before.snapshot);
+});
+test('C10 stale preview, missing confirmation, duplicate target, incompatible mapping and source collision are atomic denials',async()=>{
+  const {head,intent,request,p}=c10Fixture(),before=structuredClone(head);
+  for(const malformed of [
+    {...request,mappings:request.mappings.slice(1)},
+    {...request,mappings:request.mappings.map((row,i)=>i===2?{...row,toSlotKey:p+'title'}:row)},
+    {...request,mappings:request.mappings.map((row,i)=>i===1?{...row,toSlotKey:p+'cta'}:i===2?{...row,toSlotKey:null}:row)},
+    {...request,mappings:request.mappings.map((row,i)=>i===2?{...row,toSlotKey:'contact-cta1'}:row)}
+  ])assert.throws(()=>planSectionLayoutChange(head,malformed));
+  for(const denial of [{...intent,expectedRevision:1},{...intent,confirmStash:false},
+    {...intent,confirmOwnedRelocation:false}]){
+    assert.throws(()=>c10Apply(head,denial));assert.deepEqual(head,before);
+  }
+  const occupied=structuredClone(head);
+  occupied.snapshot.files['slots/arc-hero-cta/owned/75000000-0000-4000-8000-000000000001/component-source.tsx']='unrelated owner bytes';
+  const collisionBefore=structuredClone(occupied);
+  assert.throws(()=>c10Apply(occupied,intent));
+  assert.deepEqual(occupied,collisionBefore);
+});
+test('C10 Unplaced restore targets a declared EMPTY compatible slot and never rewrites original source',async()=>{
+  const {head,intent,p,source,sourcePath}=c10Fixture();
+  const changed=c10Apply(head,intent);
+  const cleared=applyEditorTransaction(changed,op(changed,{kind:'CLEAR_SLOT',slotKey:p+'cta'}));
+  const before=structuredClone(cleared);
+  const restore:RestoreLayoutStashIntent={kind:'RESTORE_LAYOUT_STASH',fromSlotKey:p+'cta1',
+    stashIndex:changed.snapshot.stashes[p+'cta1'].length-1,toSlotKey:p+'cta',
+    expectedRevision:cleared.revision,confirmOwnedRelocation:true};
+  assert.throws(()=>c10Apply(cleared,{...restore,confirmOwnedRelocation:false},
+    '75000000-0000-4000-8000-000000000002'));
+  assert.deepEqual(cleared,before);
+  const moved=c10Apply(cleared,restore,'75000000-0000-4000-8000-000000000002');
+  const result=moved.snapshot.slots[p+'cta'];
+  assert.equal(result.state,'S2');
+  assert.equal(moved.snapshot.files[sourcePath],source);
+  assert.equal(moved.snapshot.files[result.sourcePath!],source);
+  assert.equal(moved.snapshot.stashes[p+'cta1'].length,before.snapshot.stashes[p+'cta1'].length-1);
+  assert.deepEqual(moved.snapshot.stashes[p+'cta1'][0],before.snapshot.stashes[p+'cta1'][0]);
+  assert.deepEqual(cleared,before);
+  assert.throws(()=>c10Apply(changed,{...restore,expectedRevision:changed.revision},
+    '75000000-0000-4000-8000-000000000003'),'Occupied target must not replace current assignment');
+});
+
+test('C10 legacy owned CSS or unknown pin may stash without relocation; overflow is atomic',()=>{
+  const {head,request,intent,p}=c10Fixture();
+  const legacy=structuredClone(head);
+  const key=p+'cta1',old=legacy.snapshot.slots[key].sourcePath!;
+  const css='slots/'+key+'/index.css';
+  legacy.snapshot.files[css]='/* opaque CSS */\r\n';
+  legacy.snapshot.slots[key]={...legacy.snapshot.slots[key],sourcePath:css};
+  delete legacy.snapshot.files[old];
+  const before=structuredClone(legacy);
+  assert.throws(()=>planSectionLayoutChange(legacy,request),{code:'VALIDATION'});
+  const stash={...intent,mappings:intent.mappings.map(row=>row.fromSlotKey===key?{...row,toSlotKey:null}:row)};
+  const result=c10Apply(legacy,stash);
+  assert.equal(result.snapshot.slots[p+'cta'].state,'EMPTY');
+  assert.deepEqual(result.snapshot.stashes[key].at(-1),before.snapshot.slots[key]);
+  assert.equal(result.snapshot.files[css],before.snapshot.files[css]);
+  const unknown=structuredClone(head);
+  unknown.snapshot.slots[key]={state:'S0',componentId:'unknown-legacy@1',content:{label:'Never coerce unknown pin'}};
+  assert.throws(()=>planSectionLayoutChange(unknown,request),{code:'VALIDATION'});
+  const unknownStashed=c10Apply(unknown,stash);
+  assert.deepEqual(unknownStashed.snapshot.stashes[key].at(-1),unknown.snapshot.slots[key]);
+  assert.equal(unknownStashed.snapshot.slots[p+'cta'].state,'EMPTY');
+  const tooMany=structuredClone(head);
+  for(let i=Object.keys(tooMany.snapshot.files).length;i<100;i++)
+    tooMany.snapshot.files['content/file-'+i+'.content.json']='{}';
+  const held=structuredClone(tooMany);
+  assert.throws(()=>planSectionLayoutChange(tooMany,request),{code:'VALIDATION'});
+  assert.throws(()=>c10Apply(tooMany,intent),{code:'VALIDATION'});
+  assert.deepEqual(tooMany,held);
+});
+
+const scopedFixture=()=>{
+  const snapshot=createPortfolioPresetDraft('arc');
+  const raw={mode:'light',surface:'#f9f9f9',text:'#222222',accent:'#111111',
+    authorModePalettes:{dark:{surface:'#18181b',text:'#fafafa',accent:'#ce8f56'}},
+    scopedTokens:{version:1,light:[
+      {scope:{kind:'global'},base:{accent:'#123456',spacingPx:12},breakpoints:{phone:{accent:'#654321'}}},
+      {scope:{kind:'template',id:'arc'},base:{fontSizePx:24}},
+      {scope:{kind:'section',id:'arc-hero'},base:{accent:'#abcdef'},breakpoints:{tablet:{spacingPx:20}}},
+      {scope:{kind:'component',id:'arc-hero-title'},base:{fontWeight:600},breakpoints:{phone:{accent:'#fedcba'}}},
+      {scope:{kind:'component',id:'orphan-private'},base:{unknownPrivate:'preserve-only'}}
+    ]}};
+  snapshot.files['theme/tokens.json']=JSON.stringify(raw);
+  return {head:createEditorHead(snapshot),raw};
+};
+test('C10 R4 shared resolver applies exact content-width boundaries and authoritative scope precedence',()=>{
+  const {head}=scopedFixture(),snapshot=head.snapshot;
+  const target={mode:'light' as const,sectionId:'arc-hero',slotKey:'arc-hero-title'};
+  for(const [width,bucket,accent,spacing] of [[600,'phone','#fedcba',12],[600.01,'tablet','#abcdef',20],
+    [950,'tablet','#abcdef',20],[950.01,'desktop','#abcdef',12]] as const){
+    assert.equal(scopedThemeBreakpoint(width),bucket);
+    const resolution=resolveScopedTheme(snapshot,{...target,widthPx:width});
+    assert.equal(resolution.status,'resolved');assert.equal(resolution.breakpoint,bucket);
+    assert.equal(resolution.tokens.accent,accent);assert.equal(resolution.tokens.spacingPx,spacing);
+    assert.equal(resolution.tokens.fontSizePx,24);assert.equal(resolution.tokens.fontWeight,600);
+    assert.equal(scopedThemeCssVariables(resolution.tokens)['--k-theme-spacing'],spacing+'px');
+  }
+  for(const width of [0,-1,NaN,Infinity])assert.equal(scopedThemeBreakpoint(width),null);
+  assert.equal(resolveScopedTheme(snapshot,{mode:'dark',widthPx:600}).tokens.surface,'#18181b');
+  assert.equal(resolveScopedTheme(snapshot,{...target,sectionId:'contact',widthPx:600}).status,'blocked');
+  assert.equal(parseScopedTheme(snapshot).status,'valid');
+  assert.ok(parseScopedTheme(snapshot).issues.some(i=>i.code==='UNSUPPORTED_ORPHAN'));
+  assert.equal(JSON.stringify(resolveScopedTheme(snapshot,{...target,widthPx:600}).tokens).includes('preserve-only'),false);
+});
+test('C10 R4 typed set/reset, operation replay, stale edit and single Undo preserve unrelated private bytes',()=>{
+  const {head,raw}=scopedFixture(),before=structuredClone(head);
+  const intent:EditScopedThemeIntent={kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',
+    scope:{kind:'component',id:'arc-hero-title'},layer:'phone',edit:{kind:'reset',key:'accent'}};
+  const command=op(head,intent);
+  const changed=applyEditorTransaction(head,command);
+  assert.equal(changed.revision,head.revision+1);
+  assert.equal(changed.undo.length,head.undo.length+1);
+  assert.equal(resolveScopedTheme(changed.snapshot,{mode:'light',slotKey:'arc-hero-title',widthPx:600}).tokens.accent,'#abcdef');
+  assert.deepEqual(JSON.parse(changed.snapshot.files['theme/tokens.json']).scopedTokens.light.at(-1),raw.scopedTokens.light.at(-1));
+  assert.deepEqual(applyEditorTransaction(changed,command),changed);
+  assert.throws(()=>applyEditorTransaction(changed,op(changed,intent)),{code:'REVISION_CONFLICT'});
+  const set:EditScopedThemeIntent={...intent,expectedRevision:changed.revision,edit:{kind:'set',key:'accent',value:'#123abc'}};
+  const next=applyEditorTransaction(changed,op(changed,set));
+  assert.equal(resolveScopedTheme(next.snapshot,{mode:'light',slotKey:'arc-hero-title',widthPx:600}).tokens.accent,'#123abc');
+  assert.deepEqual(applyEditorTransaction(next,op(next,{kind:'UNDO'})).snapshot,changed.snapshot);
+  assert.deepEqual(applyEditorTransaction(changed,op(changed,{kind:'UNDO'})).snapshot,before.snapshot);
+  assert.deepEqual(head,before);
+});
+test('C10 R4 rejects unsafe active tokens without normalizing input or allowing raw managed-write bypass',()=>{
+  const {head,raw}=scopedFixture();
+  for(const base of [{accent:'url(https://unsafe.invalid)'},{fontSizePx:73},{lineHeight:0.5},{fontWeight:450},{radiusPx:33},{spacingPx:-1},{unknown:true}]){
+    const snapshot=structuredClone(head.snapshot);
+    snapshot.files['theme/tokens.json']=JSON.stringify({...raw,scopedTokens:{version:1,light:[{scope:{kind:'global'},base}]}});
+    const before=structuredClone(snapshot);
+    assert.equal(parseScopedTheme(snapshot).status,'blocked');
+    assert.equal(resolveScopedTheme(snapshot,{mode:'light',widthPx:600}).status,'blocked');
+    assert.deepEqual(snapshot,before);
+  }
+  const before=structuredClone(head);
+  assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',path:'theme/tokens.json',
+    source:JSON.stringify({...raw,scopedTokens:{version:1,light:[]}})})),{code:'VALIDATION'});
+  assert.deepEqual(head,before);
 });

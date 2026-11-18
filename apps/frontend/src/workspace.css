@@ -82,9 +82,11 @@
 
 /* Fetch-only content-footprint placeholders; never used as fake loading delays. */
 .ws-loading{min-height:420px;padding:26px 0}.ws-loading [role="status"]{font-size:13px;color:var(--body)}
-.ws-skeleton-heading{margin:30px 0 25px;color:var(--line-dark);font-size:clamp(20px,4vw,42px)}
+.ws-skeleton-heading{margin:24px 0 30px}
 .ws-skeleton-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
-.ws-skeleton-grid>span{min-height:130px;padding:22px;border-radius:13px;border:1px solid var(--line);color:var(--line-dark);font-size:22px;line-height:1.8}
+.ws-skeleton-grid>.glyph-skeleton{min-height:210px;padding:22px;border-radius:13px;border:1px solid var(--line);align-content:start;gap:14px}
+.ws-skeleton-grid>.glyph-skeleton .is-label{margin-bottom:6px}
+.ws-gate .glyph-skeleton{width:min(100%,32rem);margin-block:18px 0}
 .ws-error{max-width:650px}.ws-error h1{font-size:36px}.ws-error p{color:var(--body)}
 .ws-recent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;margin-top:30px}
 .ws-recent-grid>section,.ws-recent-grid>nav{border-top:1px solid var(--line);padding-top:20px;min-width:0}
@@ -398,12 +400,14 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .pv-empty-page{padding:35px}.pv-empty-page h2{font:normal 25px Georgia,serif}
 .portfolio-only-preview.pv-document{padding:0;border-top:4px solid;min-height:100dvh}
 .portfolio-only-preview .pv-site{max-width:1250px;margin:0 auto}
+@supports not (container-type:inline-size){
 @media(max-width:950px){.pv-hero-grid{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}
   .pv-section-slots{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.pv-hero-grid{grid-template-columns:1fr}.pv-hero-art{min-height:100px}
   .pv-section-slots{grid-template-columns:1fr}.pv-layout-L3 .pv-slot-cell:nth-child(1),
   .pv-layout-L4 .pv-slot-cell:nth-child(2){grid-column:auto}
   .pv-site-head span{display:none}.pv-site-footer{flex-direction:column;gap:2px}}
+}
 
 /* EDIT-01: compact, approved-reference-inspired three-pane editor shell.
  * Dashboard and public shells remain unchanged. */
@@ -1287,3 +1291,50 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-exit-inventory dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:12px;
   border:1px solid var(--line);border-radius:8px;background:var(--surface-soft)}
 .ws-exit-inventory dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+
+/* WF-008/048: shared shell status and compact keyboard-accessible navigation. */
+.ws-network-status{font-size:.8125rem;color:var(--muted);line-height:1.5;margin:0 0 12px;overflow-wrap:anywhere}
+.ws-network-status[data-state="offline"]{color:var(--ink);background:var(--surface-soft);border-inline-start:3px solid var(--accent-strong);padding:10px 12px}
+.ws-editor-shell .ws-network-status{margin:0;padding:5px 12px;border-bottom:1px solid var(--line)}
+.ws-onboarding-note:empty{margin:0;padding:0}
+.ws-rail :is(a,button):focus-visible{outline-color:#f7f5ef}
+.ws-onboarding :is(.ws-primary,.ws-secondary):disabled{cursor:not-allowed;opacity:.7}
+.ws-choice-set:disabled .ws-choice{cursor:not-allowed}
+@media(max-width:440px){
+  .ws-rail{grid-template-columns:minmax(0,1fr) auto}
+  .ws-rail .ws-brand{grid-column:1;grid-row:1}
+  .ws-mobile-menu{grid-column:2;grid-row:1}
+  .ws-rail nav{grid-column:1/-1;grid-row:auto}
+  .ws-rail-bottom{grid-column:1/-1;grid-row:auto;justify-self:end}
+  .ws-rail nav a{min-width:0;overflow-wrap:anywhere}
+  .ws-rail nav a svg{flex:none}
+}
+
+/* Approved workspace hierarchy: content-led reflow rather than fixed screenshot dimensions. */
+.ws-topbar-context{min-width:0;overflow-wrap:anywhere}
+.ws-topbar-actions{min-width:0;flex-wrap:wrap}
+.ws-home :is(h1,h2,h3,p),.ws-onboarding :is(h1,legend,strong,small){overflow-wrap:anywhere}
+.ws-home .ws-heading>p:last-child,.ws-onboarding .ws-heading>p:last-child{font-size:.9375rem}
+.ws-choice>span:not(.ws-area-icon){font-size:.875rem}
+.ws-choice small{font-size:.75rem}
+.ws-content:focus-visible,.ws-gate:focus-visible{outline:3px solid var(--focus);outline-offset:-3px}
+@media(max-width:720px){.ws-skeleton-grid>.glyph-skeleton{min-height:150px}.ws-home-intro>.ws-primary{max-width:100%;white-space:normal}}
+@media(max-width:440px){.ws-recent-grid li{align-items:flex-start;flex-wrap:wrap}.ws-recent-grid li span{flex:none}.ws-actions>:is(button,a){max-width:100%;white-space:normal;overflow-wrap:anywhere}}
+
+/* Portfolio layout follows the rendered site, not the workspace viewport.
+ * Keep this name distinct from the R4 token-measurement container. */
+@supports (container-type:inline-size){
+  .pv-site{container:k-portfolio-layout / inline-size}
+  @container k-portfolio-layout (width <= 950px){
+    .pv-hero-grid{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}
+    .pv-section-slots{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  @container k-portfolio-layout (width <= 600px){
+    .pv-hero-grid{grid-template-columns:1fr}
+    .pv-hero-art,.ws-editor-shell .ws-editor-grid .pv-hero-art{min-height:100px}
+    .pv-site .pv-section-slots{grid-template-columns:minmax(0,1fr)}
+    .pv-layout-L3 .pv-slot-cell:nth-child(1),.pv-layout-L4 .pv-slot-cell:nth-child(2){grid-column:auto}
+    .pv-site-head span{display:none}
+    .pv-site-footer{flex-direction:column;gap:2px}
+  }
+}

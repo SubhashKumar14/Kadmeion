@@ -632,3 +632,23 @@ p{line-height:1.55}
   .demo-rail {display:none}
   .demo-caption {padding-top:.5rem}
 }
+
+/* Pending-only custom pseudo-letterform silhouettes (UI-09/65/95, WF-048).
+   Decorative content: consumer must put aria-hidden on this group and keep a real status separately.
+   No font, script, network asset or conventional bar; use text footprint classes.
+   Decorative shimmer settles after two cycles (at most 3.6s); the static glyph and
+   truthful status persist for the actual remaining pending interval. */
+.glyph-skeleton{display:grid;gap:.65rem;min-width:0;max-width:100%;pointer-events:none;user-select:none}
+.glyph-skeleton-line{display:block;height:1.125rem;width:min(100%,32rem)}
+.glyph-skeleton-line.is-title{height:2.5rem;width:min(100%,27rem)}
+.glyph-skeleton-line.is-medium{width:min(76%,24rem)}
+.glyph-skeleton-line.is-short{width:min(48%,12rem)}
+.glyph-skeleton-line.is-label{height:.9rem;width:min(60%,11rem)}
+@supports (mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22225%22%20height%3D%2219%22%20viewBox%3D%220%200%20225%2019%22%3E%3Cpath%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20d%3D%22M2%204%20Q9%201%2012%207%20Q11%2013%204%2013%20L6%2017%20M2%2010%20L7%206%20M20%203%20L20%2013%20Q25%2017%2029%2012%20L29%205%20M21%208%20L26%208%20M36%202%20L36%2015%20M36%206%20Q47%201%2046%2011%20Q43%2015%2039%2012%20M53%205%20Q63%201%2064%2010%20L61%2015%20M54%2011%20L60%2011%20M74%203%20Q69%207%2074%2013%20Q80%2017%2082%209%20L80%204%20M72%208%20L77%208%20M90%202%20L96%207%20L90%2015%20M97%203%20L100%2014%20M112%204%20Q119%200%20120%207%20L116%2012%20L122%2015%20M112%204%20L112%2016%20M130%205%20Q139%201%20140%209%20Q139%2016%20132%2014%20M129%2010%20L133%206%20M150%202%20L150%2015%20M150%209%20Q160%203%20161%209%20L161%2015%20M169%203%20Q179%203%20177%2011%20L172%2016%20M168%208%20L175%208%20M187%203%20L192%207%20Q195%2012%20188%2016%20M194%203%20L197%2012%20M207%205%20Q214%202%20217%209%20Q214%2016%20207%2013%20L210%208%22%2F%3E%3C%2Fsvg%3E")) {
+  .glyph-skeleton-line{background:linear-gradient(105deg,var(--muted) 25%,var(--line-dark) 46%,var(--muted) 68%);background-size:220% 100%;opacity:.65;mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22225%22%20height%3D%2219%22%20viewBox%3D%220%200%20225%2019%22%3E%3Cpath%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20d%3D%22M2%204%20Q9%201%2012%207%20Q11%2013%204%2013%20L6%2017%20M2%2010%20L7%206%20M20%203%20L20%2013%20Q25%2017%2029%2012%20L29%205%20M21%208%20L26%208%20M36%202%20L36%2015%20M36%206%20Q47%201%2046%2011%20Q43%2015%2039%2012%20M53%205%20Q63%201%2064%2010%20L61%2015%20M54%2011%20L60%2011%20M74%203%20Q69%207%2074%2013%20Q80%2017%2082%209%20L80%204%20M72%208%20L77%208%20M90%202%20L96%207%20L90%2015%20M97%203%20L100%2014%20M112%204%20Q119%200%20120%207%20L116%2012%20L122%2015%20M112%204%20L112%2016%20M130%205%20Q139%201%20140%209%20Q139%2016%20132%2014%20M129%2010%20L133%206%20M150%202%20L150%2015%20M150%209%20Q160%203%20161%209%20L161%2015%20M169%203%20Q179%203%20177%2011%20L172%2016%20M168%208%20L175%208%20M187%203%20L192%207%20Q195%2012%20188%2016%20M194%203%20L197%2012%20M207%205%20Q214%202%20217%209%20Q214%2016%20207%2013%20L210%208%22%2F%3E%3C%2Fsvg%3E");mask-repeat:repeat-x;mask-position:left center;mask-size:auto 100%;animation:kadmeion-glyph-luminance 1.8s ease-in-out 2 forwards}
+  .glyph-skeleton-line:nth-child(2n){mask-position:2rem center;animation-delay:-.4s}
+}
+@keyframes kadmeion-glyph-luminance{from{background-position:100% 0}to{background-position:-100% 0}}
+@media(prefers-reduced-motion:reduce){.glyph-skeleton-line{animation:none!important;background-position:center}}
+@media(forced-colors:active){.glyph-skeleton-line{animation:none!important;background:CanvasText;forced-color-adjust:none}}
+@media(max-width:480px){.glyph-skeleton-line.is-title{height:1.9rem}}

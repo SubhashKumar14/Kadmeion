@@ -28,17 +28,35 @@ export interface EditorHead {
   operations: Record<string,string>;
 }
 
+export type LayoutMappingRequest = {
+  sectionId:string;expectedLayout:string;targetLayout:string;
+  mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>;
+};
+export type ChangeSectionLayoutIntent=LayoutMappingRequest & {
+  kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;
+  confirmStash:boolean;confirmOwnedRelocation:boolean;
+};
+export type RestoreLayoutStashIntent={
+  kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
+  expectedRevision:number;confirmOwnedRelocation:boolean;
+};
+
 export type EditorIntent =
+  | EditScopedThemeIntent
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
+  | ChangeSectionLayoutIntent
+  | RestoreLayoutStashIntent
   | { kind:'CLEAR_SLOT'; slotKey:string }
-  | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean }
+  | { kind:'ASSIGN_COMPONENT'; slotKey:string; componentId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'UPDATE_CONTENT'; slotKey:string; content:Record<string,string> }
+  /** Draft metadata placement only. Never grants media-byte attestation. */
+  | { kind:'PLACE_PRIVATE_IMAGE'; slotKey:string; assetId:string; altText:string }
   | { kind:'CUSTOMIZE_COMPONENT'; slotKey:string; copiedSource:string }
-  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean }
+  | { kind:'REUSE_SAVED_COMPONENT'; slotKey:string; componentVersionId:string; confirmOwnedReplacement?:boolean; preserveMatchingContent?:boolean }
   | { kind:'EDIT_OWNED_SOURCE'; slotKey:string; source:string }
-  | { kind:'RESTORE_STASH'; slotKey:string }
+  | { kind:'RESTORE_STASH'; slotKey:string; stashIndex?:number }
   | { kind:'UNDO' }
   | { kind:'REDO' };
 
@@ -56,6 +74,57 @@ const OP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a
 function assertSlotKey(key: string) {
   if (typeof key!=='string' || !SLOT_KEY.test(key) || RESERVED_KEYS.has(key))
     throw new ContractError('VALIDATION', 'Invalid or reserved slot key.');
+}
+
+/** undefined = older layoutless snapshot; null = declared layout but no
+ * unique valid target. Never infer compatibility from an arbitrary suffix. */
+export function declaredLayoutSlotKind(snapshot:PortfolioSnapshot,key:string):string|null|undefined{
+  try{
+    const page=JSON.parse(snapshot.files['pages/home.page.json']??'null') as {sections?:unknown}|null;
+    if(!page||!Object.hasOwn(page,'sections'))return undefined;
+    if(!Array.isArray(page.sections)||!Object.hasOwn(snapshot.slots,key))return null;
+    const matches:string[]=[];
+    for(const raw of page.sections){
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))continue;
+      const section=raw as {id?:unknown;layout?:unknown};
+      if(typeof section.id!=='string'||typeof section.layout!=='string')continue;
+      for(const name of portfolioLayout(section.layout)?.slots??[]){
+        const kind=name.toLowerCase();
+        if(section.id+'-'+kind===key)matches.push(kind);
+      }
+    }
+    return matches.length===1?matches[0]!:null;
+  }catch{return null;}
+}
+const libraryKinds:Readonly<Record<string,readonly string[]>>={
+  'title-stacked@1':['title'],'body-copy@1':['text','text1','text2','note'],
+  'external-link@1':['cta','cta1','cta2','btn1','btn2','links'],
+  'project-card@1':['project','card'],'skills-list@1':['items','entries'],
+  'experience-list@1':['entries'],'technology-tag@1':['badge'],'author-metric@1':['meta']
+};
+export function canAssignCompatibleComponent(snapshot:PortfolioSnapshot,key:string,pin:string):boolean{
+  const kind=declaredLayoutSlotKind(snapshot,key);
+  return typeof kind==='string'&&Object.hasOwn(libraryKinds,pin)&&libraryKinds[pin]!.includes(kind);
+}
+/** A real declared media slot, not merely a key ending in "-image". */
+export function canPlacePrivateImage(snapshot:PortfolioSnapshot,key:string):boolean {
+  const slot=Object.hasOwn(snapshot.slots,key)?snapshot.slots[key]:undefined;
+  if(!slot||(slot.state!=='EMPTY'&&(slot.state!=='S0'||slot.componentId!=='image@1')))return false;
+  const kind=declaredLayoutSlotKind(snapshot,key);
+  return typeof kind==='string'&&['avatar','image','imagea','imageb','media','thumbs'].includes(kind);
+}
+
+/** Same pinned, documented text fields only; unknown fields stay in full stash. */
+export function matchingReplacementContent(slot:SlotAssignment,pin:string):Record<string,string>{
+  const known:Readonly<Record<string,readonly string[]>>={
+    'title-stacked@1':['title','subtitle'],'body-copy@1':['text'],
+    'external-link@1':['label','url'],'project-card@1':['title','summary','url'],
+    'skills-list@1':['items'],'experience-list@1':['items'],
+    'technology-tag@1':['text'],'author-metric@1':['label','value']
+  };
+  if(slot.componentId!==pin||!Object.hasOwn(known,pin))return {};
+  return Object.fromEntries((known[pin]??[]).filter(field=>Object.hasOwn(slot.content,field))
+    .map(field=>[field,slot.content[field]!]));
 }
 
 function isOwned(slot: SlotAssignment): boolean {
@@ -149,11 +218,452 @@ export function validateSnapshot(snapshot: PortfolioSnapshot): void {
 }
 
 
+type LayoutSection={id:string;layout:string;raw:Record<string,unknown>;keys:string[];names:string[]};
+export type LayoutChangePlan={
+  expectedRevision:number;sectionId:string;expectedLayout:string;targetLayout:string;
+  rows:Array<{fromSlotKey:string;toSlotKey:string|null;componentId:string;state:SlotState;
+    fields:string[];sourcePath?:string;sourceBytes?:number;disposition:'retain'|'move'|'stash'|'relocate'}>;
+  targetKeys:string[];emptyTargetKeys:string[];stashedKeys:string[];
+  addedFiles:number;addedStashAssignments:number;requiresStashConfirmation:boolean;
+  requiresOwnedRelocationConfirmation:boolean;
+};
+const PAGE_PATH='pages/home.page.json';
+const mediaKinds=['avatar','image','imagea','imageb','media','thumbs'];
+const invalidLayout=(message:string):never=>{throw new ContractError('VALIDATION',message);};
+function dataRecord(value:unknown):value is Record<string,unknown>{
+  return !!value&&typeof value==='object'&&!Array.isArray(value);
+}
+function exactFields(value:unknown,fields:readonly string[]):boolean{
+  return dataRecord(value)&&Object.keys(value).length===fields.length&&fields.every(k=>Object.hasOwn(value,k));
+}
+/** Resolve real declared own slots; reject malformed/ambiguous manifests rather
+ * than infer section ownership from a string prefix. Legacy declarations
+ * with opaque data cannot be discarded by canonicalization. */
+function layoutManifest(snapshot:PortfolioSnapshot):{page:Record<string,unknown>;sections:LayoutSection[]}{
+  validateSnapshot(snapshot);
+  const source=snapshot.files[PAGE_PATH];
+  if(typeof source!=='string')return invalidLayout('Managed page is unavailable.');
+  const raw:unknown=JSON.parse(source);
+  if(!dataRecord(raw)||!Array.isArray(raw.sections)||raw.sections.length>32)
+    return invalidLayout('Invalid managed section list.');
+  const ids=new Set<string>(),keys=new Set<string>(),sections:LayoutSection[]=[];
+  for(const item of raw.sections){
+    if(!dataRecord(item)||typeof item.id!=='string'||typeof item.layout!=='string')
+      return invalidLayout('Invalid section declaration.');
+    const id=item.id;assertSlotKey(id);
+    const pinned=portfolioLayout(item.layout);
+    if(!pinned||ids.has(id))return invalidLayout('Unknown or duplicate section layout.');
+    ids.add(id);
+    const full=pinned.slots.map(name=>id+'-'+name.toLowerCase());
+    if(Object.hasOwn(item,'slots')===Object.hasOwn(item,'slotKeys'))
+      return invalidLayout('Section must declare exactly one slot representation.');
+    if(Object.hasOwn(item,'slotKeys')){
+      const names=item.slotKeys;
+      if(!Array.isArray(names)||names.length!==pinned.slots.length||
+        new Set(names).size!==names.length||pinned.slots.some(name=>!names.includes(name)))
+        return invalidLayout('Section slot manifest does not match its pinned layout.');
+    }else{
+      const legacy=item.slots;
+      if(!dataRecord(legacy)||Object.keys(legacy).length!==pinned.slots.length||
+        pinned.slots.some(name=>!Object.hasOwn(legacy,name)))
+        return invalidLayout('Legacy slots do not match the pinned layout.');
+      for(const name of pinned.slots){
+        const saved=snapshot.slots[id+'-'+name.toLowerCase()],value=legacy[name];
+        if(value===null){
+          if(saved?.state!=='EMPTY')return invalidLayout('Legacy slot disagrees with saved assignment.');
+        }else if(!exactFields(value,['use'])||!dataRecord(value)||typeof value.use!=='string'||
+          saved?.state!=='S0'||saved.componentId!==value.use)
+          return invalidLayout('Legacy slot contains unsupported or nonmatching data; preserve it before changing layout.');
+      }
+    }
+    for(const key of full){
+      assertSlotKey(key);
+      if(keys.has(key)||!Object.hasOwn(snapshot.slots,key))
+        return invalidLayout('Missing or ambiguous declared slot.');
+      keys.add(key);
+    }
+    sections.push({id,layout:item.layout,raw:item,keys:full,names:pinned.slots});
+  }
+  return {page:raw,sections};
+}
+function assignmentFits(assignment:SlotAssignment,kind:string):boolean{
+  const pin=assignment.componentId;
+  return typeof pin==='string'&&(pin==='image@1'?
+    assignment.state==='S0'&&mediaKinds.includes(kind):
+    Object.hasOwn(libraryKinds,pin)&&libraryKinds[pin]!.includes(kind));
+}
+function stashComplete(next:PortfolioSnapshot,key:string,assignment:SlotAssignment):void{
+  const history=Object.hasOwn(next.stashes,key)?next.stashes[key]!: [];
+  next.stashes[key]=[...history,structuredClone(assignment)];
+}
+function relocationPath(key:string,operationId:string):string{
+  return 'slots/'+key+'/owned/'+operationId+'/component-source.tsx';
+}
+/** A new path is necessary because provenance is bound to the original slot.
+ * Never rename/delete original files or normalize opaque source. */
+function relocateOwned(next:PortfolioSnapshot,assignment:SlotAssignment,to:string,operationId:string):SlotAssignment{
+  const old=assignment.sourcePath;
+  if(!old||!old.endsWith('.tsx')||!Object.hasOwn(next.files,old))
+    return invalidLayout('Only compatible owned TSX may relocate. Stash unsupported source instead.');
+  const path=relocationPath(to,operationId);
+  assertOwnedSourcePath(path);
+  if(Object.hasOwn(next.files,path))return invalidLayout('Owned relocation path already exists.');
+  next.files[path]=next.files[old]!;
+  return {...structuredClone(assignment),sourcePath:path};
+}
+function constructLayoutChange(head:EditorHead,request:LayoutMappingRequest,operationId:string):{
+  plan:LayoutChangePlan;snapshot:PortfolioSnapshot
+}{
+  if(!exactFields(request,['sectionId','expectedLayout','targetLayout','mappings'])||
+    typeof request.sectionId!=='string'||typeof request.expectedLayout!=='string'||
+    typeof request.targetLayout!=='string'||!Array.isArray(request.mappings)||request.mappings.length>8)
+    return invalidLayout('Invalid bounded layout mapping.');
+  const {page,sections}=layoutManifest(head.snapshot);
+  const section=sections.find(item=>item.id===request.sectionId);
+  const target=portfolioLayout(request.targetLayout);
+  if(!section||section.layout!==request.expectedLayout||!target||section.layout===request.targetLayout)
+    return invalidLayout('Select a different pinned layout for the current section.');
+  const next=structuredClone(head.snapshot);
+  const targetKeys=target.slots.map(name=>section.id+'-'+name.toLowerCase());
+  const oldKeys=new Set(section.keys),otherKeys=new Set(sections.filter(s=>s!==section).flatMap(s=>s.keys));
+  for(const key of targetKeys){
+    assertSlotKey(key);
+    if(otherKeys.has(key)||(!oldKeys.has(key)&&Object.hasOwn(next.slots,key)))
+      return invalidLayout('A target slot collides with another assignment.');
+  }
+  const filled=section.keys.filter(key=>head.snapshot.slots[key]!.state!=='EMPTY');
+  if(request.mappings.length!==filled.length)return invalidLayout('Choose a destination or stash for every assigned slot.');
+  const taken=new Set<string>(),rows:LayoutChangePlan['rows']=[],stashedKeys:string[]=[];
+  const beforeFileCount=Object.keys(next.files).length;
+  let relocation=false;
+  for(const key of section.keys)delete next.slots[key];
+  for(const key of targetKeys)next.slots[key]={state:'EMPTY',content:{}};
+  for(let index=0;index<filled.length;index++){
+    const from=filled[index]!,row=request.mappings[index];
+    if(!row||!exactFields(row,['fromSlotKey','toSlotKey'])||row.fromSlotKey!==from||
+      (row.toSlotKey!==null&&typeof row.toSlotKey!=='string'))
+      return invalidLayout('Mapping must list each assigned source exactly once in manifest order.');
+    const assignment=head.snapshot.slots[from]!,to=row.toSlotKey;
+    let disposition:LayoutChangePlan['rows'][number]['disposition'];
+    if(to===null){
+      stashComplete(next,from,assignment);stashedKeys.push(from);disposition='stash';
+    }else{
+      const position=targetKeys.indexOf(to);
+      if(position<0||taken.has(to))return invalidLayout('Choose a unique declared destination in this section.');
+      if(!assignmentFits(assignment,target.slots[position]!.toLowerCase()))
+        return invalidLayout('Incompatible pinned assignment; choose a compatible slot or stash it.');
+      taken.add(to);
+      if(from!==to&&isOwned(assignment)){
+        next.slots[to]=relocateOwned(next,assignment,to,operationId);
+        stashComplete(next,from,assignment);stashedKeys.push(from);relocation=true;disposition='relocate';
+      }else{
+        next.slots[to]=structuredClone(assignment);disposition=from===to?'retain':'move';
+      }
+    }
+    rows.push({fromSlotKey:from,toSlotKey:to,componentId:assignment.componentId!,
+      state:assignment.state,fields:Object.keys(assignment.content).sort(),disposition,
+      ...(assignment.sourcePath?{sourcePath:assignment.sourcePath,
+        sourceBytes:new TextEncoder().encode(head.snapshot.files[assignment.sourcePath]!).byteLength}:{})});
+  }
+  // Only this managed section's representation changes. Unknown sibling and
+  // top-level fields survive; Undo retains the exact original page string.
+  const {slots:_legacy,slotKeys:_oldNames,...other}=section.raw;
+  next.files[PAGE_PATH]=JSON.stringify({...page,sections:sections.map(item=>item===section?
+    {...other,layout:request.targetLayout,slotKeys:target.slots}:item.raw)});
+  validateSnapshot(next);
+  return {snapshot:next,plan:{expectedRevision:head.revision,sectionId:section.id,
+    expectedLayout:section.layout,targetLayout:request.targetLayout,rows,targetKeys,
+    emptyTargetKeys:targetKeys.filter(key=>!taken.has(key)),stashedKeys,
+    addedFiles:Object.keys(next.files).length-beforeFileCount,
+    addedStashAssignments:stashedKeys.length,requiresStashConfirmation:stashedKeys.length>0,
+    requiresOwnedRelocationConfirmation:relocation}};
+}
+/** Preview uses an unused synthetic UUID only inside a disposable clone.
+ * No source bytes, real operation ID or mutable snapshot are returned. The
+ * real transaction repeats collision and quota checks for its own UUID. */
+export function planSectionLayoutChange(head:EditorHead,request:LayoutMappingRequest):LayoutChangePlan{
+  let id='';
+  for(let n=0;n<=100;n++){
+    const candidate='00000000-0000-4000-8000-'+n.toString(16).padStart(12,'0');
+    if(!Object.keys(head.snapshot.files).some(path=>path.includes('/owned/'+candidate+'/'))){
+      id=candidate;break;
+    }
+  }
+  if(!id)return invalidLayout('No safe relocation preview path.');
+  return constructLayoutChange(head,request,id).plan;
+}
+function restoreLayoutAssignment(head:EditorHead,next:PortfolioSnapshot,intent:RestoreLayoutStashIntent,operationId:string):void{
+  assertSlotKey(intent.fromSlotKey);assertSlotKey(intent.toSlotKey);
+  const {sections}=layoutManifest(head.snapshot);
+  const target=sections.flatMap(section=>section.keys.map((key,i)=>({key,kind:section.names[i]!.toLowerCase()})))
+    .filter(item=>item.key===intent.toSlotKey);
+  const stash=Object.hasOwn(next.stashes,intent.fromSlotKey)?next.stashes[intent.fromSlotKey]:undefined;
+  if(target.length!==1||next.slots[intent.toSlotKey]?.state!=='EMPTY'||!stash||
+    !Number.isSafeInteger(intent.stashIndex)||intent.stashIndex<0||intent.stashIndex>=stash.length)
+    return invalidLayout('Restore requires one available stash entry and a declared empty target.');
+  const saved=stash[intent.stashIndex]!;
+  if(saved.state==='EMPTY'||!assignmentFits(saved,target[0]!.kind))
+    return invalidLayout('Stashed assignment is incompatible with this target.');
+  if(intent.fromSlotKey!==intent.toSlotKey&&isOwned(saved)){
+    if(!intent.confirmOwnedRelocation)return invalidLayout('Explicit owned-source relocation confirmation is required.');
+    next.slots[intent.toSlotKey]=relocateOwned(next,saved,intent.toSlotKey,operationId);
+  }else next.slots[intent.toSlotKey]=structuredClone(saved);
+  const remaining=stash.filter((_item,i)=>i!==intent.stashIndex);
+  if(remaining.length)next.stashes[intent.fromSlotKey]=remaining;else delete next.stashes[intent.fromSlotKey];
+}
+
 /**
  * Runtime-facing commands must match their discriminated contracts exactly.
  * Unknown actions previously produced a successful no-op revision, while
  * JSON property order could make an identical retry look like an ID conflict.
  */
+
+export type ScopedThemeMode='light'|'dark';
+export type ScopedThemeBreakpoint='phone'|'tablet'|'desktop';
+export type ScopedThemeLayer='base'|ScopedThemeBreakpoint;
+export type ScopedThemeScope={kind:'global'}|{kind:'template'|'section'|'component';id:string};
+export type ScopedThemeTokens={surface?:string;text?:string;accent?:string;fontSizePx?:number;lineHeight?:number;fontWeight?:400|500|600|700;spacingPx?:number;radiusPx?:number};
+export type ScopedThemeKey=keyof ScopedThemeTokens;
+export type ScopedThemeEdit={ [K in ScopedThemeKey]-?:{kind:'set';key:K;value:NonNullable<ScopedThemeTokens[K]>} }[ScopedThemeKey]|{kind:'reset';key:ScopedThemeKey};
+export type EditScopedThemeIntent={kind:'EDIT_SCOPED_THEME';expectedRevision:number;mode:ScopedThemeMode;scope:ScopedThemeScope;layer:ScopedThemeLayer;edit:ScopedThemeEdit};
+type ScopedThemeEntry={mode:ScopedThemeMode;scope:ScopedThemeScope;base?:ScopedThemeTokens;breakpoints?:Partial<Record<ScopedThemeBreakpoint,ScopedThemeTokens>>;active:boolean};
+type ScopedThemeIssue={code:string;scope?:ScopedThemeScope;mode?:ScopedThemeMode;layer?:ScopedThemeLayer;key?:string};
+export type ScopedThemeParse={status:'legacy'|'valid'|'blocked';mode:ScopedThemeMode|null;issues:ReadonlyArray<ScopedThemeIssue>;entries:ReadonlyArray<ScopedThemeEntry>};
+export type ScopedThemeTarget={mode:ScopedThemeMode;sectionId?:string;slotKey?:string;widthPx:number};
+export type ScopedThemeResolution={status:'resolved'|'blocked';breakpoint:ScopedThemeBreakpoint|null;tokens:ScopedThemeTokens;origins:Partial<Record<ScopedThemeKey,{scope:ScopedThemeScope|{kind:'palette'};layer:ScopedThemeLayer}>>;issues:ReadonlyArray<ScopedThemeIssue>};
+const THEME_FILE='theme/tokens.json';
+const scopedModes=['light','dark'] as const;
+const scopedBuckets=['phone','tablet','desktop'] as const;
+const scopedNames=['surface','text','accent','fontSizePx','lineHeight','fontWeight','spacingPx','radiusPx'] as const;
+const scopedCss:Record<ScopedThemeKey,string>={surface:'--k-theme-surface',text:'--k-theme-text',accent:'--k-theme-accent',fontSizePx:'--k-theme-font-size',lineHeight:'--k-theme-line-height',fontWeight:'--k-theme-font-weight',spacingPx:'--k-theme-spacing',radiusPx:'--k-theme-radius'};
+const themePresets=new Set(['arc','collage','editorial','stairs','studio','blank']);
+const themeError=():never=>{throw new ContractError('VALIDATION','Invalid or unsupported scoped theme.');};
+const isThemeMode=(x:unknown):x is ScopedThemeMode=>x==='light'||x==='dark';
+const isThemeBucket=(x:unknown):x is ScopedThemeBreakpoint=>x==='phone'||x==='tablet'||x==='desktop';
+const isThemeKey=(x:unknown):x is ScopedThemeKey=>typeof x==='string'&&(scopedNames as readonly string[]).includes(x);
+function themeValue(k:ScopedThemeKey,v:unknown):boolean{
+  if(k==='surface'||k==='text'||k==='accent')return typeof v==='string'&&/^#[a-fA-F0-9]{6}$/.test(v);
+  if(typeof v!=='number'||!Number.isFinite(v))return false;
+  if(k==='lineHeight')return v>=1&&v<=2;
+  if(!Number.isInteger(v))return false;
+  if(k==='fontWeight')return [400,500,600,700].includes(v);
+  if(k==='fontSizePx')return v>=12&&v<=72;
+  return v>=0&&v<=(k==='radiusPx'?32:64);
+}
+function themeRecord(x:unknown):x is Record<string,unknown>{return dataRecord(x);}
+function themeScope(x:unknown):ScopedThemeScope|null{
+  if(!themeRecord(x))return null;
+  if(x.kind==='global'&&exactFields(x,['kind']))return {kind:'global'};
+  if((x.kind==='template'||x.kind==='section'||x.kind==='component')&&exactFields(x,['kind','id'])&&
+    typeof x.id==='string'&&SLOT_KEY.test(x.id)&&!RESERVED_KEYS.has(x.id))return {kind:x.kind,id:x.id};
+  return null;
+}
+function themeScopeKey(scope:ScopedThemeScope):string{return scope.kind==='global'?'global':scope.kind+':'+scope.id;}
+function themeGraph(snapshot:PortfolioSnapshot):{preset:string|null;sections:LayoutSection[]}{
+  validateSnapshot(snapshot);
+  const manifest:unknown=JSON.parse(snapshot.files['kadmeion.json']??'null');
+  const preset=themeRecord(manifest)&&typeof manifest.preset==='string'&&themePresets.has(manifest.preset)?manifest.preset:null;
+  const page:unknown=JSON.parse(snapshot.files[PAGE_PATH]??'null');
+  const sections=themeRecord(page)&&Object.hasOwn(page,'sections')?layoutManifest(snapshot).sections:[];
+  return {preset,sections};
+}
+function themeActive(scope:ScopedThemeScope,graph:ReturnType<typeof themeGraph>):boolean{
+  if(scope.kind==='global')return true;
+  if(scope.kind==='template')return graph.preset===scope.id;
+  if(scope.kind==='section')return graph.sections.some(s=>s.id===scope.id);
+  return graph.sections.some(s=>s.keys.includes(scope.id));
+}
+function themePalette(raw:unknown):ScopedThemeTokens|null{
+  if(!themeRecord(raw))return null;
+  const {surface,text,accent}=raw;
+  if(typeof surface!=='string'||typeof text!=='string'||typeof accent!=='string'||
+    !themeValue('surface',surface)||!themeValue('text',text)||!themeValue('accent',accent))return null;
+  return {surface,text,accent};
+}
+function themePatch(raw:unknown):ScopedThemeTokens|null{
+  if(!themeRecord(raw))return null;
+  const patch:Record<string,unknown>={};
+  for(const [k,v] of Object.entries(raw)){
+    if(!isThemeKey(k)||!themeValue(k,v))return null;
+    patch[k]=v;
+  }
+  return patch as ScopedThemeTokens;
+}
+function themeBounded(raw:unknown):boolean{
+  if(new TextEncoder().encode(JSON.stringify(raw)).byteLength>65536)return false;
+  const stack=[{value:raw,depth:0}];
+  while(stack.length){
+    const {value,depth}=stack.pop()!;
+    if(depth>8)return false;
+    if(value&&typeof value==='object')
+      for(const [key,child] of Object.entries(value)){
+        if(RESERVED_KEYS.has(key))return false;
+        stack.push({value:child,depth:depth+1});
+      }
+  }
+  return true;
+}
+export function scopedThemeBreakpoint(widthPx:number):ScopedThemeBreakpoint|null{
+  return Number.isFinite(widthPx)&&widthPx>0?(widthPx<=600?'phone':widthPx<=950?'tablet':'desktop'):null;
+}
+/** Validation is separate from private storage; never normalize an imported document. */
+export function parseScopedTheme(snapshot:PortfolioSnapshot):ScopedThemeParse{
+  const issues:ScopedThemeIssue[]=[],entries:ScopedThemeEntry[]=[];
+  let mode:ScopedThemeMode|null=null;
+  const result=(status:ScopedThemeParse['status']):ScopedThemeParse=>({status,mode,issues,entries});
+  try{
+    const source=snapshot.files[THEME_FILE];
+    if(source===undefined)return result('legacy');
+    validateManagedJson(THEME_FILE,source);
+    const raw:unknown=JSON.parse(source);
+    if(!themeRecord(raw))return result('blocked');
+    mode=isThemeMode(raw.mode)?raw.mode:null;
+    if(!Object.hasOwn(raw,'scopedTokens'))return result('legacy');
+    if(!mode||!themePalette(raw)){issues.push({code:'INVALID_PALETTE'});return result('blocked');}
+    const doc=raw.scopedTokens;
+    if(!themeRecord(doc)||doc.version!==1||Object.keys(doc).some(k=>!['version','light','dark'].includes(k))||!themeBounded(doc)){
+      issues.push({code:'UNSUPPORTED_SCOPED_DOCUMENT'});return result('blocked');
+    }
+    const graph=themeGraph(snapshot);
+    let count=0,blocked=false;
+    for(const m of scopedModes){
+      if(!Object.hasOwn(doc,m))continue;
+      const list=doc[m];
+      if(!Array.isArray(list)||(count+=list.length)>128){issues.push({code:'SCOPED_ENTRY_LIMIT',mode:m});return result('blocked');}
+      const seen=new Set<string>();
+      for(const row of list){
+        const scope=themeRecord(row)?themeScope(row.scope):null;
+        if(!scope||!themeRecord(row)){issues.push({code:'INVALID_SCOPE',mode:m});blocked=true;continue;}
+        const key=themeScopeKey(scope),active=themeActive(scope,graph);
+        if(seen.has(key)){issues.push({code:'DUPLICATE_SCOPE',mode:m,scope});blocked=true;continue;}
+        seen.add(key);
+        const entry:ScopedThemeEntry={mode:m,scope,active};
+        let invalid=Object.keys(row).some(k=>!['scope','base','breakpoints'].includes(k));
+        if(Object.hasOwn(row,'base')){
+          const patch=themePatch(row.base);
+          if(patch)entry.base=patch;else invalid=true;
+        }
+        if(Object.hasOwn(row,'breakpoints')){
+          if(!themeRecord(row.breakpoints)||Object.keys(row.breakpoints).some(k=>!isThemeBucket(k)))invalid=true;
+          else{
+            entry.breakpoints={};
+            for(const bucket of scopedBuckets){
+              if(!Object.hasOwn(row.breakpoints,bucket))continue;
+              const patch=themePatch(row.breakpoints[bucket]);
+              if(patch)entry.breakpoints[bucket]=patch;else invalid=true;
+            }
+          }
+        }
+        if(!active){issues.push({code:invalid?'UNSUPPORTED_ORPHAN':'ORPHAN_SCOPE',mode:m,scope});if(!invalid)entries.push(entry);continue;}
+        if(invalid){issues.push({code:'UNSUPPORTED_ACTIVE_SCOPE',mode:m,scope});blocked=true;continue;}
+        entries.push(entry);
+      }
+    }
+    return result(blocked?'blocked':'valid');
+  }catch{issues.push({code:'INVALID_SCOPED_GRAPH'});return result('blocked');}
+}
+export function resolveScopedTheme(snapshot:PortfolioSnapshot,target:ScopedThemeTarget):ScopedThemeResolution{
+  return resolveTheme(snapshot,target,false);
+}
+/** Base-only fallback for CSS engines with no container query support.
+ * Does not use a representative responsive bucket or invent default tokens. */
+export function resolveScopedThemeBase(snapshot:PortfolioSnapshot,target:ScopedThemeTarget):ScopedThemeResolution{
+  return resolveTheme(snapshot,target,true);
+}
+function resolveTheme(snapshot:PortfolioSnapshot,target:ScopedThemeTarget,baseOnly:boolean):ScopedThemeResolution{
+  const parsed=parseScopedTheme(snapshot);
+  const breakpoint=scopedThemeBreakpoint(target.widthPx);
+  const tokens:ScopedThemeTokens={},origins:ScopedThemeResolution['origins']={};
+  const issues=[...parsed.issues];
+  const result=(status:ScopedThemeResolution['status']):ScopedThemeResolution=>({status,breakpoint,tokens,origins,issues});
+  if(parsed.status==='blocked'||!breakpoint||!isThemeMode(target.mode))return result('blocked');
+  try{
+    const graph=themeGraph(snapshot);
+    const raw:unknown=JSON.parse(snapshot.files[THEME_FILE]??'null');
+    if(!themeRecord(raw))return result('blocked');
+    const palette=themePalette(target.mode===raw.mode?raw:themeRecord(raw.authorModePalettes)?raw.authorModePalettes[target.mode]:null);
+    if(!palette)return result('blocked');
+    let section=target.sectionId===undefined?undefined:graph.sections.find(s=>s.id===target.sectionId);
+    if(target.sectionId!==undefined&&!section)return result('blocked');
+    if(target.slotKey!==undefined){
+      const parent=graph.sections.find(s=>s.keys.includes(target.slotKey!));
+      if(!parent||(section&&parent!==section))return result('blocked');
+      section=parent;
+    }
+    const merge=(patch:ScopedThemeTokens|undefined,scope:ScopedThemeScope|{kind:'palette'},layer:ScopedThemeLayer)=>{
+      if(!patch)return;
+      Object.assign(tokens,patch);
+      for(const key of scopedNames)if(Object.hasOwn(patch,key))origins[key]={scope,layer};
+    };
+    merge(palette,{kind:'palette'},'base');
+    const scopes:ScopedThemeScope[]=[{kind:'global'}];
+    if(graph.preset)scopes.push({kind:'template',id:graph.preset});
+    if(section)scopes.push({kind:'section',id:section.id});
+    if(target.slotKey!==undefined)scopes.push({kind:'component',id:target.slotKey});
+    for(const scope of scopes){
+      const row=parsed.entries.find(e=>e.active&&e.mode===target.mode&&themeScopeKey(e.scope)===themeScopeKey(scope));
+      merge(row?.base,scope,'base');if(!baseOnly)merge(row?.breakpoints?.[breakpoint],scope,breakpoint);
+    }
+    return result('resolved');
+  }catch{return result('blocked');}
+}
+export function scopedThemeCssVariables(tokens:ScopedThemeTokens):Readonly<Record<string,string>>{
+  const validated=themePatch(tokens);
+  if(!validated)return themeError();
+  const output:Record<string,string>={};
+  for(const key of scopedNames){
+    const value=validated[key];
+    if(value!==undefined)output[scopedCss[key]]=String(value)+(['fontSizePx','spacingPx','radiusPx'].includes(key)?'px':'');
+  }
+  return output;
+}
+function themeCanonical(value:unknown):string{
+  const normalize=(v:unknown):unknown=>Array.isArray(v)?v.map(normalize):themeRecord(v)?
+    Object.fromEntries(Object.keys(v).sort().map(k=>[k,normalize(v[k])])):v;
+  return JSON.stringify(normalize(value))??'';
+}
+function assertUnchangedScopedTheme(before:string|undefined,after:string){
+  const old=before===undefined?{}:JSON.parse(before);
+  const next=JSON.parse(after);
+  if(themeCanonical(old.scopedTokens)!==themeCanonical(next.scopedTokens))themeError();
+}
+function editScopedTheme(head:EditorHead,next:PortfolioSnapshot,intent:EditScopedThemeIntent):void{
+  assertBaseRevision(intent.expectedRevision,head.revision);
+  const scope=themeScope(intent.scope),edit=intent.edit;
+  if(!scope||!isThemeMode(intent.mode)||!(intent.layer==='base'||isThemeBucket(intent.layer))||
+    !themeRecord(edit)||!isThemeKey(edit.key)||
+    !(edit.kind==='set'&&exactFields(edit,['kind','key','value'])&&themeValue(edit.key,edit.value)||
+    edit.kind==='reset'&&exactFields(edit,['kind','key'])))return themeError();
+  if(parseScopedTheme(head.snapshot).status==='blocked'||!themeActive(scope,themeGraph(head.snapshot)))return themeError();
+  const source=next.files[THEME_FILE];
+  if(source===undefined)return themeError();
+  const raw=JSON.parse(source) as Record<string,unknown>;
+  if(!isThemeMode(raw.mode)||!themePalette(raw))return themeError();
+  if(resolveScopedTheme(head.snapshot,{mode:intent.mode,widthPx:768}).status!=='resolved')return themeError();
+  const doc=(raw.scopedTokens??{version:1}) as Record<string,unknown>;
+  const list=(doc[intent.mode]??[]) as Record<string,unknown>[];
+  let row=list.find(r=>{const s=themeScope(r.scope);return s&&themeScopeKey(s)===themeScopeKey(scope);});
+  if(!row){
+    if(edit.kind==='reset')return themeError();
+    row={scope};list.push(row);
+  }
+  const layers=(row.breakpoints??{}) as Record<string,unknown>;
+  const patch=(intent.layer==='base'?row.base:layers[intent.layer]) as Record<string,unknown>|undefined;
+  const updated=patch??{};
+  if(edit.kind==='reset'){
+    if(!Object.hasOwn(updated,edit.key))return themeError();
+    delete updated[edit.key];
+  }else{
+    if(Object.hasOwn(updated,edit.key)&&updated[edit.key]===edit.value)return themeError();
+    updated[edit.key]=edit.value;
+  }
+  if(intent.layer==='base')row.base=updated;
+  else{layers[intent.layer]=updated;row.breakpoints=layers;}
+  doc[intent.mode]=list;raw.scopedTokens=doc;
+  next.files[THEME_FILE]=JSON.stringify(raw,null,2);
+  if(parseScopedTheme(next).status!=='valid')return themeError();
+}
+
 function commandDigest(command:EditorCommand):{id:string;hash:string} {
   if(!command||typeof command!=='object'||Array.isArray(command)||
      Object.keys(command).some(k=>!['operationId','baseRevision','intent'].includes(k))||
@@ -166,15 +676,19 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     throw new ContractError('VALIDATION','Invalid editor transaction intent.');
   const fields:Record<string,readonly string[]>={
     WRITE_MANAGED_FILE:['kind','path','source'],
+    EDIT_SCOPED_THEME:['kind','expectedRevision','mode','scope','layer','edit'],
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
+    CHANGE_SECTION_LAYOUT:['kind','sectionId','expectedLayout','targetLayout','mappings','expectedRevision','confirmStash','confirmOwnedRelocation'],
+    RESTORE_LAYOUT_STASH:['kind','fromSlotKey','stashIndex','toSlotKey','expectedRevision','confirmOwnedRelocation'],
     CLEAR_SLOT:['kind','slotKey'],
-    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement'],
+    ASSIGN_COMPONENT:['kind','slotKey','componentId','confirmOwnedReplacement','preserveMatchingContent'],
     UPDATE_CONTENT:['kind','slotKey','content'],
+    PLACE_PRIVATE_IMAGE:['kind','slotKey','assetId','altText'],
     CUSTOMIZE_COMPONENT:['kind','slotKey','copiedSource'],
-    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement'],
+    REUSE_SAVED_COMPONENT:['kind','slotKey','componentVersionId','confirmOwnedReplacement','preserveMatchingContent'],
     EDIT_OWNED_SOURCE:['kind','slotKey','source'],
-    RESTORE_STASH:['kind','slotKey'],
+    RESTORE_STASH:['kind','slotKey','stashIndex'],
     UNDO:['kind'],
     REDO:['kind']
   };
@@ -182,7 +696,8 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
   if(!permitted||
      Object.keys(intent).some(k=>!permitted.includes(k))||
      ('confirmOwnedReplacement' in intent &&
-       typeof intent.confirmOwnedReplacement!=='boolean'))
+       typeof intent.confirmOwnedReplacement!=='boolean')||
+     ('preserveMatchingContent' in intent&&typeof intent.preserveMatchingContent!=='boolean'))
     throw new ContractError('VALIDATION','Unknown editor command kind or properties.');
   // Canonicalize only JSON commands, never source strings or managed file
   // bytes. Normalized UUID case is part of the idempotency key.
@@ -226,7 +741,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
     return head; // idempotent duplicate; no new version
   }
   assertBaseRevision(command.baseRevision,head.revision);
-  const next = structuredClone(head.snapshot);
+  let next = structuredClone(head.snapshot);
   const intent = command.intent;
   if (intent.kind==='UNDO' || intent.kind==='REDO') {
     const source = intent.kind==='UNDO'?head.undo:head.redo;
@@ -244,7 +759,25 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
 
   if (intent.kind==='WRITE_MANAGED_FILE') {
     validateManagedJson(intent.path,intent.source);
+    if(intent.path===THEME_FILE)assertUnchangedScopedTheme(head.snapshot.files[THEME_FILE],intent.source);
     next.files[intent.path]=intent.source; // exact user bytes; no implicit formatting
+  } else if(intent.kind==='EDIT_SCOPED_THEME'){
+    editScopedTheme(head,next,intent);
+  } else if(intent.kind==='CHANGE_SECTION_LAYOUT'){
+    assertBaseRevision(intent.expectedRevision,head.revision);
+    if(typeof intent.confirmStash!=='boolean'||typeof intent.confirmOwnedRelocation!=='boolean')
+      return invalidLayout('Explicit layout confirmation flags are required.');
+    const {sectionId,expectedLayout,targetLayout,mappings}=intent;
+    const result=constructLayoutChange(head,{sectionId,expectedLayout,targetLayout,mappings},operationId);
+    if(result.plan.requiresStashConfirmation&&!intent.confirmStash)
+      return invalidLayout('Confirm preservation of unplaced or relocated assignments in the stash.');
+    if(result.plan.requiresOwnedRelocationConfirmation&&!intent.confirmOwnedRelocation)
+      return invalidLayout('Confirm byte-identical owned source relocation; relative imports may no longer resolve.');
+    next=result.snapshot;
+  } else if(intent.kind==='RESTORE_LAYOUT_STASH'){
+    assertBaseRevision(intent.expectedRevision,head.revision);
+    if(typeof intent.confirmOwnedRelocation!=='boolean')return invalidLayout('Explicit relocation flag is required.');
+    restoreLayoutAssignment(head,next,intent,operationId);
   } else if (intent.kind==='ADD_SECTION') {
     const layout=portfolioLayout(intent.layout);
     const path='pages/home.page.json';
@@ -296,17 +829,40 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         break;
       case 'ASSIGN_COMPONENT':
         if (!COMPONENT_PIN.test(intent.componentId)) throw new ContractError('VALIDATION', 'Unpinned component.');
+        if(declaredLayoutSlotKind(next,intent.slotKey)!==undefined&&!canAssignCompatibleComponent(next,intent.slotKey,intent.componentId))
+          throw new ContractError('VALIDATION','Component is incompatible with the declared layout slot. Use private image placement for media.');
         if (isOwned(slot) && !intent.confirmOwnedReplacement)
           throw new ContractError('VALIDATION', 'Owned source needs explicit replace-and-stash confirmation.');
         if (slot.state!=='EMPTY') stash.push(structuredClone(slot));
         next.stashes[intent.slotKey]=stash;
-        next.slots[intent.slotKey]={state:'S0',componentId:intent.componentId,content:{}};
+        next.slots[intent.slotKey]={state:'S0',componentId:intent.componentId,
+          content:intent.preserveMatchingContent?matchingReplacementContent(slot,intent.componentId):{}};
         break;
       case 'UPDATE_CONTENT':
         if (slot.state==='EMPTY') throw new ContractError('VALIDATION', 'Assign a component first.');
         validateContent(intent.content);
         next.slots[intent.slotKey]={...slot,content:{...slot.content,...intent.content}};
         break;
+      case 'PLACE_PRIVATE_IMAGE': {
+        if(!canPlacePrivateImage(next,intent.slotKey))
+          throw new ContractError('VALIDATION','Choose an empty or pristine image-compatible layout slot. Owned source needs protected replacement.');
+        if(typeof intent.assetId!=='string'||!OP_ID.test(intent.assetId)||
+           typeof intent.altText!=='string'||!intent.altText.trim()||intent.altText.length>300||
+           /[\x00-\x1f\x7f]/.test(intent.altText))
+          throw new ContractError('VALIDATION','Choose an owner-verified asset and descriptive alt text (1–300 characters).');
+        const assetId=intent.assetId.toLowerCase(),altText=intent.altText.trim();
+        const content:Record<string,string>={asset_id:assetId,alt_text:altText};
+        // Preserve an existing pin only for the exact same asset; new metadata
+        // must not fabricate or inherit a digest belonging to different bytes.
+        if(slot.state==='S0'&&slot.content.asset_id===assetId&&
+           /^[0-9a-f]{64}$/.test(slot.content.source_sha256??''))
+          content.source_sha256=slot.content.source_sha256!;
+        if(slot.state!=='EMPTY'){
+          stash.push(structuredClone(slot));next.stashes[intent.slotKey]=stash;
+        }
+        next.slots[intent.slotKey]={state:'S0',componentId:'image@1',content};
+        break;
+      }
       case 'CUSTOMIZE_COMPONENT': {
         if (slot.state!=='S0' || !slot.componentId)
           throw new ContractError('VALIDATION', 'Only a trusted library component can be customized.');
@@ -335,7 +891,9 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         if (!Object.hasOwn(ownerSavedComponents,id))
           throw new ContractError('VALIDATION','Saved component must be fetched and validated.');
         const saved=ownerSavedComponents[id];
-        const kind=intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1);
+        const declaredKind=declaredLayoutSlotKind(next,intent.slotKey);
+        if(declaredKind===null)throw new ContractError('VALIDATION','Saved component needs a unique declared target.');
+        const kind=declaredKind===undefined?intent.slotKey.slice(intent.slotKey.lastIndexOf('-')+1):declaredKind;
         if (!saved||saved.id!==id||typeof saved.base_component_pin!=='string'||
             !COMPONENT_PIN.test(saved.base_component_pin)||
             !Array.isArray(saved.compatible_slot_kinds)||
@@ -370,7 +928,7 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
           saved.source_code!==saved.pristine_source?saved.pristine_source:fallback;
         next.slots[intent.slotKey]={
           state:pristine?'S1':'S2',componentId:saved.base_component_pin,
-          content:{},sourcePath:path,originalSource:original
+          content:intent.preserveMatchingContent?matchingReplacementContent(slot,saved.base_component_pin):{},sourcePath:path,originalSource:original
         };
         break;
       }
@@ -382,13 +940,21 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
         next.files[slot.sourcePath]=intent.source;
         next.slots[intent.slotKey]={...slot,state:intent.source===slot.originalSource?'S1':'S2'};
         break;
-      case 'RESTORE_STASH':
-        const saved=stash.at(-1);
-        if (slot.state!=='EMPTY' || !saved)
-          throw new ContractError('VALIDATION', 'Restore requires an empty slot and an available stash.');
-        next.slots[intent.slotKey]=saved;
-        next.stashes[intent.slotKey]=stash.slice(0,-1);
+      case 'RESTORE_STASH': {
+        const index=intent.stashIndex===undefined?stash.length-1:intent.stashIndex;
+        if(!Number.isSafeInteger(index)||index<0||index>=stash.length||slot.state!=='EMPTY')
+          throw new ContractError('VALIDATION','Restore requires an empty slot and an available stash.');
+        const saved=stash[index];
+        if(!saved||saved.state==='EMPTY')throw new ContractError('VALIDATION','Stashed assignment unavailable.');
+        // Older layoutless projects retain their original restore behavior;
+        // declared layouts cannot bypass compatibility via the legacy command.
+        const kind=declaredLayoutSlotKind(next,intent.slotKey);
+        if(kind!==undefined&&(kind===null||!assignmentFits(saved,kind)))
+          return invalidLayout('Archived assignment does not fit the current declared slot.');
+        next.slots[intent.slotKey]=structuredClone(saved);
+        next.stashes[intent.slotKey]=stash.filter((_item,i)=>i!==index);
         break;
+      }
       default:
         throw new ContractError('VALIDATION','Unsupported editor command.');
     }
