@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public,extensions;
-select plan(9);
+select plan(14);
 select has_table('kadmeion_private','private_asset_content_attestations',
   'write-once server attestation table exists');
 select ok((select relrowsecurity from pg_class where
@@ -26,6 +26,10 @@ select ok(has_function_privilege('authenticated',
 select ok(not has_function_privilege('anon',
   'public.read_private_asset_content_attestations(uuid)','EXECUTE'),
   'anonymous digest reads are forbidden');
+select ok(has_function_privilege('authenticated','public.read_owner_private_asset_pin(text,uuid,uuid)','EXECUTE'),'C04 authenticated pin RPC');
+select ok(not has_function_privilege('anon','public.read_owner_private_asset_pin(text,uuid,uuid)','EXECUTE'),'C04 anonymous pin RPC denied');
+select ok(not has_function_privilege('service_role','public.read_owner_private_asset_pin(text,uuid,uuid)','EXECUTE'),'C04 service role owner pin RPC denied');
+select ok(not has_table_privilege('authenticated','kadmeion_private.private_asset_content_attestations','UPDATE'),'C04 direct digest update denied');
 set local role authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-0000000000e1',true);
 do $$
@@ -38,6 +42,7 @@ begin
   if not refused then raise exception 'Forged session read server digests'; end if;
 end $$;
 select pass('synthetic owner JWT cannot bypass live-session digest read');
+select throws_ok($q$select public.read_owner_private_asset_pin('PROJECT','10000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002')$q$,'42501','PRIVATE_ASSET_NOT_FOUND','C04 forged JWT denied before reading private pin');
 reset role;
 select * from finish();
 rollback;
