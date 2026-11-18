@@ -20,6 +20,17 @@ function matchesFrozenPin(pin:LoadedPrivateFrozenRevision|null|undefined,request
     pin.frozen.status==='FROZEN' && pin.frozen.publicUrl===null;
 }
 
+/** A historical DB acknowledgement identifies an owner pin, not a live release.
+ * Catalogue omission is allowed; a present catalogue or journal contradiction is not. */
+function matchesAcknowledgedPin(pin:LoadedPrivateFrozenRevision|null|undefined,row:PrivateReleaseAcknowledgement,
+    portfolioId:string,requests:readonly OwnerFrozenRequest[]|null,revisions:readonly SavedOwnerRevision[]|null):
+    pin is LoadedPrivateFrozenRevision {
+  if(!pin||row.portfolioId!==portfolioId||pin.frozen.portfolioId!==portfolioId||
+     !matchesFrozenPin(pin,pin.frozen))return false;
+  const known=requests?.filter(item=>item.requestId===row.requestId)??[];
+  if(known.length>1||(known[0]&&(known[0].status!=='FROZEN'||!matchesFrozenPin(pin,known[0]))))return false;
+  return !revisions?.some(item=>item.revision===pin.loadedRevision&&item.snapshotSha256!==pin.loadedSnapshotSha256);
+}
 const routes = {staging:'Reviewer staging', publish:'Publish preflight', releases:'Releases & rollback', share:'Sharing controls'} as const;
 type ReleaseMode = keyof typeof routes;
 type SafeGrant = {grantId:string;requestId:string;expiresAt:string;status:'REGISTERED_UNSERVABLE'|'REVOKED'};
@@ -608,8 +619,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       const response=await port.loadOwnerFrozenRelease(row.requestId);
       if(epoch!==historySelectionEpoch.current)return;
       const pin=response.data;
-      if(!pin||pin.frozen.portfolioId!==id||!matchesFrozenPin(pin,pin.frozen)||
-         revisions?.some(item=>item.revision===pin.loadedRevision&&item.snapshotSha256!==pin.loadedSnapshotSha256)){
+      if(!matchesAcknowledgedPin(pin,row,id,frozenRequests,revisions)){
         setHistorySelectionError('The acknowledged frozen request could not be verified. No current draft was substituted.');
         return;
       }
@@ -1056,7 +1066,7 @@ function mergeReleaseAcknowledgements(portfolioId:string,previous:readonly Priva
     seen.add(row.intentId);
   }
   const last=page.items.at(-1);
-  if(page.nextCursor!==null&&(!last||page.nextCursor.portfolioId!==portfolioId||
+  if(page.nextCursor!==null&&(!last||page.nextCursor.version!==1||page.nextCursor.portfolioId!==portfolioId||
      page.nextCursor.intentId!==last.intentId||page.nextCursor.verifiedAt!==last.verifiedAt))
     throw new Error('Release acknowledgement cursor is inconsistent.');
   return {items:[...previous,...page.items],nextCursor:page.nextCursor};
@@ -1077,7 +1087,7 @@ function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect
   const epoch=useRef(0);
   const flight=useRef<object|null>(null);
   async function read(after:PrivateReleaseAcknowledgementCursor|null,previous:readonly PrivateReleaseAcknowledgement[],expected:number){
-    if(!available||epoch.current!==expected||flight.current!==null)return;
+    if(!available||selectionDisabled||epoch.current!==expected||flight.current!==null)return;
     const ticket={};
     flight.current=ticket;setPending(true);setError('');
     const current=()=>epoch.current===expected&&flight.current===ticket;
@@ -1119,7 +1129,7 @@ function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect
           <p>Frozen request <code style={{overflowWrap:'anywhere'}}>{row.requestId}</code></p>
         </div><div>
           <button type="button" className="ws-secondary" disabled={selectionDisabled||pending}
-            onClick={()=>onSelect(row)}>{request?'Inspect matching frozen revision '+request.revision:'Inspect acknowledged frozen request'}</button>
+            onClick={()=>{if(!selectionDisabled&&flight.current===null)onSelect(row);}}>{request?'Inspect matching frozen revision '+request.revision:'Inspect acknowledged frozen request'}</button>
           {!request&&<p className="ws-field-hint">Outside the loaded catalogue; the exact owner pin will be checked before inspection.</p>}
         </div></li>;
       })}</ol>}
