@@ -625,29 +625,55 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const view=latestRecovery.current;
     if(!view||view.record!==record||view.head!==head||(view.owner&&!scopeCurrent(view)))return;
     const epoch=port.reconcileOwnerSessionEpoch();
+    const currentSave=()=>{
+      const current=latestRecovery.current;
+      return !!current&&current.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
+        (!view.owner||scopeCurrent(view))&&current.record===record&&current.head===head&&current.operation===operation;
+    };
     saveFlight.current=true;
-    setSaving(true); setError(''); setNotice('');
-    try {
-      const result = await port.saveOwnerPortfolio(id, operation, record.revision, head.snapshot);
-      const current=latestRecovery.current;
-      if(!current||current.port!==port||current.id!==id||port.reconcileOwnerSessionEpoch()!==epoch||
-        (view.owner&&!scopeCurrent(view))||current.record!==record||current.head!==head||current.operation!==operation)return;
-      if (!result.data) {
-        setError(result.error?.message ?? 'Draft save could not be confirmed.');
-        if(verifiedOwner)setRecoveryExpanded(true);
-        return;
+    setSaving(true);setError('');setNotice('');
+    try{
+      let confirmed:number|null=null;
+      let failure='Draft save could not be confirmed.';
+      try{
+        const reply=await port.saveOwnerPortfolio(id,operation,record.revision,head.snapshot);
+        if(!currentSave())return;
+        if(reply.data===record.revision+1)confirmed=reply.data;
+        else failure=reply.error?.message??failure;
+      }catch{
+        if(!currentSave())return;
       }
-      setRecord({...record, revision: result.data, snapshot: head.snapshot});
-      setOperation(''); setNotice('Private portfolio draft saved.');
-    } catch {
-      const current=latestRecovery.current;
-      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch){
-        setError('Draft save could not be verified. Your edits remain in this editor.');
+      if(confirmed!==null){
+        setRecord({...record,revision:confirmed,snapshot:head.snapshot});
+        setOperation('');setNotice('Private portfolio draft saved.');return;
+      }
+      // A lost acknowledgement is not a failed commit. Reconcile using an
+      // authenticated exact next-revision read, never a second mutation or
+      // a new operation ID. A same-content concurrent commit is only evidence
+      // that the intended draft is saved, not evidence of our operation ID.
+      try{
+        const fresh=await port.readOwnerPortfolio(id);
+        if(!currentSave())return;
+        if(fresh.data?.id===id&&fresh.data.revision===record.revision+1&&
+           sameDraftSnapshot(fresh.data.snapshot,head.snapshot)){
+          setRecord(fresh.data);setOperation('');
+          setNotice('Saved private revision verified by readback.');return;
+        }
+        if(fresh.data&&fresh.data.id===id&&fresh.data.revision!==record.revision)
+          failure='The saved cloud revision changed. Compare or preserve your working draft before retrying.';
+      }catch{
+        if(!currentSave())return;
+      }
+      if(currentSave()){
+        setError(failure);
         if(verifiedOwner)setRecoveryExpanded(true);
       }
+    }finally{
+      saveFlight.current=false;
+      const current=latestRecovery.current;
+      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
+         (!view.owner||scopeCurrent(view)))setSaving(false);
     }
-    finally {saveFlight.current=false;const current=latestRecovery.current;
-      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch)setSaving(false);}
   }
 
   async function initialize() {
