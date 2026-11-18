@@ -23,15 +23,23 @@ type LoadState = {status:'loading'} | {status:'error'; message:string} |
 const PAGE_SIZE=50;
 const accountChangedMessage='Your account changed or its session could not be verified. Private projects were cleared. Retry to load the current account.';
 
+const cursorKey=(value:ProjectCursor)=>JSON.stringify([value.updatedAt,value.id]);
 function validProjectPage(page:ProjectPage, ownerId:string, previous:ProjectCursor|null):boolean {
   if (!page || !Array.isArray(page.items) || page.items.length>PAGE_SIZE ||
+      page.items.some(item=>!item||typeof item.id!=='string'||typeof item.updatedAt!=='string'||
+        !Number.isFinite(Date.parse(item.updatedAt))) ||
       new Set(page.items.map(item=>item.id)).size!==page.items.length) return false;
   const cursor=page.nextCursor;
   if (cursor===null) return true;
-  return page.items.length>0 && cursor.version===1 && cursor.collection==='projects' &&
+  const tail=page.items[page.items.length-1];
+  // The adapter derives the cursor from the final visible row. Keep exact
+  // timestamps (including microseconds), not Date-coerced equality.
+  return !!cursor && page.items.length===PAGE_SIZE && !!tail &&
+    cursor.version===1 && cursor.collection==='projects' &&
     cursor.ownerUserId===ownerId && typeof cursor.updatedAt==='string' &&
     Number.isFinite(Date.parse(cursor.updatedAt)) && typeof cursor.id==='string' &&
-    !(previous && previous.id===cursor.id && previous.updatedAt===cursor.updatedAt);
+    cursor.id===tail.id && cursor.updatedAt===tail.updatedAt &&
+    !(previous && cursorKey(previous)===cursorKey(cursor));
 }
 const freshDraft=():NewPrivateProject=>({
   title:'',slug:'',summary:'',repositoryUrl:null,liveUrl:null
@@ -66,6 +74,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const ownerExpired=useRef(false);
   const currentOwner=()=>!ownerExpired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
   const pageInFlight=useRef(false);
+  const visitedPageCursors=useRef(new Set<string>());
   const [search,setSearch]=useState('');
   const [view,setView]=useState<'gallery'|'list'>('gallery');
   const [sort,setSort]=useState<'recent'|'oldest'|'name'|'name-desc'>('recent');
@@ -97,6 +106,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setSaving(false);
     requestEpoch.current++;
     pageInFlight.current=false;
+    visitedPageCursors.current.clear();
     setLoadingMore(false);
     setPageError('');
     setSearch('');
@@ -120,6 +130,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     const current=()=>active&&epoch===requestEpoch.current&&currentOwner();
     if(!current())return ()=>{active=false;unsubscribe();};
     pageInFlight.current=false;
+    visitedPageCursors.current.clear();
     setLoadingMore(false);
     setPageError('');
     setState({status:'loading'});
@@ -200,7 +211,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   // Load one page or an explicitly requested bounded batch for search/sort.
   // This is not a server-side snapshot: concurrent edits may move keyset rows.
   async function loadMore(batch=false) {
-    if(!currentOwner()||state.status!=='ready'||!state.nextCursor||pageInFlight.current)return;
+    if(!currentOwner()||state.status!=='ready'||!state.nextCursor||pageInFlight.current||creationInFlight.current)return;
     const {ownerId,nextCursor}=state;
     const epoch=requestEpoch.current;
     const current=()=>epoch===requestEpoch.current&&currentOwner();
@@ -208,18 +219,16 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     if(typeof pageReader!=='function'){setPageError('Private project pagination is unavailable. Retry later.');return;}
     pageInFlight.current=true;setLoadingMore(true);setPageError('');
     let cursor:ProjectCursor|null=nextCursor;
-    const seenCursors=new Set<string>();
-    const key=(value:ProjectCursor)=>JSON.stringify([value.updatedAt,value.id]);
+    const seenCursors=visitedPageCursors.current;
     try{
       const startIdentity=await port.getUser();
       if(!current())return;
       if(startIdentity.error||startIdentity.data?.user?.id!==ownerId){invalidateOwner();return;}
       for(let index=0;cursor&&index<(batch?10:1);index++){
         const requested:ProjectCursor=cursor;
-        if(seenCursors.has(key(requested))){
+        if(seenCursors.has(cursorKey(requested))){
           setPageError('The project cursor repeated. Refresh before loading more.');return;
         }
-        seenCursors.add(key(requested));
         const reply:AuthOutcome<ProjectPage>=await pageReader.call(port,PAGE_SIZE,requested);
         if(!current())return;
         const identity=await port.getUser();
@@ -229,9 +238,12 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           setPageError(reply.error?.message??'More projects could not be loaded. Earlier pages remain available.');return;
         }
         const page:ProjectPage=reply.data;
-        if(!validProjectPage(page,ownerId,requested)||(page.nextCursor&&seenCursors.has(key(page.nextCursor)))){
+        if(!validProjectPage(page,ownerId,requested)||(page.nextCursor&&seenCursors.has(cursorKey(page.nextCursor)))){
           setPageError('The next page failed validation. Previously loaded projects were kept.');return;
         }
+        // Record only accepted cursor requests; a transient failure can retry
+        // the same page and cycles across separate Load more actions are denied.
+        seenCursors.add(cursorKey(requested));
         setState(previous=>{
           if(previous.status!=='ready'||previous.ownerId!==ownerId||
             previous.nextCursor?.id!==requested.id||previous.nextCursor?.updatedAt!==requested.updatedAt)return previous;
@@ -431,8 +443,9 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         <button type="button" aria-pressed={view==='gallery'} onClick={()=>setView('gallery')}>Gallery</button>
         <button type="button" aria-pressed={view==='list'} onClick={()=>setView('list')}>List</button>
       </div>
-      <button type="button" className="ws-secondary" disabled={state.status!=='ready'}
+      <button type="button" className="ws-secondary" disabled={state.status!=='ready'||loadingMore||saving}
         onClick={()=>{
+          if(pageInFlight.current||creationInFlight.current||!currentOwner())return;
           requestEpoch.current++;
           setState({status:'loading'});
           setReload(value=>value+1);
@@ -452,7 +465,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         Showing {hasFilters ? filtered.length+' matching of ' : ''}{state.items.length} loaded private {state.items.length===1?'project':'projects'}.
         {state.nextCursor
           ? ' More projects are available. Search and sorting apply only to loaded records; link filters also cover loaded records only.'
-          : ' All pages currently available were loaded; refresh if your projects changed.'}
+          : ' Reached the end of the current owner page sequence; concurrent changes may require a refresh.'}
       </p>
       {filtered.length===0?<div className="ws-project-empty-layout">
         <div className="ws-project-empty">
@@ -480,7 +493,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <LibraryCover port={port} projectId={item.id} revision={item.revision}/>
           <div className="ws-project-card-body"><h2><a href={'/app/projects/' + item.id}>{item.title}</a></h2>
             <p>{item.summary||'No project summary yet.'}</p>
-            <span>Private · Updated {new Date(item.updatedAt).toLocaleDateString()} · Revision {item.revision}</span>
+            <span>Private workspace record · Updated {new Date(item.updatedAt).toLocaleDateString()} · Revision {item.revision}</span>
             {(repository || liveSite) && <div className="ws-project-links">
               {repository && <a href={repository} target="_blank" rel="noopener noreferrer">Repository</a>}
               {liveSite && <a href={liveSite} target="_blank" rel="noopener noreferrer">Live site</a>}
