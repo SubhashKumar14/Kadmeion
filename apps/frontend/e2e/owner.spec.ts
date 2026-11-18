@@ -4056,3 +4056,89 @@ test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposabl
   const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
   expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
 });
+
+test('B16 WF-046 actual mounted Trash generation refuses stale and raced ABA restores',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local GoTrue and PostgREST only.');
+  test.setTimeout(110_000);
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if(!key||process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal Trash proof.');
+  const {SupabasePrivateTrashService}=await import('../../../packages/contracts/src/private-trash-service.ts');
+  const [owner,foreign]=await Promise.all([localUser('R11 Trash generation owner'),localUser('R11 Trash generation foreign')]);
+  const client=async(actor:typeof owner)=>{
+    const r=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',redirect:'error',
+      headers:{apikey:key,'Content-Type':'application/json'},
+      body:JSON.stringify({email:actor.email,password:actor.password}),signal:AbortSignal.timeout(10000)});
+    if(!r.ok)throw Error('Disposable owner session unavailable.');
+    const v=await r.json();
+    if(v.user?.id!==actor.id||typeof v.access_token!=='string')throw Error('Unexpected owner receipt.');
+    return new SupabasePrivateTrashService(origin,key,async()=>v.access_token);
+  };
+  const second=await client(owner),outsider=await client(foreign);
+  await page.setViewportSize({width:1600,height:1000});
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R11 Trash generation');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  const item=runLocalFixtureSql("select id from public.projects where owner_user_id=:'actor_id'::uuid and slug='r11-trash-generation';",owner.id);
+  expect(item).toMatch(/^[a-f0-9-]{36}$/i);
+  await page.goto('/app/projects/'+item);
+  await page.getByRole('button',{name:'Move to Trash'}).click();
+  await page.getByRole('button',{name:'Confirm move to Trash'}).click();
+  await expect(page).toHaveURL('/app/trash');
+  const restore=page.getByRole('button',{name:'Restore privately',exact:true});
+  await expect(restore).toBeEnabled();
+  const generation=async()=>{
+    const rows=(await second.list()).filter(r=>r.item_type==='project'&&r.item_id===item);
+    expect(rows).toHaveLength(1);return rows[0]!.id;
+  };
+  const first=await generation();
+  await expect(outsider.restoreGeneration('project',item,first)).rejects.toBeDefined();
+  expect(await generation()).toBe(first);
+  let legacy=0;const posted:string[]=[];
+  page.on('request',r=>{
+    if(r.method()!=='POST')return;
+    const u=new URL(r.url());
+    if(u.origin!==origin)return;
+    if(u.pathname==='/rest/v1/rpc/restore_private_item')legacy++;
+    if(u.pathname==='/rest/v1/rpc/owner_restore_private_item_generation')posted.push(r.postDataJSON()?.p_expected_trash_id);
+  });
+  // A second real session restores generation A and retrashes to B while
+  // the original browser still displays A. The stale UI must not dispatch.
+  expect(await second.restoreGeneration('project',item,first)).toMatchObject({trash_id:first,public_visibility:'private'});
+  await second.move('project',item);
+  const next=await generation();expect(next).not.toBe(first);
+  await restore.click();
+  await expect(page.getByRole('alert')).toContainText('No restore request was sent');
+  expect(posted).toEqual([]);expect(legacy).toBe(0);
+  expect(await generation()).toBe(next);
+  await page.getByRole('button',{name:'Refresh confirmed Trash'}).click();
+  await expect(restore).toBeEnabled();
+  // Race after the actual UI readback, immediately before dispatch to the
+  // real atomic RPC. The exact stale B request must fail against generation C.
+  let newest:string|null=null;
+  const endpoint=origin+'/rest/v1/rpc/owner_restore_private_item_generation';
+  await page.route(endpoint,async route=>{
+    expect(route.request().postDataJSON()?.p_expected_trash_id).toBe(next);
+    await second.restoreGeneration('project',item,next);
+    await second.move('project',item);
+    newest=await generation();
+    expect(newest).not.toBe(next);
+    await route.continue();
+  },{times:1});
+  await restore.click();
+  await expect(page.getByRole('alert')).toContainText('Restore was not confirmed');
+  expect(posted).toEqual([next]);expect(legacy).toBe(0);
+  expect(newest).not.toBeNull();expect(await generation()).toBe(newest);
+  await page.getByRole('button',{name:'Refresh confirmed Trash'}).click();
+  await expect(restore).toBeEnabled();
+  await restore.click();
+  await expect(page.getByText('Item restored as private.',{exact:true})).toBeVisible();
+  expect(posted).toEqual([next,newest]);expect(legacy).toBe(0);
+  await page.reload();
+  await expect(page.getByText('Trash is empty.',{exact:true})).toBeVisible();
+  expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and id=:'item_id'::uuid and trashed_at is null;",owner.id,item)).toBe('1');
+  expect((await second.list()).filter(r=>r.item_id===item)).toHaveLength(0);
+});
