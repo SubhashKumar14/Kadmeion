@@ -103,6 +103,7 @@ function safeDeliveryResponse(response:Response,route:URL,indexable:boolean,medi
 }
 
 function sameDeliveryPolicy(get:Headers,head:Headers):boolean {
+  if(get.get('link')!==head.get('link'))return false;
   // Compare observable representation policy, not transport-only headers
   // such as Content-Length, Date, or content encoding.
   for(const name of [...CACHE_HEADERS,'x-robots-tag']){
@@ -235,11 +236,25 @@ async function readGet(http:typeof fetch,route:URL,indexable:boolean,media=false
   });
 }
 
+function matchesFrozenPng(bytes:Uint8Array,sha:string):boolean {
+  const signature=[137,80,78,71,13,10,26,10];
+  return bytes.byteLength>=signature.length&&signature.every((value,index)=>bytes[index]===value)&&
+    createHash('sha256').update(bytes).digest('hex')===sha;
+}
+
+export function validCanonicalDeliveryMetadata(value:string|null,host:URL,canonicalPath:string,indexable:boolean,required:boolean):boolean {
+  if(!indexable)return value===null;
+  if(value===null)return !required;
+  return value==='<'+canonicalPath+'>; rel="canonical"'||
+    value==='<'+new URL(canonicalPath,host).href+'>; rel="canonical"';
+}
+
 async function digestHtml(indexable:boolean,route:URL,
-  host:URL,http:typeof fetch,expectedSha:string,requirePublicAliasProof=false):Promise<DeliverySample|null> {
+  host:URL,http:typeof fetch,expectedSha:string,requirePublicAliasProof=false,requireCanonicalMetadata=false):Promise<DeliverySample|null> {
   const get=await readGet(http,route,indexable);
   if(!get)return null;
   const {bytes,headers}=get;
+  if(!validCanonicalDeliveryMetadata(headers.get('link'),host,route.pathname,indexable,requireCanonicalMetadata))return null;
   const servedSha=createHash('sha256').update(bytes).digest('hex');
   if(!optionalServedDigest(headers,servedSha))return null;
   let html=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
@@ -292,7 +307,7 @@ async function digestHtml(indexable:boolean,route:URL,
   for(const [src,sha] of media){
     const assetRoute=new URL(src.replaceAll('&amp;','&'),host);
     const png=await readGet(http,assetRoute,false,true);
-    if(!png||createHash('sha256').update(png.bytes).digest('hex')!==sha||
+    if(!png||!matchesFrozenPng(png.bytes,sha)||
        !optionalServedDigest(png.headers,sha))return null;
     if(!await verifyHead(http,assetRoute,png.headers,sha,false,true))return null;
   }

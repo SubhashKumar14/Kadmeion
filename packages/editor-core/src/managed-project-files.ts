@@ -54,6 +54,27 @@ const CURATED_SLOT_COMPONENTS: Readonly<Record<string,string>> = Object.freeze({
   badge:'technology-tag@1',meta:'author-metric@1'
 });
 
+/**
+ * Canonical, newly materialized reference implementations for the existing
+ * trusted text-component pins. Their source bytes are fixed for this registry.
+ * The S0 renderer still uses its own trusted data projection; these independent
+ * TSX copies are for explicit private S1 customization and source export only.
+ * They are not evidence of historic source bytes, arbitrary-code execution,
+ * or safe publication. Image source is deliberately outside this registry.
+ */
+const CANONICAL_TEXT_COMPONENT_SOURCE:Readonly<Record<string,string>>=Object.freeze({
+  "title-stacked@1": "import React from 'react';\nexport default function Heading({ title = '', subtitle = '' }: { title?: string; subtitle?: string }) {\n  return <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>;\n}\n",
+  "body-copy@1": "import React from 'react';\nexport default function BodyCopy({ text = '' }: { text?: string }) {\n  return <p>{text}</p>;\n}\n",
+  "external-link@1": "import React from 'react';\nfunction safeLink(value: string): string | undefined {\n  if (!value || value.length > 2048 || /[\\\\\\s\\u0000-\\u001f\\u007f]/u.test(value)) return undefined;\n  try {\n    const url = new URL(value);\n    return url.protocol === 'https:' && url.hostname && !url.username && !url.password ? url.href : undefined;\n  } catch { return undefined; }\n}\nexport default function ExternalLink({ label = '', url = '' }: { label?: string; url?: string }) {\n  const href = safeLink(url);\n  return href ? <a href={href} rel=\"noopener noreferrer nofollow\">{label}</a> : <span>{label}</span>;\n}\n",
+  "project-card@1": "import React from 'react';\nfunction safeLink(value: string): string | undefined {\n  if (!value || value.length > 2048 || /[\\\\\\s\\u0000-\\u001f\\u007f]/u.test(value)) return undefined;\n  try {\n    const url = new URL(value);\n    return url.protocol === 'https:' && url.hostname && !url.username && !url.password ? url.href : undefined;\n  } catch { return undefined; }\n}\nexport default function ProjectCard({ title = '', summary = '', url = '' }: { title?: string; summary?: string; url?: string }) {\n  const href = safeLink(url);\n  return <article><h2>{title}</h2><p>{summary}</p>{href && <a href={href} rel=\"noopener noreferrer nofollow\">View project</a>}</article>;\n}\n",
+  "skills-list@1": "import React from 'react';\nexport default function SkillsList({ items = '' }: { items?: string }) {\n  let entries: string[] = [];\n  try {\n    const value: unknown = JSON.parse(items);\n    if (Array.isArray(value) && value.length <= 24 && value.every(item => typeof item === 'string' && item.length <= 1200)) entries = value;\n  } catch { /* malformed authored list remains unrendered */ }\n  return <ul>{entries.map((item, index) => <li key={index}>{item}</li>)}</ul>;\n}\n",
+  "technology-tag@1": "import React from 'react';\nexport default function TechnologyTag({ text = '' }: { text?: string }) {\n  return <span>{text}</span>;\n}\n",
+  "author-metric@1": "import React from 'react';\nexport default function AuthorMetric({ label = '', value = '' }: { label?: string; value?: string }) {\n  return <dl><div><dt>{label}</dt><dd>{value}</dd></div></dl>;\n}\n"
+});
+export function canonicalLibraryComponentSource(pin:string):string|undefined{
+  return Object.hasOwn(CANONICAL_TEXT_COMPONENT_SOURCE,pin)?CANONICAL_TEXT_COMPONENT_SOURCE[pin]:undefined;
+}
+
 /** Build an editable draft from the documented layout order and empty owner slots. */
 export function createPortfolioPresetDraft(presetId:PortfolioPresetId):PortfolioSnapshot {
   if(typeof presetId!=='string'||!Object.hasOwn(presets,presetId))

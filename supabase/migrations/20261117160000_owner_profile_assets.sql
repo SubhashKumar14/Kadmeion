@@ -57,8 +57,16 @@ alter policy kd_storage_private_insert on storage.objects with check (
    select 1 from public.profile_assets a where a.owner_user_id=(select auth.uid())
     and a.object_path=name and a.state='PENDING_UPLOAD'
     and lower(coalesce(metadata->>'mimetype',''))=a.mime_type
-    and (case when coalesce(metadata->>'size','')~'^[0-9]{1,10}$'
-       then (metadata->>'size')::bigint else null end)=a.byte_size
+    -- Storage v1.90.1 performs a rolled-back permission probe (version '1')
+    -- with declared contentLength, then re-authorizes with actual backend size.
+    -- Prefer final size whenever present: malformed/mismatched size must never
+    -- fall back to the declared length. Register/pin still require actual size.
+    and (case
+      when metadata ? 'size' then case when coalesce(metadata->>'size','')~'^[0-9]{1,10}$'
+        then (metadata->>'size')::bigint else null end
+      when version::text='1' then case when coalesce(metadata->>'contentLength','')~'^[0-9]{1,10}$'
+        then (metadata->>'contentLength')::bigint else null end
+      else null end)=a.byte_size
  ))
 );
 create function kadmeion_private.reject_project_profile_namespace()
@@ -473,6 +481,10 @@ begin
     raise exception using errcode='42501',message='OWNER_PROFILE_NOT_FOUND';
   end if;
   perform kadmeion_private.require_live_asset_export_owner();
+  -- Current v1 scope must be safe even on an idempotent operation replay.
+  -- Otherwise a previously stored metadata-only snapshot can masquerade as
+  -- current coverage after a PROFILE registration or orphan Storage upload.
+  perform kadmeion_private.require_v1_asset_scope(v_owner);
   select * into v_existing from public.private_account_exit_inventory_snapshots
     where owner_user_id=v_owner and operation_id=p_operation_id for update;
   if found then
@@ -483,7 +495,6 @@ begin
       'capturedAt',v_existing.captured_at,'alreadyCaptured',true,
       'inventory',v_existing.inventory,'deletionAllowed',false);
   end if;
-  perform kadmeion_private.require_v1_asset_scope(v_owner);
   if p_request_id is not null and not exists(
     select 1 from public.private_account_erasure_requests
     where id=p_request_id and owner_user_id=v_owner and status='REQUESTED_BLOCKED'
@@ -558,7 +569,7 @@ declare
   v_record public.private_account_exit_inventory_snapshots%rowtype;
 begin
   v_session:=kadmeion_private.require_live_exit_auth_session();
-  perform kadmeion_private.require_live_asset_export_owner();
+  perform kadmeion_private.require_v1_asset_scope(v_owner);
   if p_snapshot_id is null then
     raise exception using errcode='22023',message='INVALID_INVENTORY_SNAPSHOT';
   end if;
@@ -701,7 +712,8 @@ begin
        o.owner_id is distinct from v_owner::text or
        lower(coalesce(o.metadata->>'mimetype',''))<>a.mime_type or
        coalesce(o.metadata->>'size','') !~ '^[0-9]{1,10}$' or
-       (o.metadata->>'size')::bigint<>a.byte_size) as changed
+       (case when coalesce(o.metadata->>'size','') ~ '^[0-9]{1,10}$'
+          then (o.metadata->>'size')::bigint else null end) is distinct from a.byte_size) as changed
     from assets a
     left join kadmeion_private.private_asset_content_attestations t on t.asset_id=a.id
     left join storage.objects o on o.bucket_id='kadmeion-private-assets'

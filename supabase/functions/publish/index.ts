@@ -90,55 +90,70 @@ function headers(origin?:string,allowed=false):Headers {
 function error(code:number,message:string,origin?:string,allowed=false):Response {
   return Response.json({error:message},{status:code,headers:headers(origin,allowed)});
 }
-async function bounded(request:Request|Response,limit:number):Promise<unknown> {
-  const length=request.headers.get('content-length');
-  const reader=request.body?.getReader();
-  if(!reader)throw Error('Missing body');
-  const chunks:Uint8Array[]=[];
-  let size=0;
+const PUBLISH_RPC_TIMEOUT_MS=10_000;
+function cancelPublishBody(body:{cancel:()=>Promise<void>}|null|undefined):void{
+  try{void body?.cancel().catch(()=>{});}catch{}
+}
+async function withPublishDeadline<T>(run:(signal:AbortSignal)=>Promise<T>):Promise<T>{
+  const controller=new AbortController();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const deadline=new Promise<never>((_,reject)=>{
+    timer=setTimeout(()=>{reject(Error('Publication request timed out'));controller.abort();},PUBLISH_RPC_TIMEOUT_MS);
+  });
+  try{return await Promise.race([run(controller.signal),deadline]);}
+  finally{clearTimeout(timer);controller.abort();}
+}
+async function bounded(request:Request|Response,limit:number,signal:AbortSignal):Promise<unknown> {
+  let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+  const stop=()=>cancelPublishBody(reader??request.body);
+  signal.addEventListener('abort',stop,{once:true});
   try{
-    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))
-      throw Error('Body too large');
+    if(signal.aborted)throw Error('Publication request expired');
+    const length=request.headers.get('content-length');
+    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>limit))throw Error('Body too large');
+    reader=request.body?.getReader();
+    if(!reader)throw Error('Missing body');
+    const chunks:Uint8Array[]=[];
+    let size=0,count=0;
     for(;;){
       const next=await reader.read();
+      if(signal.aborted)throw Error('Publication request expired');
       if(next.done)break;
-      if(!(next.value instanceof Uint8Array))throw Error('Invalid stream');
+      if(!(next.value instanceof Uint8Array)||++count>65_536)throw Error('Invalid stream');
       size+=next.value.byteLength;
       if(size>limit)throw Error('Body too large');
-      chunks.push(next.value);
+      if(next.value.byteLength!==0)chunks.push(next.value);
     }
-  }catch(error){
-    await reader.cancel().catch(()=>{});
-    throw error;
-  }finally{reader.releaseLock();}
-  const encoding=request.headers.get('content-encoding');
-  if(length!==null&&(!('status' in request)||!encoding||encoding.toLowerCase()==='identity')&&
-      Number(length)!==size)throw Error('Invalid body length');
-  const bytes=new Uint8Array(size);let offset=0;
-  for(const part of chunks){bytes.set(part,offset);offset+=part.byteLength;}
-  return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+    const encoding=request.headers.get('content-encoding');
+    if(length!==null&&(!('status' in request)||!encoding||encoding.toLowerCase()==='identity')&&
+        Number(length)!==size)throw Error('Invalid body length');
+    const bytes=new Uint8Array(size);let offset=0;
+    for(const part of chunks){bytes.set(part,offset);offset+=part.byteLength;}
+    return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+  }finally{
+    signal.removeEventListener('abort',stop);
+    stop();
+    try{reader?.releaseLock();}catch{}
+  }
 }
 async function getJson(url:string,headers:Record<string,string>,http:typeof fetch,
                        body?:Record<string,unknown>):Promise<unknown> {
-  const response=await http(url,{
-    method:body?'POST':'GET',headers:{
-      ...headers,Accept:'application/json',
-      ...(body?{'Content-Type':'application/json'}:{})
-    },
-    body:body?JSON.stringify(body):undefined,
-    credentials:'omit',cache:'no-store',redirect:'error',
-    signal:AbortSignal.timeout(10_000)
+  return withPublishDeadline(async signal=>{
+    const response=await http(url,{
+      method:body?'POST':'GET',headers:{
+        ...headers,Accept:'application/json',
+        ...(body?{'Content-Type':'application/json'}:{})
+      },
+      body:body?JSON.stringify(body):undefined,
+      credentials:'omit',cache:'no-store',redirect:'error',signal
+    });
+    if(signal.aborted||response.redirected||(response.url!==''&&response.url!==url)||!response.ok||
+       !/^application\/(?:json|[a-z0-9.+-]+\+json)(?:;|$)/i.test(response.headers.get('content-type')??'')){
+      cancelPublishBody(response.body);
+      throw Error('Private provider response not verified');
+    }
+    return bounded(response,MAX_RPC_BYTES,signal);
   });
-  if(!response.ok){
-    await response.body?.cancel();
-    throw Error('Private provider rejected request');
-  }
-  if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:;|$)/i.test(
-    response.headers.get('content-type')??'')){
-    await response.body?.cancel();
-    throw Error('Invalid provider media type');
-  }
-  return bounded(response,MAX_RPC_BYTES);
 }
 export async function handleOwnerPublishRelease(request:Request,deps:Dependencies={}):Promise<Response> {
   const env=deps.env??serverEnv();
@@ -165,7 +180,7 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
   if(encoding&&encoding.toLowerCase()!=='identity')
     return error(415,'Uncompressed JSON required',origin,permitted);
   let data:unknown;
-  try{data=await bounded(request,MAX_REQUEST);}
+  try{data=await withPublishDeadline(signal=>bounded(request,MAX_REQUEST,signal));}
   catch{return error(400,'Invalid request',origin,permitted);}
   if(!record(data)||Object.keys(data).length!==1||!Object.hasOwn(data,'intentId')||
      typeof data.intentId!=='string'||!UUID.test(data.intentId))
