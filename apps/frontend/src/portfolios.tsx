@@ -484,6 +484,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
   const componentDrag=useRef<{head:EditorHead;pin:string}|null>(null);
+  const sectionDrag=useRef<{head:EditorHead;id:string}|null>(null);
+  const [draggingSection,setDraggingSection]=useState<string|null>(null);
   const componentSaveRetry=useRef<ComponentSaveRetryState>({pending:null,inFlight:false});
   const [openedSource, setOpenedSource] = useState(false);
   const [openedAssets,setOpenedAssets]=useState(false);
@@ -568,11 +570,12 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
        (verifiedOwner&&!scopeCurrent(live)))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
+    const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
-    if(layoutMutation||themeMutation){
+    if(layoutMutation||themeMutation||sectionOrderMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         preview||(layoutMutation?tool!=='Components':tool!=='Theme')){
+         preview||(layoutMutation?tool!=='Components':themeMutation?tool!=='Theme':!canReorderSection())){
         setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
       if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
@@ -584,7 +587,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((layoutMutation||themeMutation||historyMutation) && (pendingFields || sourceDirty))||
+    if (((layoutMutation||themeMutation||historyMutation||sectionOrderMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -613,7 +616,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       }
       lastAppliedHead.current=head;
       setHead(next);
-      setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation?
+      setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation||sectionOrderMutation?
         'Layout transaction applied to the working draft. Save to persist, or use Undo.':themeMutation?
         'Theme transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
       return true;
@@ -807,6 +810,26 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!view||!head||view.head!==head||!draftCurrent(view)||!canPlaceComponent(pin,target))return false;
     if(!apply({kind:'ASSIGN_COMPONENT',slotKey:target,componentId:pin}))return false;
     setSlot(target);setTool('Content');return true;
+  }
+  function canReorderSection():boolean{
+    return !!head&&!!verifiedOwner&&allowed&&!preview&&!['Components','Source','Assets','History'].includes(tool)&&
+      !saving&&!recoveryBusy&&!pendingFields&&!sourceDirty&&layerGroups.length>1;
+  }
+  function sectionDropAllowed(sectionId:string,beforeSectionId:string|null):boolean{
+    if(!canReorderSection()||sectionId===beforeSectionId)return false;
+    const ids=layerGroups.map(group=>group.id);
+    if(new Set(ids).size!==ids.length||!ids.includes(sectionId))return false;
+    const next=ids.filter(id=>id!==sectionId);
+    const to=beforeSectionId===null?next.length:next.indexOf(beforeSectionId);
+    if(to<0)return false;
+    next.splice(to,0,sectionId);
+    return next.some((id,index)=>id!==ids[index]);
+  }
+  function moveSectionBefore(beforeSectionId:string|null):boolean{
+    const drag=sectionDrag.current;sectionDrag.current=null;setDraggingSection(null);
+    const view=latestRecovery.current;
+    if(!head||!drag||drag.head!==head||!view||!draftCurrent(view)||!sectionDropAllowed(drag.id,beforeSectionId))return false;
+    return apply({kind:'MOVE_SECTION_BEFORE',sectionId:drag.id,beforeSectionId,expectedRevision:head.revision});
   }
   // Local storage is not an identity authority. Gate context is mandatory.
   type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
@@ -1507,10 +1530,31 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <button type="button" className="ws-secondary" disabled={saving}
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
-        <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}>
+        <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}
+          onDragOver={event=>{
+            const drag=sectionDrag.current;
+            if(drag&&drag.head===head&&sectionDropAllowed(drag.id,group.id)){
+              event.preventDefault();event.dataTransfer.dropEffect='move';
+            }
+          }}
+          onDrop={event=>{
+            const drag=sectionDrag.current;
+            if(!drag||drag.head!==head||!sectionDropAllowed(drag.id,group.id))return;
+            event.preventDefault();moveSectionBefore(group.id);
+          }}>
           <div className="ws-editor-layer-reorder">
             <span>Section {index+1} / {layerGroups.length}</span>
             <div role="group" aria-label={'Reorder '+group.title}>
+              <button type="button" className="ws-editor-reorder-action" draggable={canReorderSection()}
+                disabled={!canReorderSection()} aria-label={'Drag '+group.title+' to reorder; use Up and Down for keyboard'}
+                onDragStart={event=>{
+                  const view=latestRecovery.current;
+                  if(!head||!view||!canReorderSection()||!draftCurrent(view)){event.preventDefault();return;}
+                  sectionDrag.current={head,id:group.id};setDraggingSection(group.id);
+                  event.dataTransfer.effectAllowed='move';
+                  event.dataTransfer.setData('application/x-kadmeion-section','section');
+                }}
+                onDragEnd={()=>{sectionDrag.current=null;setDraggingSection(null);}}>Drag</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' up'}
                 disabled={index===0||saving} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' down'}
@@ -1535,7 +1579,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
               <span className="ws-editor-layer-state">{state}</span>
             </button>
           </li>;})}</ul></details>
-        </li>)}</ol>
+        </li>)}{draggingSection&&sectionDropAllowed(draggingSection,null)&&<li
+          onDragOver={event=>{if(sectionDrag.current?.head===head){event.preventDefault();event.dataTransfer.dropEffect='move';}}}
+          onDrop={event=>{event.preventDefault();moveSectionBefore(null);}}>
+          <span>Drop here to move the section to the end</span>
+        </li>}</ol>
         </>}
       </aside>
       {contentPreview}
