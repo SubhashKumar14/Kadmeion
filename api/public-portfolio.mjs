@@ -47,6 +47,22 @@ async function reportBody(req) {
   return {p_operation_id:candidate.operationId,p_reason_code:candidate.reason,p_evidence:evidence};
 }
 
+export function canonicalPublicLink(handle,slug,env) {
+  const path='/'+handle+'/'+slug;
+  // Only deployment-owned configuration may select an absolute canonical.
+  // Never derive it from Host, forwarded headers, or the request target.
+  try {
+    const origin=new URL(env.KADMEION_RELEASE_HOST_ORIGIN);
+    if(origin.protocol==='https:'&&origin.hostname===env.KADMEION_RELEASE_HOSTNAME&&
+       origin.hostname.includes('.')&&!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(origin.hostname)&&
+       !/(?:\.local|\.internal|\.localhost|\.test|\.invalid)$/.test(origin.hostname)&&
+       !origin.username&&!origin.password&&origin.pathname==='/'&&!origin.search&&!origin.hash)
+      return '<'+new URL(path,origin).href+'>; rel="canonical"';
+  }catch{}
+  // A relative same-origin link is valid metadata without inventing a host.
+  return '<'+path+'>; rel="canonical"';
+}
+
 export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch} = {}) {
   function reply(status, body, type, indexable = false, media = false) {
     res.statusCode = status;
@@ -149,6 +165,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     const published = release.indexable ? rendered.html.replace(stagedRobots, publicRobots) : rendered.html;
     res.setHeader('X-Kadmeion-Served-SHA256',
       createHash('sha256').update(published).digest('hex'));
+    if(release.indexable)res.setHeader('Link',canonicalPublicLink(handle,slug,env));
     return reply(200, published, undefined, release.indexable, rendered.media);
   } catch {
     return reply(503, 'Temporarily unavailable');
