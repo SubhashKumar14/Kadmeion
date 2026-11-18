@@ -137,6 +137,17 @@ function parseCursor(value:string|null):{createdAt:string;id:string}|null {
     throw new PrivateNotificationsError('VALIDATION');
   return {createdAt:parts[0],id:parts[1].toLowerCase()};
 }
+// PostgreSQL timestamps carry up to six fractional digits; Date.parse only
+// preserves three. Compare the remaining digits before the UUID tie-break.
+function compareNoticeKey(aTime:string,aId:string,bTime:string,bId:string):number {
+  const millis=Date.parse(aTime)-Date.parse(bTime);
+  if(millis!==0)return Math.sign(millis);
+  const submillis=(time:string)=>Number((/\.(\d{1,6})(?:Z|[+-]\d{2}:\d{2})$/.exec(time)?.[1]??'').padEnd(6,'0').slice(3));
+  const micros=submillis(aTime)-submillis(bTime);
+  if(micros!==0)return Math.sign(micros);
+  const a=aId.toLowerCase(),b=bId.toLowerCase();
+  return a===b?0:a<b?-1:1;
+}
 async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown> {
   const type=response.headers.get('content-type');
   if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
@@ -281,14 +292,12 @@ export class SupabasePrivateNotificationsService {
     const rows=raw as PrivateNotification[],seen=new Set<string>();
     for(let i=0;i<rows.length;i++){
       const row=rows[i];
-      if(!row||seen.has(row.id))throw new PrivateNotificationsError('INVALID_ACK');
-      seen.add(row.id);
+      if(!row||seen.has(row.id.toLowerCase()))throw new PrivateNotificationsError('INVALID_ACK');
+      seen.add(row.id.toLowerCase());
       const previous=i?rows[i-1]:null;
-      if(previous&&(Date.parse(row.created_at)>Date.parse(previous.created_at)||
-        (row.created_at===previous.created_at&&row.id>=previous.id)))
+      if(previous&&compareNoticeKey(row.created_at,row.id,previous.created_at,previous.id)>=0)
         throw new PrivateNotificationsError('INVALID_ACK');
-      if(cursor&&(Date.parse(row.created_at)>Date.parse(cursor.createdAt)||
-        (row.created_at===cursor.createdAt&&row.id>=cursor.id)))
+      if(cursor&&compareNoticeKey(row.created_at,row.id,cursor.createdAt,cursor.id)>=0)
         throw new PrivateNotificationsError('INVALID_ACK');
     }
     const items=rows.slice(0,limit);
