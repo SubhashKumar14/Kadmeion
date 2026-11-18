@@ -1680,15 +1680,16 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
       {activeRequest&&<section aria-label="Request-bound private export">
         <h3>Export for this deletion request</h3>
         <p>Optional private inventory and recovery files bound to this exact pending request. All inventory versions share the ten-snapshot account quota. These records are not deletion approval. The analytics annex is a separate current owner read, not bound to the inventory snapshot.</p>
-        {!activeScope&&<button type="button" className="ws-secondary" disabled={busy||exitQuotaBlocked} onClick={()=>void prepareExitExport('capture')}>Capture request-bound inventory</button>}
+        {executionUncertain&&<p role="status">Resolve the uncertain account-exit result before preparing another export.</p>}
+        {!activeScope&&<button type="button" className="ws-secondary" disabled={busy||exitQuotaBlocked||executionUncertain} onClick={()=>void prepareExitExport('capture')}>Capture request-bound inventory</button>}
         {exitQuotaBlocked&&<p role="status">No further inventory captures are available under the current quota. Previously acknowledged inventory can still be used.</p>}
         {activeScope&&<>
           <p>Captured <time dateTime={activeScope.capturedAt}>{new Date(activeScope.capturedAt).toLocaleString()}</time>. Profile asset metadata: {activeScope.inventory.counts.profileAssetMetadata}.</p>
           <div className="ws-actions">
-            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('reconcile')}>Check request-bound storage metadata</button>
-            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('metadata')}>Download request-bound metadata</button>
-            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('json')}>Download request-bound recovery JSON</button>
-            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('zip')}>Download request-bound recovery ZIP</button>
+            <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('reconcile')}>Check request-bound storage metadata</button>
+            <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('metadata')}>Download request-bound metadata</button>
+            <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('json')}>Download request-bound recovery JSON</button>
+            <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('zip')}>Download request-bound recovery ZIP</button>
             <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('provider')}>Download request-bound GitHub facts JSON</button>
             <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('analytics')}>Download retained analytics JSON</button>
           </div>
