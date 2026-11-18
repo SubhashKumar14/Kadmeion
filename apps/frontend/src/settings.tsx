@@ -732,7 +732,8 @@ export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: s
   window.setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
-type ExportKind = 'metadata'|'metadata-v2'|'recovery'|'recovery-json'|'source';
+type ExportKind = 'metadata'|'metadata-v2'|'recovery-v2'|'recovery-json-v2'|'recovery'|'recovery-json'|'source';
+const v2ExportKind=(kind:ExportKind)=>kind==='metadata-v2'||kind==='recovery-v2'||kind==='recovery-json-v2';
 type ExportReceipt = {kind:ExportKind;filename:string;bytes:number;sha256:string;scope:string;capturedAt?:string;revision?:number;assets?:number;assetFiles?:number;categories?:number;records?:number};
 const formatExportBytes=(bytes:number)=>bytes>=1024*1024?(bytes/(1024*1024)).toFixed(2)+' MiB':(bytes/1024).toFixed(1)+' KiB';
 async function exportDigest(bytes:Uint8Array):Promise<string>{
@@ -804,7 +805,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
 
   async function download(kind: ExportKind) {
     if(running.current||busy||!current()||(kind==='source'&&!selectedPortfolio)||
-      (kind!=='source'&&quotaBlocked&&!(kind==='metadata-v2'?v2Inventory:inventory)))return;
+      (kind!=='source'&&quotaBlocked&&!(v2ExportKind(kind)?v2Inventory:inventory)))return;
     // Capture has a durable owner quota. Reuse one acknowledged inventory
     // across formats and retries; only an explicit refresh requests a new one.
     // An unacknowledged capture replays its original operation UUID.
@@ -825,23 +826,46 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         importPortfolioSourceZip(bytes);
         file={kind,filename:'kadmeion-portfolio-revision-'+data.revision+'.zip',bytes:bytes.byteLength,
           sha256:await exportDigest(bytes),scope:'Editable saved portfolio source; uploaded media excluded.',revision:data.revision};
-      } else if(kind==='metadata-v2'){
+      } else if(v2ExportKind(kind)){
         if(!v2Inventory)v2Operation.current??=crypto.randomUUID();
         const captured=v2Inventory??await services.account.captureInventoryV2(v2Operation.current!,null);
         if(!current())return;
         v2Operation.current=null;setV2Inventory(captured);setV2Reconciliation(null);
         if(captured.schemaVersion!==2||captured.requestId!==null)
           throw new Error('The profile-inclusive export inventory scope was not confirmed.');
-        const result=await services.data.exportApplicationMetadataV2(captured.snapshotId,captured.requestId);
-        if(!current())return;
-        bytes=result.bytes;mime=result.mime;
-        const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as {
-          capturedAt:string;records:Record<string,unknown[]>;restrictedAudit:Record<string,unknown[]>;verifiedReleaseHistory:unknown[]
-        };
-        const categories=[...Object.values(decoded.records),...Object.values(decoded.restrictedAudit),decoded.verifiedReleaseHistory];
-        file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:await exportDigest(bytes),
-          capturedAt:decoded.capturedAt,scope:'Profile-inclusive private application metadata (version 2); no uploaded bytes or account-exit proof.',
-          categories:categories.length,records:categories.reduce((count,rows)=>count+rows.length,0)};
+        if(kind==='metadata-v2'){
+          const result=await services.data.exportApplicationMetadataV2(captured.snapshotId,captured.requestId);
+          if(!current())return;
+          bytes=result.bytes;mime=result.mime;
+          const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as {
+            capturedAt:string;records:Record<string,unknown[]>;restrictedAudit:Record<string,unknown[]>;verifiedReleaseHistory:unknown[]
+          };
+          const categories=[...Object.values(decoded.records),...Object.values(decoded.restrictedAudit),decoded.verifiedReleaseHistory];
+          file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:await exportDigest(bytes),
+            capturedAt:decoded.capturedAt,scope:'Profile-inclusive private application metadata (version 2); no uploaded bytes or account-exit proof.',
+            categories:categories.length,records:categories.reduce((count,rows)=>count+rows.length,0)};
+        }else{
+          const result=await services.data.exportV2(captured.snapshotId,captured.requestId);
+          if(!current())return;
+          const {verifyBoundedPrivateAccountExport,createBoundedPrivateAccountRecoveryBundle}=
+            await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+          if(!current())return;
+          const verified=await verifyBoundedPrivateAccountExport(result.bytes);
+          if(verified.schemaVersion!==2||verified.inventorySnapshotId!==captured.snapshotId||verified.requestId!==captured.requestId)
+            throw new Error('Version 2 recovery scope did not match the acknowledged inventory.');
+          if(kind==='recovery-json-v2'){
+            bytes=result.bytes;mime=result.mime;
+            file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:verified.sha256,
+              capturedAt:captured.capturedAt,scope:'Locally verified profile-inclusive private recovery JSON; partial backup only.',
+              assets:verified.assetsChecked};
+          }else{
+            const bundle=await createBoundedPrivateAccountRecoveryBundle(result.bytes);
+            bytes=bundle.zip;
+            file={kind,filename:bundle.filename,bytes:bytes.byteLength,sha256:bundle.sha256,
+              capturedAt:captured.capturedAt,scope:'Locally verified profile-inclusive private recovery ZIP; partial backup only.',
+              assets:bundle.assetsReferenced,assetFiles:bundle.assetFiles};
+          }
+        }
       } else {
         if(!inventory)operation.current??=crypto.randomUUID();
         const captured = inventory??await services.account.captureInventory(operation.current!,null);
@@ -884,7 +908,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       if(!current())return;
       downloadPrivateFile(file.filename,bytes,mime);
       setReceipt(file);
-      setMessage({error:false,text:kind==='recovery'?'Private recovery download prepared.':kind==='metadata-v2'?'Profile-inclusive metadata download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
+      setMessage({error:false,text:(kind==='recovery'||kind==='recovery-v2')?'Private recovery download prepared.':kind==='metadata-v2'?'Profile-inclusive metadata download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
     } catch (error) {
       if(!current())return;
       const code=typeof error==='object'&&error!==null&&'code' in error?error.code:undefined;
@@ -894,7 +918,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         setQuotaBlocked(true);
         setMessage({error:true,text:'The durable account inventory quota has been reached (at most 10 snapshots per owner). No file was downloaded. No new inventory will be requested in this session; eligible saved portfolio source exports do not consume this quota.'});
       }else if(code==='VERSION_REQUIRED')
-        setMessage({error:true,text:'Legacy export cannot cover the current profile asset scope. Choose profile-inclusive metadata (version 2); no legacy file was downloaded.'});
+        setMessage({error:true,text:'Legacy export cannot cover the current profile asset scope. Choose a profile-inclusive version 2 export; no legacy file was downloaded.'});
       else if(code==='RATE_LIMITED')
         setMessage({error:true,text:'The server temporarily rate-limited the export. No file was downloaded. Retry later; the same acknowledged inventory or original capture operation will be reused.'});
       else if(code==='LIMIT_EXCEEDED')
@@ -967,6 +991,14 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       <p>Includes private avatar registry and selection metadata, existing owner records, component source and restricted audit. It excludes uploaded bytes. Version 2 uses a separate explicit inventory within the same account-wide limit of 10 snapshots; no legacy fallback occurs.</p>
       <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
         onClick={()=>void download('metadata-v2')}>{busy==='metadata-v2'?'Preparing profile-inclusive metadata…':'Download profile-inclusive metadata'}</button>
+      <h3>Profile-inclusive bounded media recovery (version 2)</h3>
+      <p>Includes eligible project and private profile asset bytes only when registry, trusted hashes and current Storage identities agree before and after transfer. Pending uploads, missing pins, changed identities and size limits refuse the whole archive.</p>
+      <div className="ws-actions">
+        <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
+          onClick={()=>void download('recovery-v2')}>{busy==='recovery-v2'?'Verifying profile-inclusive files…':'Download profile-inclusive recovery ZIP'}</button>
+        <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
+          onClick={()=>void download('recovery-json-v2')}>{busy==='recovery-json-v2'?'Verifying profile-inclusive JSON…':'Download profile-inclusive recovery JSON'}</button>
+      </div>
       {v2Inventory&&<>
         <p>Version 2 inventory captured {new Date(v2Inventory.capturedAt).toLocaleString()}. Profile asset metadata: {v2Inventory.inventory.counts.profileAssetMetadata}. This is not a verified byte or deletion receipt.</p>
         <div className="ws-actions">
@@ -993,7 +1025,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
         onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
       <h3>Bounded recovery archive (legacy version 1)</h3>
-      <p>Legacy recovery is refused when profile asset coverage is required. Version 2 metadata and storage checks above do not include recovery bytes.</p>
+      <p>Legacy recovery is refused when profile asset coverage is required. Use version 2 recovery to include eligible profile bytes; metadata and reconciliation alone do not verify bytes.</p>
       <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes, 16 MiB recovery JSON and 10 MiB ZIP capacity. No partial file on verification failure.</p>
       <div className="ws-actions">
         <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
