@@ -307,6 +307,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       KADMEION_SUPABASE_SERVICE_ROLE_KEY: cfg.service
     };
     let deliveryFailure = 'unavailable';
+    let trustedAnalyticsIngress=false;
     const server = createServer((request, response) => {
       if (deliveryFailure === 'unavailable') {
         response.writeHead(503).end();
@@ -319,7 +320,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
         return;
       }
       const handler = request.url.startsWith('/api/unlisted') ? handleUnlistedRequest : handlePublicPortfolio;
-      void handler(request, response, {env: deliveryEnv});
+      void handler(request, response, {env: deliveryEnv, trustedLocalAnalyticsOrigin: trustedAnalyticsIngress ? deliveryEnv.KADMEION_RELEASE_HOST_ORIGIN : null});
     });
     server.listen(0, '127.0.0.1');
     t.after(() => new Promise((resolve, reject) => {
@@ -624,6 +625,11 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     const enabled=await changeAnalytics('ENABLE',beforeAnalytics.version);
     assert.equal(enabled.enabled,true);
     assert.equal(await totalViews(),0);
+    // An environment flag and spoofed proxy headers cannot authorize collection.
+    const envOnly=await fetch(canonical,{headers:{'X-Forwarded-Host':'127.0.0.1','X-Forwarded-Proto':'http'}});
+    assert.equal(envOnly.status,200);await envOnly.arrayBuffer();
+    assert.equal(await totalViews(),0,'Environment/header-only ingress must not count');
+    trustedAnalyticsIngress=true;
     const analyticsEnvelope=await capturedAnalytics();
     assert.ok(analyticsEnvelope.analytics);
     const canonicalAlias=deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+slug;
@@ -658,6 +664,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     const ignoredVisit=await fetch(canonical);assert.equal(ignoredVisit.status,200);await ignoredVisit.arrayBuffer();
     assert.equal((await analyticsCall('read_owner_analytics',{p_portfolio_ids:[portfolioId],p_window_days:7})).ok,false);
     assert.equal(ok(await authorityRpc('collect_portfolio_analytics_view',lateArgs),'Reject disabled stale collector').status,'IGNORED');
+    trustedAnalyticsIngress=false;
     deliveryEnv.KADMEION_ANALYTICS_COLLECTOR_ENABLED='false';
     const canonicalResponse = await fetch(canonical);
     assert.equal(canonicalResponse.status, 200);
