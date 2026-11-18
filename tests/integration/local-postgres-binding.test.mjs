@@ -32,6 +32,8 @@ import {publishConsentedUnlistedRelease, verifyActivatedUnlistedRelease}
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
 import {handlePublicPortfolio} from '../../api/public-portfolio.mjs';
 import {handleUnlistedRequest} from '../../api/unlisted.mjs';
+import {handleOwnerPublishRelease} from '../../supabase/functions/publish/index.ts';
+import {SupabasePrivateReleaseService} from '../../packages/contracts/src/private-release-service.ts';
 
 function localSettings(){
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION,'1',
@@ -673,6 +675,97 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       assert.equal((await fetch(canonical)).status, 404);
       assert.equal((await fetch(deliveryOrigin + '/' + nextHandle + '/' + slug)).status, 404);
     }
+
+    // R10: exercise the real owner-facing STAGE_PUBLIC handler and client
+    // against live disposable GoTrue, PostgREST, restricted pg and HTTP host.
+    // The fetch adapter routes ONLY the Edge call into its real handler;
+    // all identity, RLS, mutation, storage and host probes stay physical.
+    const stageSlug='r10-stage-'+randomUUID().slice(0,8);
+    const [{id:stagePortfolio}]=ok(await api('/rest/v1/portfolios?select=id',{
+      method:'POST',jwt:owner.jwt,body:{owner_user_id:owner.id,slug:stageSlug,title:'R10 owner staging',template_id:'starter'},
+      headers:{Prefer:'return=representation'}
+    }),'Create isolated R10 portfolio');
+    const stageEnv={KADMEION_RELEASE_WORKER_ENABLED:'true',KADMEION_RELEASE_HOST_APPROVED:'true',
+      KADMEION_RELEASE_HOST_REVOCATION_VERIFIED:'true',KADMEION_RELEASE_HOST_ORIGIN:deliveryOrigin,
+      KADMEION_RELEASE_HOSTNAME:'127.0.0.1',KADMEION_ALLOWED_PUBLISH_ORIGINS:'http://127.0.0.1:5173',
+      SUPABASE_URL:cfg.origin,SUPABASE_ANON_KEY:cfg.anon,SUPABASE_SERVICE_ROLE_KEY:cfg.service,
+      KADMEION_LOCAL_INTEGRATION:'1'};
+    const stageHttp=async(url,init)=>{
+      if(String(url)===cfg.origin+'/functions/v1/publish')
+        return handleOwnerPublishRelease(new Request(url,init),{env:stageEnv,stageWriter:writer,http:fetch});
+      return fetch(url,init);
+    };
+    const stagedOwner=new SupabasePrivateReleaseService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    const stagedOutsider=new SupabasePrivateReleaseService(cfg.origin,cfg.anon,async()=>outsider.jwt,stageHttp);
+    const releaseOwner=new SupabasePrivateReleasePointerService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    async function commitR10(title,baseRevision){
+      const snapshot={formatVersion:1,files:{
+        'kadmeion.json':JSON.stringify({formatVersion:1,preset:'blank',seo:{title,description:'R10 real owner source staging'}}),
+        'pages/home.page.json':JSON.stringify({header:null,sections:[{id:'release-hero',
+          layout:'stepped-hero@1',slotKeys:['title','cta']}]})
+      },slots:{'release-hero-title':{state:'S0',componentId:'title-stacked@1',content:{title}},
+        'release-hero-cta':{state:'EMPTY',content:{}}},stashes:{}};
+      const commit=ok(await api('/rest/v1/rpc/commit_portfolio_revision',{method:'POST',jwt:owner.jwt,
+        body:{p_portfolio_id:stagePortfolio,p_operation_id:randomUUID(),p_base_revision:baseRevision,p_snapshot:snapshot}}),'Commit managed R10 source');
+      const pin=await stagedOwner.freeze(stagePortfolio,randomUUID(),commit.revision,'PUBLIC');
+      return {pin,revision:commit.revision};
+    }
+    const r10A=await commitR10('R10 verified Alpha',0);
+    const r10StageA={portfolioId:stagePortfolio,requestId:r10A.pin.requestId,operationId:randomUUID(),expectedGeneration:0};
+    await assert.rejects(stagedOutsider.stagePublicCandidate(r10StageA));
+    const stageA=await stagedOwner.stagePublicCandidate(r10StageA);
+    assert.equal(stageA.status,'STAGED_PRIVATE');
+    assert.equal(stageA.generation,1);assert.equal(stageA.publicUrl,null);
+    assert.equal(stageA.publicServingEnabled,false);
+    assert.equal((await stagedOwner.stagePublicCandidate(r10StageA)).alreadyStored,true,'Same stage operation replays without extra generation');
+    assert.equal((await releaseOwner.read(stagePortfolio)).generation,1);
+    const actualCanonical=deliveryOrigin+'/'+handle+'/'+stageSlug;
+    assert.equal((await fetch(actualCanonical)).status,404,'Stage never publishes');
+    const opA=randomUUID();
+    const consentA=await releaseOwner.requestPublicPublication(r10A.pin.requestId,stageA.generation,opA,'PUBLISH PUBLIC');
+    const expectA={portfolioId:stagePortfolio,requestId:r10A.pin.requestId,intentId:consentA.intentId,operationId:opA};
+    const receiptA=await releaseOwner.executePublicDelivery(expectA);
+    assert.equal(receiptA.publicUrl,actualCanonical);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Alpha/);
+    const r10B=await commitR10('R10 verified Beta',r10A.revision);
+    const stageB=await stagedOwner.stagePublicCandidate({portfolioId:stagePortfolio,requestId:r10B.pin.requestId,
+      operationId:randomUUID(),expectedGeneration:stageA.generation});
+    assert.equal(stageB.generation,2);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Alpha/,'New stage preserves previously verified release');
+    const opB=randomUUID();
+    const consentB=await releaseOwner.requestPublicPublication(r10B.pin.requestId,stageB.generation,opB,'PUBLISH PUBLIC');
+    const expectB={portfolioId:stagePortfolio,requestId:r10B.pin.requestId,intentId:consentB.intentId,operationId:opB};
+    // Simulate a lost acknowledgement from the browser by discarding the
+    // first result, then build brand-new owner services from persisted RLS.
+    await releaseOwner.executePublicDelivery(expectB);
+    const resumedMetadata=new SupabasePrivateReleaseService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    const resumedOwner=new SupabasePrivateReleasePointerService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    const catalogue=await resumedMetadata.listPublicationIntents(stagePortfolio);
+    const recovered=catalogue.items.find(row=>row.intentId===consentB.intentId);
+    assert.equal(recovered.operationId,opB);assert.equal(recovered.requestId,r10B.pin.requestId);assert.equal(recovered.status,'USED');
+    assert.deepEqual((await stagedOutsider.listPublicationIntents(stagePortfolio)).items,[]);
+    assert.ok((await resumedMetadata.listAcknowledgements(stagePortfolio)).items.some(row=>row.intentId===consentA.intentId&&row.requestId===r10A.pin.requestId));
+    const checkedB=await resumedOwner.checkPublicDelivery(expectB);
+    assert.equal(checkedB.intentId,consentB.intentId);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Beta/);
+    await assert.rejects(resumedOwner.checkPublicDelivery(expectA),'Old intent cannot be presented as current');
+    const rollbackOp=randomUUID();
+    const rollbackConsent=await resumedOwner.requestPublicRollback(consentA.intentId,consentB.intentId,
+      checkedB.pointerGeneration,rollbackOp,'ROLL BACK PUBLIC');
+    const rolled=await resumedOwner.executePublicDelivery({portfolioId:stagePortfolio,requestId:r10A.pin.requestId,
+      intentId:rollbackConsent.intentId,operationId:rollbackOp});
+    assert.equal(rolled.requestId,r10A.pin.requestId);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Alpha/);
+    await resumedOwner.block(stagePortfolio,randomUUID());
+    assert.equal((await resumedOwner.read(stagePortfolio)).status,'BLOCKED');
+    for(const path of [actualCanonical,deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+stageSlug,
+      deliveryOrigin+'/api/unlisted?portfolioId='+stagePortfolio,
+      actualCanonical+'/assets/never-public.png']){
+      for(const method of ['GET','HEAD'])assert.equal((await fetch(path,{method})).status,404);
+    }
+    await assert.rejects(resumedOwner.checkPublicDelivery({portfolioId:stagePortfolio,requestId:r10A.pin.requestId,
+      intentId:rollbackConsent.intentId,operationId:rollbackOp}),'Blocked route cannot emit authoritative receipt');
+    t.diagnostic('R10 OWNER STAGE/PUBLISH/REPUBLISH/RECOVER/ROLLBACK/WITHDRAW: live local SQL + Edge handler + GET/HEAD complete');
 
     // New generation is never silently revived after Trash.
     const preparedAgain=await pointer.prepare(portfolioId,frozen.requestId,
