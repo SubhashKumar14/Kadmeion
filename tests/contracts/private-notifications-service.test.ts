@@ -21,7 +21,7 @@ const prefs={
 };
 const create=(http:typeof fetch,token:()=>Promise<string|null>=async()=> 'owner-jwt',
   user=owner)=>new SupabasePrivateNotificationsService(
-  'https://unit.supabase.co','sb_publishable_test',user,token,http);
+  'https://unit.supabase.co','sb_publishable_test',user,token,http,()=>true);
 const json=(body:unknown,status=200)=>Response.json(body,{status});
 
 test('owner-JWT-only inbox uses RLS, exact selected fields and no service key',async()=>{
@@ -112,28 +112,48 @@ test('preferences return null for absent row, reject extra owner fields and only
     [prefs,prefs],[{...prefs,reviewer_enabled:'yes'}]]){
     await assert.rejects(create(async()=>json(wrong)).getPreferences(),{code:'INVALID_ACK'});
   }
+});
+test('C08 notifications exact null state, compare-and-set receipt and conflict without fallback',async()=>{
+  const expected={ownerUserId:owner,version:0,preferences:null};
+  const desired={reviewerEnabled:true,publishEnabled:false,syncEnabled:false};
+  const operationId=noticeA;
+  const request={expected,desired,operationId};
+  const applied={status:'APPLIED',ownerUserId:owner,version:1,preferences:desired};
   let calls=0;
   const service=create(async(input,options)=>{
     calls++;
-    assert.match(String(input),/\/rpc\/owner_set_notification_preferences$/);
     assert.equal(options?.method,'POST');
-    assert.deepEqual(JSON.parse(options?.body as string),{
-      p_reviewer_enabled:true,p_publish_enabled:false,p_sync_enabled:false
-    });
-    return json(prefs);
+    if(calls===1){
+      assert.match(String(input),/\/rpc\/read_owner_notification_preferences_state$/);
+      assert.deepEqual(JSON.parse(String(options?.body)),{});
+      return json(expected);
+    }
+    assert.match(String(input),/\/rpc\/change_owner_notification_preferences$/);
+    assert.deepEqual(JSON.parse(String(options?.body)),{p_expected_version:0,p_expected:null,p_desired:desired,p_operation_id:operationId});
+    return json(applied);
   });
-  assert.deepEqual(await service.setPreferences({
-    reviewerEnabled:true,publishEnabled:false,syncEnabled:false
-  }),prefs);
-  assert.equal(calls,1);
-  await assert.rejects(service.setPreferences({
-    reviewerEnabled:true,publishEnabled:false,syncEnabled:false,
-    securityEnabled:false
-  } as never),{code:'VALIDATION'});
-  assert.equal(calls,1);
-  await assert.rejects(create(async()=>json({...prefs,publish_enabled:true}))
-    .setPreferences({reviewerEnabled:true,publishEnabled:false,syncEnabled:false}),
-    {code:'INVALID_ACK'});
+  assert.deepEqual(await service.readPreferenceState(),expected);
+  assert.deepEqual(await service.changePreferences(request),applied);
+  assert.equal(calls,2);
+  await assert.rejects(service.changePreferences({...request,desired:{...desired,securityEnabled:false} as never}),{code:'VALIDATION'});
+  assert.equal(calls,2);
+  for(const wrong of [{...applied,ownerUserId:foreign},{...applied,version:2},{...applied,preferences:{...desired,publishEnabled:true}},{...applied,unexpected:true}]){
+    await assert.rejects(create(async()=>json(wrong)).changePreferences(request),{code:'INVALID_ACK'});
+  }
+  await assert.rejects(create(async()=>json({code:'40001',message:'private'},409)).changePreferences(request),{code:'CONFLICT'});
+  await assert.rejects(create(async()=>json({code:'40001',message:'PREFERENCE_CONFLICT'},500)).changePreferences(request),{code:'CONFLICT'});
+  await assert.rejects(create(async()=>json({code:'XX000',message:'private'},500)).changePreferences(request),{code:'PROVIDER_UNAVAILABLE'});
+});
+test('C08 notification terminal absent/null and revoked owner cannot recreate preferences or fetch',async()=>{
+  const off={reviewerEnabled:false,publishEnabled:false,syncEnabled:false};
+  let calls=0;
+  const mock:typeof fetch=async()=>{calls++;return json({});};
+  const terminal={ownerUserId:owner,version:Number.MAX_SAFE_INTEGER,preferences:null};
+  await assert.rejects(create(mock).changePreferences({expected:terminal,desired:off,operationId:noticeA}),{code:'VALIDATION'});
+  const stale=new SupabasePrivateNotificationsService('https://unit.supabase.co','sb_publishable_test',owner,
+    async()=> 'owner-jwt',mock,()=>false);
+  await assert.rejects(stale.readPreferenceState(),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,0);
 });
 test('mark-read and dismiss validate authoritative receipt, owner action and replay',async()=>{
   let calls=0;
