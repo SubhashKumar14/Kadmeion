@@ -3488,7 +3488,7 @@ test('B16 WF-018 all five curated presets and genuine Blank persist exact author
   expect(new Set(ids).size).toBe(cases.length);
 });
 
-test('unmounted private analytics stays consent-off without collection after owner navigation and reload',async({page})=>{
+test('mounted private analytics stays consent-off without collection after owner navigation and reload',async({page})=>{
   test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase CI.');
   test.setTimeout(90_000);
   const owner=await localUser('CI Analytics Consent Off');
@@ -3498,14 +3498,28 @@ test('unmounted private analytics stays consent-off without collection after own
   await signIn(page,owner);
   const appOrigin=new URL(page.url()).origin;
   const observed:{classification:string;count:number}[]=[
-    {classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}
+    {classification:'forbidden analytics call',count:0},{classification:'external HTTP',count:0}
   ];
+  const stateReads:{method:string}[]=[];
+  const noOwnerAnalyticsRows=()=>{
+    const counts=runLocalFixtureSql("select (select count(*) from kadmeion_private.analytics_opt_in a join public.portfolios p on p.id=a.portfolio_id where p.owner_user_id=:'actor_id'::uuid)+(select count(*) from kadmeion_private.aggregate_daily a join public.portfolios p on p.id=a.portfolio_id where p.owner_user_id=:'actor_id'::uuid)+(select count(*) from kadmeion_private.analytics_rate_window a join public.portfolios p on p.id=a.portfolio_id where p.owner_user_id=:'actor_id'::uuid);",owner.id);
+    expect(counts).toBe('0');
+  };
+  noOwnerAnalyticsRows();
   page.on('request',request=>{
-    const url=new URL(request.url());
+    const url=new URL(request.url()),method=request.method();
     if(!['http:','https:'].includes(url.protocol))return;
-    if(/analytics|telemetry|tracking|collect_event/i.test(url.pathname)&&
-      !(url.origin===appOrigin&&url.pathname==='/app/analytics'))observed[0].count++;
-    if(url.origin!==appOrigin&&url.origin!==origin)observed[1].count++;
+    if(url.origin!==appOrigin&&url.origin!==origin){observed[1].count++;return;}
+    if(!/analytics|telemetry|tracking|collect_event/i.test(url.pathname))return;
+    // Vite loads actual source modules in local Chromium, not analytics API calls.
+    if(url.origin===appOrigin&&method==='GET'&&(url.pathname==='/app/analytics'||
+      /(?:^|\/)(?:portfolio-analytics\.tsx|private-analytics-service\.ts)$/.test(url.pathname)))return;
+    // A read-only, authenticated consent-state capability check is not collection.
+    if(url.origin===origin&&url.pathname==='/rest/v1/rpc/read_owner_analytics_state'&&method==='POST'){
+      stateReads.push({method});return;
+    }
+    // No metrics reads, mutation, collector or telemetry before explicit consent.
+    observed[0].count++;
   });
   await page.goto('/app/analytics');
   const verifyOff=async()=>{
@@ -3519,7 +3533,9 @@ test('unmounted private analytics stays consent-off without collection after own
   await verifyOff();
   await page.getByRole('link',{name:'Manage private portfolios'}).click();
   await expect(page).toHaveURL(/\/app\/portfolios(?:[?#].*)?$/);
-  expect(observed).toEqual([{classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}]);
+  expect(observed).toEqual([{classification:'forbidden analytics call',count:0},{classification:'external HTTP',count:0}]);
+  expect(stateReads.every(request=>request.method==='POST')).toBe(true);
+  noOwnerAnalyticsRows();
 });
 
 test('B16 WF-001/002 R6 core registration creates exactly one owner and durable private profile without mailbox dependency',async({page,browser})=>{
