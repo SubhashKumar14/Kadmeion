@@ -123,12 +123,13 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   const slug = path?.[2] ?? (path ? null : target.searchParams.get('slug'));
   // Never accept a second, untrusted identity in the query string.
   // Rewritten API URLs must carry exactly the named route parameters once.
+  // The allowed handle and slug alphabets are already URL-safe. Reject
+  // alternate encodings, empty separators, and query parameters on /u routes.
+  const alias = '/api/published-identity?handle=' + handle;
   const uniqueRoute = path
-    ? target.search === ''
-    : target.pathname === '/api/published-identity' &&
-      target.searchParams.size === (slug === null ? 1 : 2) &&
-      target.searchParams.getAll('handle').length === 1 &&
-      (slug === null || target.searchParams.getAll('slug').length === 1);
+    ? !raw.includes('?')
+    : raw === (slug === null ? alias : alias + '&slug=' + slug) ||
+      (slug !== null && raw === '/api/published-identity?slug=' + slug + '&handle=' + handle);
   if (!uniqueRoute || !handlePattern.test(handle ?? '') ||
       (slug !== null && !slugPattern.test(slug))) {
     return reply(404, 'Not found');
@@ -144,13 +145,14 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   }
   try {
     const rpc = slug ? 'service_read_published_case_study_projection' : 'service_read_published_profile_projection';
-    const upstream = await http(new URL('/rest/v1/rpc/' + rpc, supabase), {
+    const rpcUrl = new URL('/rest/v1/rpc/' + rpc, supabase);
+    const upstream = await http(rpcUrl, {
       method: 'POST', cache: 'no-store', redirect: 'error', credentials: 'omit',
       headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
       body: JSON.stringify(slug ? {p_handle: handle, p_slug: slug} : {p_handle: handle}),
       signal: AbortSignal.timeout(5000)
     });
-    if (!upstream.ok) {
+    if (!upstream.ok || upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
       // Cancellation of one branch of a tee can remain pending. Never let
       // cleanup delay a fail-closed public response or leak upstream details.
       void upstream.body?.cancel().catch(() => {});
