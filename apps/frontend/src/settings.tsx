@@ -617,6 +617,40 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   </>;
 }
 
+// Distinguish confirmed expiry from a stale generation without issuing an
+// ID-only restore against a changed or ambiguous Trash journal.
+type ReviewedTrashEntry=PrivateTrashEntry & {id:string};
+type GenerationTrashService=Services['trash'] & {
+  restoreGeneration(kind:PrivateTrashKind,itemId:string,trashId:string):Promise<{
+    item_type:PrivateTrashKind;item_id:string;status:'restored';public_visibility:'private';trash_id:string;
+  }>;
+};
+function supportsGenerationRestore(service:Services['trash']):service is GenerationTrashService{
+  return typeof (service as Partial<GenerationTrashService>).restoreGeneration==='function';
+}
+function reviewedTrashRows(rows:PrivateTrashEntry[]):ReviewedTrashEntry[]{
+  if(rows.length>100)throw new PrivateTrashError('INVALID_STATE','Trash review exceeds the supported limit.');
+  const seen=new Set<string>(),targets=new Set<string>();
+  return rows.map(row=>{
+    const id=(row as Partial<ReviewedTrashEntry>).id,target=row.item_type+':'+row.item_id.toLowerCase();
+    if(typeof id!=='string'||!/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(id)||
+      seen.has(id.toLowerCase())||targets.has(target))
+      throw new PrivateTrashError('INVALID_STATE','An authoritative Trash generation could not be verified.');
+    seen.add(id.toLowerCase());targets.add(target);
+    return {...row,id};
+  });
+}
+function classifyTrashReadback(rows:ReviewedTrashEntry[],item:ReviewedTrashEntry,now:number):'CURRENT'|'EXPIRED'|'CHANGED' {
+  if(rows.length>100||!Number.isFinite(now))return 'CHANGED';
+  const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
+  const match=same[0];
+  if(same.length!==1||!match)return 'CHANGED';
+  const deadline=Date.parse(match.restore_until);
+  if(!Number.isFinite(deadline)||!Number.isFinite(Date.parse(match.trashed_at)))return 'CHANGED';
+  if(deadline<=now)return 'EXPIRED';
+  return match.id===item.id&&match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until?'CURRENT':'CHANGED';
+}
+
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -628,7 +662,7 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   const readbackRequired=useRef(false);
   const uncertainRestore=useRef(false);
   const [loading,setLoading]=useState(true);
-  const [items, setItems] = useState<PrivateTrashEntry[] | null>(null);
+  const [items, setItems] = useState<ReviewedTrashEntry[] | null>(null);
   const [message, setMessage] = useState<Message>(emptyMessage);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -636,7 +670,9 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   const [expiredByServer, setExpiredByServer] = useState<Set<string>>(()=>new Set());
   useEffect(() => {
     let active=true;reading.current=true;setLoading(true);
-    void service.list().then(rows=>{
+    void service.list().then(source=>{
+      if(!supportsGenerationRestore(service))throw new PrivateTrashError('INVALID_STATE','Atomic Trash restoration is unavailable.');
+      const rows=reviewedTrashRows(source);
       if(active&&current()){
         setItems(rows);setNow(Date.now());
         const visibleKeys=new Set(rows.map(row=>row.item_type+':'+row.item_id+':'+row.trashed_at));
@@ -673,30 +709,43 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
     };
   },[items,now]);
 
-  async function restore(item: PrivateTrashEntry) {
+  async function restore(item: ReviewedTrashEntry) {
     const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
-    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key)||
-      !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.trashed_at===item.trashed_at))return;
+    if(!supportsGenerationRestore(service)||inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key)||
+      !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.id===item.id&&row.trashed_at===item.trashed_at))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
-      setMessage({error:true,text:'The restore deadline has passed.'});
+      setMessage({error:true,text:'The 15-day restoration window has ended.'});
       return;
     }
     inFlight.current=true;setBusy(true);setMessage(null);
+    let dispatched=false;
     try{
-      const receipt=await service.restore(item.item_type,item.item_id);
+      const latest=reviewedTrashRows(await service.list());
       if(!current())return;
-      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+      const checkedAt=Date.now(),state=classifyTrashReadback(latest,item,checkedAt);
+      if(state==='EXPIRED'){
+        setItems(latest);setNow(checkedAt);
+        setMessage({error:true,text:'The 15-day restoration window has ended.'});
+        return;
+      }
+      if(state!=='CURRENT')
+        throw new PrivateTrashError('INVALID_STATE','The Trash generation changed before restoration.');
+      dispatched=true;
+      const receipt=await service.restoreGeneration(item.item_type,item.item_id,item.id);
+      if(!current())return;
+      if(receipt.item_type!==item.item_type||receipt.item_id!==item.item_id||receipt.trash_id!==item.id||receipt.status!=='restored'||receipt.public_visibility!=='private')
         throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
-      setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
+      setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.id!==item.id||row.trashed_at!==item.trashed_at)??[]);
       setMessage({error:false,text:'Item restored as private.'});
     }catch(error){
       if(!current())return;
-      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+      if(dispatched&&error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+        readbackRequired.current=true;uncertainRestore.current=dispatched;setNeedsReadback(true);
+        setMessage({error:true,text:dispatched?'Restore was not confirmed. Refresh Trash and review your private library before retrying.':
+          'The current Trash record could not be verified. No restore request was sent. Refresh Trash before retrying.'});
       }
     }finally{
       inFlight.current=false;if(current())setBusy(false);
@@ -713,12 +762,12 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
     <ul className="ws-settings-records">{items?.map(item => {
       const expired = Date.parse(item.restore_until)<=now ||
         expiredByServer.has(item.item_type+':'+item.item_id+':'+item.trashed_at);
-      return <li key={item.item_type + ':' + item.item_id}>
+      return <li key={item.id}>
         <strong>{item.item_type} · {item.item_id.slice(0, 8)}</strong>
         <p>Moved to Trash <time dateTime={item.trashed_at}>{new Date(item.trashed_at).toLocaleString()}</time></p>
         <p>Restore by <time dateTime={item.restore_until}>{new Date(item.restore_until).toLocaleString()}</time></p>
         {expired && <p>Recovery window ended. Restore is unavailable.</p>}
-        <button type="button" className="ws-secondary" disabled={busy||loading||needsReadback||expired}
+        <button type="button" className="ws-secondary" disabled={!supportsGenerationRestore(service)||busy||loading||needsReadback||expired}
           onClick={() => void restore(item)}>Restore privately</button>
       </li>;
     })}</ul>
