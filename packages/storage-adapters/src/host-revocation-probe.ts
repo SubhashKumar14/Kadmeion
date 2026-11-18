@@ -327,6 +327,29 @@ function matchPublicMediaSet(bytes:Uint8Array,paths:readonly string[]):void{
 }
 
 /**
+ * Post-takedown proof for an already-authorized moderation hold or withdrawal.
+ * A takedown MUST NOT wait for the abusive content to be successfully fetched.
+ * The manifest must come from a trusted pre-hold release record, not a visitor.
+ * This observes scoped denial only; it neither lifts nor creates a hold and
+ * never claims the database case, CDN retention or worldwide removal is proved.
+ */
+export async function probeCanonicalPublicTakedown(
+  input:{origin:string;canonicalPath:string;manifestSha256:string|null;
+    assetHashes:readonly string[];allowLocal?:boolean},
+  http:typeof fetch=fetch
+):Promise<HostRevocationObservation>{
+  if(!input||!canonicalPathValid(input.canonicalPath)||UNLISTED.test(input.canonicalPath)||
+     !validWithdrawalManifest(input.manifestSha256,input.assetHashes))
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const alias=publicApiAlias(input.canonicalPath)!;
+  const direct=[alias,...input.assetHashes.map(sha=>alias+'&manifest='+input.manifestSha256+'&asset='+sha)];
+  return probeHostRevocation({
+    origin:input.origin,allowLocal:input.allowLocal,canonicalPath:input.canonicalPath,
+    candidateDirectPaths:direct
+  },http);
+}
+
+/**
  * Strict public withdrawal entry point for a trusted server-provided exact
  * pre-withdrawal manifest. Derives the canonical API and all scoped media
  * paths internally; caller cannot substitute another handle or omit aliases.
