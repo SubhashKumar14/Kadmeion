@@ -42,6 +42,35 @@ export interface PrivateReleaseAcknowledgementPage {
   items:PrivateReleaseAcknowledgement[];
   nextCursor:PrivateReleaseAcknowledgementCursor|null;
 }
+/** C11 owner-RLS intent metadata. No HTML, bearer, route or current-delivery claim. */
+export interface OwnerPublicationIntentRecord {
+  intentId:string;portfolioId:string;requestId:string;operationId:string;
+  status:'AWAITING_HOST'|'USED';createdAt:string;expiresAt:string;
+}
+export interface OwnerPublicationIntentPage {
+  items:OwnerPublicationIntentRecord[];truncated:boolean;
+}
+export function parseOwnerPublicationIntents(raw:unknown,portfolioId:string,limit:number):OwnerPublicationIntentPage {
+  if(!canonicalUuid(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50||
+     !Array.isArray(raw)||raw.length>limit+1)invalidHistory();
+  const seen=new Set<string>(),operations=new Set<string>();
+  let previous:{time:bigint;id:string}|null=null;
+  const items:OwnerPublicationIntentRecord[]=[];
+  for(const row of raw){
+    if(!record(row)||!exactKeys(row,['id','portfolio_id','request_id','operation_id','status','created_at','expires_at'])||
+       !canonicalUuid(row.id)||row.portfolio_id!==portfolioId||!canonicalUuid(row.request_id)||
+       !canonicalUuid(row.operation_id)||seen.has(row.id)||operations.has(row.operation_id)||
+       (row.status!=='AWAITING_HOST'&&row.status!=='USED')||typeof row.created_at!=='string'||
+       typeof row.expires_at!=='string')invalidHistory();
+    const created=historyInstant(row.created_at),expires=historyInstant(row.expires_at);
+    if(created===null||expires===null||expires<=created||
+       (previous&&!comesAfter(created,row.id,previous.time,previous.id)))invalidHistory();
+    seen.add(row.id);operations.add(row.operation_id);previous={time:created,id:row.id};
+    items.push({intentId:row.id,portfolioId,requestId:row.request_id,operationId:row.operation_id,
+      status:row.status,createdAt:row.created_at,expiresAt:row.expires_at});
+  }
+  return {items:items.slice(0,limit),truncated:items.length>limit};
+}
 const HISTORY_BYTES=32*1024;
 const HISTORY_TIMEOUT_MS=8_000;
 const record=(value:unknown):value is Record<string,unknown>=>
@@ -66,6 +95,10 @@ function historyInstant(value:unknown):bigint|null{
     offset=(hours*60+minutes)*(m[4]==='-'?-1:1);
   }
   return BigInt(wall-offset*60_000)*1000n+BigInt((m[2]??'').padEnd(6,'0'));
+}
+/** PostgreSQL timestamp syntax without Date.parse calendar normalization. */
+export function isPrivateReleaseTimestamp(value:unknown):value is string{
+  return historyInstant(value)!==null;
 }
 function comesAfter(at:bigint,id:string,previousAt:bigint,previousId:string):boolean{
   return at<previousAt||(at===previousAt&&id>previousId);
@@ -163,6 +196,9 @@ export async function fetchBoundedPrivateReleaseRpc(fetcher:typeof fetch,url:str
       response=received;
       if(controller.signal.aborted||performance.now()>=expiresAt||received.redirected||received.headers.has('location')||
          (received.url&&received.url!==url)){cancelHistory(received.body);throw unavailable();}
+      // PostgREST JSON RPCs return 200 for a complete receipt. Do not
+      // treat a partial (206) or asynchronous (202) response as a commit.
+      if(received.ok&&received.status!==200){cancelHistory(received.body);throw unavailable();}
       const body=await historyJson(received,controller.signal,expiresAt).catch(()=>null);
       if(controller.signal.aborted||performance.now()>=expiresAt)throw unavailable();
       return {ok:received.ok,status:received.status,body};
@@ -203,7 +239,7 @@ export class SupabasePrivateReleaseService {
 
   async freeze(portfolioId: string, operationId: string, revision: number,
       visibilityIntent: FrozenVisibilityIntent): Promise<PrivateFrozenRequest> {
-    if (!UUID.test(portfolioId) || !UUID.test(operationId) ||
+    if (!uuid(portfolioId) || !uuid(operationId) ||
         !Number.isSafeInteger(revision) || revision < 1 ||
         (visibilityIntent !== 'PUBLIC' && visibilityIntent !== 'UNLISTED'))
       throw new ContractError('VALIDATION', 'Invalid pinned release request.');
@@ -231,7 +267,9 @@ export class SupabasePrivateReleaseService {
       throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Freeze could not be confirmed.');
     }
     const ack=response.body;
-    if (!record(ack) || !uuid(ack.requestId) || ack.portfolioId!==portfolioId ||
+    if (!record(ack) || !exactKeys(ack,['requestId','portfolioId','revision','snapshotSha256',
+        'visibilityIntent','status','publicUrl','alreadyFrozen']) ||
+        !canonicalUuid(ack.requestId) || ack.portfolioId!==portfolioId ||
         ack.revision!==revision || typeof ack.snapshotSha256!=='string' || !SHA256.test(ack.snapshotSha256) ||
         ack.visibilityIntent!==visibilityIntent || ack.status!=='FROZEN' ||
         ack.publicUrl!==null || typeof ack.alreadyFrozen!=='boolean')
@@ -239,6 +277,21 @@ export class SupabasePrivateReleaseService {
     return {requestId:ack.requestId,portfolioId,revision,snapshotSha256:ack.snapshotSha256,
       visibilityIntent,status:'FROZEN',publicUrl:null,alreadyFrozen:ack.alreadyFrozen};
   }
+  /** C11 supplies the operation_id column grant. RLS restricts the owner's rows.
+   * No empty/failed response is a public-state or ownership assertion. */
+  async listPublicationIntents(portfolioId:string,limit=50):Promise<OwnerPublicationIntentPage>{
+    if(!canonicalUuid(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50)
+      throw new ContractError('VALIDATION','Invalid publication intent page.');
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateReleaseError('AUTH_EXPIRED','Sign in to recover publication intents.');
+    const params=new URLSearchParams({select:'id,portfolio_id,request_id,operation_id,status,created_at,expires_at',
+      portfolio_id:'eq.'+portfolioId,order:'created_at.desc,id.asc',limit:String(limit+1)});
+    const raw=await fetchHistory(this.fetcher,this.endpoint+'/rest/v1/private_unlisted_publication_intents?'+params.toString(),
+      {apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json'});
+    if(await this.token()!==jwt)throw new PrivateReleaseError('AUTH_EXPIRED','Session changed during publication recovery.');
+    return parseOwnerPublicationIntents(raw,portfolioId,limit);
+  }
+
   /**
    * Metadata-only read of the four existing owner-RLS granted columns.
    * Callers must first verify the current owner session and portfolio access,
