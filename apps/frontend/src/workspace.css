@@ -1322,14 +1322,15 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media(max-width:440px){.ws-recent-grid li{align-items:flex-start;flex-wrap:wrap}.ws-recent-grid li span{flex:none}.ws-actions>:is(button,a){max-width:100%;white-space:normal;overflow-wrap:anywhere}}
 
 /* Portfolio layout follows the rendered site, not the workspace viewport.
- * Keep this name distinct from the R4 token-measurement container. */
+ * Legacy .pv-site supplies the named container; a nested R4 measurement
+ * wrapper is the nearest matching container for scoped content. */
 @supports (container-type:inline-size){
-  .pv-site{container:k-portfolio-layout / inline-size}
-  @container k-portfolio-layout (width <= 950px){
+  .pv-site{container:k-portfolio-width / inline-size}
+  @container k-portfolio-width (width <= 950px){
     .pv-hero-grid{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}
     .pv-section-slots{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
-  @container k-portfolio-layout (width <= 600px){
+  @container k-portfolio-width (width <= 600px){
     .pv-hero-grid{grid-template-columns:1fr}
     .pv-hero-art,.ws-editor-shell .ws-editor-grid .pv-hero-art{min-height:100px}
     .pv-site .pv-section-slots{grid-template-columns:minmax(0,1fr)}
@@ -1338,3 +1339,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .pv-site-footer{flex-direction:column;gap:2px}
   }
 }
+
+/* A hero art field is editable only when it contains an actual slot button. */
+.pv-hero-art button.pv-slot{pointer-events:auto}
+.pv-hero-art button.pv-slot:focus-visible{outline-offset:-3px}
