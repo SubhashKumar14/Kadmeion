@@ -570,10 +570,9 @@ const gen=(x:unknown,min=1):x is number=>typeof x==='number'&&Number.isSafeInteg
 function exact(x:Record<string,unknown>,wanted:readonly string[]):boolean{return Object.keys(x).length===wanted.length&&wanted.every(k=>Object.hasOwn(x,k));}
 const ts=(x:unknown):x is string=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(x)&&Number.isFinite(Date.parse(x));
 export function parseAuthority(raw:unknown,expected:AuthorityIdentity,validRoute:AuthorityPorts['validRoute']):AuthorityReceipt{
-  if(!obj(raw)||!exact(raw,keys)||!uuid(raw.portfolioId)||!uuid(raw.intentId)||!uuid(raw.requestId)||!uuid(raw.operationId)||raw.visibility!=='PUBLIC'||
+  if(!uuid(expected.requestId)||!uuid(expected.operationId)||!obj(raw)||!exact(raw,keys)||!uuid(raw.portfolioId)||!uuid(raw.intentId)||!uuid(raw.requestId)||!uuid(raw.operationId)||raw.visibility!=='PUBLIC'||
      raw.portfolioId!==expected.portfolioId||raw.intentId!==expected.intentId||raw.releaseGeneration!==expected.releaseGeneration||raw.storedHtmlSha256!==expected.htmlSha256||
-     (expected.requestId!==undefined&&raw.requestId!==expected.requestId)||
-     (expected.operationId!==undefined&&raw.operationId!==expected.operationId)||
+     raw.requestId!==expected.requestId||raw.operationId!==expected.operationId||
      !gen(raw.releaseGeneration)||!gen(raw.stageGeneration)||!gen(raw.pointerGeneration)||!gen(raw.revocationGeneration,0)||!gen(raw.deliveryEpoch)||raw.deliveryEpoch>=MAX||
      raw.stageGeneration>raw.releaseGeneration||raw.releaseGeneration>raw.pointerGeneration||raw.stageGeneration<=raw.revocationGeneration||
      typeof raw.handle!=='string'||typeof raw.slug!=='string'||!validRoute(raw.handle,raw.slug)||'/'+raw.handle+'/'+raw.slug!==expected.publicPath||!digest(raw.storedHtmlSha256)||
@@ -612,11 +611,16 @@ export async function verifyAuthority(expected:AuthorityIdentity,ports:Authority
   if(!same(first,after))fail();
   if(!sampleMatches(sampled,first)){
     if(acknowledged||checkOnly)fail();
+    // S1 C11 recovery is terminal; only exact epoch+1 and absence of this
+    // current receipt are valid. The legacy UNLISTED fallback may restore a
+    // prior route, but PUBLIC requires a separate explicit rollback consent.
+    if(first.deliveryEpoch>=MAX-1)fail();
     const raw=await ports.recover(first);
-    if(!obj(raw)||!exact(raw,['portfolioId','status','releaseGeneration','deliveryEpoch','hostRevocationVerified','publicUrl'])||raw.portfolioId!==first.portfolioId||!gen(raw.deliveryEpoch)||raw.deliveryEpoch<=first.deliveryEpoch||raw.hostRevocationVerified!==false||raw.publicUrl!==null)fail();
-    if(raw.status==='REVOKED'&&raw.releaseGeneration===null)return {status:'DELIVERY_REVOKED' as const};
-    if(raw.status==='RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION'&&raw.deliveryEpoch<MAX&&gen(raw.releaseGeneration))return {status:'PRIOR_RELEASE_RESTORED' as const,releaseGeneration:raw.releaseGeneration};
-    return fail();
+    if(!obj(raw)||!exact(raw,['portfolioId','status','releaseGeneration','deliveryEpoch','hostRevocationVerified','publicUrl'])||
+       raw.portfolioId!==first.portfolioId||raw.status!=='REVOKED'||raw.releaseGeneration!==null||
+       raw.deliveryEpoch!==first.deliveryEpoch+1||raw.hostRevocationVerified!==false||raw.publicUrl!==null)fail();
+    if(await ports.read(identity.portfolioId,identity.intentId)!==null)fail();
+    return {status:'DELIVERY_REVOKED' as const};
   }
   if(acknowledged)return {status:'DELIVERY_ACKNOWLEDGED' as const,receipt:first,sample:sampled};
   if(first.deliveryEpoch>=MAX-1)fail();
