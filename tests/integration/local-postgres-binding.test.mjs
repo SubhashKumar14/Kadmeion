@@ -86,6 +86,11 @@ async function api(path,{method='GET',jwt=cfg.anon,key=cfg.anon,body,headers={}}
     data:await response.json().catch(()=>null)};
 }
 function ok(result,label){
+  if(!result.ok&&label==='service_acknowledge_unlisted_release') {
+    const code=typeof result.data?.code==='string'?result.data.code.slice(0,12):'UNKNOWN';
+    const message=typeof result.data?.message==='string'?result.data.message.slice(0,160):'UNKNOWN';
+    assert.fail('C11 LOCAL DIAGNOSTIC '+label+' HTTP '+result.status+' PostgreSQL '+code+' '+message);
+  }
   assert.ok(result.ok,label+' failed (HTTP '+result.status+')');
   return result.data;
 }

@@ -157,6 +157,15 @@ export type OwnerProfileAvatarUpload = Readonly<{
   id:string;scope:'PROFILE';mime:OwnerPrivateImageMime;size:number;altText:string;
   verifiedMetadata:true;publicDeliveryAllowed:false;
 }>;
+export type OwnerProjectDraftSaveCode='AUTH_CHANGED'|'DENIED'|'CONFLICT'|'CONFIRMATION_REQUIRED'|
+  'VALIDATION'|'LIMIT_EXCEEDED'|'RATE_LIMITED'|'INTEGRITY'|'UNAVAILABLE';
+export type OwnerProjectDraftSaveOutcome={
+  data:OwnerProject|null;error:(AuthFailure&{code:OwnerProjectDraftSaveCode})|null;
+};
+class OwnerProjectDraftSaveError extends Error{
+  readonly code:OwnerProjectDraftSaveCode;
+  constructor(code:OwnerProjectDraftSaveCode,message:string){super(message);this.code=code;}
+}
 export type NewPrivateProject = {
   title: string; slug: string; summary: string; repositoryUrl: string | null; liveUrl: string | null;
 };
@@ -2284,6 +2293,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     };
   }
 
+  /** Owner-bound release service; public delivery is independently attested by the server. */
+  async ownerReleaseDelivery(){
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const token=this.ownerEpochToken(userId,epoch);
+      const {SupabasePrivateReleasePointerService}=await import('../../../packages/contracts/src/private-release-visibility-service.ts');
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing release delivery.');
+      const service=new SupabasePrivateReleasePointerService(this.origin,this.publishableKey,token,this.fetcher);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing release delivery.');
+      return {service,ownerId:userId,adapterEpoch:epoch,isCurrentOwner};
+    });
+  }
+
   /** Owner reads rely on RLS. Operator RPCs independently check the role. */
   async privateModeration() {
     return this.outcome(async () => {
@@ -2639,6 +2663,100 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         throw new Error('The server did not confirm the new project revision.');
       return {...draft, id: projectId, revision: receipt.revision, updatedAt: receipt.updated_at};
     });
+  }
+
+  /** Atomic guarded project draft API. The caller must not fall back to the
+   * legacy manual write when this RPC is unavailable. Only mount after the
+   * matching forward migration and real withdrawal-race acceptance. */
+  async saveOwnerProjectDraft(projectId:string,baseRevision:number,input:PrivateProjectDraft,
+    confirmProjectionWithdrawal:boolean,expectedEpoch:number):Promise<OwnerProjectDraftSaveOutcome>{
+    const fail:(code:OwnerProjectDraftSaveCode,message:string)=>never=(code,message)=>{throw new OwnerProjectDraftSaveError(code,message);};
+    const guard=()=>{if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      fail('AUTH_CHANGED','Owner session changed while saving the private project.');};
+    try{
+      guard();
+      if(!PROJECT_ID_PATTERN.test(projectId)||!Number.isSafeInteger(baseRevision)||baseRevision<0||
+        typeof confirmProjectionWithdrawal!=='boolean'||!Number.isSafeInteger(expectedEpoch))
+        fail('VALIDATION','Invalid private project draft save.');
+      let draft:PrivateProjectDraft;
+      try{draft=normalizeProjectDraft(input);}catch{return fail('VALIDATION','Invalid private project draft.');}
+      const id=projectId.toLowerCase();
+      const {session,userId,epoch}=await this.ownerSession();
+      guard();
+      if(epoch!==expectedEpoch||!this.isCurrentSession(session))fail('AUTH_CHANGED','Owner session changed before saving.');
+      const query=new URLSearchParams({select:OWNER_PROJECT_FIELDS,id:'eq.'+id,owner_user_id:'eq.'+userId,
+        trashed_at:'is.null',limit:'2'});
+      const read=async()=>{
+        const rows=await this.mediaJson('/rest/v1/projects?'+query,session,epoch);
+        guard();
+        if(!Array.isArray(rows)||rows.length!==1)fail('DENIED','Private project is unavailable.');
+        const current=this.parsePrivateProject(rows[0],userId);
+        if(current.id!==id)fail('INTEGRITY','Project readback did not match the requested owner record.');
+        return current;
+      };
+      const prior=await read();
+      if(prior.revision!==baseRevision)fail('CONFLICT','This project changed while you were editing. Load the latest revision.');
+      if(prior.slug!==draft.slug)fail('VALIDATION','Project slug cannot be changed by draft autosave.');
+      const matches=(p:OwnerProject)=>p.title===draft.title&&p.summary===draft.summary&&
+        p.description===draft.description&&p.repositoryUrl===draft.repositoryUrl&&p.liveUrl===draft.liveUrl;
+      const changed=!matches(prior);
+      guard();
+      const url=this.origin+'/rest/v1/rpc/owner_save_private_project_draft';
+      let response:Response;
+      try{response=await this.fetcher(url,{
+        method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+          Accept:'application/json','Content-Type':'application/json'},
+        body:JSON.stringify({p_project_id:id,p_base_revision:baseRevision,p_title:draft.title,p_summary:draft.summary,
+          p_description:draft.description,p_repository_url:draft.repositoryUrl,p_live_url:draft.liveUrl,
+          p_confirm_projection_withdrawal:confirmProjectionWithdrawal}),
+        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15000)
+      });}catch{return fail('UNAVAILABLE','Project save acknowledgement is unavailable. Reload before retrying.');}
+      let raw:unknown;
+      try{
+        guard();
+        if(response.redirected||(response.url&&response.url!==url))fail('INTEGRITY','Private project save response could not be verified.');
+        if(!response.ok){
+          let payload:Json|null=null;
+          try{
+            const value=await this.readMediaJsonBody(response,session,epoch,8192);
+            payload=value&&typeof value==='object'&&!Array.isArray(value)?value as Json:null;
+          }catch(error){guard();if(error instanceof OwnerMediaError&&error.code==='AUTH_CHANGED')throw error;}
+          guard();
+          if(response.status===401||response.status===403||payload?.code==='42501')
+            fail('DENIED','Private project save was denied.');
+          if(payload?.code==='40001')fail('CONFLICT','This project changed while you were editing. Load the latest revision.');
+          if(payload?.code==='P0001'&&payload.message==='PROJECT_WITHDRAWAL_CONFIRMATION_REQUIRED')
+            fail('CONFIRMATION_REQUIRED','Confirm withdrawal of the current public case study before saving.');
+          if(payload?.code==='22023')fail('VALIDATION','Invalid private project draft.');
+          if(payload?.code==='54000'||payload?.code==='55000'||response.status===413)
+            fail('LIMIT_EXCEEDED','The project revision or data limit was reached.');
+          if(response.status===429)fail('RATE_LIMITED','Too many private project requests. Try again later.');
+          fail('UNAVAILABLE','Project save acknowledgement is unavailable. Reload before retrying.');
+        }
+        raw=await this.readMediaJsonBody(response,session,epoch,8192);
+      }finally{void response.body?.cancel().catch(()=>{});}
+      guard();
+      const receipt=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+      const nextRevision=baseRevision+(changed?1:0);
+      if(!receipt||Object.keys(receipt).length!==3||receipt.id!==id||!Number.isSafeInteger(nextRevision)||
+        receipt.revision!==nextRevision||typeof receipt.updated_at!=='string'||!Number.isFinite(Date.parse(receipt.updated_at)))
+        fail('INTEGRITY','The server did not confirm the guarded project revision.');
+      const current=await read();
+      if(current.revision!==nextRevision||current.slug!==draft.slug||!matches(current)||
+        current.updatedAt!==receipt.updated_at)
+        fail('CONFLICT','Project changed after the save. Load the latest revision.');
+      guard();
+      return {data:current,error:null};
+    }catch(error){
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        return {data:null,error:{code:'AUTH_CHANGED',message:'Owner session changed while saving the private project.'}};
+      if(error instanceof OwnerProjectDraftSaveError)return {data:null,error:{code:error.code,message:error.message}};
+      if(error instanceof OwnerMediaError){
+        if(error.code==='AUTH_CHANGED'||error.code==='DENIED'||error.code==='INTEGRITY')
+          return {data:null,error:{code:error.code,message:error.message}};
+      }
+      return {data:null,error:{code:'UNAVAILABLE',message:'Project save acknowledgement is unavailable. Reload before retrying.'}};
+    }
   }
 
   /** Creates an owner-private draft, never a shared or published project. */
