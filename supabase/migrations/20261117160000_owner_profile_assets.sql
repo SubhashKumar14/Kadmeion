@@ -38,6 +38,12 @@ alter table public.profiles
        and avatar_last_base_revision between 0 and 9007199254740990
        and avatar_revision=avatar_last_base_revision+1)
  );
+-- The original profile bootstrap granted table-level INSERT. A column REVOKE
+-- alone cannot remove that inherited privilege. Retain owner bootstrap fields
+-- but require the CAS RPC for all avatar identity and revision mutations.
+revoke insert on table public.profiles from public,anon,authenticated;
+grant insert(user_id,handle,display_name,headline,bio,onboarding_complete)
+ on public.profiles to authenticated;
 revoke insert(avatar_asset_id,avatar_revision,avatar_last_operation_id,avatar_last_base_revision),
  update(avatar_asset_id,avatar_revision,avatar_last_operation_id,avatar_last_base_revision)
  on public.profiles from public,anon,authenticated,service_role;
