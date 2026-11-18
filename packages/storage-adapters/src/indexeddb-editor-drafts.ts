@@ -197,6 +197,112 @@ export class IndexedDbEditorDraftStore {
   }
 
 
+  /** The committed-history cache is separate from unsaved recovery copies.
+   * One bounded row per owner/portfolio. The caller MUST obtain the exact
+   * authenticated cloud revision and snapshot before restoring this history.
+   * Never persist operation replay IDs, credentials, or unapplied buffers. */
+  private savedHistoryKey(ownerId:string,portfolioId:string):string {
+    assertRecoveryId(ownerId);assertRecoveryId(portfolioId);
+    return 'saved-history-v1:'+ownerId+':'+portfolioId;
+  }
+
+  private committedHistoryPayload(cloudRevision:number,head:EditorHead):EditorRecoveryPayload {
+    const payload:EditorRecoveryPayload={formatVersion:1,cloudBaseRevision:cloudRevision,
+      localRevision:head.revision,cloudOperationId:null,snapshot:head.snapshot,
+      history:{undo:head.undo,redo:head.redo},fieldDrafts:{},sourceDrafts:{},seoDraft:null};
+    validateRecoveryPayload(payload);
+    return structuredClone(payload);
+  }
+
+  private verifyCommittedHistory(value:unknown):EditorRecoveryPayload {
+    if(!isPlainRecord(value))throw recoveryFailure('Saved local history could not be verified.');
+    const payload=value as unknown as EditorRecoveryPayload;
+    validateRecoveryPayload(payload);
+    if(!payload.history||payload.cloudOperationId!==null||Object.keys(payload.fieldDrafts).length||
+      Object.keys(payload.sourceDrafts).length||payload.seoDraft!==null)
+      throw recoveryFailure('Invalid committed history cache.');
+    return payload;
+  }
+
+  private async savedHistoryTransaction<T>(mode:IDBTransactionMode,
+    action:(store:IDBObjectStore,done:(value:T)=>void,fail:(error:unknown)=>void)=>void):Promise<T>{
+    const db=await this.open();
+    try {
+      return await new Promise<T>((resolve,reject)=>{
+        const tx=db.transaction('draft-heads',mode);
+        let completed=false,result:T;
+        const done=(value:T)=>{result=value;completed=true;};
+        const fail=(error:unknown)=>{reject(error);try{tx.abort();}catch{/* already finished */}};
+        tx.oncomplete=()=>completed?resolve(result):reject(new Error('Missing saved history acknowledgement.'));
+        tx.onabort=tx.onerror=()=>reject(tx.error??new Error('Saved history transaction failed.'));
+        try{action(tx.objectStore('draft-heads'),done,fail);}catch(error){fail(error);}
+      });
+    }finally{db.close();}
+  }
+
+  /** Only called after an authoritative cloud Save/identical readback.
+   * Stale tabs cannot replace newer cache rows; equal revision with a
+   * different history is not silently overwritten. */
+  async saveCommittedHistory(ownerId:string,portfolioId:string,cloudRevision:number,head:EditorHead):Promise<boolean>{
+    const key=this.savedHistoryKey(ownerId,portfolioId);
+    const payload=this.committedHistoryPayload(cloudRevision,head);
+    return this.savedHistoryTransaction<boolean>('readwrite',(store,done,fail)=>{
+      const read=store.get(key);
+      read.onsuccess=()=>{
+        try{
+          if(read.result!==undefined){
+            const current=this.verifyCommittedHistory(read.result);
+            if(current.cloudBaseRevision>cloudRevision){done(false);return;}
+            if(current.cloudBaseRevision===cloudRevision){
+              done(canonicalRecoveryPayload(current)===canonicalRecoveryPayload(payload));return;
+            }
+          }
+          const write=store.put(payload,key);
+          write.onsuccess=()=>done(true);
+        }catch(error){fail(error);}
+      };
+    });
+  }
+
+  async loadCommittedHistory(ownerId:string,portfolioId:string,cloudRevision:number,snapshot:PortfolioSnapshot):Promise<EditorHead|null>{
+    const key=this.savedHistoryKey(ownerId,portfolioId);
+    if(!Number.isSafeInteger(cloudRevision)||cloudRevision<0)throw recoveryFailure('Invalid cloud history revision.');
+    validateSnapshot(snapshot);
+    return this.savedHistoryTransaction<EditorHead|null>('readonly',(store,done,fail)=>{
+      const read=store.get(key);
+      read.onsuccess=()=>{
+        try{
+          if(read.result===undefined){done(null);return;}
+          const current=this.verifyCommittedHistory(read.result);
+          // Match every byte of the saved snapshot, not merely the numeric revision.
+          if(current.cloudBaseRevision!==cloudRevision||
+             canonicalRecoveryPayload(current)!==canonicalRecoveryPayload({...current,snapshot})){
+            done(null);return;
+          }
+          done(recoverEditorHistory(current));
+        }catch(error){fail(error);}
+      };
+    });
+  }
+
+  /** Explicit deletion never removes unsaved recovery copies or cloud data.
+   * Do not delete a row that another tab advanced beyond the reviewed base. */
+  async forgetCommittedHistory(ownerId:string,portfolioId:string,cloudRevision:number):Promise<boolean>{
+    const key=this.savedHistoryKey(ownerId,portfolioId);
+    if(!Number.isSafeInteger(cloudRevision)||cloudRevision<0)throw recoveryFailure('Invalid cloud history revision.');
+    return this.savedHistoryTransaction<boolean>('readwrite',(store,done,fail)=>{
+      const read=store.get(key);
+      read.onsuccess=()=>{
+        try{
+          if(read.result===undefined){done(true);return;}
+          const current=this.verifyCommittedHistory(read.result);
+          if(current.cloudBaseRevision>cloudRevision){done(false);return;}
+          const remove=store.delete(key);remove.onsuccess=()=>done(true);
+        }catch(error){fail(error);}
+      };
+    });
+  }
+
   /**
    * Separate versioned store avoids upgrading the older draft-heads database.
    * A device's IndexedDB is not an auth boundary: callers must pass only the
