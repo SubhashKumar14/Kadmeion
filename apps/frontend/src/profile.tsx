@@ -43,21 +43,21 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [projectionLoading,setProjectionLoading]=useState(false);
   const projectionAttempt=useRef(0);
   const projectionPending=useRef(false);
-  const projectionEpoch=useRef(port.getOwnerSessionEpoch());
   useEffect(()=>()=>{projectionAttempt.current++;projectionPending.current=false;},[port]);
   function invalidateProjection(){
     projectionAttempt.current++;projectionPending.current=false;setProjectionLoading(false);
     setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
   }
   async function readProjection(){
-    if(projectionPending.current||operationPending.current)return;
+    if(projectionPending.current||operationPending.current||!validEpoch())return;
     projectionPending.current=true;
-    const attempt=++projectionAttempt.current,epoch=projectionEpoch.current;
-    const current=()=>attempt===projectionAttempt.current&&epoch===port.getOwnerSessionEpoch();
+    const attempt=++projectionAttempt.current,epoch=profileEpoch.current,lifetime=profileLifetime.current;
+    const current=()=>attempt===projectionAttempt.current&&lifetime===profileLifetime.current&&
+      epoch===profileEpoch.current&&validEpoch();
     setProjectionLoading(true);setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
     try{
       if(!current())return;
-      const [result,profile]=await Promise.all([port.ownerSharingPreferences(),port.readOwnerProfile()]);
+      const [result,profile]=await Promise.all([port.ownerSharingPreferences(),port.readOwnerProfile(epoch)]);
       if(!current())return;
       if(result.error||!result.data||profile.error||!profile.data){
         setProjectionError('Saved profile and sharing preferences could not both be verified. Retry to preview them.');return;
@@ -68,8 +68,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
         ...(prefs.shareHeadline?['headline' as const]:[]),...(prefs.shareBio?['bio' as const]:[])]);
       setProjectionRequested(prefs.publicationRequested);
     }catch{if(current())setProjectionError('Saved sharing preferences are unavailable. Retry securely.');}
-    finally{if(attempt===projectionAttempt.current){projectionPending.current=false;setProjectionLoading(false);
-      if(!current()){setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('Your session changed. Reopen your profile.');}}}
+    finally{if(current()){projectionPending.current=false;setProjectionLoading(false);}}
   }
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
@@ -100,7 +99,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   }
   function stopAutosave(){autoEnabled.current=false;cancelScheduledSave();setAutosave(false);}
   function expireProfile(){
-    stopAutosave();invalidateProjection();setSaved(null);setDraft(null);setSkill('');setSkillError('');
+    stopAutosave();invalidateProjection();pendingSkill.current=false;setSaved(null);setDraft(null);setSkill('');setSkillError('');
     setLatestProfile(null);setUncertainSave(null);setConfirmRebase(false);setWithdrawal(false);
     setBusy(false);setActiveSaveMode(null);setLoadingProfile(false);setCheckingLatest(false);
     setNeedsReload(true);setSessionExpired(true);setNotice('');setError('Your owner session changed. Reopen your profile.');
