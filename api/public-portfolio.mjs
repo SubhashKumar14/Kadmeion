@@ -1,4 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
+import {collectEligiblePublicView,createLocalAnalyticsRpcCollector} from './portfolio-analytics.mjs';
 import {cancelRpcBody, withDeliveryRpc, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
@@ -151,7 +152,7 @@ export function canonicalPublicLink(handle,slug,env) {
   return '<'+path+'>; rel="canonical"';
 }
 
-export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch} = {}) {
+export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch, trustedLocalAnalyticsOrigin = null} = {}) {
   function reply(status, body, type, indexable = false, media = false, reportUi = false) {
     res.statusCode = status;
     res.setHeader('Cache-Control', 'private, no-store');
@@ -220,8 +221,21 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
         typeof key !== 'string' || !key.startsWith('eyJ') || key.length < 70) {
       return reportResponse(503, 'Temporarily unavailable');
     }
+    // R10 local composition only: the caller is a trusted loopback server,
+    // not request input. Direct rewritten/API, report, media, HEAD and hosted
+    // paths retain their original resolver and never ask for analytics receipts.
+    let analyticsOrigin=null;
+    if(local&&typeof trustedLocalAnalyticsOrigin==='string'&&!rewritten&&
+       !reporting&&!media&&!reportUi&&req.method==='GET'){
+      try{
+        const u=new URL(trustedLocalAnalyticsOrigin);
+        if(u.protocol==='http:'&&u.hostname==='127.0.0.1'&&u.port&&u.origin===trustedLocalAnalyticsOrigin)
+          analyticsOrigin=u.origin;
+      }catch{}
+    }
     const rpc = reporting ? 'service_submit_portfolio_abuse_report' :
-      media ? 'service_read_frozen_release_png' : 'service_read_public_portfolio';
+      media ? 'service_read_frozen_release_png' :
+      analyticsOrigin ? 'service_read_public_portfolio_with_analytics' : 'service_read_public_portfolio';
     const upstream = await withDeliveryRpc(http,new URL('/rest/v1/rpc/' + rpc, origin), {
       method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit',
       headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
@@ -248,7 +262,16 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       const png = upstream.body;
       return png ? reply(200, png, 'image/png') : reply(404, 'Not found');
     }
-    const release = upstream.body;
+    let release = upstream.body, analyticsReceipt=null;
+    if (release === null) return reply(404, 'Not found');
+    if(analyticsOrigin){
+      if(!release||typeof release!=='object'||Array.isArray(release)||
+         Object.keys(release).sort().join(',')!=='analytics,release'||
+         !Object.hasOwn(release,'analytics')||!Object.hasOwn(release,'release'))
+        return reply(503,'Temporarily unavailable');
+      analyticsReceipt=release.analytics;
+      release=release.release;
+    }
     if (release === null) return reply(404, 'Not found');
     if (!release || typeof release !== 'object' || Array.isArray(release) ||
         typeof release.indexable !== 'boolean')
@@ -272,6 +295,19 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     res.setHeader('X-Kadmeion-Served-SHA256',
       createHash('sha256').update(published).digest('hex'));
     if(release.indexable)res.setHeader('Link',canonicalPublicLink(handle,slug,env));
+    // Only after validated immutable HTML, indexability, and a real receipt
+    // from the same canonical authority statement. Absence means zero writes.
+    // The collector performs a second transactional epoch/consent check;
+    // collection failure cannot change the visitor's HTML response.
+    if(analyticsOrigin&&release.indexable&&analyticsReceipt!==null&&
+       !req.aborted&&!res.destroyed&&!res.writableEnded){
+      try{
+        const collect=createLocalAnalyticsRpcCollector({localIntegration:true,endpoint:origin.origin,serviceRoleKey:key,http});
+        await collectEligiblePublicView({canonicalIngressVerified:true,localIntegration:true,
+          enabled:true,renderedSuccessfully:true,method:req.method,receipt:analyticsReceipt,
+          headers:req.headers,canonicalOrigin:analyticsOrigin,frozenHtmlSha256:release.htmlSha256},{collect});
+      }catch{}
+    }
     return reply(200, published, undefined, release.indexable, rendered.media);
   } catch {
     if(validatedReportPage)return reply(503,reportResultDocument(503),'text/html; charset=utf-8',false,false,true);
