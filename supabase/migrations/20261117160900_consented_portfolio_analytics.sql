@@ -226,7 +226,7 @@ create trigger zz_analytics_intent after update of public_handle,public_slug on 
 
 create function public.service_purge_expired_portfolio_analytics(p_limit integer default 1000) returns jsonb
 language plpgsql security definer set search_path='' set timezone='UTC' set lock_timeout='50ms' as $$
-declare d date:=(clock_timestamp() at time zone 'UTC')::date; a integer; q integer;
+declare t timestamptz:=clock_timestamp(); d date:=(t at time zone 'UTC')::date; a integer; q integer;
 begin
  if (select auth.role()) is distinct from 'service_role' then raise exception using errcode='42501',message='TRUSTED_WORKER_REQUIRED'; end if;
  if p_limit is null or p_limit not between 1 and 1000 then raise exception using errcode='22023',message='ANALYTICS_INVALID'; end if;
@@ -238,6 +238,12 @@ begin
  order by utc_day,scope_key limit p_limit for update skip locked)
  delete from kadmeion_private.analytics_rate_window x using batch b where x.scope_key=b.scope_key;
  get diagnostics q=row_count;
+ -- The singleton global quota contains no visitor identifiers, but must
+ -- still expire at UTC rollover even when no subsequent event arrives.
+ -- This touches at most one row, after the bounded portfolio cleanup.
+ update kadmeion_private.analytics_rate_window
+   set minute_start=date_trunc('minute',t,'UTC'),minute_used=0,utc_day=d,day_used=0
+   where scope_key='GLOBAL' and utc_day<d;
  return jsonb_build_object('aggregateRowsDeleted',a,'quotaRowsDeleted',q,'more',
  exists(select 1 from kadmeion_private.aggregate_daily where utc_day<d-29)
  or exists(select 1 from kadmeion_private.analytics_rate_window where portfolio_id is not null and utc_day<d));
