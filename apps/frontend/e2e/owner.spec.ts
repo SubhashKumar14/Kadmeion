@@ -2795,3 +2795,138 @@ test('B16 ordinary recovery rejects malformed provider acknowledgement and retri
   await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
   await expect(page.locator('.ws-shell')).toHaveCount(0);
 });
+
+test('B16 C10 real trusted static scoped-theme CSS uses measured 600/950 boundaries',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S3 R4 shared engine and trusted static renderer.');
+  const {createPortfolioPresetDraft,createEditorHead,applyEditorTransaction,prepareSafeStaticPreview}=await import('../../../packages/editor-core/src/index.ts');
+  const snapshot=createPortfolioPresetDraft('stairs');
+  const manifest=JSON.parse(snapshot.files['kadmeion.json']);
+  snapshot.files['kadmeion.json']=JSON.stringify({...manifest,seo:{title:'Scoped fixture',description:'Private static scoped fixture'}});
+  const document=JSON.parse(snapshot.files['pages/home.page.json']);
+  const section=document.sections[0];
+  snapshot.files['pages/home.page.json']=JSON.stringify({...document,sections:[section]});
+  for(const [key,slot] of Object.entries(snapshot.slots)){
+    if(!key.startsWith('stepped-hero-')&&slot.state==='S0')snapshot.slots[key]={state:'EMPTY',content:{}};
+  }
+  snapshot.slots['stepped-hero-title']={state:'S0',componentId:'title-stacked@1',content:{title:'Real scoped heading',subtitle:'Private preview'}};
+  snapshot.slots['stepped-hero-cta']={state:'S0',componentId:'external-link@1',content:{label:'Example',url:'https://example.com/work'}};
+  snapshot.files['theme/tokens.json']=JSON.stringify({mode:'light',surface:'#ffffff',text:'#222222',accent:'#444444'});
+  let head=createEditorHead(snapshot);
+  const change=(scope:{kind:'global'}|{kind:'template'|'section'|'component';id:string},
+    layer:'base'|'phone'|'tablet'|'desktop',value:string)=>{
+    head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,
+      intent:{kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',scope,layer,
+        edit:{kind:'set',key:'text',value}}});
+  };
+  change({kind:'global'},'base','#111111');
+  change({kind:'template',id:'stairs'},'base','#333333');
+  change({kind:'section',id:section.id},'base','#555555');
+  change({kind:'component',id:'stepped-hero-title'},'phone','#224466');
+  change({kind:'component',id:'stepped-hero-title'},'tablet','#336633');
+  change({kind:'component',id:'stepped-hero-title'},'desktop','#663344');
+  const id='10000000-0000-4000-8000-000000000001',sha='a'.repeat(64);
+  // Synthetic frozen envelope for isolated compiler/browser geometry proof;
+  // this is not a database frozen receipt or hosted publication claim.
+  const render=()=>prepareSafeStaticPreview({
+    snapshot:head.snapshot,frozen:{portfolioId:id,revision:1,snapshotSha256:sha,status:'FROZEN',publicUrl:null,visibilityIntent:'PUBLIC'},
+    loadedPortfolioId:id,loadedRevision:1,loadedSnapshotSha256:sha,
+    plan:[
+      {slotKey:'stepped-hero-title',componentId:'title-stacked@1',kind:'heading',required:true},
+      {slotKey:'stepped-hero-cta',componentId:'external-link@1',kind:'external-link',required:false}
+    ]
+  });
+  const result=render();
+  expect(result.status).toBe('PREVIEW_ONLY');
+  expect(result.publicationReady).toBe(false);
+  if(!result.previewHtml)throw new Error('Scoped trusted static preview missing.');
+  await page.setViewportSize({width:1600,height:900});
+  await page.setContent(result.previewHtml);
+  const container=page.locator('.k-theme-container'),slot=page.locator('.k-theme-slot-0');
+  for(const [width,color] of [[600,'rgb(34, 68, 102)'],[601,'rgb(51, 102, 51)'],
+    [950,'rgb(51, 102, 51)'],[951,'rgb(102, 51, 68)']] as const){
+    await container.evaluate((node,w)=>{(node as HTMLElement).style.width=w+'px';},width);
+    await expect.poll(()=>container.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(width,0);
+    await expect(slot).toHaveCSS('color',color);
+    await expect(page.locator('.k-theme-section-0')).toHaveCSS('color','rgb(85, 85, 85)');
+    await expect(page.locator('.k-theme-root')).toHaveCSS('color','rgb(51, 51, 51)');
+  }
+  const before=structuredClone(head.snapshot);
+  head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,
+    intent:{kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',
+      scope:{kind:'component',id:'stepped-hero-title'},layer:'desktop',edit:{kind:'reset',key:'text'}}});
+  const reset=render();
+  expect(reset.status).toBe('PREVIEW_ONLY');
+  if(!reset.previewHtml)throw new Error('Static reset preview missing.');
+  await page.setContent(reset.previewHtml);
+  await page.locator('.k-theme-container').evaluate(node=>{(node as HTMLElement).style.width='951px';});
+  await expect(page.locator('.k-theme-slot-0')).toHaveCSS('color','rgb(85, 85, 85)');
+  head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,intent:{kind:'UNDO'}});
+  expect(head.snapshot).toEqual(before);
+});
+
+test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP persistence',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires real mounted R4 editor and disposable local Supabase.');
+  test.setTimeout(95_000);
+  const owner=await localUser('S6 mounted scoped theme');
+  await page.setViewportSize({width:2200,height:1100});
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 mounted scoped fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 mounted scoped fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:'Theme',exact:true}).click();
+  await page.getByLabel('Portfolio theme').selectOption('light');
+  const scope=page.getByRole('region',{name:'Scoped theme overrides'});
+  const token=scope.getByLabel('Theme token'),layer=scope.getByLabel('Override layer');
+  const value=scope.getByLabel('Override value');
+  async function set(scopeId:string,bucket:string,color:string){
+    await scope.getByLabel('Scope',{exact:true}).selectOption(scopeId);
+    await layer.selectOption(bucket);
+    await token.selectOption('text');
+    await value.fill(color);
+    await scope.getByRole('button',{name:'Apply override',exact:true}).click();
+    await expect(scope.getByText('Override applied to the working draft. Save to persist, or use Undo.',{exact:true})).toBeVisible();
+    await expect(value).toHaveValue(color);
+  }
+  await set('global','base','#112233');
+  await set('section:arc-hero','base','#334455');
+  await set('component:arc-hero-title','phone','#224466');
+  await set('component:arc-hero-title','desktop','#663344');
+  const canvas=page.locator('.ws-studio-editor .k-theme-container');
+  const title=canvas.getByRole('button',{name:/^Edit L1 title slot in preview/});
+  const measure=()=>canvas.evaluate(node=>node.getBoundingClientRect().width);
+  await page.getByLabel('Preview width').selectOption('390');
+  await expect.poll(measure).toBeLessThanOrEqual(600);
+  await expect(title).toHaveCSS('color','rgb(34, 68, 102)');
+  await page.getByLabel('Preview width').selectOption('1440');
+  await expect.poll(measure).toBeGreaterThan(950);
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await scope.getByRole('button',{name:'Reset selected override'}).click();
+  await expect(title).toHaveCSS('color','rgb(51, 68, 85)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(51, 68, 85)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'Theme',exact:true}).click();
+  await page.getByLabel('Preview width').selectOption('390');
+  await expect(title).toHaveCSS('color','rgb(34, 68, 102)');
+  await page.getByLabel('Preview width').selectOption('1440');
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const downloadedPath=await download.path();if(!downloadedPath)throw new Error('Private source export absent.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(downloadedPath)));
+  const {resolveScopedTheme}=await import('../../../packages/editor-core/src/index.ts');
+  for(const [widthPx,text] of [[390,'#224466'],[768,'#334455'],[1440,'#663344']] as const){
+    const resolved=resolveScopedTheme(snapshot,{mode:'light',sectionId:'arc-hero',slotKey:'arc-hero-title',widthPx});
+    expect(resolved.status).toBe('resolved');expect(resolved.tokens.text).toBe(text);
+  }
+});

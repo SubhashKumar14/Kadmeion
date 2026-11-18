@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, Dispatch, SetStateAction } from 'react';
 import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import { matchingReplacementContent, savedComponentInputFromOwnedSlot, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
+import { matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
   '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>) => boolean;
@@ -93,7 +93,8 @@ function slotDisplay(slot:PortfolioSnapshot['slots'][string]|undefined):string {
   return '';
 }
 
-const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing}:{
+const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing,themeNode}:{
+    themeNode?:(section:CanvasSection,name:string)=>string|undefined;
     section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';snapshot:PortfolioSnapshot|null|undefined;editing:boolean;selectedSlot?:string;onSelectSlot?:(key:string)=>void;showMissing:boolean;
   })=>{
     const key=section.id+'-'+name.toLowerCase();
@@ -104,9 +105,10 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     const label=SLOT_TITLES[name.toLowerCase()]??name;
     const example=editing&&!text?layoutExample(section.renderId,name):null;
     const visibleLabel=imageLabel||text|| (kind==='media' ? '' : example??('Add '+label));
+    const node=(!assignment||assignment.state==='EMPTY'||assignment.state==='S0')?themeNode?.(section,name):undefined;
     const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
-    if(editing)return <button className={className} type="button"
+    if(editing)return <button className={className} data-k-theme-node={node} type="button"
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
       {imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:text||(
@@ -116,9 +118,9 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       )}
     </button>;
     // Reference labels are author-only, never fabricated visitor imagery.
-    if(imageReference)return showMissing?<span className={className}>{imageLabel} · Preview bytes unavailable</span>:null;
-    return text?<span className={className}>{text}</span>:
-      !showMissing?null:<span className={className} aria-hidden="true">Not added: {label}</span>;
+    if(imageReference)return showMissing?<span className={className} data-k-theme-node={node}>{imageLabel} · Preview bytes unavailable</span>:null;
+    return text?<span className={className} data-k-theme-node={node}>{text}</span>:
+      !showMissing?null:<span className={className} data-k-theme-node={node} aria-hidden="true">Not added: {label}</span>;
   };
 
 /** Partition manifest-declared slots once; do not project historical stashes
@@ -135,9 +137,47 @@ function canvasSlotGroups(section:CanvasSection){
   return {hero,headline,textSlot,buttons,media,note,others};
 }
 
-export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll}: {
+
+/** Only engine-validated tokens and generated ordinals enter the stylesheet. */
+const SCOPED_WIDTHS=[390,768,1440] as const;
+function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],mode:PortfolioTheme['mode'],instance:string):string|null{
+  const targets:{node:string;sectionId?:string;slotKey?:string}[]=[{node:'root'}];
+  sections.forEach((section,index)=>{
+    targets.push({node:'s'+index,sectionId:section.id});
+    section.slots.forEach((name,ordinal)=>targets.push({node:'s'+index+'c'+ordinal,sectionId:section.id,slotKey:section.id+'-'+name.toLowerCase()}));
+  });
+  const prefix='[data-k-theme-instance="'+instance+'"] ';
+  const query=['width <= 600px','600px < width <= 950px','width > 950px'];
+  const propertyMap:Readonly<Record<string,string>>={
+    '--k-theme-surface':'background-color','--k-theme-text':'color',
+    '--k-theme-font-size':'font-size','--k-theme-line-height':'line-height',
+    '--k-theme-font-weight':'font-weight','--k-theme-spacing':'padding','--k-theme-radius':'border-radius'
+  };
+  const rules:string[]=[];
+  for(const [index,widthPx] of SCOPED_WIDTHS.entries()){
+    const declarations:string[]=[];
+    for(const {node,sectionId,slotKey} of targets){
+      const resolved=resolveScopedTheme(snapshot,{mode,sectionId,slotKey,widthPx});
+      if(resolved.status!=='resolved')return null;
+      const values=scopedThemeCssVariables(resolved.tokens);
+      const properties=Object.keys(values).flatMap(key=>{
+        const property=propertyMap[key];
+        return property?[property+':var('+key+')']:[];
+      });
+      const selector=prefix+'[data-k-theme-node="'+node+'"]';
+      const vars=Object.entries(values).map(([key,value])=>key+':'+value);
+      declarations.push(selector+'{'+vars.concat(properties,'--portfolio-surface:var(--k-theme-surface)').join(';')+'}');
+      if(node==='root'||!slotKey)declarations.push(selector+'{border-color:var(--k-theme-accent)}');
+      if(slotKey)declarations.push(selector+'.pv-slot-action{color:var(--k-theme-accent);border-color:var(--k-theme-accent)}');
+    }
+    rules.push('@container k-portfolio-width ('+query[index]+'){'+declarations.join('')+'}');
+  }
+  return rules.join('');
+}
+
+export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll,onContentWidth}: {
   snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean;
-  simulation?:boolean; width?: number; keyboardScroll?:boolean;
+  simulation?:boolean; width?: number; keyboardScroll?:boolean;onContentWidth?:(width:number|null)=>void;
   selectedSlot?:string; onSelectSlot?:(key:string)=>void;
 }) {
   const theme=readTheme(snapshot);
@@ -146,28 +186,37 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
     background:theme.surface,color:theme.text,colorScheme:theme.mode,
     borderTopColor:theme.accent,maxWidth:width
   };
-  const sections=canvasSections(snapshot);
+  const sections=useMemo(()=>canvasSections(snapshot),[snapshot]);
+  const instance=useId().replace(/[^a-zA-Z0-9_-]/g,'');
+  const measured=useRef<HTMLDivElement>(null);
+  const parsed=useMemo(()=>snapshot?parseScopedTheme(snapshot):null,[snapshot]);
+  const scopedCss=useMemo(()=>parsed?.status==='valid'&&snapshot?scopedCanvasRules(snapshot,sections,theme.mode,instance):null,[parsed,snapshot,sections,theme.mode,instance]);
+  const scoped=!!scopedCss;
+  useLayoutEffect(()=>{
+    const element=measured.current;
+    if(!onContentWidth)return;
+    if(!element||typeof ResizeObserver==='undefined'){onContentWidth(null);return;}
+    const observer=new ResizeObserver(entries=>{
+      const w=entries[0]?.contentRect.width;
+      onContentWidth(typeof w==='number'&&scopedThemeBreakpoint(w)?w:null);
+    });
+    observer.observe(element);
+    return()=>{observer.disconnect();onContentWidth(null);};
+  },[scoped,onContentWidth]);
+  const themeNode=(section:CanvasSection,name:string)=>scoped?'s'+sections.indexOf(section)+'c'+section.slots.indexOf(name):undefined;
   const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
-  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation};
+  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation,themeNode};
   const Tag=standalone?'main':'div';
-  return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
-    style={style} role={standalone?undefined:'region'} tabIndex={keyboardScroll?0:undefined}
-    aria-label={standalone?'Saved private portfolio author preview':
-      simulation?'Simulated visitor portfolio appearance':'Private authoring canvas'}>
-    {!standalone&&<div className="pv-editor-caption">
-      <span>AUTHOR CANVAS / {theme.mode.toUpperCase()}</span>
-      <span>Illustrative empty-slot copy · Never saved or published</span>
-    </div>}
-    <div className="pv-site">
+  const content=<>
       <header className="pv-site-head"><strong>{title}</strong>
         <span>Owner-authored portfolio</span></header>
-      {sections.length===0?<section className="pv-empty-page">
+            {sections.length===0?<section className="pv-empty-page">
         <h2>No authored sections yet.</h2>
         <p>{standalone?'This saved portfolio has no authored sections.':'Add a section using Structure & layers to begin building your page.'}</p>
       </section>:sections.map((section,index)=>{
         const {hero,headline,textSlot,buttons,media,note,others}=canvasSlotGroups(section);
         return <section key={section.id} className={'pv-section pv-layout-'+section.renderId+(hero?' pv-hero':' pv-content-section')}
-          aria-label={'Portfolio section '+(index+1)}>
+          data-k-theme-node={scoped?'s'+index:undefined} aria-label={'Portfolio section '+(index+1)}>
           {hero?<div className="pv-hero-grid">
             <div className="pv-hero-copy">
               <span className="pv-eyebrow">{section.renderId==='L5'?'YOUR STORY':'PORTFOLIO / INTRODUCTION'}</span>
@@ -204,23 +253,152 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
         </section>;
       })}
       <footer className="pv-site-footer"><span>{title}</span><span>Author preview · Saved content only</span></footer>
+    </>;
+  return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
+    style={style} role={standalone?undefined:'region'} tabIndex={keyboardScroll?0:undefined}
+    aria-label={standalone?'Saved private portfolio author preview':
+      simulation?'Simulated visitor portfolio appearance':'Private authoring canvas'}>
+    {!standalone&&<div className="pv-editor-caption">
+      <span>AUTHOR CANVAS / {theme.mode.toUpperCase()}</span>
+      <span>Illustrative empty-slot copy · Never saved or published</span>
+    </div>}
+    {(parsed?.status==='blocked'||(parsed?.status==='valid'&&!scoped))&&!standalone&&<p role="alert">Scoped theme could not be resolved. Showing the legacy palette only; publication is blocked for unsupported active overrides.</p>}
+    <div className="pv-site" ref={scoped?undefined:measured}>
+      {scoped?<div ref={measured} data-k-theme-instance={instance} className="k-theme-container" style={{containerName:'k-portfolio-width',containerType:'inline-size',width:'100%',minWidth:0,writingMode:'horizontal-tb',padding:0,border:0}}>
+        <style>{scopedCss}</style><div className="k-theme-root" data-k-theme-node="root">{content}</div>
+      </div>:content}
     </div>
   </Tag>;
 }
 
-export function ThemeInspector({head, apply, width, resize}: {
-  head: EditorHead; apply: Apply; width: number; resize: (width: number) => void;
+
+const scopedKeys:readonly ScopedThemeKey[]=['surface','text','accent','fontSizePx','lineHeight','fontWeight','spacingPx','radiusPx'];
+const scopedKeyLabel:Record<ScopedThemeKey,string>={surface:'Surface color',text:'Text color',accent:'Accent color',fontSizePx:'Font size (px)',lineHeight:'Line height',fontWeight:'Font weight',spacingPx:'Spacing (px)',radiusPx:'Corner radius (px)'};
+const scopedScopeId=(scope:ScopedThemeScope)=>scope.kind==='global'?'global':scope.kind+':'+scope.id;
+function scopedSetEdit(key:ScopedThemeKey,input:string):ScopedThemeEdit|null{
+  if(key==='surface'||key==='text'||key==='accent')return /^#[a-fA-F0-9]{6}$/.test(input)?{kind:'set',key,value:input}:null;
+  if(!input.trim())return null;
+  const value=Number(input);
+  if(!Number.isFinite(value))return null;
+  switch(key){
+    case 'fontSizePx':return Number.isInteger(value)&&value>=12&&value<=72?{kind:'set',key,value}:null;
+    case 'lineHeight':return value>=1&&value<=2?{kind:'set',key,value}:null;
+    case 'fontWeight':return value===400||value===500||value===600||value===700?{kind:'set',key,value}:null;
+    case 'spacingPx':return Number.isInteger(value)&&value>=0&&value<=64?{kind:'set',key,value}:null;
+    case 'radiusPx':return Number.isInteger(value)&&value>=0&&value<=32?{kind:'set',key,value}:null;
+  }
+}
+function ScopedTokenControl({tokenKey,explicit,effective,disabled,revision,onEdit}:{
+  tokenKey:ScopedThemeKey;explicit:ScopedThemeTokens[ScopedThemeKey];effective:ScopedThemeTokens[ScopedThemeKey];disabled:boolean;revision:number;onEdit:(edit:ScopedThemeEdit)=>boolean;
+}){
+  const [input,setInput]=useState(String(explicit??effective??''));
+  const field=useRef<HTMLDivElement>(null);
+  const previousRevision=useRef(revision);
+  useLayoutEffect(()=>{
+    if(previousRevision.current!==revision){
+      previousRevision.current=revision;setInput(String(explicit??effective??''));
+    }
+  },[revision,explicit,effective]);
+  function submit(change:ScopedThemeEdit){
+    if(onEdit(change))field.current?.querySelector<HTMLElement>('input,select')?.focus();
+  }
+  const edit=scopedSetEdit(tokenKey,input);
+  const color=tokenKey==='surface'||tokenKey==='text'||tokenKey==='accent';
+  const numeric=!color&&tokenKey!=='fontWeight';
+  return <div ref={field}>
+    {tokenKey==='fontWeight'?<label>Override value<select value={input} onChange={event=>setInput(event.target.value)} disabled={disabled}>
+      <option value="">Choose a weight</option>{[400,500,600,700].map(value=><option key={value} value={value}>{value}</option>)}
+    </select></label>:<label>Override value<input type={numeric?'number':'text'} value={input} onChange={event=>setInput(event.target.value)}
+      min={tokenKey==='fontSizePx'?12:tokenKey==='lineHeight'?1:0} max={tokenKey==='fontSizePx'?72:tokenKey==='lineHeight'?2:tokenKey==='radiusPx'?32:64}
+      step={tokenKey==='lineHeight'?'any':1} maxLength={color?7:undefined} placeholder={color?'#RRGGBB':'Enter a value'} disabled={disabled}
+      aria-invalid={input!==''&&!edit}/></label>}
+    {input!==''&&!edit&&<p role="alert">Enter a value within the supported token bounds.</p>}
+    <button type="button" className="ws-primary" disabled={disabled||!edit||(edit.kind==='set'&&edit.value===explicit)} onClick={()=>edit&&submit(edit)}>Apply override</button>
+    <button type="button" className="ws-secondary" disabled={disabled||explicit===undefined} onClick={()=>submit({kind:'reset',key:tokenKey})}>Reset selected override</button>
+  </div>;
+}
+function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
+  head:EditorHead;apply:Apply;mode:PortfolioTheme['mode'];contentWidth?:number|null;disabled:boolean;
+}){
+  const [scopeId,setScopeId]=useState('global');
+  const [layer,setLayer]=useState<ScopedThemeLayer>('base');
+  const [tokenKey,setTokenKey]=useState<ScopedThemeKey>('surface');
+  const [notice,setNotice]=useState('');
+  const parsed=parseScopedTheme(head.snapshot);
+  const sections=canvasSections(head.snapshot);
+  let preset:unknown;
+  try{preset=objectRecord(JSON.parse(head.snapshot.files['kadmeion.json']??'null'))?.preset;}catch{preset=undefined;}
+  const options:{scope:ScopedThemeScope;label:string;sectionId?:string;slotKey?:string}[]=[{scope:{kind:'global'},label:'Global'}];
+  if(typeof preset==='string'&&['arc','collage','editorial','stairs','studio','blank'].includes(preset))
+    options.push({scope:{kind:'template',id:preset},label:'Template · '+preset});
+  for(const section of sections){
+    options.push({scope:{kind:'section',id:section.id},label:'Section · '+section.id,sectionId:section.id});
+    for(const name of section.slots){
+      const slotKey=section.id+'-'+name.toLowerCase();
+      options.push({scope:{kind:'component',id:slotKey},label:'Component · '+section.id+' / '+name,sectionId:section.id,slotKey});
+    }
+  }
+  const matched=options.find(item=>scopedScopeId(item.scope)===scopeId);
+  const selected=matched??options[0]!;
+  const actual=typeof contentWidth==='number'&&scopedThemeBreakpoint(contentWidth)?contentWidth:null;
+  const widthPx=layer==='phone'?390:layer==='tablet'?768:layer==='desktop'?1440:actual??768;
+  const resolved=resolveScopedTheme(head.snapshot,{mode,sectionId:selected.sectionId,slotKey:selected.slotKey,widthPx});
+  const entry=parsed.entries.find(item=>item.active&&item.mode===mode&&scopedScopeId(item.scope)===scopedScopeId(selected.scope));
+  const explicit=(layer==='base'?entry?.base:entry?.breakpoints?.[layer])?.[tokenKey];
+  const effective=resolved.tokens[tokenKey],origin=resolved.origins[tokenKey];
+  const blocked=disabled||!matched||parsed.status==='blocked'||resolved.status!=='resolved';
+  function edit(change:ScopedThemeEdit){
+    setNotice('');
+    if(blocked)return false;
+    const ok=apply({kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode,scope:selected.scope,layer,edit:change});
+    setNotice(ok?'Override applied to the working draft. Save to persist, or use Undo.':'Override was not applied. Review the current draft and retry.');
+    return ok;
+  }
+  const contrast=resolved.tokens.text&&resolved.tokens.surface?themeContrast(resolved.tokens.text,resolved.tokens.surface):null;
+  return <section aria-label="Scoped theme overrides">
+    <h3>Scoped theme overrides</h3>
+    <p>{actual!==null?'Measured content: '+actual+' px · '+scopedThemeBreakpoint(actual):'Measured canvas width unavailable.'} Editing a layer does not change the selected preview width.</p>
+    {parsed.status==='blocked'&&<p role="alert">Unsupported theme data is preserved privately. Scoped editing and publication are blocked until it is resolved.</p>}
+    {parsed.issues.some(issue=>issue.code==='ORPHAN_SCOPE'||issue.code==='UNSUPPORTED_ORPHAN')&&<p>Unplaced theme overrides are retained privately and not rendered. Reusing the same canonical scope may reactivate a retained override.</p>}
+    {!matched&&<p role="alert">The previously selected scope no longer exists. Choose a current scope before applying an override.</p>}
+    <label>Scope<select value={matched?scopeId:''} onChange={event=>{setScopeId(event.target.value);setNotice('');}}>
+      {!matched&&<option value="" disabled>Choose a current scope</option>}
+      {options.map(item=><option key={scopedScopeId(item.scope)} value={scopedScopeId(item.scope)}>{item.label}</option>)}
+    </select></label>
+    <label>Override layer<select value={layer} onChange={event=>{const value=event.target.value;if(value==='base'||value==='phone'||value==='tablet'||value==='desktop')setLayer(value);setNotice('');}}>
+      <option value="base">Base · all widths</option><option value="phone">Phone · up to 600 px</option><option value="tablet">Tablet · above 600 to 950 px</option><option value="desktop">Desktop · above 950 px</option>
+    </select></label>
+    <label>Theme token<select value={tokenKey} onChange={event=>{const key=scopedKeys.find(k=>k===event.target.value);if(key)setTokenKey(key);setNotice('');}}>
+      {scopedKeys.map(key=><option value={key} key={key}>{scopedKeyLabel[key]}</option>)}
+    </select></label>
+    {matched&&<><dl><div><dt>Explicit value in selected layer</dt><dd>{explicit??'Inherited'}</dd></div>
+      <div><dt>Effective value at {widthPx} px{actual===widthPx?' measured':' reference width'}</dt><dd>{effective??'Renderer default / unavailable'}</dd></div>
+      <div><dt>Effective origin</dt><dd>{origin?(origin.scope.kind==='palette'?'Flat palette':scopedScopeId(origin.scope))+' · '+origin.layer:'Unavailable'}</dd></div></dl>
+    {selected.scope.kind==='global'&&<p>The root effective value includes the active template; a narrower override may win.</p>}
+    {contrast!==null&&<p role={contrast<4.5?'alert':undefined}>Effective text / surface contrast: {contrast.toFixed(2)}:1. This checks only these colors.</p>}
+    {resolved.status!=='resolved'&&parsed.status!=='blocked'&&<p>Initialize or correct the global palette before editing scoped tokens.</p>}
+    <ScopedTokenControl key={mode+'|'+scopeId+'|'+layer+'|'+tokenKey} revision={head.revision} tokenKey={tokenKey} explicit={explicit} effective={effective} disabled={blocked} onEdit={edit}/></>}
+    {notice&&<p role="status">{notice}</p>}
+    <p>Only supported trusted preview content is styled. Custom source is not executed. A reset removes this key from this layer only.</p>
+  </section>;
+}
+
+export function ThemeInspector({head, apply, width, resize,contentWidth,disabled=false}: {
+  head: EditorHead; apply: Apply; width: number; resize: (width: number) => void;contentWidth?:number|null;disabled?:boolean;
 }) {
   const theme = readTheme(head.snapshot);
   const ratio=themeContrast(theme.text,theme.surface);
   const previous=head.snapshot.files[THEME_PATH];
-  const tokens=previous?objectRecord(JSON.parse(previous))??{}:{};
+  let parsedTokens:Record<string,unknown>|undefined;
+  try{parsedTokens=previous?objectRecord(JSON.parse(previous)):{};}catch{parsedTokens=undefined;}
+  const tokens=parsedTokens??{};
   // Retain the renderer's established flat active fields. This editor-only
   // history is optional; unknown token fields are not rewritten.
   const history=objectRecord(tokens.authorModePalettes);
   const historySupported=tokens.authorModePalettes===undefined||!!history&&
     ['light','dark'].every(mode=>history[mode]===undefined||validPalette(history[mode]));
   function setTheme(next: PortfolioTheme) {
+    if(disabled||!parsedTokens)return;
     if(!historySupported){
       if(next.mode!==theme.mode)return;
       apply({kind:'WRITE_MANAGED_FILE',path:THEME_PATH,source:JSON.stringify({...tokens,...next},null,2)});
@@ -242,20 +420,23 @@ export function ThemeInspector({head, apply, width, resize}: {
     <label>Preview width<select value={width} onChange={event => resize(Number(event.target.value))}>
       <option value={0}>Fit canvas</option><option value={1440}>Desktop · up to 1440 px</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
     </select></label>
-    <label>Portfolio theme<select value={theme.mode} disabled={!historySupported} onChange={event=>{
+    <label>Portfolio theme<select value={theme.mode} disabled={disabled||!parsedTokens||!historySupported} onChange={event=>{
       if(event.target.value==='light'||event.target.value==='dark')switchMode(event.target.value);
     }}><option value="light">Light</option><option value="dark">Dark</option></select></label>
     {!historySupported&&<p role="alert">Existing palette-history data is unsupported. The current colors can be edited, but switching modes is blocked to avoid losing data.</p>}
-    {colors.map(key => <label key={key}>{key}<input type="color" value={theme[key]} onChange={event =>
+    {colors.map(key => <label key={key}>{key}<input type="color" disabled={disabled||!parsedTokens} value={theme[key]} onChange={event =>
       setTheme({...theme, [key]: event.target.value})}/></label>)}
     <p>Global portfolio tokens · independent of the workspace theme. Preview widths do not authorize phone editing.</p>
     <p role={ratio<4.5?'alert':undefined}>Text on surface: {ratio.toFixed(2)}:1 contrast.
       {ratio<4.5?' Below 4.5:1 for ordinary text; adjust the colors before release.':' Meets the 4.5:1 reference for these two colors only.'}
       {' '}This is not a complete accessibility or publication check.</p>
     <button type="button" className="ws-secondary"
-      disabled={colors.every(key=>theme[key]===(theme.mode==='dark'?defaultDarkTheme:defaultTheme)[key])}
+      disabled={disabled||!parsedTokens||colors.every(key=>theme[key]===(theme.mode==='dark'?defaultDarkTheme:defaultTheme)[key])}
       onClick={()=>setTheme({... (theme.mode==='dark'?defaultDarkTheme:defaultTheme)})}>Reset global palette</button>
-    <p>Each mode retains its own global palette; reset affects only the active palette. Changes use the private transaction and Undo. Unsupported scoped tokens are left untouched; their static export parity is not yet verified.</p>
+    {!parsedTokens&&<p role="alert">The existing theme document cannot be edited safely; its original data is preserved.</p>}
+    {!previous&&<button type="button" className="ws-secondary" disabled={disabled} onClick={()=>setTheme(theme)}>Initialize global palette</button>}
+    <p>Each mode retains its own global palette; reset affects only the active palette. Changes use the private transaction and Undo.</p>
+    <ScopedThemeControls head={head} apply={apply} mode={theme.mode} contentWidth={contentWidth} disabled={disabled||!parsedTokens}/>
   </div>;
 }
 
@@ -508,7 +689,8 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   return <div className="ws-editor-tool"><h2>My Components</h2>
     {message && <p role="status">{message}</p>}
     {!versions&&message&&<button type="button" className="ws-secondary" onClick={()=>setRefresh(n=>n+1)}>Retry private components</button>}
-    {!versions && !message && <p role="status">Loading saved components…</p>}
+    {!versions && !message && <><p role="status">Loading saved components…</p>
+      <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-label"/><span className="glyph-skeleton-line is-short"/></div></>}
     {versions?.length === 0 && <p>You haven’t saved any component versions.</p>}
     {!!versions?.length&&<>
       <p>Selected target: {state?slotKind+' slot':'No slot selected'}. Private saved versions only.</p>
@@ -1005,7 +1187,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       <p>Owner-private project media. Collections are grouped by real source projects, not invented media tags.</p>
       <nav aria-label="Asset collections">
         <button type="button" aria-pressed={!collection} onClick={()=>setCollection('')}>
-          <span>All assets</span><small>{assets?.length??0}</small>
+          <span>All assets</span><small>{assets===null?'—':assets.length}</small>
         </button>
         {projects?.map(project=><button key={project.id} type="button"
           aria-pressed={collection===project.id} onClick={()=>setCollection(project.id)}>
@@ -1019,12 +1201,13 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     <section className="ws-asset-center" aria-label="Owner-private media records">
       <div className="ws-asset-toolbar">
         <span>PRIVATE ASSET CANVAS · {collection?'PROJECT COLLECTION':'ALL PROJECTS'}</span>
-        <span>{visible.length} shown · Not public</span>
+        <span>{assets===null?'Count unavailable':`${visible.length} shown`} · Not public</span>
       </div>
       {error&&<div role="alert" className="ws-inline-alert">{error}
         <button className="ws-secondary" type="button" onClick={()=>setRefresh(n=>n+1)}>Retry private records</button></div>}
       {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
-      {assets===null&&!error&&<p role="status">Checking private assets and projects…</p>}
+      {assets===null&&!error&&<><p role="status">Checking private assets and projects…</p>
+        <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
       {assets?.length===0&&<div className="ws-asset-empty">
         <div className="ws-asset-empty-glyph" aria-hidden="true"><span/></div>
         <h2>Your asset library is empty.</h2>
@@ -1200,7 +1383,8 @@ export function RevisionHistory({port,id,revision,onRestore,working,buffered,act
   return <div className="ws-editor-tool ws-revision-list">
     <h2>Saved checkpoints</h2>
     {error&&<p role="alert">{error}</p>}
-    {!items&&!error&&<p role="status">Loading owner-private revisions…</p>}
+    {!items&&!error&&<><p role="status">Loading owner-private revisions…</p>
+      <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {items?.length===0&&<p>No saved checkpoints have been returned.</p>}
     <ul className="ws-editor-slots">{items?.map(item=><li key={item.revision}>
       <button type="button" disabled={busy} aria-pressed={item.revision===selected}
