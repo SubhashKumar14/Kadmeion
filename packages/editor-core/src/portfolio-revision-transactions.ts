@@ -46,6 +46,7 @@ export type EditorIntent =
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
+  | { kind:'MOVE_SECTION_BEFORE'; sectionId:string; beforeSectionId:string|null; expectedRevision:number }
   | ChangeSectionLayoutIntent
   | RestoreLayoutStashIntent
   | { kind:'CLEAR_SLOT'; slotKey:string }
@@ -177,6 +178,33 @@ function validateSlotAssignment(key:string,slot:SlotAssignment,snapshot:Portfoli
   if ((slot.state==='S1'&&current!==slot.originalSource) ||
       (slot.state==='S2'&&current===slot.originalSource))
     throw new ContractError('VALIDATION','Owned source state disagrees with its file bytes.');
+}
+
+/** Bounded, data-only source diagnostics. Neither syntax compilation nor
+ * execution nor publication approval is implied. Positions are 1-based
+ * UTF-16 editor coordinates; CRLF counts as one new line. Existing opaque
+ * imported bytes are never normalized or discarded by this diagnostic. */
+export type OwnedSourceDiagnostic=Readonly<{code:'INVALID_SOURCE'|'SIZE_LIMIT'|'UNPAIRED_SURROGATE'|'EMPTY_SOURCE';severity:'error'|'warning';message:string;line?:number;column?:number}>;
+export function diagnoseOwnedSource(value:unknown):OwnedSourceDiagnostic[]{
+  if(typeof value!=='string')return [{code:'INVALID_SOURCE',severity:'error',message:'Owned source must be text.'}];
+  if(value.length>MAX_FILE_BYTES||new TextEncoder().encode(value).byteLength>MAX_FILE_BYTES)
+    return [{code:'SIZE_LIMIT',severity:'error',message:'Owned source exceeds the private source byte limit.'}];
+  let line=1,column=1;
+  for(let i=0;i<value.length;i++){
+    const code=value.charCodeAt(i);
+    if(code>=0xd800&&code<=0xdbff){
+      const next=value.charCodeAt(i+1);
+      if(next>=0xdc00&&next<=0xdfff){i++;column+=2;continue;}
+      return [{code:'UNPAIRED_SURROGATE',severity:'error',line,column,message:'Unpaired Unicode surrogate cannot be preserved in UTF-8 source.'}];
+    }
+    if(code>=0xdc00&&code<=0xdfff)
+      return [{code:'UNPAIRED_SURROGATE',severity:'error',line,column,message:'Unpaired Unicode surrogate cannot be preserved in UTF-8 source.'}];
+    if(code===13||code===10){
+      if(code===13&&value.charCodeAt(i+1)===10)i++;
+      line++;column=1;
+    }else column++;
+  }
+  return value.trim()?[]:[{code:'EMPTY_SOURCE',severity:'warning',message:'Source is empty. It remains private; no valid component compilation is implied.'}];
 }
 
 export function createEditorHead(snapshot: PortfolioSnapshot): EditorHead {
@@ -458,6 +486,22 @@ function themeScope(x:unknown):ScopedThemeScope|null{
     typeof x.id==='string'&&SLOT_KEY.test(x.id)&&!RESERVED_KEYS.has(x.id))return {kind:x.kind,id:x.id};
   return null;
 }
+/** Place one existing section before another, or at the end. No IDs,
+ * assignments, source files, stashes, or scope keys are rewritten. */
+function reorderSectionBefore(sections:readonly LayoutSection[],sectionId:string,beforeSectionId:string|null):LayoutSection[]{
+  assertSlotKey(sectionId);
+  if(beforeSectionId!==null)assertSlotKey(beforeSectionId);
+  if(sectionId===beforeSectionId)return invalidLayout('Choose a different destination.');
+  const from=sections.findIndex(section=>section.id===sectionId);
+  if(from<0)return invalidLayout('Selected section does not exist.');
+  const next=sections.filter(section=>section.id!==sectionId);
+  const to=beforeSectionId===null?next.length:next.findIndex(section=>section.id===beforeSectionId);
+  if(to<0)return invalidLayout('Destination section does not exist.');
+  next.splice(to,0,sections[from]!);
+  if(next.every((section,index)=>section.id===sections[index]?.id))
+    return invalidLayout('Section is already in this position.');
+  return next;
+}
 function themeScopeKey(scope:ScopedThemeScope):string{return scope.kind==='global'?'global':scope.kind+':'+scope.id;}
 function themeGraph(snapshot:PortfolioSnapshot):{preset:string|null;sections:LayoutSection[]}{
   validateSnapshot(snapshot);
@@ -679,6 +723,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     EDIT_SCOPED_THEME:['kind','expectedRevision','mode','scope','layer','edit'],
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
+    MOVE_SECTION_BEFORE:['kind','sectionId','beforeSectionId','expectedRevision'],
     CHANGE_SECTION_LAYOUT:['kind','sectionId','expectedLayout','targetLayout','mappings','expectedRevision','confirmStash','confirmOwnedRelocation'],
     RESTORE_LAYOUT_STASH:['kind','fromSlotKey','stashIndex','toSlotKey','expectedRevision','confirmOwnedRelocation'],
     CLEAR_SLOT:['kind','slotKey'],
@@ -797,6 +842,11 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
       next.slots[key]={state:'EMPTY',content:{}};
     }
     next.files[path]=JSON.stringify({...page,sections:[...page.sections,{id,layout:intent.layout,slotKeys:layout.slots}]});
+  } else if(intent.kind==='MOVE_SECTION_BEFORE'){
+    assertBaseRevision(intent.expectedRevision,head.revision);
+    const {page,sections}=layoutManifest(head.snapshot);
+    const moved=reorderSectionBefore(sections,intent.sectionId,intent.beforeSectionId);
+    next.files[PAGE_PATH]=JSON.stringify({...page,sections:moved.map(section=>section.raw)});
   } else if (intent.kind==='MOVE_SECTION') {
     const path='pages/home.page.json';
     const original=next.files[path];
@@ -935,8 +985,11 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
       case 'EDIT_OWNED_SOURCE':
         if (!isOwned(slot) || !slot.sourcePath)
           throw new ContractError('VALIDATION', 'Library source is protected from editing.');
-        if (typeof intent.source!=='string' || new TextEncoder().encode(intent.source).byteLength>MAX_FILE_BYTES)
-          throw new ContractError('VALIDATION', 'Owned source too large.');
+        {
+          const issue=diagnoseOwnedSource(intent.source).find(item=>item.severity==='error');
+          if(issue)throw new ContractError('VALIDATION',issue.message+
+            (issue.line!==undefined?' Line '+issue.line+', column '+issue.column+'.':''));
+        }
         next.files[slot.sourcePath]=intent.source;
         next.slots[intent.slotKey]={...slot,state:intent.source===slot.originalSource?'S1':'S2'};
         break;

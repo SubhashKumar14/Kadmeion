@@ -64,6 +64,41 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
 }) {
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
+  const railRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const rail = railRef.current;
+    const trigger = rail?.querySelector<HTMLButtonElement>('.ws-mobile-menu');
+    const nav = rail?.querySelector<HTMLElement>('#ws-nav');
+    if (!trigger || !nav) return;
+    // Keep this media query aligned with the compact rail in workspace.css.
+    const media = window.matchMedia('(max-width:720px)');
+    let previousFocus: Element | null = document.activeElement;
+    const rememberFocus = (event: FocusEvent) => {
+      previousFocus = event.target instanceof Element ? event.target : null;
+    };
+    const clearPointerFocus = () => { previousFocus = null; };
+    const onViewportChange = (event: MediaQueryListEvent) => {
+      // CSS can hide a focused control before the media change event fires.
+      const active = document.activeElement;
+      const focused = active === document.body ? previousFocus : active;
+      if (document.hasFocus()) {
+        if (event.matches && focused && nav.contains(focused) && !nav.getClientRects().length) {
+          trigger.focus();
+        } else if (!event.matches && focused === trigger) {
+          (nav.querySelector<HTMLAnchorElement>('[aria-current="page"]') ?? nav.querySelector<HTMLAnchorElement>('a'))?.focus();
+        }
+      }
+      if (!event.matches) setMenuOpen(false);
+    };
+    document.addEventListener('focusin', rememberFocus);
+    document.addEventListener('pointerdown', clearPointerFocus);
+    media.addEventListener('change', onViewportChange);
+    return () => {
+      document.removeEventListener('focusin', rememberFocus);
+      document.removeEventListener('pointerdown', clearPointerFocus);
+      media.removeEventListener('change', onViewportChange);
+    };
+  }, []);
   const [offline, setOffline] = useState(() => !navigator.onLine);
   useEffect(() => {
     const update = () => setOffline(!navigator.onLine);
@@ -83,7 +118,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       const content = document.getElementById('ws-content');
       if (content) { event.preventDefault(); content.focus(); }
     }}>Skip to workspace content</a>
-    <aside className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
+    <aside ref={railRef} className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
       if (event.key === 'Escape' && menuOpen) {
         setMenuOpen(false);
         const trigger = event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu');
@@ -182,14 +217,14 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
     <p role="status" className={note ? "ws-onboarding-note ws-inline-alert" : "ws-onboarding-note"}>{note}</p>
     <div className="ws-actions">
       <button type="button" className="ws-primary" disabled={saving} onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
-      <button type="button" className="ws-secondary" disabled={saving} onClick={() => {
+      <button type="button" className="ws-secondary" aria-disabled={saving} onClick={() => {
         if (skipFlight.current) return;
         skipFlight.current = true;
         const selectedStep = choice;
         setSaving(true); setNote('Saving selected step…');
         void onSkip(selectedStep).then(saved => {
-          setNote(saved ? 'This step was saved as skipped in your private account. You can return later.' :
-            'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying.');
+          setNote(saved ? 'The current private account record is saved as skipped. You can return later.' :
+            'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying; the write outcome may be uncertain.');
         }).catch(() => {
           setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
         }).finally(() => {
@@ -356,19 +391,35 @@ export function WorkspaceApp() {
   }, [route]);
   async function skipChoice(choice: PrivateStep): Promise<boolean> {
     const port=authRef.current;
-    if (!port) return false;
+    if (!port || gate.status !== 'verified') return false;
     const ownerEpoch = port.getOwnerSessionEpoch();
-    const result=await port.setPrivateOnboardingStep(choice,'skipped');
-    if (result.error || !result.data || result.data.step !== choice || result.data.status !== 'skipped')
-      return false;
-    if (authRef.current !== port || port.getOwnerSessionEpoch() !== ownerEpoch) return false;
-    setSnapshot(state=>state.status !== 'ready' ? state : {
-      status:'ready',value:{...state.value,onboarding:[
-        ...state.value.onboarding.filter(item=>item.step!==choice),
-        {step:choice,status:'skipped' as PrivateStepStatus}
-      ]}
-    });
-    return true;
+    const current = () => authRef.current === port && port.getOwnerSessionEpoch() === ownerEpoch;
+    if (ownerEpoch !== gate.epoch || !current()) return false;
+    try {
+      const result=await port.setPrivateOnboardingStep(choice,'skipped');
+      if (!current()) return false;
+      if (!result.error && result.data?.step === choice && result.data.status === 'skipped') {
+        setSnapshot(state=>state.status !== 'ready' ? state : {
+          status:'ready',value:{...state.value,onboarding:[
+            ...state.value.onboarding.filter(item=>item.step!==choice),
+            {step:choice,status:'skipped' as PrivateStepStatus}
+          ]}
+        });
+        return true;
+      }
+    } catch {
+      // An absent acknowledgement does not establish whether the write committed.
+    }
+    if (!current()) return false;
+    try {
+      const read=await port.readOwnerWorkspace();
+      if (!current() || read.error || !read.data) return false;
+      const steps=read.data.onboarding;
+      setSnapshot(state=>state.status !== 'ready' ? state : {
+        status:'ready',value:{...state.value,onboarding:steps}
+      });
+      return steps.some(step=>step.step===choice && step.status==='skipped');
+    } catch { return false; }
   }
   async function signOut() {
     const port = authRef.current;
