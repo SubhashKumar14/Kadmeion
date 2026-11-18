@@ -280,12 +280,17 @@ function Onboarding({ steps, onSkip, offline }: { steps: OwnerWorkspaceSnapshot[
           setSaving(false);
         });
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
-      <a href="/app" className="ws-secondary">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
+    </div>
+    <div className="ws-onboarding-privacy">
+      <div>
+        <strong>Private until you publish.</strong>
+        <p id="ws-onboarding-privacy-note">You can get started without connecting a developer account. Your projects and portfolio stay private unless you explicitly publish them.</p>
+      </div>
+      <a href="/app" className="ws-secondary" aria-describedby="ws-onboarding-privacy-note">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
     </div>
     {offline && <p className="ws-footnote">Saving a skipped step requires a connection. You can leave without saving, but the workspace may not load until you reconnect and verify your owner session.</p>}
     {selectedStatus === 'completed' && <p className="ws-footnote">This step was marked completed in the loaded account records. You can open it again without changing its status.</p>}
     {selectedStatus === 'skipped' && <p className="ws-footnote">This step was already marked skipped in the loaded account records. You can open it again whenever you are ready.</p>}
-    <p className="ws-footnote">You can get started without connecting a developer account.</p>
   </section>;
 }
 
@@ -327,15 +332,16 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
     <div className="ws-recent-grid">
       <section aria-labelledby="ws-recent-title">
         <h2 id="ws-recent-title">Recent work</h2>
-        <ul>
+        {(snapshot.portfolios.length > 0 || snapshot.projects.length > 0) ? <ul>
           {snapshot.portfolios.map(item=><li key={'portfolio-' + item.id}>
             <a href={'/app/portfolios/' + item.id + '/edit'}>{item.title}</a>
             <span>Draft · revision {item.revision}</span></li>)}
           {snapshot.projects.map(item=><li key={'project-' + item.id}>
             <a href={'/app/projects/' + item.id}>{item.title}</a><span>Private project</span></li>)}
-        </ul>
-        {!snapshot.portfolios.length && !snapshot.projects.length &&
-          <p>Nothing to show yet. Your recent private projects and portfolios will appear here.</p>}
+        </ul> : <div className="ws-recent-empty">
+          <span className="ws-area-icon" aria-hidden="true"><Icon name="folder" size={20}/></span>
+          <p><strong>Nothing to show yet.</strong> Your recent private projects and portfolios will appear here.</p>
+        </div>}
       </section>
       <nav aria-labelledby="ws-next-title">
         <h2 id="ws-next-title">Next steps</h2>
