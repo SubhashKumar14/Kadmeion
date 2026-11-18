@@ -6,10 +6,15 @@
 import {publishConsentedUnlistedRelease,checkCurrentPublicDelivery,type FrozenPublicationConsent,type PublicAuthorityRpc} from '../../../packages/storage-adapters/src/unlisted-release-verification.ts';
 import {parseOwnerPublicDelivery,type OwnerPublicDeliveryAcknowledgement} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 
+import type {TrustedPrivateBindingWriter} from '../../../packages/storage-adapters/src/private-artifact-pointer-binding.ts';
+import type {OwnerPublicStageRequest} from '../../../packages/contracts/src/private-release-service.ts';
+
 type Env=Readonly<Record<string,string|undefined>>;
 type Dependencies={
   env?:Env;
   http?:typeof fetch;
+  /** Real local integration injects the scoped SQL writer, never client data. */
+  stageWriter?:TrustedPrivateBindingWriter;
   publish?:(intentId:string,origin:string,rpc:(name:string,body:Record<string,unknown>)=>Promise<unknown>)=>Promise<unknown>;
 };
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -24,7 +29,10 @@ function serverEnv():Env {
     'KADMEION_RELEASE_HOST_REVOCATION_VERIFIED','KADMEION_RELEASE_HOST_ORIGIN',
     'KADMEION_RELEASE_HOSTNAME','KADMEION_ALLOWED_PUBLISH_ORIGINS',
     'SUPABASE_URL','SUPABASE_ANON_KEY','SUPABASE_PUBLISHABLE_KEY',
-    'SUPABASE_SERVICE_ROLE_KEY','KADMEION_LOCAL_INTEGRATION'];
+    'SUPABASE_SERVICE_ROLE_KEY','KADMEION_LOCAL_INTEGRATION',
+    'KADMEION_RELEASE_STAGE_WORKER_ENABLED','KADMEION_PRIVATE_BIND_DB_HOST',
+    'KADMEION_PRIVATE_BIND_DB_PORT','KADMEION_PRIVATE_BIND_DB_NAME',
+    'KADMEION_PRIVATE_BIND_DB_USER','KADMEION_PRIVATE_BIND_DB_PASSWORD','KADMEION_PRIVATE_BIND_DB_CA'];
   return Object.fromEntries(fields.map(k=>[k,deno?.get(k)]));
 }
 function originList(raw:string|undefined):Set<string>|null {
@@ -188,6 +196,67 @@ function parseOwnerPublicationRequest(raw:unknown):OwnerPublicationRequest|null{
   })});
 }
 
+/** No authored HTML, manifest, slot plan or owner ID comes from the caller. */
+function parseOwnerPublicStage(raw:unknown):OwnerPublicStageRequest|null{
+  if(!record(raw)||raw.action!=='STAGE_PUBLIC'||Object.keys(raw).length!==5||
+     !['action','portfolioId','requestId','operationId','expectedGeneration'].every(key=>Object.hasOwn(raw,key)))return null;
+  const canon=(value:unknown):value is string=>typeof value==='string'&&UUID.test(value)&&value===value.toLowerCase();
+  if(!canon(raw.portfolioId)||!canon(raw.requestId)||!canon(raw.operationId)||
+     typeof raw.expectedGeneration!=='number'||!Number.isSafeInteger(raw.expectedGeneration)||
+     raw.expectedGeneration<0||raw.expectedGeneration>=Number.MAX_SAFE_INTEGER-1)return null;
+  return Object.freeze({portfolioId:raw.portfolioId,requestId:raw.requestId,operationId:raw.operationId,
+    expectedGeneration:raw.expectedGeneration});
+}
+
+/** Stage remains private. The configured service-only writer cannot be
+ * acquired by an unauthenticated or foreign caller. Default: unavailable. */
+async function stageOwnerPublic(request:OwnerPublicStageRequest,ownerId:string,jwt:string,
+    config:NonNullable<ReturnType<typeof configuration>>,env:Env,deps:Dependencies,http:typeof fetch){
+  const ownerHeaders={apikey:config.pub,Authorization:'Bearer '+jwt};
+  const isCurrentOwner=async()=>{
+    try{
+      const who=await getJson(config.supabase+'/auth/v1/user',ownerHeaders,http);
+      if(!record(who)||who.id!==ownerId||who.is_anonymous===true)return false;
+      const owned=await getJson(config.supabase+'/rest/v1/portfolios?'+new URLSearchParams({
+        select:'id,owner_user_id,trashed_at',id:'eq.'+request.portfolioId,limit:'2'}),ownerHeaders,http);
+      if(!Array.isArray(owned)||owned.length!==1||!record(owned[0])||owned[0].id!==request.portfolioId||
+         owned[0].owner_user_id!==ownerId||owned[0].trashed_at!==null)return false;
+      const path='/rest/v1/private_release_requests?select=id,portfolio_id,owner_user_id,visibility_intent,status&id=eq.'+
+        encodeURIComponent(request.requestId)+'&limit=2';
+      const rows=await getJson(config.supabase+path,ownerHeaders,http);
+      return Array.isArray(rows)&&rows.length===1&&record(rows[0])&&
+        rows[0].id===request.requestId&&rows[0].portfolio_id===request.portfolioId&&
+        rows[0].owner_user_id===ownerId&&rows[0].visibility_intent==='PUBLIC'&&rows[0].status==='FROZEN';
+    }catch{return false;}
+  };
+  if(!await isCurrentOwner())throw Error('Private public staging unavailable.');
+  const {prepareAndStageOwnerPublicCandidate,SupabaseTrustedReviewerStageWriter}=await import('../../../packages/storage-adapters/src/private-reviewer-staging.ts');
+  const {SupabasePrivateFrozenRevisionLoader}=await import('../../../packages/storage-adapters/src/private-frozen-revision-loader.ts');
+  const {SupabasePrivateReleasePointerService}=await import('../../../packages/contracts/src/private-release-visibility-service.ts');
+  let writer=deps.stageWriter,close:(()=>Promise<void>)|undefined;
+  if(!writer){
+    if(env.KADMEION_RELEASE_STAGE_WORKER_ENABLED!=='true')throw Error('Private stage worker unavailable.');
+    const {openPrivateArtifactPgWorker}=await import('../../../packages/storage-adapters/src/private-artifact-pg-worker.ts');
+    const host=env.KADMEION_PRIVATE_BIND_DB_HOST??'';
+    const local=env.KADMEION_LOCAL_INTEGRATION==='1'&&['127.0.0.1','localhost','::1'].includes(host);
+    const worker=await openPrivateArtifactPgWorker({
+      host,port:Number(env.KADMEION_PRIVATE_BIND_DB_PORT),database:env.KADMEION_PRIVATE_BIND_DB_NAME??'',
+      user:env.KADMEION_PRIVATE_BIND_DB_USER??'',password:env.KADMEION_PRIVATE_BIND_DB_PASSWORD??'',
+      ...(local?{localOnly:true}:{ssl:{rejectUnauthorized:true, ...(env.KADMEION_PRIVATE_BIND_DB_CA?{ca:env.KADMEION_PRIVATE_BIND_DB_CA}:{})}})
+    });
+    writer=worker.writer;close=worker.close;
+  }
+  try{
+    const token=async()=>await isCurrentOwner()?jwt:null;
+    const loader=new SupabasePrivateFrozenRevisionLoader(config.supabase,config.pub,token,http);
+    const pointer=new SupabasePrivateReleasePointerService(config.supabase,config.pub,token,http);
+    return await prepareAndStageOwnerPublicCandidate(request,{
+      isCurrentOwner,loader,pointer,writer,
+      stageWriter:new SupabaseTrustedReviewerStageWriter(config.supabase,config.secret,http)
+    });
+  }finally{await close?.();}
+}
+
 /** Every privileged call is bound to the RLS-verified owner consent. */
 function assertReleaseRpcScope(name:string,input:Record<string,unknown>,request:OwnerPublicationRequest,
     consent:FrozenPublicationConsent,authority:boolean):void{
@@ -276,6 +345,23 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
   let data:unknown;
   try{data=await withPublishDeadline(signal=>bounded(request,MAX_REQUEST,signal));}
   catch{return error(400,'Invalid request',origin,permitted);}
+  if(record(data)&&data.action==='STAGE_PUBLIC'){
+    const stage=parseOwnerPublicStage(data);
+    if(!stage)return error(400,'Invalid private staging request',origin,permitted);
+    // No worker or explicitly authorized configuration: stop before outbound reads.
+    const localStage=env.KADMEION_LOCAL_INTEGRATION==='1'&&
+      ['http://127.0.0.1:54321','http://localhost:54321','http://kong:8000'].includes(config.supabase);
+    if((deps.stageWriter&&!localStage)||(!deps.stageWriter&&env.KADMEION_RELEASE_STAGE_WORKER_ENABLED!=='true'))
+      return error(503,'Trusted staging unavailable',origin,permitted);
+    const http=deps.http??fetch;
+    try{
+      const who=await getJson(config.supabase+'/auth/v1/user',{apikey:config.pub,Authorization:'Bearer '+token},http);
+      if(!record(who)||typeof who.id!=='string'||!UUID.test(who.id)||who.id!==who.id.toLowerCase()||who.is_anonymous===true)
+        return error(401,'Owner session required',origin,permitted);
+      const stored=await stageOwnerPublic(stage,who.id,token,config,env,deps,http);
+      return Response.json(stored,{status:200,headers:headers(origin,permitted)});
+    }catch{return error(503,'Private staging was not confirmed',origin,permitted);}
+  }
   const action=parseOwnerPublicationRequest(data);
   if(!action)return error(400,'Invalid release intent',origin,permitted);
   const {intentId,checkOnly,expected}=action;

@@ -133,3 +133,18 @@ test('forged success receipt cannot unlock public release',async()=>{
   assert.equal(r.status,409);
   assert.equal(calls,0);
 });
+
+test('explicit PROFILE request binds scope and never accepts a PROJECT receipt',async()=>{
+  const body=JSON.stringify({assetId,scope:'PROFILE'});
+  const response=await handleCompletePrivateAsset(req({body}),{env,attest:async(id,jwt,scope)=>{
+    assert.equal(id,assetId);assert.equal(jwt,ownerJwt);assert.equal(scope,'PROFILE');
+    return {assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED'};
+  }});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',
+    publicPublishingAllowed:false,accountDeletionAllowed:false});
+  const wrong=await handleCompletePrivateAsset(req({body}),{env,attest:async()=>({assetId,status:'WRITE_ONCE_ATTESTED'})});
+  assert.equal(wrong.status,409);
+  const invalid=await handleCompletePrivateAsset(req({body:JSON.stringify({assetId,scope:'PROJECT'})}),{env,attest:async()=>{throw Error('Unexpected call');}});
+  assert.equal(invalid.status,400);
+});

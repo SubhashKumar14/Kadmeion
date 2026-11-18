@@ -1,6 +1,6 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision, OwnerFrozenRequest} from '../../auth-web/src/supabase-auth-port.ts';
-import type {PrivateFrozenRequest, FrozenVisibilityIntent, PrivateReleaseAcknowledgement, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage} from '../../../packages/contracts/src/private-release-service.ts';
+import type {PrivateFrozenRequest, FrozenVisibilityIntent, PrivateReleaseAcknowledgement, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage, OwnerPublicationIntentRecord, OwnerPublicationIntentPage, OwnerPublicStageRequest, OwnerPublicStageReceipt} from '../../../packages/contracts/src/private-release-service.ts';
 import type {AuthOutcome} from '../../../packages/contracts/src/auth-service.ts';
 import type {PrivatePointerReceipt, PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
@@ -40,6 +40,61 @@ function samePreparedPointer(a:PrivatePointerSnapshot,b:PrivatePointerSnapshot):
   return a.portfolioId===b.portfolioId&&a.status==='PREPARED_PRIVATE'&&b.status==='PREPARED_PRIVATE'&&
     a.generation===b.generation&&a.revocationGeneration===b.revocationGeneration&&
     a.candidateRequestId===b.candidateRequestId&&a.candidateManifestSha256===b.candidateManifestSha256;
+}
+// Exact structural subset of S1 #96 ownerReleaseDelivery and S9 R30
+// execute/check contract. Main may not yet contain the paired producer.
+// Do not construct this service with a browser-held privileged credential.
+type PublicActionIdentity=Readonly<{portfolioId:string;requestId:string;intentId:string;operationId:string}>;
+type PublicDeliveryEvidence=PublicActionIdentity & Readonly<{
+  visibility:'PUBLIC';releaseGeneration:number;stageGeneration:number;pointerGeneration:number;
+  revocationGeneration:number;deliveryEpoch:number;canonicalPath:string;publicUrl:string;
+  storedHtmlSha256:string;servedHtmlSha256:string;mediaManifest:string|null;
+  assetHashes:readonly string[];observedHttpRequests:number;verifiedAt:string;
+}>;
+type PublicConsent={intentId:string;status:'AWAITING_HOST'|'USED';alreadyRecorded:boolean;publicServingEnabled:false;publicUrl:null};
+type OwnerPublicService={
+  read(id:string):Promise<PrivatePointerSnapshot>;
+  requestPublicPublication(requestId:string,generation:number,operationId:string,confirmation:'PUBLISH PUBLIC'):Promise<PublicConsent>;
+  requestPublicRollback(targetIntentId:string,currentIntentId:string,generation:number,operationId:string,confirmation:'ROLL BACK PUBLIC'):Promise<PublicConsent>;
+  executePublicDelivery(expected:PublicActionIdentity):Promise<PublicDeliveryEvidence>;
+  checkPublicDelivery(expected:PublicActionIdentity):Promise<PublicDeliveryEvidence>;
+  block(id:string,operationId:string):Promise<PrivatePointerReceipt>;
+};
+type OwnerDeliveryScope={service:OwnerPublicService;ownerId:string;adapterEpoch:number;isCurrentOwner:()=>boolean};
+type PublicAttempt={kind:'publish'|'rollback';requestId:string;generation:number;operationId:string;
+  intentId:string|null;targetIntentId?:string;currentIntentId?:string};
+const releaseUuid=(value:unknown):value is string=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+function publicActionFactory(port:SupabaseBrowserAuthPort){
+  const candidate=port as unknown as {ownerReleaseDelivery?:()=>Promise<AuthOutcome<OwnerDeliveryScope|null>>};
+  return typeof candidate.ownerReleaseDelivery==='function'?candidate.ownerReleaseDelivery.bind(port):null;
+}
+function publicStageFactory(port:SupabaseBrowserAuthPort){
+  const candidate=port as unknown as {stageOwnerPublicCandidate?:(request:OwnerPublicStageRequest)=>Promise<AuthOutcome<OwnerPublicStageReceipt>>};
+  return typeof candidate.stageOwnerPublicCandidate==='function'?candidate.stageOwnerPublicCandidate.bind(port):null;
+}
+function publicationIntentReader(port:SupabaseBrowserAuthPort){
+  const candidate=port as unknown as {listOwnerPublicationIntents?:(id:string,limit:number)=>Promise<AuthOutcome<OwnerPublicationIntentPage>>};
+  return typeof candidate.listOwnerPublicationIntents==='function'?candidate.listOwnerPublicationIntents.bind(port):null;
+}
+function samePublicationIntent(a:OwnerPublicationIntentRecord,b:OwnerPublicationIntentRecord):boolean{
+  return a.portfolioId===b.portfolioId&&a.intentId===b.intentId&&a.requestId===b.requestId&&
+    a.operationId===b.operationId&&a.createdAt===b.createdAt&&a.expiresAt===b.expiresAt;
+}
+function historicalPublicTarget(row:OwnerPublicationIntentRecord,ack:PrivateReleaseAcknowledgement):boolean{
+  return row.status==='USED'&&row.intentId===ack.intentId&&row.requestId===ack.requestId&&row.portfolioId===ack.portfolioId;
+}
+function exactDeliveryEvidence(value:PublicDeliveryEvidence,expected:PublicActionIdentity):boolean {
+  return !!value&&value.visibility==='PUBLIC'&&value.portfolioId===expected.portfolioId&&
+    value.requestId===expected.requestId&&value.intentId===expected.intentId&&value.operationId===expected.operationId&&
+    Number.isSafeInteger(value.deliveryEpoch)&&value.deliveryEpoch>0&&
+    Number.isSafeInteger(value.pointerGeneration)&&Number.isSafeInteger(value.releaseGeneration)&&
+    Number.isSafeInteger(value.stageGeneration)&&Number.isSafeInteger(value.revocationGeneration)&&
+    value.stageGeneration>value.revocationGeneration&&value.stageGeneration<=value.releaseGeneration&&
+    value.releaseGeneration<=value.pointerGeneration&&
+    /^[a-f0-9]{64}$/.test(value.storedHtmlSha256)&&/^[a-f0-9]{64}$/.test(value.servedHtmlSha256)&&
+    Array.isArray(value.assetHashes)&&value.assetHashes.length<=8&&
+    value.observedHttpRequests===4+2*value.assetHashes.length&&
+    typeof value.verifiedAt==='string'&&Number.isFinite(Date.parse(value.verifiedAt));
 }
 type SnapshotDelta={key:string;kind:'Added'|'Removed'|'Changed';beforeBytes:number|null;afterBytes:number|null;fields?:string[]};
 type FrozenComparison={
@@ -864,8 +919,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               onClick={()=>void selectAcknowledgedRequest(ackSelection)}>Retry acknowledged owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy} onClick={cancelHistoricalSelection}>Cancel acknowledged pin selection</button>
           </div>}
-          <button type="button" className="ws-secondary" disabled>Public rollback unavailable — host proof required</button>
-          <p className="ws-field-hint">A rollback requires a previously host-attested live release, a guarded pointer change and new GET/HEAD plus media verification. None is inferred from a private frozen request.</p>
+          {!publicActionFactory(port)&&<button type="button" className="ws-secondary" disabled>Public rollback unavailable — host proof required</button>}
+          <p className="ws-field-hint">Public rollback uses authoritative delivery controls, not a historical database acknowledgement alone.</p>
         </> : <>
           <h2>{mode==='staging'?'Prepare a frozen reviewer revision':'Inspect a saved revision'}</h2>
           <p>Freeze a selected immutable saved revision with its content digest. Unsaved editor changes are not included.</p>
@@ -1001,10 +1056,16 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <div className="ws-actions">
               {result?.status==='PREVIEW_ONLY' && <button className="ws-primary" type="button" disabled={readsBusy}
                 onClick={()=>void downloadStaticPreview()}>Download offline static preview ZIP</button>}
-              <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>
+              {(!publicActionFactory(port)||!frozen||frozen.visibilityIntent!=='PUBLIC'||
+                result?.status!=='PREVIEW_ONLY'||result.blockers.length!==1||
+                result.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')&&
+                <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>}
             </div>
           </div>}
         </>}
+        {(mode==='publish'||mode==='releases')&&<AuthoritativePublicDelivery port={port} portfolioId={id}
+          frozen={historySelection||ackSelection?null:frozen} preflight={result}
+          disabled={readsBusy} pointer={pointer} begin={beginReleaseAction} setBusy={setBusy} onPointer={setPointer}/>}
         {(mode==='publish'||mode==='releases')&&frozen&&!historySelection&&
           <section className="ws-release-action" aria-labelledby="private-pin-preview-title">
             <h3 id="private-pin-preview-title">Owner-private preview of frozen revision {frozen.revision}</h3>
@@ -1103,6 +1164,445 @@ type ReleaseHistoryPort=SupabaseBrowserAuthPort & {
     after?:PrivateReleaseAcknowledgementCursor|null):Promise<AuthOutcome<PrivateReleaseAcknowledgementPage>>;
 };
 const ACK_PAGE_SIZE=25,ACK_MAX_ROWS=500;
+/**
+ * Owner-only C11 action panel. A prepared pointer and the server-side
+ * consent RPC's staged-artifact check are prerequisites. A parsed Edge
+ * acknowledgement is the only positive public-delivery evidence. Never
+ * synthesize URLs from handles, historical ACKs or a private block receipt.
+ */
+function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled,pointer,begin,setBusy,onPointer}:{
+  port:SupabaseBrowserAuthPort;portfolioId:string;frozen:PrivateFrozenRequest|null;
+  preflight:SafePreviewResult|null;disabled:boolean;pointer:PrivatePointerSnapshot|null;
+  begin:()=>{current:()=>boolean;finish:()=>void}|null;setBusy:(busy:boolean)=>void;
+  onPointer:(pointer:PrivatePointerSnapshot)=>void;
+}){
+  const factory=publicActionFactory(port);
+  const pending=useRef<PublicAttempt|null>(null);
+  const withdrawal=useRef<{operationId:string;receipt:PrivatePointerReceipt|null}|null>(null);
+  const [attempt,setAttempt]=useState<PublicAttempt|null>(null);
+  const [withdrawing,setWithdrawing]=useState(false);
+  const [receipt,setReceipt]=useState<PublicDeliveryEvidence|null>(null);
+  const [liveComparison,setLiveComparison]=useState<{evidence:PublicDeliveryEvidence;comparison:FrozenComparison}|null>(null);
+  const [history,setHistory]=useState<PublicDeliveryEvidence[]>([]);
+  const [recovered,setRecovered]=useState<OwnerPublicationIntentPage|null>(null);
+  const [recoveryId,setRecoveryId]=useState('');
+  const [acknowledged,setAcknowledged]=useState<PrivateReleaseAcknowledgement[]>([]);
+  const reader=publicationIntentReader(port);
+  const stageFactory=publicStageFactory(port);
+  const stageFlight=useRef<OwnerPublicStageRequest|null>(null);
+  const [stageAttempt,setStageAttempt]=useState<OwnerPublicStageRequest|null>(null);
+  const [staged,setStaged]=useState<OwnerPublicStageReceipt|null>(null);
+  const [rollbackId,setRollbackId]=useState('');
+  const [notice,setNotice]=useState('');
+  const [error,setError]=useState('');
+  const epoch=useRef(0);
+  const receiptOwner=useRef<string|null>(null);
+  useLayoutEffect(()=>{
+    const clear=()=>{++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;
+      setAttempt(null);setWithdrawing(false);setReceipt(null);setLiveComparison(null);setHistory([]);setRollbackId('');setNotice('');setError('');
+      setRecovered(null);setRecoveryId('');setAcknowledged([]);stageFlight.current=null;setStageAttempt(null);setStaged(null);};
+    clear();
+    const unsubscribe=port.subscribeOwnerSessionEpoch(clear);
+    return()=>{unsubscribe();++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;stageFlight.current=null;};
+  },[port,portfolioId]);
+  useLayoutEffect(()=>{
+    if(!pointer)return;
+    setLiveComparison(previous=>previous&&(pointer.portfolioId!==portfolioId||pointer.status!=='PREPARED_PRIVATE'||
+      pointer.generation!==previous.evidence.pointerGeneration||pointer.revocationGeneration!==previous.evidence.revocationGeneration)?null:previous);
+    setStaged(previous=>previous&&(pointer.portfolioId!==portfolioId||pointer.status!=='PREPARED_PRIVATE'||
+      pointer.generation!==previous.generation||pointer.candidateRequestId!==previous.requestId||
+      pointer.candidateManifestSha256!==previous.manifestSha256)?null:previous);
+    setReceipt(previous=>previous&&(pointer.status==='BLOCKED'||
+      pointer.portfolioId!==portfolioId||pointer.generation>previous.pointerGeneration||
+      pointer.revocationGeneration>=previous.stageGeneration)?null:previous);
+  },[pointer,portfolioId]);
+  function retain(value:PublicAttempt|null){pending.current=value;setAttempt(value?{...value}:null);}
+  /** Read-only point-in-time comparison of a host-verified release's actual frozen pin and saved draft. */
+  async function compareLiveWithDraft(){
+    if(!factory||disabled||!receipt||pending.current||withdrawal.current||stageFlight.current)return;
+    const action=begin();if(!action)return;
+    const started=epoch.current,expected=receipt;
+    let scope:OwnerDeliveryScope|null=null;
+    const current=()=>action.current()&&epoch.current===started&&(!scope||scope.isCurrentOwner());
+    setBusy(true);setLiveComparison(null);setReceipt(null);setError('');setNotice('');
+    try{
+      const opened=await factory();
+      if(!current())return;
+      if(opened.error||!opened.data||!opened.data.isCurrentOwner()||!releaseUuid(opened.data.ownerId)||
+        opened.data.ownerId!==receiptOwner.current)throw Error('Owner changed.');
+      scope=opened.data;
+      const first=await scope.service.checkPublicDelivery(expected);
+      if(!current())return;
+      if(!exactDeliveryEvidence(first,expected))throw Error('Current delivery not verified.');
+      const pin=await port.loadOwnerFrozenRelease(first.requestId);
+      if(!current())return;
+      // loadOwnerFrozenRelease rejects a mismatched server requestId before returning the attested snapshot.
+      if(pin.error||!pin.data||pin.data.frozen.portfolioId!==portfolioId||
+        pin.data.frozen.visibilityIntent!=='PUBLIC'||!matchesFrozenPin(pin.data,pin.data.frozen))throw Error('Live frozen pin not verified.');
+      const draft=await port.readOwnerPortfolio(portfolioId);
+      if(!current())return;
+      if(draft.error||!draft.data?.snapshot||draft.data.id!==portfolioId||!Number.isSafeInteger(draft.data.revision)||
+        draft.data.revision<pin.data.loadedRevision)throw Error('Saved draft not verified.');
+      const final=await scope.service.checkPublicDelivery(expected);
+      if(!current())return;
+      // Verification time may change; every other authority/host field must remain identical.
+      const {verifiedAt: firstAt,...firstIdentity}=first;
+      const {verifiedAt: finalAt,...finalIdentity}=final;
+      if(!exactDeliveryEvidence(final,expected)||canonicalValue(firstIdentity)!==canonicalValue(finalIdentity))
+        throw Error('Delivery changed during comparison.');
+      const observed=await scope.service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+        observed.generation!==final.pointerGeneration||observed.revocationGeneration!==final.revocationGeneration)
+        throw Error('Pointer changed during comparison.');
+      const before=pin.data.snapshot,after=draft.data.snapshot;
+      if(draft.data.revision===pin.data.loadedRevision&&canonicalValue(before)!==canonicalValue(after))
+        throw Error('Same revision snapshots disagree.');
+      onPointer(observed);setReceipt(final);
+      setHistory(rows=>[final,...rows.filter(item=>item.intentId!==final.intentId)].slice(0,20));
+      setLiveComparison({evidence:final,comparison:{requestId:final.requestId,frozenRevision:pin.data.loadedRevision,
+        draftRevision:draft.data.revision,targetKind:'SAVED_DRAFT',files:snapshotDelta(before.files,after.files),
+        slots:snapshotDelta(before.slots,after.slots),stashes:snapshotDelta(before.stashes,after.stashes),
+        frozenSnapshot:before,draftSnapshot:after,title:draft.data.title}});
+    }catch{
+      if(current())setError('The current public delivery and saved draft could not both be verified. Recheck authoritative delivery, then retry the comparison.');
+    }finally{action.finish();}
+  }
+  async function stage(){
+    if(!stageFactory||!factory||disabled||pending.current||withdrawal.current||!frozen||
+      frozen.portfolioId!==portfolioId||frozen.visibilityIntent!=='PUBLIC'||
+      preflight?.status!=='PREVIEW_ONLY'||preflight.blockers.length!==1||
+      preflight.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')return;
+    const existing=stageFlight.current;
+    if(existing&&existing.requestId!==frozen.requestId){setError('Select the original frozen revision to retry its stage operation.');return;}
+    if(!window.confirm(existing?'Retry this exact private staging operation?':'Prepare this exact frozen revision in trusted private staging? Nothing is published by this action.'))return;
+    const action=begin();if(!action)return;
+    const started=epoch.current;
+    let scope:OwnerDeliveryScope|null=null;
+    const current=()=>action.current()&&epoch.current===started&&(!scope||scope.isCurrentOwner());
+    setBusy(true);setError('');setNotice('');setStaged(null);setLiveComparison(null);
+    try{
+      const opened=await factory();
+      if(!current())return;
+      if(opened.error||!opened.data||!opened.data.isCurrentOwner()||!releaseUuid(opened.data.ownerId))
+        throw Error('Owner unavailable.');
+      scope=opened.data;
+      if(receiptOwner.current!==null&&receiptOwner.current!==scope.ownerId)throw Error('Owner changed.');
+      receiptOwner.current=scope.ownerId;
+      const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
+      if(!current())return;
+      if(!matchesFrozenPin(pin.data,frozen))throw Error('Frozen candidate unavailable.');
+      const checked=prepareSafeStaticPreview({...pin.data,plan:buildPlan(pin.data.snapshot)});
+      if(checked.status!=='PREVIEW_ONLY'||checked.blockers.length!==1||
+         checked.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')throw Error('Private preflight changed.');
+      const before=await scope.service.read(portfolioId);
+      if(!current())return;
+      if(before.portfolioId!==portfolioId||!Number.isSafeInteger(before.generation)||before.generation<0)
+        throw Error('Pointer could not be reviewed.');
+      const request=existing??{portfolioId,requestId:frozen.requestId,operationId:crypto.randomUUID(),expectedGeneration:before.generation};
+      if(existing&&before.generation!==existing.expectedGeneration&&
+        !(before.generation===existing.expectedGeneration+1&&before.status==='PREPARED_PRIVATE'&&
+          before.candidateRequestId===existing.requestId))throw Error('Pointer changed after staging; original outcome unconfirmed.');
+      stageFlight.current=request;setStageAttempt({...request});
+      const response=await stageFactory(request);
+      if(!current())return;
+      if(response.error||!response.data)throw Error('Staging was not confirmed.');
+      const value=response.data;
+      if(value.status!=='STAGED_PRIVATE'||value.portfolioId!==portfolioId||value.requestId!==request.requestId||
+        value.operationId!==request.operationId||value.generation!==request.expectedGeneration+1||
+        !/^[a-f0-9]{64}$/.test(value.manifestSha256)||!/^[a-f0-9]{64}$/.test(value.htmlSha256)||
+        value.publicServingEnabled!==false||value.publicUrl!==null)throw Error('Different stage receipt.');
+      const observed=await scope.service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+        observed.generation!==value.generation||observed.candidateRequestId!==value.requestId||
+        observed.candidateManifestSha256!==value.manifestSha256||observed.revocationGeneration>=value.generation)
+        throw Error('Prepared stage changed.');
+      onPointer(observed);setStaged(value);stageFlight.current=null;setStageAttempt(null);
+      setNotice('Trusted private stage acknowledged and pointer rechecked. Publishing needs separate explicit consent.');
+    }catch{
+      if(current())setError('Trusted staging could not be confirmed. Retry the same operation; no public publication is inferred.');
+    }finally{action.finish();}
+  }
+  async function recover(kind:'load'|'check'|'resume'){
+    if(!factory||!reader||disabled||withdrawal.current||pending.current||stageFlight.current)return;
+    const selected=recovered?.items.find(row=>row.intentId===recoveryId);
+    if(kind!=='load'&&!selected)return;
+    if(kind==='check'&&selected?.status!=='USED')return;
+    if(kind==='resume'&&(selected?.status!=='AWAITING_HOST'||Date.parse(selected.expiresAt)<=Date.now()))return;
+    if(kind==='resume'&&!window.confirm('Resume this exact saved publication consent? This may publish the frozen revision.'))return;
+    const action=begin();if(!action)return;
+    const started=epoch.current;
+    let scope:OwnerDeliveryScope|null=null;
+    const current=()=>action.current()&&started===epoch.current&&(!scope||scope.isCurrentOwner());
+    setBusy(true);setError('');setNotice('');
+    if(kind!=='load'){setReceipt(null);setLiveComparison(null);}
+    try{
+      const opened=await factory();
+      if(!current())return;
+      if(opened.error||!opened.data||!opened.data.isCurrentOwner()||!releaseUuid(opened.data.ownerId))
+        throw Error('Owner unavailable.');
+      scope=opened.data;
+      if(receiptOwner.current!==null&&receiptOwner.current!==scope.ownerId)throw Error('Owner changed.');
+      receiptOwner.current=scope.ownerId;
+      const list=await reader(portfolioId,50);
+      if(!current())return;
+      if(list.error||!list.data)throw Error('Publication intent history unavailable.');
+      setRecovered(list.data);
+      if(kind==='load'){
+        const page=await port.listOwnerReleaseAcknowledgements(portfolioId,50,null);
+        if(!current())return;
+        setAcknowledged(page.error?[]:page.data?.items??[]);
+        if(page.error)throw Error('Historical acknowledgements unavailable.');
+        setNotice('Owner consent metadata reloaded. No public delivery inferred.');return;
+      }
+      const fresh=list.data.items.find(row=>row.intentId===selected!.intentId);
+      if(!fresh||!samePublicationIntent(fresh,selected!))throw Error('Consent identity changed.');
+      const pin=await port.loadOwnerFrozenRelease(fresh.requestId);
+      if(!current())return;
+      if(!pin.data||pin.data.loadedPortfolioId!==portfolioId||pin.data.frozen.portfolioId!==portfolioId||
+         pin.data.frozen.visibilityIntent!=='PUBLIC'||!matchesFrozenPin(pin.data,pin.data.frozen))throw Error('PUBLIC frozen pin unavailable.');
+      const expected={portfolioId,requestId:fresh.requestId,intentId:fresh.intentId,operationId:fresh.operationId};
+      let verified:PublicDeliveryEvidence;
+      if(fresh.status==='USED')verified=await scope.service.checkPublicDelivery(expected);
+      else{
+        if(kind!=='resume'||Date.parse(fresh.expiresAt)<=Date.now())throw Error('Consent not executable.');
+        verified=await scope.service.executePublicDelivery(expected);
+      }
+      if(!current())return;
+      if(!exactDeliveryEvidence(verified,expected))throw Error('Different receipt.');
+      const observed=await scope.service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+         observed.generation!==verified.pointerGeneration||observed.revocationGeneration!==verified.revocationGeneration)
+        throw Error('Pointer changed during recovery.');
+      onPointer(observed);setReceipt(verified);
+      setHistory(rows=>[verified,...rows.filter(item=>item.intentId!==verified.intentId)].slice(0,20));
+      setNotice('Exact current public receipt recovered from the saved consent identity.');
+      // Keep the persisted identity selected. If the next metadata read fails,
+      // its display never substitutes for current host verification.
+      setRecovered(previous=>previous?{...previous,items:previous.items.map(row=>row.intentId===fresh.intentId?{...row,status:'USED'}:row)}:previous);
+    }catch{
+      if(current())setError(kind==='load'?'Saved publication intents or historical acknowledgements could not be loaded.':
+        'This saved consent did not produce a current verified receipt. Reload and check the same identity; no replacement consent was created.');
+    }finally{action.finish();}
+  }
+  async function run(kind:'publish'|'rollback'|'retry'|'check'|'withdraw'){
+    if(!factory||disabled||(kind!=='withdraw'&&stageFlight.current))return;
+    if(kind==='check'&&pending.current&&!pending.current.intentId)return;
+    if(kind!=='withdraw'&&withdrawal.current)return;
+    if((kind==='publish'||kind==='rollback')&&pending.current)return;
+    if(kind==='retry'&&!pending.current)return;
+    if(kind==='check'&&!pending.current?.intentId&&!receipt&&!history.length)return;
+    const savedTarget=recovered?.items.find(item=>item.intentId===rollbackId&&acknowledged.some(ack=>historicalPublicTarget(item,ack)));
+    const target=kind==='rollback'?(history.find(item=>item.intentId===rollbackId)??savedTarget):undefined;
+    if(kind==='rollback'&&(!target||!receipt||target.intentId===receipt.intentId))return;
+    if(kind==='publish'&&(!frozen||frozen.portfolioId!==portfolioId||frozen.visibilityIntent!=='PUBLIC'||
+      preflight?.status!=='PREVIEW_ONLY'||preflight.blockers.length!==1||preflight.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED'))return;
+    if(kind==='publish'&&!window.confirm('Publish this exact frozen PUBLIC revision? It may become visible on the public website.'))return;
+    if(kind==='rollback'&&!window.confirm('Roll back to the selected previously verified public release? This changes the publicly served content.'))return;
+    if(kind==='retry'&&!window.confirm('Retry the same recorded publication operation? No new consent operation will be created.'))return;
+    if(kind==='withdraw'&&!withdrawal.current&&!window.confirm('Withdraw all current and pending delivery for this portfolio? This is a portfolio-wide database block, not a verified external revocation.'))return;
+    const action=begin();if(!action)return;
+    const started=epoch.current;
+    let scope:OwnerDeliveryScope|null=null;
+    const current=()=>action.current()&&epoch.current===started&&(!scope||scope.isCurrentOwner());
+    setBusy(true);setError('');setNotice('');
+    // Hide the previous positive receipt while an action/read is in flight.
+    const previous=receipt;
+    const lastVerified=previous??history[0];
+    setReceipt(null);setLiveComparison(null);
+    try{
+      const opened=await factory();
+      if(!current())return;
+      if(opened.error||!opened.data||!opened.data.isCurrentOwner()||
+        !releaseUuid(opened.data.ownerId)||!Number.isSafeInteger(opened.data.adapterEpoch))throw Error('Owner delivery unavailable.');
+      scope=opened.data;
+      const service=scope.service;
+      if(!['read','requestPublicPublication','requestPublicRollback','executePublicDelivery','checkPublicDelivery','block'].every(
+        key=>typeof service[key as keyof OwnerPublicService]==='function'))throw Error('C11 producer unavailable.');
+      if(receiptOwner.current!==null&&receiptOwner.current!==scope.ownerId)throw Error('Owner changed.');
+      receiptOwner.current=scope.ownerId;
+      if(kind==='withdraw'){
+        const work=withdrawal.current??{operationId:crypto.randomUUID(),receipt:null};
+        withdrawal.current=work;setWithdrawing(true);
+        if(!work.receipt){
+          const block=await service.block(portfolioId,work.operationId);
+          if(!current())return;
+          if(block.portfolioId!==portfolioId||!Number.isSafeInteger(block.generation)||block.generation<1||
+            block.publicServingEnabled!==false||block.publicUrl!==null||block.hostRevocationVerified!==false)
+            throw Error('Block not acknowledged.');
+          work.receipt=block;
+        }
+        const observed=await service.read(portfolioId);
+        if(!current())return;
+        onPointer(observed);
+        if(observed.portfolioId!==portfolioId||observed.status!=='BLOCKED'||
+           observed.generation!==work.receipt.generation||observed.revocationGeneration!==observed.generation||
+           work.receipt.stillBlocked!==true)throw Error('Current withdrawal not confirmed.');
+        withdrawal.current=null;setWithdrawing(false);
+        // A confirmed portfolio-wide block also invalidates pending staging
+        // and consent. Never abandon their identity merely on timeout.
+        retain(null);stageFlight.current=null;setStageAttempt(null);setStaged(null);
+        setNotice('Database delivery withdrawn and blocked pointer rechecked. External canonical, alias and media GET/HEAD denial is not independently verified.');
+        return;
+      }
+      let work=pending.current;
+      if(kind==='check'){
+        const expected=work?.intentId?{portfolioId,requestId:work.requestId,intentId:work.intentId,operationId:work.operationId}:lastVerified;
+        if(!expected)throw Error('No exact intent to check.');
+        const checked=await service.checkPublicDelivery(expected);
+        if(!current())return;
+        if(!exactDeliveryEvidence(checked,expected))throw Error('Receipt mismatch.');
+        const observed=await service.read(portfolioId);
+        if(!current())return;
+        if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+           observed.generation!==checked.pointerGeneration||observed.revocationGeneration!==checked.revocationGeneration)
+          throw Error('Pointer changed after delivery check.');
+        onPointer(observed);
+        setReceipt(checked);setHistory(rows=>[checked,...rows.filter(item=>item.intentId!==checked.intentId)].slice(0,20));
+        if(work?.intentId===expected.intentId)retain(null);
+        setNotice('Current canonical delivery and media observations verified.');return;
+      }
+      if(!work){
+        const pointer=await service.read(portfolioId);
+        if(!current())return;
+        if(pointer.portfolioId!==portfolioId||pointer.status!=='PREPARED_PRIVATE'||pointer.generation<1)
+          throw Error('A server-staged private candidate is required.');
+        onPointer(pointer);
+        if(kind==='publish'){
+          if(!frozen||pointer.candidateRequestId!==frozen.requestId)throw Error('Prepared candidate has changed.');
+          const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
+          if(!current())return;
+          if(!matchesFrozenPin(pin.data,frozen))throw Error('Frozen candidate unavailable.');
+          const result=prepareSafeStaticPreview({...pin.data,plan:buildPlan(pin.data.snapshot)});
+          if(result.status!=='PREVIEW_ONLY'||result.blockers.length!==1||result.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')
+            throw Error('Private preflight no longer eligible.');
+          work={kind:'publish',requestId:frozen.requestId,generation:pointer.generation,operationId:crypto.randomUUID(),intentId:null};
+        }else if(kind==='rollback'&&target&&previous){
+          const checked=await service.checkPublicDelivery(previous);
+          if(!current())return;
+          if(!exactDeliveryEvidence(checked,previous)||checked.pointerGeneration!==pointer.generation||
+             checked.intentId===target.intentId||('stageGeneration' in target&&target.stageGeneration<=pointer.revocationGeneration))
+            throw Error('Current public release or rollback target changed.');
+          const pin=await port.loadOwnerFrozenRelease(target.requestId);
+          if(!current())return;
+          if(!pin.data||pin.data.frozen.portfolioId!==portfolioId||pin.data.frozen.visibilityIntent!=='PUBLIC'||
+             !matchesFrozenPin(pin.data,pin.data.frozen))throw Error('Rollback snapshot not verified.');
+          work={kind:'rollback',requestId:target.requestId,generation:pointer.generation,
+            operationId:crypto.randomUUID(),intentId:null,targetIntentId:target.intentId,currentIntentId:checked.intentId};
+        }else throw Error('No reviewed action.');
+        retain(work);
+      }
+      if(!work.intentId){
+        const consent=work.kind==='publish'
+          ?await service.requestPublicPublication(work.requestId,work.generation,work.operationId,'PUBLISH PUBLIC')
+          :await service.requestPublicRollback(work.targetIntentId!,work.currentIntentId!,work.generation,work.operationId,'ROLL BACK PUBLIC');
+        if(!current())return;
+        if(!releaseUuid(consent.intentId)||consent.publicServingEnabled!==false||consent.publicUrl!==null||
+          (consent.status!=='AWAITING_HOST'&&!(consent.status==='USED'&&consent.alreadyRecorded)))throw Error('Consent not confirmed.');
+        work={...work,intentId:consent.intentId};retain(work);
+      }
+      const expected={portfolioId,requestId:work.requestId,intentId:work.intentId!,operationId:work.operationId};
+      // A lost response on retry may mean the release is already live.
+      // Try read-only verification first, then the explicitly confirmed same
+      // operation only. Never generate a second intent to obtain success.
+      let delivered:PublicDeliveryEvidence|null=null;
+      if(kind==='retry'){try{delivered=await service.checkPublicDelivery(expected);}catch{/* no positive receipt */}}
+      if(!current())return;
+      delivered??=await service.executePublicDelivery(expected);
+      if(!current())return;
+      if(!exactDeliveryEvidence(delivered,expected))throw Error('Receipt mismatch.');
+      const observed=await service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+         observed.generation!==delivered.pointerGeneration||observed.revocationGeneration!==delivered.revocationGeneration)
+        throw Error('Pointer changed after publication receipt.');
+      onPointer(observed);
+      setReceipt(delivered);setHistory(rows=>[delivered!,...rows.filter(item=>item.intentId!==delivered!.intentId)].slice(0,20));
+      retain(null);setRollbackId('');
+      setNotice('Public delivery acknowledged by the authority and host observation contract.');
+    }catch{
+      if(current())setError(kind==='withdraw'?'Withdrawal or current database readback not confirmed. Retry the same block; external denial is unverified.':
+        'Delivery is not confirmed. A trusted staged candidate, current C11/C14 service and host proof are required. Retained operations must be checked or retried without new consent.');
+    }finally{action.finish();}
+  }
+  if(!factory)return <div className="ws-release-action"><h3>Authoritative public delivery</h3>
+    <p>The paired C11 owner service is unavailable. No public action, rollback or public receipt is enabled.</p></div>;
+  const eligible=!!frozen&&frozen.visibilityIntent==='PUBLIC'&&preflight?.status==='PREVIEW_ONLY'&&
+    preflight.blockers.length===1&&preflight.blockers[0]?.code==='PUBLIC_DELIVERY_UNVERIFIED';
+  return <section className="ws-release-action" aria-label="Authoritative public delivery">
+    <h3>Authoritative public delivery</h3>
+    <p>Publication requires an exact PUBLIC frozen revision, trusted server staging and explicit consent. Only a fresh verified delivery receipt identifies a public URL.</p>
+    {error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
+    {attempt&&<p role="status">Pending {attempt.kind} operation. {attempt.intentId?'Intent recorded; delivery not confirmed.':'Consent not confirmed.'} Check or retry the same operation. Recorded consents can also be recovered after reopening this route.</p>}
+    <div className="ws-release-action" role="group" aria-label="Trusted private public staging">
+      <h4>Prepare trusted private artifact</h4>
+      <p>The server reloads the frozen revision, derives its pinned render plan and binds/stores the exact scriptless bytes. Client HTML is not accepted. Private staging cannot publish a route.</p>
+      <button type="button" className="ws-secondary" disabled={!stageFactory||disabled||!!attempt||withdrawing||!eligible||
+        !!(stageAttempt&&stageAttempt.requestId!==frozen?.requestId)}
+        onClick={()=>void stage()}>{stageAttempt?'Retry same private staging operation':'Prepare trusted private artifact'}</button>
+      {!stageFactory&&<p>Owner staging transport is not installed.</p>}
+      {stageAttempt&&<p role="status">Stage outcome unconfirmed. Retain the original operation and selected frozen revision.</p>}
+      {staged&&staged.requestId===frozen?.requestId&&<dl className="ws-release-facts">
+        <dt>Private stage generation</dt><dd>{staged.generation}</dd>
+        <dt>Manifest SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staged.manifestSha256}</code></dd>
+        <dt>Staged HTML SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staged.htmlSha256}</code></dd>
+      </dl>}
+    </div>
+    {receipt&&<dl className="ws-release-facts"><dt>Last verified public address</dt><dd>{receipt.publicUrl}</dd>
+      <dt>Verified at</dt><dd><time dateTime={receipt.verifiedAt}>{receipt.verifiedAt}</time></dd>
+      <dt>Delivery epoch</dt><dd>{receipt.deliveryEpoch}</dd><dt>Release generation</dt><dd>{receipt.releaseGeneration}</dd>
+      <dt>Stored HTML SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{receipt.storedHtmlSha256}</code></dd>
+      <dt>Served HTML SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{receipt.servedHtmlSha256}</code></dd>
+      <dt>Verified media</dt><dd>{receipt.assetHashes.length} · {receipt.observedHttpRequests} HTTP observations</dd></dl>}
+    <div className="ws-actions">
+      <button type="button" className="ws-primary" disabled={disabled||!!attempt||withdrawing||!!stageAttempt||!eligible}
+        onClick={()=>void run('publish')}>{history.length?'Publish another verified candidate':'Publish public candidate'}</button>
+      <button type="button" className="ws-secondary" disabled={disabled||withdrawing||!!stageAttempt||!!(attempt&&!attempt.intentId)||(!receipt&&!history.length&&!attempt?.intentId)}
+        onClick={()=>void run('check')}>Recheck authoritative delivery</button>
+      {attempt&&<button type="button" className="ws-secondary" disabled={disabled} onClick={()=>void run('retry')}>Retry same consent operation</button>}
+    </div>
+    <div className="ws-release-action" role="group" aria-label="Draft versus verified live release">
+      <h4>Compare saved draft with live release</h4>
+      <p>Rechecks the actual public delivery before and after reading its exact owner-private frozen pin and the saved draft. Unsaved edits are excluded. This is a point-in-time source comparison, not a screenshot of the public site.</p>
+      <button type="button" className="ws-secondary" disabled={disabled||!receipt||!!attempt||withdrawing||!!stageAttempt}
+        onClick={()=>void compareLiveWithDraft()}>Compare saved draft with verified live release</button>
+      {liveComparison&&receipt&&liveComparison.evidence.intentId===receipt.intentId&&
+        liveComparison.evidence.deliveryEpoch===receipt.deliveryEpoch&&
+        <><p>Live release generation {liveComparison.evidence.releaseGeneration} · checked <time dateTime={liveComparison.evidence.verifiedAt}>{liveComparison.evidence.verifiedAt}</time>.</p>
+        <FrozenComparisonResults comparison={liveComparison.comparison}/></>}
+    </div>
+    <div className="ws-release-action" role="group" aria-label="Saved publication consent recovery">
+      <h4>Recover saved publication consent</h4>
+      <p>Reload owner-private database identities. A used consent is not proof that its route is currently live; only the authoritative check can confirm that.</p>
+      <button type="button" className="ws-secondary" disabled={!reader||disabled||!!attempt||withdrawing||!!stageAttempt} onClick={()=>void recover('load')}>Load saved publication intents</button>
+      {recovered&&<><label>Saved publication intent
+        <select value={recoveryId} disabled={disabled||!!attempt||withdrawing||!!stageAttempt} onChange={event=>setRecoveryId(event.target.value)}>
+          <option value="">Select recorded intent</option>{recovered.items.map(item=><option key={item.intentId} value={item.intentId}>
+            {item.status==='USED'?'Used':'Awaiting delivery'} · {item.createdAt} · {item.intentId.slice(0,8)}</option>)}
+        </select></label>
+        {recovered.truncated&&<p>Latest 50 intents shown; older records may exist.</p>}
+        <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!!stageAttempt||!recovered.items.some(item=>item.intentId===recoveryId&&item.status==='USED')}
+          onClick={()=>void recover('check')}>Verify current delivery of saved intent</button>
+        <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!!stageAttempt||!recovered.items.some(item=>item.intentId===recoveryId&&item.status==='AWAITING_HOST'&&Date.parse(item.expiresAt)>Date.now())}
+          onClick={()=>void recover('resume')}>Resume saved consent</button></>}
+      {!reader&&<p>Owner intent reader unavailable until the paired C11 transport is installed.</p>}
+    </div>
+    <label>Previously acknowledged release
+      <select value={rollbackId} disabled={disabled||!!attempt||withdrawing||!!stageAttempt||!receipt} onChange={event=>setRollbackId(event.target.value)}>
+        <option value="">Choose rollback target</option>{history.filter(item=>item.intentId!==receipt?.intentId).map(item=>
+        <option key={item.intentId} value={item.intentId}>Generation {item.releaseGeneration} · {item.verifiedAt}</option>)}
+        {recovered?.items.filter(item=>item.intentId!==receipt?.intentId&&!history.some(local=>local.intentId===item.intentId)&&acknowledged.some(ack=>historicalPublicTarget(item,ack))).map(item=>
+          <option key={item.intentId} value={item.intentId}>Database history · {item.createdAt} · {item.intentId.slice(0,8)}</option>)}</select></label>
+    <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!!stageAttempt||!receipt||!rollbackId}
+      onClick={()=>void run('rollback')}>Roll back public release</button>
+    <button type="button" className="ws-secondary" disabled={disabled||(!receipt&&!withdrawing&&history.length===0&&!attempt&&!stageAttempt&&pointer?.status!=='PREPARED_PRIVATE')}
+      onClick={()=>void run('withdraw')}>{withdrawing?'Recheck or retry same withdrawal':'Withdraw portfolio delivery'}</button>
+    <p className="ws-field-hint">Positive receipts here are held only for this mounted owner review. Reload saved consent after a page change and request a fresh check. Historical database acknowledgements alone are not current host evidence. Withdrawal requires independent external denial proof.</p>
+  </section>;
+}
+
 function mergeReleaseAcknowledgements(portfolioId:string,previous:readonly PrivateReleaseAcknowledgement[],
     page:PrivateReleaseAcknowledgementPage):PrivateReleaseAcknowledgementPage {
   const seen=new Set(previous.map(row=>row.intentId));
