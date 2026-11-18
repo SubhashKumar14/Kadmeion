@@ -2346,14 +2346,16 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  async readOwnerProject(projectId: string): Promise<AuthOutcome<OwnerProject>> {
+  async readOwnerProject(projectId: string, expectedEpoch = this.getOwnerSessionEpoch()): Promise<AuthOutcome<OwnerProject>> {
     return this.outcome(async () => {
       if (!PROJECT_ID_PATTERN.test(projectId)) throw new Error('Project is unavailable.');
-      const {session, userId} = await this.ownerSession();
+      if (this.getOwnerSessionEpoch() !== expectedEpoch) throw new Error('Owner session changed before the private request.');
+      const {session, userId, epoch} = await this.ownerSession();
+      if (epoch !== expectedEpoch || this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session)) throw new Error('Owner session changed before the private request.');
       const rows = await this.ownerRest('projects?select=' + OWNER_PROJECT_FIELDS +
         '&id=eq.' + projectId + '&owner_user_id=eq.' + encodeURIComponent(userId) +
         '&trashed_at=is.null&limit=1', session.access_token);
-      if (!this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
+      if (this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session) || !Array.isArray(rows) || rows.length !== 1)
         throw new Error('Project is unavailable.');
       const project = this.parsePrivateProject(rows[0], userId);
       if (project.id !== projectId.toLowerCase()) throw new Error('Project is unavailable.');
@@ -2392,19 +2394,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
-  async saveOwnerProject(projectId: string, revision: number, input: PrivateProjectDraft):
+  async saveOwnerProject(projectId: string, revision: number, input: PrivateProjectDraft, expectedEpoch = this.getOwnerSessionEpoch()):
     Promise<AuthOutcome<Pick<OwnerProject, 'id' | 'revision' | 'updatedAt'> & PrivateProjectDraft>> {
     return this.outcome(async () => {
       if (!PROJECT_ID_PATTERN.test(projectId) || !Number.isSafeInteger(revision) || revision < 0)
         throw new Error('Invalid project revision.');
       const draft = normalizeProjectDraft(input);
-      const {session} = await this.ownerSession();
+      if (this.getOwnerSessionEpoch() !== expectedEpoch) throw new Error('Owner session changed before the private request.');
+      const {session, epoch} = await this.ownerSession();
+      if (epoch !== expectedEpoch || this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session)) throw new Error('Owner session changed before the private request.');
       const receipt = await this.ownerRest('rpc/update_private_project', session.access_token, 'POST', {
         p_project_id: projectId, p_base_revision: revision, p_title: draft.title,
         p_summary: draft.summary, p_description: draft.description,
         p_repository_url: draft.repositoryUrl, p_live_url: draft.liveUrl
       });
-      if (!this.isCurrentSession(session) || !receipt || typeof receipt !== 'object' ||
+      if (this.getOwnerSessionEpoch() !== expectedEpoch || !this.isCurrentSession(session) || !receipt || typeof receipt !== 'object' ||
           !('id' in receipt) || receipt.id !== projectId.toLowerCase() ||
           !('revision' in receipt) || !Number.isSafeInteger(receipt.revision) || receipt.revision !== revision + 1 ||
           !('updated_at' in receipt) || typeof receipt.updated_at !== 'string' ||
