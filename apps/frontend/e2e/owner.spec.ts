@@ -597,7 +597,8 @@ test('real owner onboarding and project revision are private across browser sess
   await shareDialog.getByRole('button',{name:'Done'}).click();
   await expect(shareDialog).toHaveCount(0);
   await page.getByRole('button',{name:/^Author preview/}).click();
-  await expect(page.locator('.ws-preview-caution')).toContainText('Private author preview.');
+  await expect(page.locator('.ws-preview-caution')).toHaveText('Private author preview of the saved revision. Verified owner-private images may be shown. A frozen image requires a matching server pin and independent static artifact verification; no draft is published here.');
+  await expect(page.getByText('Saved revision · No public delivery',{exact:true})).toBeVisible();
   await page.goto(editorPath);
   await page.getByRole('link', {name: 'Release workspace'}).click();
   await expect(page.getByRole('heading', {name: 'Reviewer staging.'})).toBeVisible();
