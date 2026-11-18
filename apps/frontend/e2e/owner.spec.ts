@@ -2877,6 +2877,12 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
   await expect(page.getByRole('heading',{name:'S6 mounted scoped fixture',level:1})).toBeVisible();
   const editorPath=new URL(page.url()).pathname;
   await page.getByRole('button',{name:'Theme',exact:true}).click();
+  // Fresh preset snapshots intentionally contain no persisted theme file.
+  // The visible palette defaults are not proof of an initialized theme.
+  const initialize=page.getByRole('button',{name:'Initialize global palette',exact:true});
+  await expect(initialize).toBeEnabled();
+  await initialize.click();
+  await expect(initialize).toHaveCount(0);
   await page.getByLabel('Portfolio theme').selectOption('light');
   const scope=page.getByRole('region',{name:'Scoped theme overrides'});
   const token=scope.getByLabel('Theme token'),layer=scope.getByLabel('Override layer');
@@ -2892,7 +2898,8 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
     await expect(scopeSelect).toHaveValue(scopeId);
     await layer.selectOption(bucket);
     await token.selectOption('text');
-    await value.fill(color);
+    await expect(value).toBeEnabled({timeout:10_000});
+    await value.fill(color,{timeout:10_000});
     await scope.getByRole('button',{name:'Apply override',exact:true}).click();
     await expect(scope.getByText('Override applied to the working draft. Save to persist, or use Undo.',{exact:true})).toBeVisible();
     await expect(value).toHaveValue(color);
