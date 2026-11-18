@@ -449,7 +449,8 @@ function deliveryHost(origin: string): URL {
 /** Owner-RLS frozen request binding for the paired C11 worker cutover. */
 export type FrozenPublicationConsent=Readonly<{portfolioId:string;requestId:string;visibility:'PUBLIC'|'UNLISTED'}>;
 export function validateFrozenPublicationConsent(consent:FrozenPublicationConsent,hasPublicAuthority:boolean):void{
-  if(!consent||!UUID.test(consent.portfolioId)||!UUID.test(consent.requestId)||
+  if(!consent||typeof consent.portfolioId!=='string'||!UUID.test(consent.portfolioId)||
+     typeof consent.requestId!=='string'||!UUID.test(consent.requestId)||
      (consent.visibility!=='PUBLIC'&&consent.visibility!=='UNLISTED')||
      (consent.visibility==='PUBLIC'&&!hasPublicAuthority))
     throw Error('Frozen publication consent was not verified.');
@@ -472,7 +473,20 @@ export async function publishConsentedUnlistedRelease(
 
   const {rpc} = ports;
   const consent=ports.expectedConsent===undefined?undefined:Object.freeze({...ports.expectedConsent});
-  if(consent)validateFrozenPublicationConsent(consent,ports.publicAuthority!==undefined);
+  if(consent)validateFrozenPublicationConsent(consent,typeof ports.publicAuthority==='function');
+  if(consent?.visibility==='PUBLIC'){
+    // Verify the service-only reader exists before any public prepare/activate.
+    // A null current receipt is normal for a first activation; this is only a
+    // capability probe, never a substitute for the locked SQL/C11 cutover or
+    // for exact authority checks after the external delivery samples.
+    const authority=await ports.publicAuthority!('service_read_current_public_delivery_receipt',{
+      p_portfolio_id:consent.portfolioId,p_intent_id:intentId
+    });
+    if(authority!==null&&(!record(authority)||
+       authority.portfolioId!==consent.portfolioId||authority.intentId!==intentId||
+       authority.requestId!==consent.requestId||authority.visibility!=='PUBLIC'))
+      throw Error('Public delivery authority is unavailable.');
+  }
   const prepared = await rpc('service_prepare_unlisted_release', {p_intent_id: intentId});
   if (!record(prepared) || typeof prepared.portfolioId !== 'string' || !UUID.test(prepared.portfolioId) ||
       typeof prepared.htmlSha256 !== 'string' || !SHA256.test(prepared.htmlSha256) ||
