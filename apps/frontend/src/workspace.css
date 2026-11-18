@@ -1402,7 +1402,8 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 }
 .ws-analytics-route fieldset>label:focus-within{outline:3px solid var(--focus);outline-offset:2px;border-radius:4px}
 .ws-analytics-route :is(button,a){max-inline-size:100%;white-space:normal;overflow-wrap:anywhere}
-.ws-analytics-route .ws-project-aside table{inline-size:100%;border-collapse:collapse}
+.ws-analytics-route .ws-project-aside table{inline-size:100%;min-inline-size:42rem;border-collapse:collapse}
+.ws-analytics-route .ws-project-aside div:has(>table):focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-analytics-route .ws-project-aside :is(th,td){padding:8px;text-align:start;vertical-align:top}
 .ws-analytics-route .ws-project-aside th{color:var(--ink)}
 .ws-analytics-route .ws-project-aside figure{min-inline-size:0;margin:12px 0}
