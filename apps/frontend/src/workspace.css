@@ -1366,3 +1366,23 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   .ws-rail-bottom button{width:100%;min-height:44px;padding:5px;font-size:.75rem;white-space:normal}
 }
 .ws-onboarding button[aria-disabled=true]{cursor:not-allowed}
+
+/* WORK-01/02: verified light-reference card hierarchy, not fixed artboard dimensions. */
+.ws-onboarding .ws-choice{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto 1fr auto;align-items:start}
+.ws-onboarding .ws-choice>.ws-area-icon{grid-column:1;grid-row:1}
+.ws-onboarding .ws-choice>input{grid-column:2;grid-row:1;align-self:center;justify-self:end}
+.ws-onboarding .ws-choice>:is(strong,small,span:not(.ws-area-icon)){grid-column:1/-1}
+.ws-onboarding .ws-choice>small{align-self:end}
+.ws-home .ws-area{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto 1fr auto;gap:12px;align-items:start}
+.ws-home .ws-area>.ws-area-icon{grid-column:1;grid-row:1}
+.ws-home .ws-area>.ws-area-meta{grid-column:2;grid-row:1;align-self:center;text-align:end;margin:0!important}
+.ws-home .ws-area>:is(h3,p:not(.ws-area-meta),a){grid-column:1/-1;min-width:0;overflow-wrap:anywhere}
+.ws-home .ws-area>h3{margin:0}
+.ws-home .ws-area>a{align-self:end}
+.ws-home .ws-recent-grid{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}
+.ws-home .ws-recent-grid>section,.ws-home .ws-recent-grid>nav{padding:clamp(16px,2vw,26px);border:1px solid var(--line);border-radius:13px;background:var(--panel);min-width:0}
+.ws-home .ws-recent-grid h2{font-size:clamp(1.25rem,1.7vw,1.625rem);margin:0 0 16px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.ws-home .ws-recent-grid li a{min-width:0;overflow-wrap:anywhere}
+.ws-home .ws-recent-grid>nav li a{width:100%;justify-content:space-between}
+.ws-home .ws-recent-grid li:last-child{border-bottom:0}
+@media(max-width:720px){.ws-home .ws-recent-grid{grid-template-columns:minmax(0,1fr)}}
