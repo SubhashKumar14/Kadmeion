@@ -701,7 +701,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     try{
       const result=await port.initializeOwnerPortfolio(id,pending.operation,preset.id);
       if(!current())return;
-      if(Number.isSafeInteger(result.data)&&result.data>0){
+      if(typeof result.data==='number'&&Number.isSafeInteger(result.data)&&result.data>0){
         setupAttempt.current=null;setAttempt(value=>value+1);
       }else setError(result.error?.message??'Draft setup could not be confirmed. Retry the same setup.');
     }catch{if(current())setError('Draft setup could not be confirmed. Retry the same setup.');}
