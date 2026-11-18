@@ -732,7 +732,7 @@ export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: s
   window.setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
-type ExportKind = 'metadata'|'recovery'|'recovery-json'|'source';
+type ExportKind = 'metadata'|'metadata-v2'|'recovery'|'recovery-json'|'source';
 type ExportReceipt = {kind:ExportKind;filename:string;bytes:number;sha256:string;scope:string;capturedAt?:string;revision?:number;assets?:number;assetFiles?:number;categories?:number;records?:number};
 const formatExportBytes=(bytes:number)=>bytes>=1024*1024?(bytes/(1024*1024)).toFixed(2)+' MiB':(bytes/1024).toFixed(1)+' KiB';
 async function exportDigest(bytes:Uint8Array):Promise<string>{
@@ -745,13 +745,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   useEffect(()=>{alive.current=true;return ()=>{alive.current=false;};},[]);
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const [message, setMessage] = useState<Message>(emptyMessage);
-  const [busy, setBusy] = useState<ExportKind|null>(null);
+  const [busy, setBusy] = useState<ExportKind|'reconcile-v2'|null>(null);
   const operation=useRef<string|null>(null);
   const running=useRef(false);
   const [failedKind,setFailedKind]=useState<ExportKind|null>(null);
   const [quotaBlocked,setQuotaBlocked]=useState(false);
   const [receipt,setReceipt]=useState<ExportReceipt|null>(null);
   const [inventory,setInventory]=useState<Awaited<ReturnType<Services['account']['captureInventory']>>|null>(null);
+  const v2Operation=useRef<string|null>(null);
+  const [v2Inventory,setV2Inventory]=useState<Awaited<ReturnType<Services['account']['captureInventoryV2']>>|null>(null);
+  const [v2Reconciliation,setV2Reconciliation]=useState<Awaited<ReturnType<Services['account']['reconcileStorageV2']>>|null>(null);
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState('');
   type Page=NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerPortfoliosPage']>>['data']>;
@@ -801,7 +804,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
 
   async function download(kind: ExportKind) {
     if(running.current||busy||!current()||(kind==='source'&&!selectedPortfolio)||
-      (kind!=='source'&&quotaBlocked&&!inventory))return;
+      (kind!=='source'&&quotaBlocked&&!(kind==='metadata-v2'?v2Inventory:inventory)))return;
     // Capture has a durable owner quota. Reuse one acknowledged inventory
     // across formats and retries; only an explicit refresh requests a new one.
     // An unacknowledged capture replays its original operation UUID.
@@ -822,6 +825,23 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         importPortfolioSourceZip(bytes);
         file={kind,filename:'kadmeion-portfolio-revision-'+data.revision+'.zip',bytes:bytes.byteLength,
           sha256:await exportDigest(bytes),scope:'Editable saved portfolio source; uploaded media excluded.',revision:data.revision};
+      } else if(kind==='metadata-v2'){
+        if(!v2Inventory)v2Operation.current??=crypto.randomUUID();
+        const captured=v2Inventory??await services.account.captureInventoryV2(v2Operation.current!,null);
+        if(!current())return;
+        v2Operation.current=null;setV2Inventory(captured);setV2Reconciliation(null);
+        if(captured.schemaVersion!==2||captured.requestId!==null)
+          throw new Error('The profile-inclusive export inventory scope was not confirmed.');
+        const result=await services.data.exportApplicationMetadataV2(captured.snapshotId,captured.requestId);
+        if(!current())return;
+        bytes=result.bytes;mime=result.mime;
+        const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as {
+          capturedAt:string;records:Record<string,unknown[]>;restrictedAudit:Record<string,unknown[]>;verifiedReleaseHistory:unknown[]
+        };
+        const categories=[...Object.values(decoded.records),...Object.values(decoded.restrictedAudit),decoded.verifiedReleaseHistory];
+        file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:await exportDigest(bytes),
+          capturedAt:decoded.capturedAt,scope:'Profile-inclusive private application metadata (version 2); no uploaded bytes or account-exit proof.',
+          categories:categories.length,records:categories.reduce((count,rows)=>count+rows.length,0)};
       } else {
         if(!inventory)operation.current??=crypto.randomUUID();
         const captured = inventory??await services.account.captureInventory(operation.current!,null);
@@ -864,16 +884,18 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       if(!current())return;
       downloadPrivateFile(file.filename,bytes,mime);
       setReceipt(file);
-      setMessage({error:false,text:kind==='recovery'?'Private recovery download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
+      setMessage({error:false,text:kind==='recovery'?'Private recovery download prepared.':kind==='metadata-v2'?'Profile-inclusive metadata download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
     } catch (error) {
       if(!current())return;
       const code=typeof error==='object'&&error!==null&&'code' in error?error.code:undefined;
-      const terminal=code==='QUOTA_EXCEEDED'||code==='AUTH_EXPIRED'||code==='FORBIDDEN'||code==='LIMIT_EXCEEDED';
+      const terminal=code==='QUOTA_EXCEEDED'||code==='AUTH_EXPIRED'||code==='FORBIDDEN'||code==='LIMIT_EXCEEDED'||code==='VERSION_REQUIRED';
       setFailedKind(terminal?null:kind);
       if(code==='QUOTA_EXCEEDED'){
         setQuotaBlocked(true);
         setMessage({error:true,text:'The durable account inventory quota has been reached (at most 10 snapshots per owner). No file was downloaded. No new inventory will be requested in this session; eligible saved portfolio source exports do not consume this quota.'});
-      }else if(code==='RATE_LIMITED')
+      }else if(code==='VERSION_REQUIRED')
+        setMessage({error:true,text:'Legacy export cannot cover the current profile asset scope. Choose profile-inclusive metadata (version 2); no legacy file was downloaded.'});
+      else if(code==='RATE_LIMITED')
         setMessage({error:true,text:'The server temporarily rate-limited the export. No file was downloaded. Retry later; the same acknowledged inventory or original capture operation will be reused.'});
       else if(code==='LIMIT_EXCEEDED')
         setMessage({error:true,text:'The export exceeds a supported size or record limit. No file was downloaded. Choose a narrower saved portfolio source or try metadata / verified JSON where eligible.'});
@@ -888,6 +910,17 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     }
   }
 
+  async function checkV2Storage(){
+    if(running.current||busy||!current()||!v2Inventory)return;
+    const scope=v2Inventory;
+    if(scope.schemaVersion!==2||scope.requestId!==null)return;
+    running.current=true;setBusy('reconcile-v2');setMessage(null);setV2Reconciliation(null);
+    try{
+      const result=await services.account.reconcileStorageV2(scope.snapshotId,scope.requestId);
+      if(current())setV2Reconciliation(result);
+    }catch(error){if(current())setMessage(failure(error));}
+    finally{running.current=false;if(current())setBusy(null);}
+  }
   function refreshPortfolios(){
     setSelected('');setMoreError('');setRetry(value=>value+1);
   }
@@ -930,11 +963,37 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     <SettingsCard title="Private account data">
       <p>Choose an acknowledged application metadata JSON snapshot or bounded private recovery archive. Neither terminates access nor erases your account.</p>
       {!inventory&&!quotaBlocked&&<p>Choosing an account download explicitly requests an inventory if this session has none. If an earlier capture was not acknowledged, the same operation is retried; it may allocate a snapshot only if the original did not commit. No inventory is captured when this page loads.</p>}
-      <h3>Application metadata JSON</h3>
+      <h3>Profile-inclusive metadata JSON (version 2)</h3>
+      <p>Includes private avatar registry and selection metadata, existing owner records, component source and restricted audit. It excludes uploaded bytes. Version 2 uses a separate explicit inventory within the same account-wide limit of 10 snapshots; no legacy fallback occurs.</p>
+      <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
+        onClick={()=>void download('metadata-v2')}>{busy==='metadata-v2'?'Preparing profile-inclusive metadata…':'Download profile-inclusive metadata'}</button>
+      {v2Inventory&&<>
+        <p>Version 2 inventory captured {new Date(v2Inventory.capturedAt).toLocaleString()}. Profile asset metadata: {v2Inventory.inventory.counts.profileAssetMetadata}. This is not a verified byte or deletion receipt.</p>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={busy!==null} onClick={()=>void checkV2Storage()}>{busy==='reconcile-v2'?'Checking storage metadata…':'Check profile-inclusive storage metadata'}</button>
+          <button type="button" className="ws-secondary" disabled={busy!==null||quotaBlocked} onClick={()=>{
+            if(!current()||running.current||quotaBlocked)return;
+            v2Operation.current=null;setV2Inventory(null);setV2Reconciliation(null);setFailedKind(null);setReceipt(null);setMessage(null);
+          }}>Use new version 2 inventory</button>
+        </div>
+      </>}
+      {v2Reconciliation&&<section aria-label="Profile-inclusive storage reconciliation">
+        <h4>Storage metadata result</h4>
+        <p>{v2Reconciliation.status==='METADATA_MATCH_ONLY'?'Metadata agrees; uploaded bytes remain unverified.':v2Reconciliation.status==='LIMIT_EXCEEDED'?'Inventory exceeds the reconciliation limit.':'Metadata discrepancy; do not rely on this result for recovery.'}</p>
+        <dl><dt>Project registered</dt><dd>{v2Reconciliation.projectRegistered}</dd>
+          <dt>Profile registered</dt><dd>{v2Reconciliation.profileRegistered}</dd>
+          <dt>Pending profile uploads</dt><dd>{v2Reconciliation.profilePending}</dd>
+          <dt>Missing objects</dt><dd>{v2Reconciliation.missingObjects}</dd>
+          <dt>Orphan objects</dt><dd>{v2Reconciliation.orphanObjects}</dd></dl>
+        {v2Reconciliation.inventoryDrift&&<p>The current inventory differs from the captured scope.</p>}
+        <p>This comparison never authorizes erasure or verifies downloaded bytes.</p>
+      </section>}
+      <h3>Application metadata JSON (legacy version 1)</h3>
       <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category and a 12 MiB response limit; larger accounts may be refused. No uploaded bytes.</p>
       <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
         onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
-      <h3>Bounded recovery archive</h3>
+      <h3>Bounded recovery archive (legacy version 1)</h3>
+      <p>Legacy recovery is refused when profile asset coverage is required. Version 2 metadata and storage checks above do not include recovery bytes.</p>
       <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes, 16 MiB recovery JSON and 10 MiB ZIP capacity. No partial file on verification failure.</p>
       <div className="ws-actions">
         <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
@@ -943,7 +1002,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
           onClick={()=>void download('recovery-json')}>{busy==='recovery-json'?'Checking recovery JSON…':'Download verified recovery JSON'}</button>
       </div>
       <p>Verified recovery JSON is an alternative for archives that exceed ZIP capacity, not a bypass for asset or integrity limits.</p>
-      <p>The server allows at most 10 recorded account inventory snapshots per owner. Formats and retries reuse this session’s acknowledged inventory until you explicitly refresh it. Remaining quota is not reported by the service. An export after opening a new session may allocate one snapshot; no background capture or prior-scope lookup is performed.</p>
+      <p>The server allows at most 10 recorded account inventory snapshots per owner across both schema versions. Formats and retries reuse this session’s acknowledged inventory of the selected version until you explicitly refresh it. Remaining quota is not reported by the service. An export after opening a new session may allocate one snapshot; no background capture or prior-scope lookup is performed.</p>
       {quotaBlocked&&!inventory&&<p role="status">New account inventory captures are blocked for this session because the server reported its durable quota.</p>}
       {inventory&&<><h3>Acknowledged inventory</h3>
         <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only; an application metadata export reads current records separately. Recovery rechecks storage and prior inventory consistency.</p>
