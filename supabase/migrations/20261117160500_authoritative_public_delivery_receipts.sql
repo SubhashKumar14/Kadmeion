@@ -195,11 +195,13 @@ $$;
 revoke all on function public.service_acknowledge_public_delivery(jsonb) from public,anon,authenticated,service_role;
 grant execute on function public.service_acknowledge_public_delivery(jsonb) to service_role;
 
--- Fail-closed recovery: revoke the exact unacknowledged route; do not restore a
--- prior route without a fresh authority proof. Explicit rollback is separate.
+-- Compensate only the exact failed activation. Restore the previous verified
+-- PUBLIC route only if its historical acknowledgement, current address, stage
+-- and authority all still agree; otherwise revoke. No moderation restoration.
 create function public.service_recover_failed_public_delivery(p_expected_receipt jsonb)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare before_receipt jsonb; p uuid; i uuid; e bigint; next_epoch bigint;
+declare before_receipt jsonb; restored_receipt jsonb; p uuid; i uuid; e bigint;
+  next_epoch bigint; restored_intent uuid; restored_generation bigint;
 begin
   if (select auth.role()) is distinct from 'service_role' then
     raise exception using errcode='42501',message='TRUSTED_WORKER_REQUIRED';
@@ -210,21 +212,69 @@ begin
   if before_receipt->'verifiedAt' is distinct from 'null'::jsonb then
     raise exception using errcode='40001',message='PUBLIC_DELIVERY_RECOVERY_CONFLICT';
   end if;
-  update kadmeion_private.unlisted_release_routes set status='REVOKED',updated_at=clock_timestamp()
-    where portfolio_id=p and intent_id=i and status='LIVE' and verified_at is null;
-  if not found then raise exception using errcode='40001',message='PUBLIC_DELIVERY_RECOVERY_CONFLICT'; end if;
+  -- Do not restore a prior unverified, withdrawn, renamed or cross-scope route.
+  -- Reserve the last epoch for terminal denial rather than restoration.
+  if e<9007199254740990 then
+    update kadmeion_private.unlisted_release_routes live
+      set intent_id=prior.id,request_id=prior.request_id,
+        release_generation=f.previous_generation,stage_generation=f.previous_stage_generation,
+        verified_at=f.previous_verified_at,html_sha256=f.previous_html_sha256,
+        updated_at=clock_timestamp()
+    from kadmeion_private.unlisted_release_fallbacks f
+    join public.private_unlisted_publication_intents prior on prior.id=f.previous_intent_id
+      and prior.portfolio_id=f.portfolio_id
+    join public.verified_unlisted_releases history on history.intent_id=prior.id
+      and history.portfolio_id=prior.portfolio_id and history.owner_user_id=prior.owner_user_id
+      and history.request_id=prior.request_id and history.stage_generation=f.previous_stage_generation
+      and history.html_sha256=f.previous_html_sha256 and history.verified_at=f.previous_verified_at
+    join public.private_release_requests req on req.id=prior.request_id
+      and req.portfolio_id=prior.portfolio_id and req.owner_user_id=prior.owner_user_id
+    join kadmeion_private.private_reviewer_stage_artifacts stage on stage.portfolio_id=f.portfolio_id
+      and stage.owner_user_id=prior.owner_user_id and stage.request_id=prior.request_id
+      and stage.pointer_generation=f.previous_stage_generation and stage.html_sha256=f.previous_html_sha256
+    join public.private_release_visibility_pointers pointer on pointer.portfolio_id=f.portfolio_id
+      and pointer.owner_user_id=prior.owner_user_id
+    where live.portfolio_id=p and live.intent_id=i and live.status='LIVE' and live.verified_at is null
+      and f.portfolio_id=p and f.replacement_intent_id=i and prior.owner_user_id=live.owner_user_id
+      and prior.id<>i and prior.status='USED' and req.status='FROZEN' and req.visibility_intent='PUBLIC'
+      and prior.public_handle=before_receipt->>'handle' and prior.public_slug=before_receipt->>'slug'
+      and f.previous_verified_at is not null
+      and f.previous_stage_generation>pointer.revocation_generation
+      and f.previous_stage_generation between 1 and f.previous_generation
+      and f.previous_generation<=pointer.generation
+      and pointer.status='PREPARED_PRIVATE'
+      and stage.html_sha256=encode(sha256(convert_to(stage.html,'UTF8')),'hex')
+    returning live.intent_id,live.release_generation into restored_intent,restored_generation;
+    if restored_intent is not null then
+      restored_receipt:=public.service_read_current_public_delivery_receipt(p,restored_intent);
+      if restored_receipt is null or restored_receipt->'verifiedAt'='null'::jsonb then
+        restored_generation:=null;
+      end if;
+    end if;
+  end if;
+  if restored_generation is null then
+    update kadmeion_private.unlisted_release_routes set status='REVOKED',updated_at=clock_timestamp()
+      where portfolio_id=p and intent_id=coalesce(restored_intent,i) and status='LIVE';
+    if not found then raise exception using errcode='40001',message='PUBLIC_DELIVERY_RECOVERY_CONFLICT'; end if;
+  end if;
   delete from kadmeion_private.unlisted_release_pending where portfolio_id=p;
   delete from kadmeion_private.unlisted_release_fallbacks where portfolio_id=p;
   select delivery_epoch into next_epoch from kadmeion_private.public_delivery_epochs where portfolio_id=p;
-  if next_epoch is distinct from e+1 or public.service_read_current_public_delivery_receipt(p,i) is not null then
+  if next_epoch is null or next_epoch<=e or public.service_read_current_public_delivery_receipt(p,i) is not null then
     raise exception using errcode='40001',message='PUBLIC_DELIVERY_RECOVERY_CONFLICT';
   end if;
-  return jsonb_build_object('portfolioId',p,'status','REVOKED','releaseGeneration',null,
-    'deliveryEpoch',next_epoch,'hostRevocationVerified',false,'publicUrl',null);
+  return jsonb_build_object('portfolioId',p,
+    'status',case when restored_generation is null then 'REVOKED' else 'RESTORED_NEEDS_EXTERNAL_HTTP_VERIFICATION' end,
+    'releaseGeneration',restored_generation,'deliveryEpoch',next_epoch,
+    'hostRevocationVerified',false,'publicUrl',null);
 end;
 $$;
 revoke all on function public.service_recover_failed_public_delivery(jsonb) from public,anon,authenticated,service_role;
 grant execute on function public.service_recover_failed_public_delivery(jsonb) to service_role;
+
+-- The authenticated Edge preflight needs this single owner-filtered scalar.
+-- Existing RLS remains unchanged; no owner identity or private artifact grant.
+grant select (operation_id) on public.private_unlisted_publication_intents to authenticated;
 
 -- Close old unfenced PUBLIC acknowledgement/recovery; keep UNLISTED.
 create or replace function public.service_acknowledge_unlisted_release(
