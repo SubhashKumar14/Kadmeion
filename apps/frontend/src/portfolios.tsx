@@ -2195,28 +2195,43 @@ function PrivateShareDialog({onClose}:{onClose:()=>void}) {
   </dialog>;
 }
 
-export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
-  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
-  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
+/** Saved preview is a separate authenticated read, never a public release
+ * or a continuation of mutable editor state. Invalidate the entire receipt
+ * on observed owner/epoch changes, including an in-flight read and share UI. */
+function useSavedPrivatePreview(port:SupabaseBrowserAuthPort,id:string,attempt:number){
+  const [loaded,setLoaded]=useState<{port:SupabaseBrowserAuthPort;id:string;epoch:number;record:PortfolioRecord}|null>(null);
   const [error,setError]=useState('');
+  useLayoutEffect(()=>{
+    let active=true;
+    setLoaded(null);setError('');
+    const epoch=port.reconcileOwnerSessionEpoch();
+    const invalidate=()=>{
+      if(!active)return;
+      active=false;setLoaded(null);setError('The saved private revision could not be verified.');
+    };
+    const unsubscribe=port.subscribeOwnerSessionEpoch(invalidate);
+    void port.readOwnerPortfolio(id).then(reply=>{
+      if(!active)return;
+      if(port.reconcileOwnerSessionEpoch()!==epoch){invalidate();return;}
+      if(!reply.error&&reply.data?.snapshot&&reply.data.id===id&&
+         Number.isSafeInteger(reply.data.revision)&&reply.data.revision>0){
+        setLoaded({port,id,epoch,record:reply.data});return;
+      }
+      setError(reply.error?.message??'A saved private portfolio revision is not available.');
+    }).catch(()=>{if(active)setError('The saved private revision could not be verified.');});
+    return ()=>{active=false;unsubscribe();};
+  },[port,id,attempt]);
+  const receipt=loaded?.port===port&&loaded.id===id&&loaded.epoch===port.getOwnerSessionEpoch()?loaded:null;
+  return {record:receipt?.record??null,error,privateMedia:receipt?
+    {port,ownerKey:JSON.stringify(['saved-owner-preview',receipt.epoch,id,receipt.record.revision])}:undefined};
+}
+export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
   const [view,setView]=useState<'author'|'visitor'>('visitor');
   const [device,setDevice]=useState<0|390|768>(0);
   const [attempt,setAttempt]=useState(0);
   const [shareOpen,setShareOpen]=useState(false);
-  useEffect(()=>{
-    let active=true;
-    setLoadedPreview(null);setError('');setShareOpen(false);
-    const epoch=port.reconcileOwnerSessionEpoch();
-    void port.readOwnerPortfolio(id).then(reply=>{
-      if(!active)return;
-      if(port.reconcileOwnerSessionEpoch()!==epoch){setError('The saved private revision could not be verified.');return;}
-      if(reply.data?.snapshot&&reply.data.id===id){setLoadedPreview({port,id,record:reply.data});return;}
-      setError(reply.error?.message??'A saved private portfolio revision is not available.');
-    }).catch(()=>{
-      if(active)setError('The saved private revision could not be verified.');
-    });
-    return ()=>{active=false;};
-  },[port,id,attempt]);
+  const {record,error,privateMedia}=useSavedPrivatePreview(port,id,attempt);
+  useLayoutEffect(()=>{setView('visitor');setShareOpen(false);},[port,id,attempt,privateMedia?.ownerKey]);
   return <section className="ws-portfolio-preview" aria-labelledby="ws-preview-title">
     <header className="ws-project-head ws-preview-header">
       <div className="ws-heading">
@@ -2270,11 +2285,11 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         </div>
         <div className="ws-preview-stage">
           <PortfolioCanvas snapshot={record.snapshot} title={record.title}
-            simulation={view==='visitor'} width={device||undefined}/>
+            simulation={view==='visitor'} privateMedia={view==='author'?privateMedia:undefined} width={device||undefined}/>
         </div>
         <p className="ws-preview-caution" role="status">{view==='visitor'
           ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
-          : 'Private author preview. Empty slots may be indicated; no draft is published from this page.'}</p>
+          : 'Private author preview of the saved revision. Verified owner-private images may be shown; empty slots may be indicated. No draft is published from this page.'}</p>
       </div>
       <aside className="ws-preview-checklist" aria-label="Private release checklist">
         <p className="ws-kicker">PREVIEW CHECKLIST</p>
@@ -2299,26 +2314,9 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
 }
 
 export function FullscreenPortfolioPreview({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
-  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
-  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
-  const [error,setError]=useState(false);
   const [attempt,setAttempt]=useState(0);
-
-  useEffect(()=>{
-    let active=true;
-    setLoadedPreview(null);setError(false);
-    const epoch=port.reconcileOwnerSessionEpoch();
-    void port.readOwnerPortfolio(id).then(result=>{
-      if(!active)return;
-      if(port.reconcileOwnerSessionEpoch()!==epoch||!result.data?.snapshot||result.data.id!==id){
-        setError(true);return;
-      }
-      setLoadedPreview({port,id,record:result.data});
-    }).catch(()=>{if(active)setError(true);});
-    return ()=>{active=false;};
-  },[port,id,attempt]);
-
+  const {record,error,privateMedia}=useSavedPrivatePreview(port,id,attempt);
   if(error)return <main className="ws-gate"><h1>Portfolio unavailable.</h1><button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button><a href={STUDIO}>Return to portfolio library</a></main>;
   if(!record)return <main className="ws-gate"><p role="status">Loading saved portfolio preview…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></main>;
-  return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone/>;
+  return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone privateMedia={privateMedia}/>;
 }
