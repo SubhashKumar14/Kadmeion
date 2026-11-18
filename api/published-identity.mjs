@@ -90,6 +90,15 @@ function render(projection, slug) {
 }
 
 // Route grammar is evaluated on literal bytes, not a decoded or normalized URL.
+// PostgREST scalar RPCs may return an item range even with HTTP 200.
+// Accept only a complete singleton row, never a byte range or partial page.
+function completeScalarRpcRange(headers) {
+  const range=headers.get('content-range');
+  const unit=headers.get('range-unit');
+  return (unit===null||unit.toLowerCase()==='items')&&
+    (range===null||range==='0-0/*'||range==='0-0/1');
+}
+
 function parseIdentityRoute(raw) {
   if (typeof raw !== 'string' || raw.length > 2048 ||
       /[\x00-\x20\x7f\\#]/.test(raw)) return null;
@@ -196,7 +205,7 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
         headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
         body: JSON.stringify(slug ? {p_handle: handle, p_slug: slug} : {p_handle: handle}), signal
       });
-      if (expired() || upstream.status !== 200 || upstream.headers.has('content-range') ||
+      if (expired() || upstream.status !== 200 || !completeScalarRpcRange(upstream.headers) ||
           upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
         cancelRpcBody(upstream.body);
         throw Error('Public projection not confirmed');
