@@ -85,7 +85,7 @@ function validatedOrigin(input:HostRevocationProbeInput):URL {
   if(!input||!Array.isArray(input.candidateDirectPaths)||
      input.candidateDirectPaths.length<1||input.candidateDirectPaths.length>12||
      !canonicalPathValid(input.canonicalPath)||
-     input.candidateDirectPaths.some(path=>!pathValid(path,input.canonicalPath)||path===input.canonicalPath)||
+     [...input.candidateDirectPaths].some(path=>!pathValid(path,input.canonicalPath)||path===input.canonicalPath)||
      new Set(input.candidateDirectPaths).size!==input.candidateDirectPaths.length)
     throw new HostRevocationProbeError('INVALID_INPUT');
   return trustedOrigin(input.origin,input.allowLocal===true);
@@ -198,8 +198,10 @@ export async function probeHostRevocation(
   input:HostRevocationProbeInput,http:typeof fetch=fetch
 ):Promise<HostRevocationObservation>{
   const origin=validatedOrigin(input);
+  const canonicalPath=input.canonicalPath;
+  const directPaths=[...input.candidateDirectPaths];
   let count=0;
-  for(const path of [input.canonicalPath,...input.candidateDirectPaths]){
+  for(const path of [canonicalPath,...directPaths]){
     for(const method of ['GET','HEAD'] as const){
       const response=await fetchPath(new URL(path,origin),method,http);
       await verifyDenied(response,method);
@@ -208,9 +210,9 @@ export async function probeHostRevocation(
   }
   return Object.freeze({
     status:'OBSERVED_REVOKED_ON_SCOPED_PATHS' as const,
-    canonicalPath:input.canonicalPath,
+    canonicalPath,
     observedHttpRequests:count,
-    directPathsChecked:input.candidateDirectPaths.length,
+    directPathsChecked:directPaths.length,
     universalCacheErasureVerified:false as const,
     thirdPartyArchiveErasureVerified:false as const
   });
@@ -308,7 +310,7 @@ async function observeReleaseWithdrawal(
 
 export function validWithdrawalManifest(manifest:unknown,hashes:unknown):boolean {
   return Array.isArray(hashes)&&hashes.length<=8&&
-    hashes.every(sha=>typeof sha==='string'&&SHA256.test(sha))&&
+    [...hashes].every(sha=>typeof sha==='string'&&SHA256.test(sha))&&
     new Set(hashes).size===hashes.length&&
     (hashes.length===0?manifest===null:typeof manifest==='string'&&SHA256.test(manifest));
 }
@@ -324,6 +326,152 @@ function matchPublicMediaSet(bytes:Uint8Array,paths:readonly string[]):void{
        seen.size!==expected.size||[...seen].some(src=>!expected.has(src)))
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
+}
+
+/**
+ * Post-takedown proof for an already-authorized moderation hold or withdrawal.
+ * A takedown MUST NOT wait for the abusive content to be successfully fetched.
+ * The manifest must come from a trusted pre-hold release record, not a visitor.
+ * This observes scoped denial only; it neither lifts nor creates a hold and
+ * never claims the database case, CDN retention or worldwide removal is proved.
+ */
+export async function probeCanonicalPublicTakedown(
+  input:{origin:string;canonicalPath:string;manifestSha256:string|null;
+    assetHashes:readonly string[];allowLocal?:boolean},
+  http:typeof fetch=fetch
+):Promise<HostRevocationObservation>{
+  if(!input||!canonicalPathValid(input.canonicalPath)||UNLISTED.test(input.canonicalPath)||
+     !validWithdrawalManifest(input.manifestSha256,input.assetHashes))
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const alias=publicApiAlias(input.canonicalPath)!;
+  const direct=[alias,...input.assetHashes.map(sha=>alias+'&manifest='+input.manifestSha256+'&asset='+sha)];
+  return probeHostRevocation({
+    origin:input.origin,allowLocal:input.allowLocal,canonicalPath:input.canonicalPath,
+    candidateDirectPaths:direct
+  },http);
+}
+
+/**
+ * Post-hold/rename denial for a complete trusted history supplied by the
+ * authority transaction. Multiple old manifests may share one canonical path.
+ * This proof does not discover historical addresses, create a hold, certify
+ * plan completeness, erase caches, or write a case receipt.
+ */
+export type PublicTakedownScope=Readonly<{
+  canonicalPath:string;manifestSha256:string|null;assetHashes:readonly string[];
+}>;
+export type PublicTakedownPlanObservation=Readonly<{
+  status:'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS';canonicalPaths:readonly string[];
+  observedHttpRequests:number;observedPathsSha256:string;
+  directPathsChecked:number;universalCacheErasureVerified:false;
+  thirdPartyArchiveErasureVerified:false;
+}>;
+export async function probePublicTakedownPlan(
+  input:{origin:string;scopes:readonly PublicTakedownScope[];allowLocal?:boolean},
+  http:typeof fetch=fetch
+):Promise<PublicTakedownPlanObservation>{
+  if(!input||!Array.isArray(input.scopes)||input.scopes.length<1||input.scopes.length>32)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const canonical=new Set<string>(),paths=new Set<string>(),releases=new Set<string>();
+  // Validate and snapshot every path before making even the first request.
+  for(const scope of input.scopes){
+    if(!scope||typeof scope!=='object'||Object.keys(scope).length!==3||
+       !Object.hasOwn(scope,'canonicalPath')||!Object.hasOwn(scope,'manifestSha256')||
+       !Object.hasOwn(scope,'assetHashes')||!canonicalPathValid(scope.canonicalPath)||
+       UNLISTED.test(scope.canonicalPath)||!validWithdrawalManifest(scope.manifestSha256,scope.assetHashes))
+      throw new HostRevocationProbeError('INVALID_INPUT');
+    const releaseKey=scope.canonicalPath+'|'+scope.manifestSha256;
+    if(releases.has(releaseKey))throw new HostRevocationProbeError('INVALID_INPUT');
+    releases.add(releaseKey);
+    const alias=publicApiAlias(scope.canonicalPath)!;
+    canonical.add(scope.canonicalPath);
+    paths.add(scope.canonicalPath);
+    paths.add(alias);
+    paths.add(alias+'&report=1');
+    for(const sha of scope.assetHashes)paths.add(alias+'&manifest='+scope.manifestSha256+'&asset='+sha);
+  }
+  // Never silently truncate an over-limit authority plan.
+  if(paths.size>256)throw new HostRevocationProbeError('INVALID_INPUT');
+  const checked=[...paths].sort(),canonicalPaths=Object.freeze([...canonical].sort());
+  const observedPathsSha256=createHash('sha256').update(JSON.stringify(checked)).digest('hex');
+  for(let offset=0;offset<checked.length;offset+=4){
+    await Promise.all(checked.slice(offset,offset+4).map(async path=>{
+      for(const method of ['GET','HEAD'] as const)
+        await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
+    }));
+  }
+  return Object.freeze({status:'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS',
+    canonicalPaths,observedHttpRequests:checked.length*2,observedPathsSha256,
+    directPathsChecked:checked.length-canonicalPaths.length,
+    universalCacheErasureVerified:false,thirdPartyArchiveErasureVerified:false});
+}
+
+/**
+ * Verify retirement after republish, rollback or explicit publication at a
+ * renamed address. Current canonical/API/report URLs and exact current media
+ * may legitimately remain live. Only the set difference is a denial target.
+ * Both current and historical scopes MUST come from trusted authority reads;
+ * this observes the supplied scope, not its completeness or database state.
+ */
+export type PublicReplacementObservation=Readonly<{
+  status:'OBSERVED_REPLACED_SCOPE_DENIED'|'NO_RETIRED_PATHS_IN_SCOPE';
+  currentCanonicalPath:string;
+  retiredCanonicalPaths:readonly string[];
+  observedPathsSha256:string;
+  observedHttpRequests:number;
+  directPathsChecked:number;
+  universalCacheErasureVerified:false;
+  thirdPartyArchiveErasureVerified:false;
+}>;
+export async function probePublicReplacementDenial(input:{
+  origin:string;current:PublicTakedownScope;history:readonly PublicTakedownScope[];
+  allowLocal?:boolean;
+},http:typeof fetch=fetch):Promise<PublicReplacementObservation>{
+  if(!input||!Array.isArray(input.history)||input.history.length>32)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const manifests=new Map<string,string>();
+  const scope=(value:PublicTakedownScope)=>{
+    if(!value||typeof value!=='object'||Object.keys(value).length!==3||
+       !Object.hasOwn(value,'canonicalPath')||!Object.hasOwn(value,'manifestSha256')||
+       !Object.hasOwn(value,'assetHashes')||!canonicalPathValid(value.canonicalPath)||
+       UNLISTED.test(value.canonicalPath)||!validWithdrawalManifest(value.manifestSha256,value.assetHashes))
+      throw new HostRevocationProbeError('INVALID_INPUT');
+    const canonical=value.canonicalPath,manifest=value.manifestSha256;
+    const assets=[...value.assetHashes].sort();
+    if(manifest!==null){
+      const key=JSON.stringify(assets),prior=manifests.get(manifest);
+      if(prior!==undefined&&prior!==key)throw new HostRevocationProbeError('INVALID_INPUT');
+      manifests.set(manifest,key);
+    }
+    const alias=publicApiAlias(canonical)!;
+    return {canonical,paths:[canonical,alias,alias+'&report=1',
+      ...assets.map(sha=>alias+'&manifest='+manifest+'&asset='+sha)]};
+  };
+  const current=scope(input.current);
+  const allowed=new Set(current.paths),historic=new Set<string>(),canonical=new Set<string>();
+  for(const entry of input.history){
+    const old=scope(entry);
+    if(old.canonical!==current.canonical)canonical.add(old.canonical);
+    for(const path of old.paths)if(!allowed.has(path))historic.add(path);
+  }
+  if(historic.size>256)throw new HostRevocationProbeError('INVALID_INPUT');
+  const denied=[...historic].sort();
+  const retiredCanonicalPaths=Object.freeze([...canonical].sort());
+  const observedPathsSha256=createHash('sha256').update(JSON.stringify(denied)).digest('hex');
+  for(let offset=0;offset<denied.length;offset+=4){
+    await Promise.all(denied.slice(offset,offset+4).map(async path=>{
+      for(const method of ['GET','HEAD'] as const)
+        await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
+    }));
+  }
+  return Object.freeze({
+    status:denied.length?'OBSERVED_REPLACED_SCOPE_DENIED':'NO_RETIRED_PATHS_IN_SCOPE',
+    currentCanonicalPath:current.canonical,retiredCanonicalPaths,observedPathsSha256,
+    observedHttpRequests:denied.length*2,directPathsChecked:denied.length-retiredCanonicalPaths.length,
+    universalCacheErasureVerified:false,thirdPartyArchiveErasureVerified:false
+  });
 }
 
 /**
