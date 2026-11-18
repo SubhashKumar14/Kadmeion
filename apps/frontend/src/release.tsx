@@ -127,6 +127,9 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [staticArchiveSha,setStaticArchiveSha]=useState<{requestId:string;sha256:string;htmlSha256:string}|null>(null);
   const [grant,setGrant]=useState<SafeGrant|null>(null);
   const [grants,setGrants]=useState<OwnerReviewerGrantSummary[]|null>(null);
+  // A confirmed database revocation is terminal for this grant ID. Keep the
+  // local acknowledgement even if the subsequent catalogue refresh fails.
+  const [revokedGrantIds,setRevokedGrantIds]=useState<ReadonlySet<string>>(()=>new Set());
   const [grantListError,setGrantListError]=useState('');
   const [validMinutes,setValidMinutes]=useState(60);
   const [grantNow,setGrantNow]=useState(()=>Date.now());
@@ -162,7 +165,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setVisibility('UNLISTED');setFrozen(null);setPinnedPreviewReceipt(null);
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
-    setGrant(null);setGrants(null);setGrantListError('');
+    setGrant(null);setGrants(null);setRevokedGrantIds(new Set());setGrantListError('');
     setConfirmRevoke(false);setConfirmBlock(null);setNotice('');setError('');setBusy(false);
     operation.current=null;grantOperation.current=null;blockOperation.current=null;blockFlight.current=null;
   },[port,id,mode]);
@@ -359,7 +362,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   async function registerReviewer(){
     // A registration must never run before the owner has verified the exact
     // frozen revision. The draft or an unverifiable pin is not a substitute.
-    if (!frozen || grant || busy || mode!=='staging' || historySelection!==null ||
+    if (!frozen || grant || readsBusy || mode!=='staging' || historySelection!==null ||
         pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError) return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
@@ -399,7 +402,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   }
 
   async function revokeReviewer(){
-    if (!grant || grant.status==='REVOKED' || busy || !confirmRevoke) return;
+    if (!grant || grant.status==='REVOKED' || revokedGrantIds.has(grant.grantId) || readsBusy || !confirmRevoke) return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
     setBusy(true);setError('');setNotice('');
@@ -410,6 +413,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           response.data.status!=='REVOKED'||response.data.publicRevocationVerified!==false) {
         setError(response.error?.message ?? 'Reviewer revocation was not confirmed.');return;
       }
+      setRevokedGrantIds(previous=>new Set([...previous,grant.grantId]));
       setGrant(previous=>previous?.grantId===grant.grantId ? {...previous,status:'REVOKED'} : previous);
       const refreshed=await port.listOwnerReviewerGrants(id);
       if (!current()) return;
@@ -792,11 +796,11 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {grants===null && !grantListError && readPhase==='grants' && <ReleasePending label="Loading private reviewer grant records…" />}
             {grants?.length===0 && <p>No reviewer grants have been registered.</p>}
             {!!grants?.length && <ul className="ws-release-grant-list">{grants.map(item=><li key={item.grantId}>
-              <div><strong>{item.revokedAt?'Revoked':Date.parse(item.expiresAt)<=grantNow?'Expired':'Registered (not servable)'}</strong>
+              <div><strong>{(item.revokedAt||revokedGrantIds.has(item.grantId))?'Revoked':Date.parse(item.expiresAt)<=grantNow?'Expired':'Registered (not servable)'}</strong>
                 <p>Created <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>.
                   Expires <time dateTime={item.expiresAt}>{new Date(item.expiresAt).toLocaleString()}</time>.</p>
                 <p>Private frozen request {item.requestId.slice(0,8)}…</p></div>
-              {!item.revokedAt && <button type="button" className="ws-secondary" disabled={busy}
+              {!item.revokedAt && !revokedGrantIds.has(item.grantId) && <button type="button" className="ws-secondary" disabled={readsBusy}
                 onClick={()=>{setGrantNow(Date.now());setGrant({grantId:item.grantId,requestId:item.requestId,expiresAt:item.expiresAt,status:'REGISTERED_UNSERVABLE'});
                   setConfirmRevoke(true);}}>Review revocation</button>}
             </li>)}</ul>}
@@ -816,7 +820,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                   A loading or failed preview cannot be used as evidence.
                 </p>}
               <button type="button" className="ws-secondary"
-                disabled={busy || historySelection!==null || pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError}
+                disabled={readsBusy || historySelection!==null || pinnedPreviewPending || !pinnedPreview || !!pinnedPreviewError}
                 onClick={()=>void registerReviewer()}>
                 {busy?'Registering…':'Register private reviewer grant'}</button>
             </> : <>
@@ -827,12 +831,12 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                 <dt>Reviewer URL</dt><dd>Disabled pending host verification</dd>
               </dl>
               {grant.status!=='REVOKED' && !confirmRevoke && <button type="button" className="ws-secondary"
-                onClick={()=>setConfirmRevoke(true)}>Revoke private reviewer grant</button>}
+                disabled={readsBusy} onClick={()=>setConfirmRevoke(true)}>Revoke private reviewer grant</button>}
               {(grant.status==='REVOKED'||grantExpired) && frozen && <button type="button" className="ws-secondary" disabled={busy||confirmRevoke}
                 onClick={()=>{setGrant(null);setConfirmRevoke(false);grantOperation.current=null;}}>Register another reviewer grant</button>}
               {confirmRevoke && grant.status!=='REVOKED' && <div className="ws-release-confirm">
                 <p>Revoke this private grant? The saved snapshot will remain available to its owner.</p>
-                <button type="button" className="ws-primary" disabled={busy} onClick={()=>void revokeReviewer()}>
+                <button type="button" className="ws-primary" disabled={readsBusy} onClick={()=>void revokeReviewer()}>
                   {busy?'Revoking…':'Confirm reviewer revocation'}</button>
                 <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setConfirmRevoke(false)}>Cancel</button>
               </div>}
