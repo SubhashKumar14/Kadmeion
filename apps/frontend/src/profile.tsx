@@ -72,6 +72,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [sharingConfirmed,setSharingConfirmed]=useState(false);
   const [sharingWriting,setSharingWriting]=useState(false);
   const [sharingNotice,setSharingNotice]=useState('');
+  const [sharingReviewRequired,setSharingReviewRequired]=useState(false);
   const pendingSharing=useRef<SharingChange|null>(null);
   const [projectionError,setProjectionError]=useState('');
   const [projectionLoading,setProjectionLoading]=useState(false);
@@ -81,7 +82,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   function invalidateProjection(){
     projectionAttempt.current++;projectionPending.current=false;setProjectionLoading(false);
     setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
-    setProjectionState(null);setSharingDraft(null);setSharingConfirmed(false);setSharingNotice('');
+    setProjectionState(null);setSharingDraft(null);setSharingConfirmed(false);setSharingNotice('');setSharingReviewRequired(false);
   }
   function acceptSharing(state:SharingState,profile:OwnerProfile){
     const prefs=state.preferences;
@@ -97,7 +98,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     const current=()=>attempt===projectionAttempt.current&&lifetime===profileLifetime.current&&
       epoch===profileEpoch.current&&validEpoch();
     setProjectionLoading(true);setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);
-    setProjectionState(null);setSharingDraft(null);setSharingConfirmed(false);setSharingNotice('');setProjectionError('');
+    setProjectionState(null);setSharingDraft(null);setSharingConfirmed(false);setSharingNotice('');setSharingReviewRequired(false);setProjectionError('');
     try{
       if(!current())return;
       const services=await port.ownerSettings();
@@ -117,6 +118,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
         if(sameSharingChoices(sharing.preferences,attempted.desired)){
           setSharingNotice('Current saved sharing choices match your request. No additional write was made.');
         }else{
+          setSharingReviewRequired(true);
           setSharingNotice('The saved sharing choices differ from your attempted change. Review the current saved choices before confirming a new request.');
         }
         pendingSharing.current=null;
@@ -126,7 +128,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   }
   async function savePrivateSharing(){
     if(operationPending.current||projectionPending.current||!projectionState||!sharingDraft||
-      pendingSharing.current||!sharingConfirmed||dirty||pendingSkill.current||needsReload||!validEpoch()||
+      pendingSharing.current||!sharingConfirmed||sharingReviewRequired||dirty||pendingSkill.current||needsReload||!validEpoch()||
       !canSavePrivateSharing(projectionState,sharingDraft))return;
     stopAutosave();operationPending.current=true;projectionPending.current=true;
     setSharingWriting(true);setProjectionLoading(true);setSharingConfirmed(false);
@@ -151,7 +153,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       if(owner.error||owner.data?.user?.id!==sharing.ownerUserId||sharing.ownerUserId!==change.expected.ownerUserId||
          profile.error||!profile.data||sharing.version<receipt.version)throw new Error('Sharing readback unavailable');
       acceptSharing(sharing,profile.data);pendingSharing.current=null;
-      setSharingDraft(privateSharingChoices(sharing.preferences));
+      setSharingDraft(sameSharingChoices(sharing.preferences,change.desired)?privateSharingChoices(sharing.preferences):change.desired);
+      setSharingReviewRequired(!sameSharingChoices(sharing.preferences,change.desired));
       setSharingNotice(sameSharingChoices(sharing.preferences,change.desired)
         ?'Private sharing choices saved and read back. No profile was published.'
         :'The acknowledged change is no longer the current saved choice. Review the latest settings.');
@@ -537,16 +540,33 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
                   <p>Saved preferences: {projectionState.preferences===null?'No saved row (private defaults)':'Version '+projectionState.version}.</p>
                   <fieldset disabled={locked||projectionLoading||dirty||needsReload||!!skill.trim()}>
                     <legend>Choose fields for a future publication</legend>
-                    {sharingFields.map((key,index)=><label className="ws-profile-check" key={key}>
-                      <input type="checkbox" checked={sharingDraft[key]} onChange={e=>{
+                    <p>Compare the last verified saved choices with your proposed private choices. This is not a live public-page check.</p>
+                    <dl aria-label="Saved and proposed sharing choices">{sharingFields.map((key,index)=><div key={key}>
+                      <dt>{previewFields[index]?.label??key}</dt>
+                      <dd>Saved: {projectionState.preferences?.[key]===true?'Selected':'Not selected'}; proposed: {sharingDraft[key]?'Selected':'Not selected'}</dd>
+                    </div>)}</dl>
+                    {sharingReviewRequired&&<div className="ws-project-conflict" role="group" aria-label="Review conflicting sharing choices">
+                      <p>The saved settings changed or could not be attributed to your previous request. Decide which choices to edit before confirming a new write.</p>
+                      <button type="button" className="ws-secondary" onClick={()=>{
                         if(operationPending.current||projectionPending.current||!validEpoch())return;
+                        setSharingDraft(privateSharingChoices(projectionState.preferences));setSharingConfirmed(false);setSharingReviewRequired(false);
+                        setSharingNotice('Loaded the verified saved selection. No write was made.');
+                      }}>Use saved sharing choices</button>
+                      <button type="button" className="ws-secondary" onClick={()=>{
+                        if(operationPending.current||projectionPending.current||!validEpoch())return;
+                        setSharingConfirmed(false);setSharingReviewRequired(false);setSharingNotice('Your proposed choices are retained. Confirm a separate request against this verified version.');
+                      }}>Keep proposed sharing choices</button>
+                    </div>}
+                    {sharingFields.map((key,index)=><label className="ws-profile-check" key={key}>
+                      <input type="checkbox" checked={sharingDraft[key]} disabled={sharingReviewRequired} onChange={e=>{
+                        if(operationPending.current||projectionPending.current||sharingReviewRequired||!validEpoch())return;
                         setSharingConfirmed(false);setSharingDraft(old=>old?{...old,[key]:e.target.checked}:null);
                       }}/>{previewFields[index]?.label??key}</label>)}
                     <p>Saving these private choices will not publish. {projectionRequested?'It will turn off the existing publication request and may withdraw a current public projection.':'The publication request remains off.'}</p>
-                    <label className="ws-profile-check"><input type="checkbox" checked={sharingConfirmed}
-                      onChange={e=>setSharingConfirmed(e.target.checked)}/> I confirm these exact private sharing choices{projectionRequested?' and withdrawal of the existing publication request':''}.</label>
+                    <label className="ws-profile-check"><input type="checkbox" checked={sharingConfirmed} disabled={sharingReviewRequired}
+                      onChange={e=>{if(!operationPending.current&&!projectionPending.current&&!sharingReviewRequired&&validEpoch())setSharingConfirmed(e.target.checked);}}/> I confirm these exact private sharing choices{projectionRequested?' and withdrawal of the existing publication request':''}.</label>
                     <button type="button" className="ws-secondary"
-                      disabled={!sharingConfirmed||!canSavePrivateSharing(projectionState,sharingDraft)}
+                      disabled={sharingReviewRequired||!sharingConfirmed||!canSavePrivateSharing(projectionState,sharingDraft)}
                       onClick={()=>void savePrivateSharing()}>Save private sharing choices</button>
                   </fieldset>
                   {(dirty||!!skill.trim()||needsReload)&&<p>Finish or discard unsaved profile edits before changing sharing choices.</p>}
