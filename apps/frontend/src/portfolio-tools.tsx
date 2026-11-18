@@ -184,7 +184,7 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       }}
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
-      {localImage?<img src={localImage.url} alt={imageAlt} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
+      {localImage?<img src={localImage.url} alt={imageAlt} width={localImage.dimensions.width} height={localImage.dimensions.height} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
       imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:renderedText||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
         example?<span className="pv-placeholder pv-layout-example">{example}</span>:
@@ -193,7 +193,7 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     </button>;
     // Reference labels are author-only, never fabricated visitor imagery.
     if(imageReference)return localImage?<span className={className} data-k-theme-node={node}>
-      <img src={localImage.url} alt={imageAlt} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>
+      <img src={localImage.url} alt={imageAlt} width={localImage.dimensions.width} height={localImage.dimensions.height} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>
     </span>:showMissing?<span className={className} data-k-theme-node={node}>{imageLabel} · Preview bytes unavailable</span>:null;
     // Nonediting previews can follow only explicitly authored, validated HTTPS links.
     // Never place a nested interactive link inside an editing slot button.
@@ -273,7 +273,8 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
  * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
 export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
 type CanvasImageRef={slotKey:string;assetId:string;expectedDigest?:string};
-type CanvasImageView={status:'pending'|'failed'|'deferred'}|{status:'ready';url:string;pinned:boolean;onError:()=>void};
+type RasterDimensions=Readonly<{width:number;height:number}>;
+type CanvasImageView={status:'pending'|'failed'|'deferred'}|{status:'ready';url:string;pinned:boolean;dimensions:RasterDimensions;digest:string;frozenDigestMatched:boolean;onError:()=>void};
 type CanvasImageViews=ReadonlyMap<string,CanvasImageView>;
 /** Only unique, active manifest slots may request bytes; stashes and
  * unsupported assignments never participate. The signature is order-stable. */
@@ -294,6 +295,27 @@ function canvasImageReferences(snapshot:PortfolioSnapshot|null|undefined,section
   return refs.sort((a,b)=>a.slotKey<b.slotKey?-1:a.slotKey>b.slotKey?1:0);
 }
 const CANVAS_MEDIA_BUDGET=50*1024*1024;
+// Match the owner transport's per-raster limit, and bound total retained
+// decoded pixels independently of compressed bytes (roughly 192 MB RGBA).
+const CANVAS_PIXEL_BUDGET=48_000_000;
+const PRIVATE_IMAGE_DECODE_TIMEOUT=10_000;
+async function decodePrivateRaster(url:string):Promise<RasterDimensions>{
+  const probe=new Image();
+  let deadline:number|undefined;
+  try{
+    probe.src=url;
+    await Promise.race([probe.decode(),new Promise<never>((_,reject)=>{
+      deadline=window.setTimeout(()=>reject(new Error('Private image decode timed out.')),PRIVATE_IMAGE_DECODE_TIMEOUT);
+    })]);
+    const width=probe.naturalWidth,height=probe.naturalHeight;
+    if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<1||height<1||
+       width>8192||height>8192||width*height>24_000_000)throw new Error('Private image dimensions exceed verified bounds.');
+    return {width,height};
+  }finally{
+    if(deadline!==undefined)window.clearTimeout(deadline);
+    probe.removeAttribute('src');
+  }
+}
 
 /** Only bounded raster Blob receipts can reach an ephemeral image URL.
  * The owner adapter still performs byte/hash, Storage identity and pin verification. */
@@ -351,7 +373,8 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
     for(const ref of refs)images.set(ref.slotKey,{status:'pending'});
     publish();
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
-      ++generation.current;epoch=null;release();setView({key,images:new Map()});
+      ++generation.current;epoch=null;release();
+      setView({key,images:new Map(refs.map(ref=>[ref.slotKey,{status:'failed'} as const]))});
     });
     // Keep the explicit retry useful even when a very large document exceeds
     // the local preview budget: prioritize the current selection, not API order.
@@ -364,7 +387,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
     async function load(){
       if(!port||epoch===null||!live())return;
       const bound=epoch;
-      let used=0;
+      let used=0,decodedPixels=0;
       try{
         const list=await port.listOwnerAssets();
         if(!live())return;
@@ -389,11 +412,14 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
             for(const ref of group)if(!matches.includes(ref))images.set(ref.slotKey,{status:'failed'});
             if(!matches.length){publish();continue;}
             url=URL.createObjectURL(response.data.bytes);urls.add(url);
-            const probe=new Image();
-            probe.src=url;
-            await probe.decode();
+            const dimensions=await decodePrivateRaster(url);
             if(!live())return;
-            if(!probe.naturalWidth||!probe.naturalHeight)throw new Error('Image decode failed.');
+            const pixels=dimensions.width*dimensions.height;
+            if(decodedPixels+pixels>CANVAS_PIXEL_BUDGET){
+              if(urls.delete(url))URL.revokeObjectURL(url);
+              for(const ref of matches)images.set(ref.slotKey,{status:'deferred'});
+              publish();continue;
+            }
             // The image URL belongs to this run alone; a late error from an old
             // image can neither revoke a new URL nor publish an old receipt.
             const imageUrl=url;
@@ -406,8 +432,9 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
               }
               publish();
             };
-            used+=asset.size;
-            for(const ref of matches)images.set(ref.slotKey,{status:'ready',url:imageUrl,
+            used+=asset.size;decodedPixels+=pixels;
+            for(const ref of matches)images.set(ref.slotKey,{status:'ready',url:imageUrl,dimensions,digest,
+              frozenDigestMatched:ref.expectedDigest===digest,
               pinned:response.data.serverAttestation==='SERVER_HASH_PINNED',onError:fail});
             publish();
           }catch{
@@ -427,6 +454,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
   const count=(status:CanvasImageView['status'])=>refs.filter(ref=>images.get(ref.slotKey)?.status===status).length;
   return {available:!!key,enabled,images,total:refs.length,ready:count('ready'),failed:count('failed'),deferred:count('deferred'),
     pinned:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned;}).length,
+    frozenMatched:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned&&image.frozenDigestMatched;}).length,
     show:()=>{setEnabled(true);setAttempt(value=>value+1);},hide:()=>setEnabled(false)};
 }
 
@@ -462,7 +490,9 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   },[scoped,onContentWidth]);
   const themeNode=(section:CanvasSection,name:string)=>scoped?'s'+sections.indexOf(section)+'c'+section.slots.indexOf(name):undefined;
   const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
-  const media=useCanvasMedia(privateMedia,snapshot,sections,selectedSlot,!standalone&&!simulation&&!!privateMedia);
+  // Fullscreen is still private only when the route supplies its verified
+  // owner context. Standalone share scenes without it remain byte-free.
+  const media=useCanvasMedia(privateMedia,snapshot,sections,selectedSlot,!simulation&&!!privateMedia);
   const liveDrops=editing&&privateMedia?dropTargets:undefined;
   const {highlighted:sectionHighlight,setHighlighted:setSectionHighlight}=useDropOutline();
   function sectionDragOver(event:DragEvent<HTMLElement>,before:string|null){
@@ -548,7 +578,16 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
       {media.enabled?<><span role="status">{media.ready} of {media.total} owner-private image slots verified · {media.pinned} server pin matches · Not public</span>
         {media.ready+media.failed+media.deferred<media.total&&<span>Verifying private image bytes…</span>}
         {media.failed>0&&<p role="alert">{media.failed} image slots could not be verified or decoded.</p>}
-        {media.deferred>0&&<p>{media.deferred} slots exceed this view’s 50 MiB image preview budget. Select a slot and retry to prioritize it.</p>}
+        {media.frozenMatched>0&&<span>{media.frozenMatched} snapshot digest and server pin matches · Not a publication receipt</span>}
+        {media.ready>0&&<details><summary>Verified image receipts</summary>
+          <ul className="ws-editor-slots">{Array.from(media.images.entries()).flatMap(([slotKey,image])=>image.status==='ready'?[<li key={slotKey} style={{overflowWrap:'anywhere'}}>
+            <strong>{slotKey}</strong><span> · {image.dimensions.width} × {image.dimensions.height}</span>
+            <small style={{display:'block'}}>Observed SHA-256: {image.digest}</small>
+            <small style={{display:'block'}}>{image.pinned?'Server pin matched':'No verified server pin'} · {image.frozenDigestMatched?'Snapshot digest matched':'No matching snapshot digest recorded'}</small>
+          </li>]:[])}</ul>
+          <small>Local preview evidence only. These receipts never authorize publication or write a source digest.</small>
+        </details>}
+        {media.deferred>0&&<p>{media.deferred} slots exceed this view’s 50 MiB compressed or 48 megapixel decoded image budget. Select a slot and retry to prioritize it.</p>}
         {(media.failed>0||media.deferred>0)&&<button type="button" className="ws-secondary" onClick={media.show}>Retry private canvas images</button>}
         <button type="button" className="ws-secondary" onClick={media.hide}>Hide private canvas images</button></>:
         <button type="button" className="ws-secondary" onClick={media.show}>Show private canvas images</button>}
@@ -1980,7 +2019,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
  * Storage identity, pin and bytes. This UI never promotes a local digest to a publication pin. */
 type AssetPreviewRecord={id:string;projectId:string;mime:string;size:number;altText:string};
 function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort;asset:AssetPreviewRecord;epoch:number}){
-  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean}>({status:'idle'});
+  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean;dimensions:RasterDimensions;digest:string}>({status:'idle'});
   const mounted=useRef(false);
   const activeUrl=useRef<string|null>(null);
   const flight=useRef(false);
@@ -2011,17 +2050,21 @@ function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort
       if(!live())return;
       if(!verified){setState({status:'failed'});return;}
       const url=URL.createObjectURL(data.bytes);
-      activeUrl.current=url;setState({status:'ready',url,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
+      activeUrl.current=url;
+      const dimensions=await decodePrivateRaster(url);
+      if(!live()||activeUrl.current!==url)return;
+      setState({status:'ready',url,dimensions,digest:data.integrity.computedSha256,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
     }catch{
-      if(live())setState({status:'failed'});
+      if(live()){release();setState({status:'failed'});}
     }finally{if(generation.current===started)flight.current=false;}
   }
   return <section aria-label="Owner-private image byte preview">
     {state.status==='ready'?<>
-      <img src={state.url} alt={asset.altText} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
-        onError={()=>{release();setState({status:'failed'});}}/>
+      <img src={state.url} alt={asset.altText} width={state.dimensions.width} height={state.dimensions.height} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
+        onError={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'failed'});}}/>
       <p>Owner-private bytes verified. {state.pinned?'Independent server hash pin matched.':'No independent server hash pin verified.'} Public delivery is not authorized.</p>
-      <button type="button" className="ws-secondary" onClick={()=>{release();setState({status:'idle'});}}>Close private preview</button>
+      <details><summary>Verified raster receipt</summary><dl className="ws-asset-metadata"><div><dt>Decoded dimensions</dt><dd>{state.dimensions.width} × {state.dimensions.height}</dd></div><div><dt>Observed SHA-256</dt><dd style={{overflowWrap:'anywhere'}}>{state.digest}</dd></div></dl></details>
+      <button type="button" className="ws-secondary" onClick={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'idle'});}}>Close private preview</button>
     </>:state.status==='pending'?<>
       <p role="status">Verifying private image bytes…</p>
       <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div>
@@ -2052,6 +2095,8 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [dragAsset,setDragAsset]=useState<string|null>(null);
   const assetDrag=useRef<{snapshot:PortfolioSnapshot;asset:AssetPreviewRecord;port:SupabaseBrowserAuthPort;epoch:number;generation:number}|null>(null);
   const recordGeneration=useRef(0);
+  const actionGeneration=useRef(0);
+  const lastScope=useRef<{port:SupabaseBrowserAuthPort;epoch:number}|null>(null);
   const placementField=useRef<HTMLTextAreaElement>(null);
   const [placementAlt,setPlacementAlt]=useState('');
   const [placing,setPlacing]=useState(false);
@@ -2060,13 +2105,26 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const assetMounted=useRef(false);
   useEffect(()=>{assetMounted.current=true;return()=>{assetMounted.current=false;};},[]);
   const [uploadOpen,setUploadOpen]=useState(false);
+  const uploadProjectLabel=useId(),uploadAltLabel=useId(),placementTargetLabel=useId(),placementAltLabel=useId();
+  const uploadFileId=useId();
+  const fileInput=useRef<HTMLInputElement>(null);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
   const [busy,setBusy]=useState(false);
   const [refresh,setRefresh]=useState(0);
+  // File objects, alt text, selected IDs and async action locks belong to
+  // the previous owner scope. Never carry them into a newly verified owner.
+  function resetPrivateInputs(){
+    ++actionGeneration.current;placementFlight.current=false;uploadFlight.current=false;
+    setSelectedAssetId('');setTargetKey(null);setCollection('');setProjectId('');
+    setPlacementAlt('');setAlt('');setFile(null);setUploadOpen(false);setBusy(false);setPlacing(false);
+    setNotice('');setError('');if(fileInput.current)fileInput.current.value='';
+  }
   useLayoutEffect(()=>{
-    let active=true;
+    let subscribed=true;
     const epoch=port.reconcileOwnerSessionEpoch();
+    if(lastScope.current&&(lastScope.current.port!==port||lastScope.current.epoch!==epoch))resetPrivateInputs();
+    lastScope.current={port,epoch};
     ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
     const sameBinding=recordsBinding.current?.port===port&&recordsBinding.current?.epoch===epoch;
     recordsFlight.current=true;setRecordsPending(true);setRecordsError('');
@@ -2077,19 +2135,20 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       recordsFlight.current=false;setRecordsPending(false);
     };
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
-      if(!active)return;
-      active=false;++recordGeneration.current;assetDrag.current=null;setDragAsset(null);setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
+      if(!subscribed)return;
+      subscribed=false;++recordGeneration.current;assetDrag.current=null;setDragAsset(null);resetPrivateInputs();
+      finish('Owner session changed. Reload verified private asset records.');
     });
-    if(active)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
-      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    if(subscribed)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
+      if(!subscribed||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!assetReply.data||!projectReply.data){
         finish(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');return;
       }
       recordsBinding.current={port,epoch};
       setAssets(assetReply.data);setProjects(projectReply.data);
       recordsFlight.current=false;setRecordsPending(false);
-    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)finish('Private asset records could not be loaded.');});
-    return ()=>{active=false;unsubscribe();};
+    }).catch(()=>{if(subscribed&&port.reconcileOwnerSessionEpoch()===epoch)finish('Private asset records could not be loaded.');});
+    return ()=>{subscribed=false;unsubscribe();};
   },[port,refresh]);
   function reloadRecords(){
     ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
@@ -2140,36 +2199,39 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     if(!allowPlacement||recordsFlight.current||!selected||!target||!candidateTargets.some(item=>item.key===target.key)||placementFlight.current||uploadFlight.current||!placementAlt.trim()||placementAlt.length>300)return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
+    const started=actionGeneration.current;
+    const current=()=>assetMounted.current&&actionGeneration.current===started&&port.reconcileOwnerSessionEpoch()===epoch;
     placementFlight.current=true;setPlacing(true);setNotice('');
     try{
       const placed=await onPlace(selected.id,target.key,placementAlt.trim());
-      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(!current())return;
       setNotice(placed?'Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.':
         'Image placement was not completed. Existing assignment and selected image were retained.');
     }catch{
-      if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setError('Image placement was not confirmed. Review the current draft before retrying.');
-    }finally{placementFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setPlacing(false);}
+      if(current())setError('Image placement was not confirmed. Review the current draft before retrying.');
+    }finally{if(current()){placementFlight.current=false;setPlacing(false);}}
   }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
     if(!active||!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
+    const started=actionGeneration.current;
+    const current=()=>assetMounted.current&&actionGeneration.current===started&&port.reconcileOwnerSessionEpoch()===epoch;
     uploadFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       const receipt=await port.uploadOwnerProjectImage(projectId,file,alt.trim());
-      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(!current())return;
       if(!receipt.data||receipt.data.publicDeliveryAllowed!==false||
         receipt.data.verifiedMetadata!==true)
         throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
       setNotice('Image uploaded and privately registered. Public delivery remains blocked; a trusted byte attestation is still required.');
       setSelectedAssetId(receipt.data.id);setPlacementAlt(receipt.data.altText);setCollection('');
       setAlt('');setFile(null);setUploadOpen(false);reloadRecords();
-      const input=document.getElementById('kd-private-image-file');
-      if(input instanceof HTMLInputElement)input.value='';
-    }catch(cause){if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
+      if(fileInput.current)fileInput.current.value='';
+    }catch(cause){if(current())
       setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
-    finally{uploadFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
+    finally{if(current()){uploadFlight.current=false;setBusy(false);}}
   }
   return <div className="ws-asset-library ws-asset-manager" role="group" aria-label="Private asset manager">
     <aside className="ws-asset-collections">
@@ -2242,15 +2304,15 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         <p>This is an irreversible write-once private Storage upload. No owner-side delete or public publish follows.</p>
         {projects?.length===0?<p>First <a href="/app/projects">create a private project</a>.</p>:
           <form className="ws-asset-upload" onSubmit={event=>void upload(event)}>
-            <label>Owner project<select required disabled={busy} value={projectId} onChange={event=>setProjectId(event.target.value)}>
+            <label><span id={uploadProjectLabel}>Owner project</span><select aria-labelledby={uploadProjectLabel} required disabled={busy||!recordsReady} value={projectId} onChange={event=>setProjectId(event.target.value)}>
               <option value="">Select a private project</option>
               {projects?.map(project=><option key={project.id} value={project.id}>{project.title}</option>)}
             </select></label>
-            <label htmlFor="kd-private-image-file">Private image file</label>
-            <input id="kd-private-image-file" type="file" required disabled={busy}
+            <label htmlFor={uploadFileId}>Private image file</label>
+            <input ref={fileInput} id={uploadFileId} type="file" required disabled={busy||!recordsReady}
               accept="image/png,image/jpeg,image/webp"
               onChange={event=>setFile(event.currentTarget.files?.[0]??null)}/>
-            <label>Image alt text<textarea rows={3} required disabled={busy} maxLength={500} value={alt}
+            <label><span id={uploadAltLabel}>Image alt text</span><textarea aria-labelledby={uploadAltLabel} rows={3} required disabled={busy||!recordsReady} maxLength={500} value={alt}
               onChange={event=>setAlt(event.target.value)}
               placeholder="Describe the image for assistive technology"/></label>
             <p className="ws-asset-limits">PNG, JPEG or WebP · 5 MB max. Your filename is never used as a public path.
@@ -2276,12 +2338,12 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         </dl>
         <p className="ws-asset-protection">Place only a verified owner-private registration into an actual compatible slot. Replacing a pristine image stashes its previous assignment; historical asset bytes are not deleted. No public URL or digest is fabricated.</p>
         {candidateTargets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
-          <label>Compatible image slot<select value={candidateTargets.some(item=>item.key===target?.key)?target?.key??'':''} disabled={!allowPlacement}
+          <label><span id={placementTargetLabel}>Compatible image slot</span><select aria-labelledby={placementTargetLabel} value={candidateTargets.some(item=>item.key===target?.key)?target?.key??'':''} disabled={!allowPlacement}
             onChange={event=>setTargetKey(event.target.value)}>
             <option value="">Choose an image-compatible slot</option>
             {candidateTargets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
           </select></label>
-          <label>Placement alt text<textarea ref={placementField} rows={3} value={placementAlt} disabled={!allowPlacement}
+          <label><span id={placementAltLabel}>Placement alt text</span><textarea aria-labelledby={placementAltLabel} ref={placementField} rows={3} value={placementAlt} disabled={!allowPlacement}
             aria-invalid={!placementAlt.trim()||placementAlt.length>300}
             onChange={event=>setPlacementAlt(event.target.value)}/></label>
           <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
