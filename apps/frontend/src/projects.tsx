@@ -1302,6 +1302,17 @@ function PrivateProjectImages({port,projectId,onPending}:{
 }
 
 const CASE_SECTION_KINDS: CaseStudySection['kind'][] = ['challenge', 'approach', 'implementation', 'results', 'media', 'custom'];
+type CaseRevision = {sections:CaseStudySection[];revision:number};
+function sameCaseSections(left:CaseStudySection[],right:CaseStudySection[]):boolean{
+  return JSON.stringify(normalizePrivateCaseStudy({sections:left}))===JSON.stringify(normalizePrivateCaseStudy({sections:right}));
+}
+function caseReadResolution(remote:CaseRevision,base:number,saved:CaseStudySection[],
+  local:CaseStudySection[],attempt:{base:number;sections:CaseStudySection[]}|null):'matched'|'unchanged'|'compare'{
+  if(attempt&&remote.revision===attempt.base+1&&sameCaseSections(remote.sections,attempt.sections)&&
+      sameCaseSections(local,attempt.sections))return 'matched';
+  if(remote.revision===(attempt?.base??base)&&sameCaseSections(remote.sections,saved))return 'unchanged';
+  return 'compare';
+}
 
 function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObserved, onSaved, onPending, onDirty}: {
   port: SupabaseBrowserAuthPort; projectId: string;
@@ -1322,6 +1333,8 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const generation=useRef(0);
   const expired=useRef(false);
   const [uncertain,setUncertain]=useState<{base:number;sections:CaseStudySection[]}|null>(null);
+  const [comparison,setComparison]=useState<CaseRevision|null>(null);
+  const [confirmRebase,setConfirmRebase]=useState(false);
   const currentOwner=()=>!expired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
   const current=(id:number)=>generation.current===id&&currentOwner();
   const minimumRevision=useRef(knownRevision);
@@ -1332,7 +1345,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const baseRevision=draft && !needsReload && overviewAdvance &&
     draft.revision>=overviewAdvance.from && draft.revision<=overviewAdvance.to
       ? overviewAdvance.to : draft?.revision;
-  const stale=needsReload || (baseRevision!==undefined && knownRevision>baseRevision);
+  const stale=needsReload || comparison!==null || (baseRevision!==undefined && knownRevision>baseRevision);
   const dirty=!!(draft && savedSections && JSON.stringify(draft.sections)!==JSON.stringify(savedSections));
   useEffect(()=>{onDirty(dirty);},[dirty,onDirty]);
   useEffect(()=>{
@@ -1340,7 +1353,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
       if(next===ownerEpoch.current||expired.current)return;
       expired.current=true;++generation.current;pending.current=true;
-      setDraft(null);setSavedSections(null);setUncertain(null);setNotice('');
+      setDraft(null);setSavedSections(null);setUncertain(null);setComparison(null);setConfirmRebase(false);setNotice('');
       setBusy(false);setLoading(false);setNeedsReload(true);
       setError('Your owner session changed. Reopen this project.');
     });
@@ -1364,7 +1377,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
       if (!valid()) return;
       if (result.data && !result.error && result.data.revision>=minimumRevision.current) {
         setDraft(result.data);
-        setSavedSections(result.data.sections);setUncertain(null);
+        setSavedSections(result.data.sections);setUncertain(null);setComparison(null);setConfirmRebase(false);
         onObserved(result.data.revision);
         setError('');
         setNeedsReload(false);
@@ -1388,12 +1401,14 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     setLoading(true);
     setError('');
     setNotice('');
+    setConfirmRebase(false);
     // Do not discard the old section buffer until an authoritative read succeeds.
     setVersion(value => value + 1);
   }
 
   function update(index: number, changes: Partial<CaseStudySection>) {
     if (!currentOwner()||pending.current) return;
+    setConfirmRebase(false);
     setDraft(current => current && {...current, sections: current.sections.map((section, position) =>
       index === position ? {...section, ...changes} : section)});
     setNotice('');
@@ -1401,6 +1416,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
 
   function move(index: number, offset: number) {
     if (!currentOwner()||pending.current) return;
+    setConfirmRebase(false);
     setDraft(current => {
       if (!current) return current;
       const sections = [...current.sections];
@@ -1415,7 +1431,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!currentOwner()||!draft || baseRevision===undefined || pending.current || stale) return;
+    if (!currentOwner()||!draft || baseRevision===undefined || pending.current || stale || !dirty) return;
     let submitted:CaseStudySection[];
     try{submitted=normalizePrivateCaseStudy({sections:draft.sections}).sections;}
     catch(cause){setError(cause instanceof Error?cause.message:'Enter valid case study sections.');return;}
@@ -1428,14 +1444,15 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     try {
       const result = await port.saveOwnerCaseStudy(projectId, baseRevision, {sections: submitted});
       if(!current(id))return;
-      if (!result.data || result.error || result.data.revision!==baseRevision+1) {
+      if (!result.data || result.error || result.data.revision!==baseRevision+1 ||
+          !sameCaseSections(result.data.sections,submitted)) {
         const message = result.error?.message ?? 'Case study save could not be confirmed.';
         setError(message);
         setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
         return;
       }
       setDraft(result.data);
-      setSavedSections(result.data.sections);setUncertain(null);
+      setSavedSections(result.data.sections);setUncertain(null);setComparison(null);setConfirmRebase(false);
       onSaved(baseRevision,result.data.revision);
       setNotice('Private case study saved.');
     } catch {
@@ -1447,38 +1464,73 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   }
 
   async function verifyUncertain(){
-    if(!currentOwner()||pending.current||!uncertain||!draft)return;
+    if(!currentOwner()||pending.current||!draft||!savedSections||baseRevision===undefined)return;
     const id=generation.current;
     pending.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    setConfirmRebase(false);
     try{
       const result=await port.readOwnerCaseStudy(projectId);
       if(!current(id))return;
-      if(result.error||!result.data||result.data.revision<minimumRevision.current){
+      if(result.error||!result.data||!Number.isSafeInteger(result.data.revision)||
+          result.data.revision<Math.max(minimumRevision.current,baseRevision)){
         setError('Latest saved sections could not be verified. Your edits are retained.');return;
       }
-      onObserved(result.data.revision);
-      const same=(left:CaseStudySection[],right:CaseStudySection[])=>
-        JSON.stringify(normalizePrivateCaseStudy({sections:left}))===JSON.stringify(normalizePrivateCaseStudy({sections:right}));
-      if(result.data.revision===uncertain.base+1&&same(result.data.sections,uncertain.sections)&&same(draft.sections,uncertain.sections)){
-        setDraft(result.data);setSavedSections(result.data.sections);setUncertain(null);setNeedsReload(false);
+      const remote:CaseRevision={revision:result.data.revision,sections:normalizePrivateCaseStudy(result.data).sections};
+      const resolution=caseReadResolution(remote,baseRevision,savedSections,draft.sections,uncertain);
+      onObserved(remote.revision);
+      if(resolution==='matched'){
+        setDraft(remote);setSavedSections(remote.sections);setUncertain(null);setComparison(null);setNeedsReload(false);
         setNotice('Requested sections match the current saved revision. No additional write was made.');
-      }else if(result.data.revision===uncertain.base&&savedSections&&same(result.data.sections,savedSections)){
-        setUncertain(null);setNeedsReload(false);setNotice('Saved sections are unchanged. Your edits are retained; save explicitly.');
-      }else setError('The saved case study differs from your attempted save. Your edits are retained; discard and reload only if you choose.');
+      }else if(resolution==='unchanged'){
+        setDraft({...draft,revision:remote.revision});setSavedSections(remote.sections);
+        setUncertain(null);setComparison(null);setNeedsReload(false);
+        setNotice('Saved sections are unchanged. Your edits are retained; save explicitly.');
+      }else{
+        setComparison(remote);setNeedsReload(true);
+        setError('The saved case study changed. Compare the saved sections with your draft before choosing how to continue.');
+      }
     }catch{if(current(id))setError('Saved sections could not be verified. Your edits are retained.');}
     finally{if(current(id)){pending.current=false;setBusy(false);onPending(false);}}
   }
 
+  function resolveComparison(keep:boolean){
+    if(!currentOwner()||pending.current||!comparison||!draft||
+      comparison.revision<Math.max(minimumRevision.current,knownRevision)||(keep&&!confirmRebase))return;
+    // Read-only baseline choice: no write and no sibling overview revision credit.
+    setDraft(keep?{revision:comparison.revision,sections:draft.sections}:comparison);
+    setSavedSections(comparison.sections);setComparison(null);setUncertain(null);
+    setConfirmRebase(false);setNeedsReload(false);setError('');
+    setNotice(keep?'Compared saved sections. Your draft still needs a separate explicit save.':'Loaded the compared saved sections. No write was made.');
+  }
+
   return <form className="ws-project-fields ws-case-form" onSubmit={event => void save(event)}>
     <h2>Case study sections</h2>
-    <p>Add and order sections for your draft. Visibility applies to a future release.</p>
+    <p>Add and order sections for your draft. Visibility applies to a future release. Saving changed sections can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
     {error && <p role="alert" className="ws-inline-alert">{error}</p>}
     {notice && <p role="status" className="ws-inline-alert">{notice}</p>}
     {loading && <p role="status">{draft
       ? 'Loading latest saved sections… Your edits are retained until the read succeeds.'
       : 'Loading case study…'}</p>}
-    {uncertain&&!loading&&<button type="button" className="ws-secondary" disabled={locked}
+    {draft&&(uncertain||stale)&&!loading&&<button type="button" className="ws-secondary" disabled={locked}
       onClick={()=>void verifyUncertain()}>Check latest saved sections</button>}
+    {comparison&&draft&&<section className="ws-project-conflict" aria-label="Compare saved case-study sections">
+      <h3>Saved sections at revision {comparison.revision}</h3>
+      {comparison.revision<knownRevision&&<p>A newer project revision is known. Check the latest sections again.</p>}
+      {!comparison.sections.length?<p>No saved sections at this revision.</p>:<ol>{comparison.sections.map(section=>
+        <li key={section.id}><details><summary>{section.title||'Untitled section'} · {section.kind} · {section.visible?'Included':'Hidden'}</summary>
+          <p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{section.body||'No section content'}</p>
+        </details></li>)}</ol>}
+      <p>Your local sections remain below. Keeping them may replace newer saved sections on a separate save; it does not change current public visibility.</p>
+      <label className="ws-profile-check"><input type="checkbox" checked={confirmRebase}
+        disabled={locked||comparison.revision<knownRevision} onChange={event=>setConfirmRebase(event.target.checked)}/>
+        I reviewed the saved sections and want to keep my draft against this revision.</label>
+      <div className="ws-actions">
+        <button type="button" className="ws-secondary" disabled={locked||comparison.revision<knownRevision||!confirmRebase}
+          onClick={()=>resolveComparison(true)}>Keep section draft against latest revision</button>
+        <button type="button" className="ws-secondary" disabled={locked||comparison.revision<knownRevision}
+          onClick={()=>resolveComparison(false)}>Discard section draft and use compared sections</button>
+      </div>
+    </section>}
     {(error || stale || dirty) && !loading && <button type="button" className="ws-secondary"
       disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
     {draft && stale && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
@@ -1501,6 +1553,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
           <button type="button" className="ws-secondary" disabled={index === draft.sections.length - 1} onClick={() => move(index, 1)}>Move down</button>
           <button type="button" className="ws-secondary" onClick={() => {
             if (!currentOwner()||pending.current) return;
+            setConfirmRebase(false);
             setDraft({...draft, sections: draft.sections.filter(item => item.id !== section.id)}); setNotice('');
           }}>Remove from draft</button>
         </div>
@@ -1508,10 +1561,11 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={locked || draft.sections.length >= 24} onClick={() => {
           if (!currentOwner()||pending.current) return;
+          setConfirmRebase(false);
           setDraft({...draft, sections: [...draft.sections, {id: crypto.randomUUID(), kind: 'custom', title: '', body: '', visible: false}]});
           setNotice('');
         }}>Add section</button>
-        <button type="submit" className="ws-primary" disabled={locked || stale}>{busy ? 'Saving…' : 'Save sections'}</button>
+        <button type="submit" className="ws-primary" disabled={locked || stale || !dirty}>{busy ? 'Saving…' : 'Save sections'}</button>
       </div>
     </>}
   </form>;
