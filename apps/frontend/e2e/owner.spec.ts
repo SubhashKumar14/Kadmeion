@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { expect, test, type Page } from '@playwright/test';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { chromium, expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
 import { PrivateServerAssetByteAttestor } from '../../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
@@ -3270,4 +3272,73 @@ test('B16 WF-020/021/023/025 R5 native pinned placement, EMPTY undo, device favo
   expect(snapshot.slots['arc-hero-title']).toMatchObject({state:'S0',componentId:'title-stacked@1',content:{}});
   expect(JSON.stringify(snapshot.stashes['arc-hero-title'])).toContain('R5 preserved outgoing title');
   expect(Object.values(snapshot.files).join('')).not.toContain('Optional supporting text');
+});
+
+test('B16 WF-019/027 R6 cold browser profile preserves individual editor transaction history',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local GoTrue only; actual persistent Chromium process restart.');
+  test.setTimeout(150_000);
+  const owner=await localUser('R6 cold history owner');
+  const profile=await mkdtemp(join(tmpdir(),'kadmeion-s6-cold-profile-'));
+  const start=()=>chromium.launchPersistentContext(profile,{
+    executablePath:process.env.KADMEION_CHROME_PATH||'/usr/bin/google-chrome',
+    headless:true,baseURL:'http://127.0.0.1:5173',viewport:{width:1600,height:1000}
+  });
+  let context:BrowserContext|null=null;
+  const saved='R6 cold saved',first='R6 first independent transaction',second='R6 second independent transaction';
+  const title='R6 cold recovery portfolio';
+  let editorPath='';
+  try{
+    context=await start();let page=context.pages()[0]??await context.newPage();
+    await signIn(page,owner);
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:'Arc',exact:true}).check();
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    editorPath=new URL(page.url()).pathname;
+    const field=()=>page.getByLabel('Text content');
+    const apply=async(value:string)=>{
+      await field().fill(value);
+      await page.getByRole('button',{name:'Apply text',exact:true}).click();
+      await expect(field()).toHaveValue(value);
+    };
+    const undo=()=>page.getByRole('button',{name:'Undo',exact:true});
+    const redo=()=>page.getByRole('button',{name:'Redo',exact:true});
+    await apply(saved);await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await apply(first);await apply(second);
+    await undo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    const details=()=>page.locator('details.ws-editor-safety').filter({hasText:'Browser recovery & Keep Both'});
+    const expand=async()=>{
+      await expect(details()).toBeVisible();
+      if(await details().getAttribute('open')===null)await details().locator('summary').click();
+    };
+    await expand();
+    await details().getByRole('button',{name:'Save browser recovery copy',exact:true}).click();
+    await expect(details().getByText('Recovery copy saved on this browser only. Cloud draft unchanged.',{exact:true})).toBeVisible();
+    await expect(details().getByRole('button',{name:'Open recovery copy',exact:true})).toHaveCount(1);
+    // Actual Chrome exit. No storage-state export, IDB injection, mocked auth, or page.reload substitute.
+    await context.close();context=null;
+    context=await start();page=context.pages()[0]??await context.newPage();
+    await page.goto(editorPath);
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    await expect(field()).toHaveValue(saved);
+    await expand();
+    await details().getByRole('button',{name:'Open recovery copy',exact:true}).click();
+    await expect(details().getByText('Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.',{exact:true})).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    // Snapshot-only restore would jump directly to saved; that is not persistent history (UI-054).
+    await undo().click();await expect(field(),'cold restart must restore preceding individual edit, not just the saved snapshot').toHaveValue(first);
+    await undo().click();await expect(field()).toHaveValue(saved);
+    await redo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(field()).toHaveValue(second);
+  }finally{
+    await context?.close().catch(()=>undefined);
+    await rm(profile,{recursive:true,force:true});
+  }
 });
