@@ -151,7 +151,7 @@ export function canonicalPublicLink(handle,slug,env) {
   return '<'+path+'>; rel="canonical"';
 }
 
-export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch} = {}) {
+export async function handlePublicPortfolio(req, res, {env = process.env, http = fetch, trustedLocalAnalyticsOrigin = null} = {}) {
   function reply(status, body, type, indexable = false, media = false, reportUi = false) {
     res.statusCode = status;
     res.setHeader('Cache-Control', 'private, no-store');
@@ -223,9 +223,18 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     // Only direct canonical document GETs in the disposable local stack can
     // request the trusted C13 envelope. Aliases/assets/reports/HEAD never do.
     // Do not infer eligibility or consent from visitor-controlled values.
-    const analyticsEnabled=local&&env.KADMEION_ANALYTICS_COLLECTOR_ENABLED==='true'&&
-      req.method==='GET'&&!rewritten&&!assetRequest&&!reportUi&&
-      reportOrigin(env)!==null;
+    // Only the server composition root may attest canonical ingress. An
+    // environment switch, request Host or forwarded header is insufficient.
+    let analyticsOrigin=null;
+    if(local&&typeof trustedLocalAnalyticsOrigin==='string'&&
+       req.method==='GET'&&!rewritten&&!assetRequest&&!reportUi){
+      try{
+        const u=new URL(trustedLocalAnalyticsOrigin);
+        if(u.protocol==='http:'&&u.hostname==='127.0.0.1'&&u.port&&
+           u.origin===trustedLocalAnalyticsOrigin)analyticsOrigin=u.origin;
+      }catch{}
+    }
+    const analyticsEnabled=analyticsOrigin!==null;
     const readRpc=async rpc=>withDeliveryRpc(http,new URL('/rest/v1/rpc/' + rpc, origin), {
       method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit',
       headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
@@ -296,7 +305,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     res.setHeader('X-Kadmeion-Served-SHA256',
       createHash('sha256').update(published).digest('hex'));
     if(release.indexable)res.setHeader('Link',canonicalPublicLink(handle,slug,env));
-    if(analyticsEnabled&&release.indexable&&analyticsReceipt!==null&&!req.aborted&&!res.destroyed){
+    if(analyticsEnabled&&release.indexable&&analyticsReceipt!==null&&!req.aborted&&!res.destroyed&&!res.writableEnded){
       // Existing S12 module is a deny-only HTTP route with a trusted internal
       // collector. Load only inside the local opt-in lane; never expose its
       // receipt, credentials, visitor metadata or result in a response.
@@ -306,7 +315,7 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
         await collectEligiblePublicView({
           canonicalIngressVerified:true,localIntegration:true,enabled:true,
           renderedSuccessfully:true,method:'GET',receipt:analyticsReceipt,
-          headers:req.headers,canonicalOrigin:reportOrigin(env),
+          headers:req.headers,canonicalOrigin:analyticsOrigin,
           frozenHtmlSha256:release.htmlSha256
         },{collect:createLocalAnalyticsRpcCollector({
           localIntegration:true,endpoint:origin.origin,serviceRoleKey:key,http
