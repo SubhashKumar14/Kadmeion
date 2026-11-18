@@ -1185,10 +1185,25 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const response=await view.port.listOwnerAssets();
       if(!draftCurrent(view)||latestRecovery.current?.tool!=='Assets'||latestRecovery.current.preview)return false;
       const asset=response.data?.find(row=>row.id===assetId);
-      if(!asset){setError('Current owner asset registration could not be verified. No slot was changed.');return false;}
+      if(response.error||!asset||!['image/png','image/jpeg','image/webp'].includes(asset.mime)||
+         !Number.isSafeInteger(asset.size)||asset.size<1||asset.size>5*1024*1024){
+        setError('Current owner image registration could not be verified. No slot was changed.');return false;
+      }
+      // Validate physical owner-private bytes through the authenticated port.
+      // This is still a draft reference, never a public asset or a new digest pin.
+      const read=await view.port.readOwnerPrivateAsset(asset.projectId,asset.id,view.owner!.epoch);
+      if(!draftCurrent(view)||latestRecovery.current?.tool!=='Assets'||latestRecovery.current.preview)return false;
+      const data=read.data;
+      if(read.error||!data||data.asset.id!==asset.id||data.asset.projectId!==asset.projectId||
+         data.asset.mime!==asset.mime||data.asset.size!==asset.size||!(data.bytes instanceof Blob)||
+         data.bytes.type!==asset.mime||data.bytes.size!==asset.size||
+         data.integrity.status!=='OWNER_BYTES_VERIFIED'||!/^[a-f0-9]{64}$/.test(data.integrity.computedSha256)||
+         !['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation)||data.publicDeliveryAllowed!==false){
+        setError('Owner-private image bytes could not be verified. Retry from Assets; existing assignment was kept.');return false;
+      }
       recoveryLock.current=false;
       if(!apply({kind:'PLACE_PRIVATE_IMAGE',slotKey:target,assetId:asset.id,altText}))return false;
-      setSlot(target);setNotice('Private image reference applied to working draft. Save draft to persist it. Verified media bytes are still required for release.');
+      setSlot(target);setNotice('Private image reference applied after owner-byte verification. Save draft to persist it; no publication pin or release authority was granted.');
       return true;
     }catch{
       if(scopeCurrent(view))setError('Asset validation failed. No slot was changed.');
@@ -1470,15 +1485,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
   },[operation,pendingFields,sourceDirty]);
-  // Additive S7 props: never create a private-byte context for a simulated
-  // visitor, an unverified owner, or a device that cannot author.
-  const canvasOwner=verifiedOwner&&allowed&&!preview&&record?.id===id&&
+  // An author preview is still the private, verified editor. Never provide
+  // this context to standalone/simulated visitor or unverified owner views.
+  const canvasOwner=verifiedOwner&&allowed&&record?.id===id&&
     port.getOwnerSessionEpoch()===verifiedOwner.epoch?
     {port,ownerKey:JSON.stringify([verifiedOwner.id,verifiedOwner.epoch,id])}:undefined;
   const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth,privateMedia:canvasOwner,
-    dropTargets:canvasOwner?{canDropComponent:canDropCanvasComponent,dropComponent:dropCanvasComponent,
+    dropTargets:canvasOwner&&!preview?{canDropComponent:canDropCanvasComponent,dropComponent:dropCanvasComponent,
       canDropSection:canDropCanvasSection,dropSection:dropCanvasSection}:undefined,
-    onAddFirstSection:canvasOwner&&!saving&&!recoveryBusy?()=>{
+    onAddFirstSection:canvasOwner&&!preview&&!saving&&!recoveryBusy?()=>{
       const view=latestRecovery.current;
       if(!view||!draftCurrent(view)||view.preview)return;
       setTool('Content');setSectionPicker(true);
