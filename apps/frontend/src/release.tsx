@@ -1182,6 +1182,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
   const [attempt,setAttempt]=useState<PublicAttempt|null>(null);
   const [withdrawing,setWithdrawing]=useState(false);
   const [receipt,setReceipt]=useState<PublicDeliveryEvidence|null>(null);
+  const [liveComparison,setLiveComparison]=useState<{evidence:PublicDeliveryEvidence;comparison:FrozenComparison}|null>(null);
   const [history,setHistory]=useState<PublicDeliveryEvidence[]>([]);
   const [recovered,setRecovered]=useState<OwnerPublicationIntentPage|null>(null);
   const [recoveryId,setRecoveryId]=useState('');
@@ -1198,7 +1199,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
   const receiptOwner=useRef<string|null>(null);
   useLayoutEffect(()=>{
     const clear=()=>{++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;
-      setAttempt(null);setWithdrawing(false);setReceipt(null);setHistory([]);setRollbackId('');setNotice('');setError('');
+      setAttempt(null);setWithdrawing(false);setReceipt(null);setLiveComparison(null);setHistory([]);setRollbackId('');setNotice('');setError('');
       setRecovered(null);setRecoveryId('');setAcknowledged([]);stageFlight.current=null;setStageAttempt(null);setStaged(null);};
     clear();
     const unsubscribe=port.subscribeOwnerSessionEpoch(clear);
@@ -1206,6 +1207,8 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
   },[port,portfolioId]);
   useLayoutEffect(()=>{
     if(!pointer)return;
+    setLiveComparison(previous=>previous&&(pointer.portfolioId!==portfolioId||pointer.status!=='PREPARED_PRIVATE'||
+      pointer.generation!==previous.evidence.pointerGeneration||pointer.revocationGeneration!==previous.evidence.revocationGeneration)?null:previous);
     setStaged(previous=>previous&&(pointer.portfolioId!==portfolioId||pointer.status!=='PREPARED_PRIVATE'||
       pointer.generation!==previous.generation||pointer.candidateRequestId!==previous.requestId||
       pointer.candidateManifestSha256!==previous.manifestSha256)?null:previous);
@@ -1214,6 +1217,56 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       pointer.revocationGeneration>=previous.stageGeneration)?null:previous);
   },[pointer,portfolioId]);
   function retain(value:PublicAttempt|null){pending.current=value;setAttempt(value?{...value}:null);}
+  /** Read-only point-in-time comparison of a host-verified release's actual frozen pin and saved draft. */
+  async function compareLiveWithDraft(){
+    if(!factory||disabled||!receipt||pending.current||withdrawal.current||stageFlight.current)return;
+    const action=begin();if(!action)return;
+    const started=epoch.current,expected=receipt;
+    let scope:OwnerDeliveryScope|null=null;
+    const current=()=>action.current()&&epoch.current===started&&(!scope||scope.isCurrentOwner());
+    setBusy(true);setLiveComparison(null);setReceipt(null);setError('');setNotice('');
+    try{
+      const opened=await factory();
+      if(!current())return;
+      if(opened.error||!opened.data||!opened.data.isCurrentOwner()||!releaseUuid(opened.data.ownerId)||
+        opened.data.ownerId!==receiptOwner.current)throw Error('Owner changed.');
+      scope=opened.data;
+      const first=await scope.service.checkPublicDelivery(expected);
+      if(!current())return;
+      if(!exactDeliveryEvidence(first,expected))throw Error('Current delivery not verified.');
+      const pin=await port.loadOwnerFrozenRelease(first.requestId);
+      if(!current())return;
+      if(pin.error||!pin.data||pin.data.frozen.requestId!==first.requestId||pin.data.frozen.portfolioId!==portfolioId||
+        pin.data.frozen.visibilityIntent!=='PUBLIC'||!matchesFrozenPin(pin.data,pin.data.frozen))throw Error('Live frozen pin not verified.');
+      const draft=await port.readOwnerPortfolio(portfolioId);
+      if(!current())return;
+      if(draft.error||!draft.data?.snapshot||draft.data.id!==portfolioId||!Number.isSafeInteger(draft.data.revision)||
+        draft.data.revision<pin.data.loadedRevision)throw Error('Saved draft not verified.');
+      const final=await scope.service.checkPublicDelivery(expected);
+      if(!current())return;
+      // Verification time may change; every other authority/host field must remain identical.
+      const {verifiedAt: firstAt,...firstIdentity}=first;
+      const {verifiedAt: finalAt,...finalIdentity}=final;
+      if(!exactDeliveryEvidence(final,expected)||canonicalValue(firstIdentity)!==canonicalValue(finalIdentity))
+        throw Error('Delivery changed during comparison.');
+      const observed=await scope.service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+        observed.generation!==final.pointerGeneration||observed.revocationGeneration!==final.revocationGeneration)
+        throw Error('Pointer changed during comparison.');
+      const before=pin.data.snapshot,after=draft.data.snapshot;
+      if(draft.data.revision===pin.data.loadedRevision&&canonicalValue(before)!==canonicalValue(after))
+        throw Error('Same revision snapshots disagree.');
+      onPointer(observed);setReceipt(final);
+      setHistory(rows=>[final,...rows.filter(item=>item.intentId!==final.intentId)].slice(0,20));
+      setLiveComparison({evidence:final,comparison:{requestId:final.requestId,frozenRevision:pin.data.loadedRevision,
+        draftRevision:draft.data.revision,targetKind:'SAVED_DRAFT',files:snapshotDelta(before.files,after.files),
+        slots:snapshotDelta(before.slots,after.slots),stashes:snapshotDelta(before.stashes,after.stashes),
+        frozenSnapshot:before,draftSnapshot:after,title:draft.data.title}});
+    }catch{
+      if(current())setError('The current public delivery and saved draft could not both be verified. Recheck authoritative delivery, then retry the comparison.');
+    }finally{action.finish();}
+  }
   async function stage(){
     if(!stageFactory||!factory||disabled||pending.current||withdrawal.current||!frozen||
       frozen.portfolioId!==portfolioId||frozen.visibilityIntent!=='PUBLIC'||
@@ -1226,7 +1279,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     const started=epoch.current;
     let scope:OwnerDeliveryScope|null=null;
     const current=()=>action.current()&&epoch.current===started&&(!scope||scope.isCurrentOwner());
-    setBusy(true);setError('');setNotice('');setStaged(null);
+    setBusy(true);setError('');setNotice('');setStaged(null);setLiveComparison(null);
     try{
       const opened=await factory();
       if(!current())return;
@@ -1282,7 +1335,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     let scope:OwnerDeliveryScope|null=null;
     const current=()=>action.current()&&started===epoch.current&&(!scope||scope.isCurrentOwner());
     setBusy(true);setError('');setNotice('');
-    if(kind!=='load')setReceipt(null);
+    if(kind!=='load'){setReceipt(null);setLiveComparison(null);}
     try{
       const opened=await factory();
       if(!current())return;
@@ -1357,7 +1410,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     // Hide the previous positive receipt while an action/read is in flight.
     const previous=receipt;
     const lastVerified=previous??history[0];
-    setReceipt(null);
+    setReceipt(null);setLiveComparison(null);
     try{
       const opened=await factory();
       if(!current())return;
@@ -1508,6 +1561,16 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       <button type="button" className="ws-secondary" disabled={disabled||withdrawing||!!stageAttempt||!!(attempt&&!attempt.intentId)||(!receipt&&!history.length&&!attempt?.intentId)}
         onClick={()=>void run('check')}>Recheck authoritative delivery</button>
       {attempt&&<button type="button" className="ws-secondary" disabled={disabled} onClick={()=>void run('retry')}>Retry same consent operation</button>}
+    </div>
+    <div className="ws-release-action" role="group" aria-label="Draft versus verified live release">
+      <h4>Compare saved draft with live release</h4>
+      <p>Rechecks the actual public delivery before and after reading its exact owner-private frozen pin and the saved draft. Unsaved edits are excluded. This is a point-in-time source comparison, not a screenshot of the public site.</p>
+      <button type="button" className="ws-secondary" disabled={disabled||!receipt||!!attempt||withdrawing||!!stageAttempt}
+        onClick={()=>void compareLiveWithDraft()}>Compare saved draft with verified live release</button>
+      {liveComparison&&receipt&&liveComparison.evidence.intentId===receipt.intentId&&
+        liveComparison.evidence.deliveryEpoch===receipt.deliveryEpoch&&
+        <><p>Live release generation {liveComparison.evidence.releaseGeneration} · checked <time dateTime={liveComparison.evidence.verifiedAt}>{liveComparison.evidence.verifiedAt}</time>.</p>
+        <FrozenComparisonResults comparison={liveComparison.comparison}/></>}
     </div>
     <div className="ws-release-action" role="group" aria-label="Saved publication consent recovery">
       <h4>Recover saved publication consent</h4>
