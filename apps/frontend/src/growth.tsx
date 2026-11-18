@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import type {FormEvent} from 'react';
 import type {SupabaseBrowserAuthPort} from '../../auth-web/src/supabase-auth-port.ts';
+import {VerifiedOwnerAnalytics} from './portfolio-analytics.tsx';
 import type {
   SupabasePrivateGoalsService, PrivateGoal, GoalProgress, GoalMilestone, GoalStatus,
   GoalProgressChronologicalPage
@@ -1017,7 +1018,7 @@ function Connections({service}:{service:SupabasePrivatePlatformLinksService}){
 type GrowthRequestScope = {port:SupabaseBrowserAuthPort;path:string;attempt:number};
 type GrowthLoad = {scope:GrowthRequestScope;data:GrowthServices|null;error:string;viewKey:string};
 
-export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}){
+export function GrowthApp({port,path,verifiedOwner}:{port:SupabaseBrowserAuthPort;path:string;verifiedOwner?:{id:string;epoch:number}}){
   const [attempt,setAttempt]=useState(0);
   // Keep returned private data tied to the exact requesting adapter and route.
   // A late response, account adapter change or retry must not briefly render
@@ -1054,7 +1055,7 @@ export function GrowthApp({port,path}:{port:SupabaseBrowserAuthPort;path:string}
       {(Object.entries(routes) as [GrowthRoute,string][]).map(([href,title])=>
         <a key={href} href={href} aria-current={href===path?'page':undefined}>{title}</a>)}
     </nav>
-    {path==='/app/analytics'?<Analytics/>:
+    {path==='/app/analytics'?(verifiedOwner?<VerifiedOwnerAnalytics port={port} verifiedOwner={verifiedOwner}/>:<Analytics/>):
       error?<div className="ws-project-aside"><p role="alert">{error}</p>
         <button type="button" className="ws-secondary" onClick={()=>setAttempt(n=>n+1)}>Retry private Growth</button></div>:
       !services?<p role="status">Checking your owner-private growth records…</p>:
