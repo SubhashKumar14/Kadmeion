@@ -22,6 +22,8 @@ import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/sr
 import {SupabasePortfolioRevisionStore} from '../../packages/storage-adapters/src/supabase-portfolio-revisions.ts';
 import {SupabaseMyComponentsService} from '../../packages/contracts/src/private-my-components-service.ts';
 import {SupabasePrivateGoalsService} from '../../packages/contracts/src/private-goals-service.ts';
+import {SupabasePrivateNotificationsService} from '../../packages/contracts/src/private-notifications-service.ts';
+import {SupabasePrivateIdentityService} from '../../packages/contracts/src/private-identity-service.ts';
 
 
 function localSupabaseCredentials() {
@@ -95,6 +97,19 @@ const png=Uint8Array.from(Buffer.from(
 ));
 const bucket='kadmeion-private-assets';
 
+// C08 migration and all client consumers must be composed atomically; no legacy writer fallback.
+const preferenceRpc=(actor,name,body={})=>send('/rest/v1/rpc/'+name,{...json(actor),method:'POST',body});
+async function setPreferenceFixture(actor,domain,desired){
+  const readName=domain==='notification'?'read_owner_notification_preferences_state':'read_owner_profile_sharing_state';
+  const changeName=domain==='notification'?'change_owner_notification_preferences':'change_owner_profile_sharing';
+  const current=successful(await preferenceRpc(actor,readName),'Read authoritative C08 preference fixture');
+  assert.equal(current.ownerUserId,actor.id);
+  assert.ok(Number.isSafeInteger(current.version));
+  return preferenceRpc(actor,changeName,{p_expected_version:current.version,p_expected:current.preferences,
+    p_desired:desired,p_operation_id:randomUUID()});
+}
+const visibleSharing={shareDisplayName:true,shareHeadline:false,shareBio:false,publicationRequested:true};
+
 test('B3: a private preset initializes a real first revision once under owner RLS',{timeout:60_000},async()=>{
   const owner=await adminUser('preset-owner');
   const outsider=await adminUser('preset-outsider');
@@ -133,7 +148,6 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
   await t.test('public profile projection requires explicit consent and withdraws on privacy changes', async () => {
     const handle = 'ci_' + randomUUID().slice(0, 8);
     const profilePath = '/rest/v1/profiles?user_id=eq.' + owner.id;
-    const sharingPath = '/rest/v1/profile_sharing_preferences';
     const publishPath = '/rest/v1/rpc/owner_publish_profile_projection';
     const readPath = '/rest/v1/rpc/service_read_published_profile_projection';
     const lookup = (credentials = {key: cfg.service, bearer: cfg.service}) => send(readPath, {
@@ -143,10 +157,7 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
     successful(await send(profilePath, {
       ...json(owner), method: 'PATCH', body: {handle, display_name: 'Visible name', bio: 'Private bio'}
     }), 'Set private profile');
-    successful(await send(sharingPath, {
-      ...json(owner), method: 'POST',
-      body: {user_id: owner.id, publication_requested: true, share_display_name: true}
-    }), 'Set profile sharing preferences');
+    successful(await setPreferenceFixture(owner,'sharing',visibleSharing),'Set profile sharing preferences');
     assert.equal(successful(await lookup(), 'Read prior to explicit publication'), null);
     const publish = (actor, confirmation) => send(publishPath, {
       ...json(actor), method: 'POST', body: {p_confirmation: confirmation}
@@ -160,11 +171,8 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
     });
     assert.equal((await lookup({bearer: stranger.token})).ok, false);
     assert.equal((await lookup({})).ok, false);
-    const ownerPreferences = sharingPath + '?user_id=eq.' + owner.id;
     for (const requested of [false, true]) {
-      successful(await send(ownerPreferences, {
-        ...json(owner), method: 'PATCH', body: {publication_requested: requested}
-      }), 'Change privacy preference');
+      successful(await setPreferenceFixture(owner,'sharing',{...visibleSharing,publicationRequested:requested}),'Change privacy preference');
       assert.equal(successful(await lookup(), 'Read withdrawn profile'), null);
     }
     successful(await publish(owner, 'PUBLISH PROFILE'), 'Republish selected data');
@@ -212,10 +220,7 @@ test('B1/B2: real local Auth JWTs enforce API and Storage tenancy (no hosted wri
     successful(await send('/rest/v1/profiles?user_id=eq.' + actor.id, {
       ...json(actor), method: 'PATCH', body: {handle, display_name: '<script>name</script>'}
     }), 'Set public identity fixture');
-    successful(await send('/rest/v1/profile_sharing_preferences', {
-      ...json(actor), method: 'POST',
-      body: {user_id: actor.id, publication_requested: true, share_display_name: true}
-    }), 'Set profile intent');
+    successful(await setPreferenceFixture(actor,'sharing',visibleSharing),'Set profile intent');
     successful(await call('owner_publish_profile_projection', {p_confirmation: 'PUBLISH PROFILE'}), 'Publish profile');
     const identity = await fetch(profileRoute);
     assert.equal(identity.status, 200);
@@ -754,11 +759,7 @@ test('account erasure removes active account data only after fresh owner confirm
   await send(objectPath, {...bearer(owner), method: 'DELETE'});
   assert.equal((await execute(fresh)).data?.message, 'ERASURE_STORAGE_CLEANUP_REQUIRED');
   const service = new SupabasePrivateAccountErasureService(cfg.origin, cfg.anon, async () => fresh.token);
-  const sharingPath='/rest/v1/profile_sharing_preferences';
-  successful(await send(sharingPath,{
-    ...json(fresh),method:'POST',
-    body:{user_id:owner.id,publication_requested:true,share_display_name:true}
-  }),'Set exposure consent fixture');
+  successful(await setPreferenceFixture(fresh,'sharing',visibleSharing),'Set exposure consent fixture');
   assert.equal((await execute(fresh)).data?.message,'ERASURE_PUBLIC_REVOCATION_UNVERIFIED');
   await assert.rejects(service.removeUploadBatch(),{code:'CONFLICT'});
   await send(objectPath,{...bearer(fresh),method:'DELETE'});
@@ -943,8 +944,8 @@ test('B6: local HTTP canonical HTML and direct immutable assets deny across oper
     const notifications='/rest/v1/private_notifications?select=id,event_type,category,priority,target_id,read_at,dismissed_at';
     const listNotifications=async(actor)=>successful(await send(notifications,bearer(actor)),'List owner notifications');
     const notifyRpc=(actor,name,body)=>send('/rest/v1/rpc/'+name,{...json(actor),method:'POST',body});
-    const preference=(sync)=>notifyRpc(owner,'owner_set_notification_preferences',{
-      p_reviewer_enabled:false,p_publish_enabled:false,p_sync_enabled:sync
+    const preference=(sync)=>setPreferenceFixture(owner,'notification',{
+      reviewerEnabled:false,publishEnabled:false,syncEnabled:sync
     });
     assert.deepEqual(await listNotifications(owner),[]);
     assert.ok(!(await send(notifications)).ok,'Anonymous notification read succeeded');
@@ -1929,6 +1930,50 @@ test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes
   assert.deepEqual(await attestor.attest(first.id,owner.token),{assetId:first.id,status:'WRITE_ONCE_ATTESTED'});
   const pinned=successful(await rpc('read_owner_private_asset_pin',pinInput),'C04 trusted owner pin');
   assert.deepEqual(pinned,{...unpinned,status:'SERVER_HASH_PINNED',expectedSha256:createHash('sha256').update(first.bytes).digest('hex')});
+  // Real JWT claims, local disposable DB only; inject inconsistency within savepoints.
+  // Never alter production data or leave a corrupted object/session after this test.
+  const rawEnv=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20_000});
+  const dbMatch=rawEnv.match(/^(?:export )?DB_URL=(.+)$/m);
+  assert.ok(dbMatch,'Local database fixture URL required');
+  const db=new URL(dbMatch[1].trim().replace(/^["']|["']$/g,''));
+  assert.equal(db.protocol,'postgresql:');
+  assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+  assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+  const sql=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+    user:'postgres',password:decodeURIComponent(db.password),ssl:false});
+  const claims=JSON.parse(Buffer.from(owner.token.split('.')[1],'base64url').toString('utf8'));
+  assert.equal(claims.sub,owner.id);assert.equal(claims.role,'authenticated');
+  assert.match(claims.session_id,/^[0-9a-f-]{36}$/i);
+  try{
+    await sql.connect();await sql.query('BEGIN');
+    await sql.query("select set_config('request.jwt.claims',$1,true),set_config('request.jwt.claim.sub',$2,true),set_config('request.jwt.claim.role','authenticated',true)",[JSON.stringify(claims),owner.id]);
+    const readPinSql=()=>sql.query("select public.read_owner_private_asset_pin('PROJECT',$1::uuid,$2::uuid) as receipt",[first.id,project.id]);
+    await sql.query('SET LOCAL ROLE authenticated');
+    assert.deepEqual((await readPinSql()).rows[0].receipt,pinned);
+    await sql.query('RESET ROLE');
+    for(const [statement,params,code,message] of [
+      ["update storage.objects set metadata=jsonb_set(metadata,'{size}',to_jsonb($2::integer)) where id=$1::uuid",[pinned.objectId,first.bytes.length+1],'22023','PRIVATE_ASSET_PIN_INTEGRITY'],
+      ["update storage.objects set metadata=jsonb_set(metadata,'{mimetype}',to_jsonb($2::text)) where id=$1::uuid",[pinned.objectId,'image/jpeg'],'22023','PRIVATE_ASSET_PIN_INTEGRITY'],
+      ['update storage.objects set version=$2 where id=$1::uuid',[pinned.objectId,randomUUID()],'22023','PRIVATE_ASSET_PIN_INTEGRITY'],
+      ["update auth.sessions set not_after=clock_timestamp()-interval '1 minute' where id=$1::uuid and user_id=$2::uuid",[claims.session_id,owner.id],'42501','PRIVATE_ASSET_NOT_FOUND']
+    ]){
+      await sql.query('SAVEPOINT c04_negative');
+      try{
+        assert.equal((await sql.query(statement,params)).rowCount,1);
+        await sql.query('SET LOCAL ROLE authenticated');
+        await assert.rejects(readPinSql(),{code,message});
+      }finally{
+        await sql.query('ROLLBACK TO SAVEPOINT c04_negative');
+        await sql.query('RELEASE SAVEPOINT c04_negative');
+      }
+      await sql.query('SET LOCAL ROLE authenticated');
+      assert.deepEqual((await readPinSql()).rows[0].receipt,pinned,'Rollback must restore exact owner pin');
+      await sql.query('RESET ROLE');
+    }
+  }finally{
+    try{await sql.query('ROLLBACK');}finally{await sql.end();}
+  }
+  assert.deepEqual(successful(await rpc('read_owner_private_asset_pin',pinInput),'C04 HTTP pin after local negative savepoints'),pinned);
   const input={p_project_id:project.id,p_base_revision:before.revision,
     p_asset_id:first.id,p_operation_id:randomUUID()};
   const set=(body,actor=owner)=>rpc('set_private_project_thumbnail',body,actor);
@@ -2099,3 +2144,157 @@ test('C07/WF-041: real owner conditional goal writes and 105-event raw chronolog
   assert.equal(await mine.deleteGoalIfUnchanged(original.id,current.updated_at),original.id);
   assert.equal(await mine.readGoal(original.id),null);
 });
+
+test('C08 actual owner preference CAS: two real sessions, absent/default, ACL, replay and ABA',
+  {timeout:120_000},async()=>{
+    const owner=await adminUser('c08-owner'),other=await adminUser('c08-other');
+    const login=successful(await send('/auth/v1/token?grant_type=password',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:{email:owner.email,password:owner.password}
+    }),'Second real owner session');
+    const second={...owner,token:login.access_token};
+    const sessionId=actor=>JSON.parse(Buffer.from(actor.token.split('.')[1],'base64url').toString('utf8')).session_id;
+    assert.notEqual(sessionId(owner),sessionId(second));
+    const absent={ownerUserId:owner.id,version:0,preferences:null};
+    const domains=[
+      {read:'read_owner_notification_preferences_state',change:'change_owner_notification_preferences',
+       table:'private_notification_preferences',ownerKey:'owner_user_id',
+       first:{reviewerEnabled:false,publishEnabled:true,syncEnabled:false},
+       second:{reviewerEnabled:true,publishEnabled:false,syncEnabled:false},
+       off:{reviewerEnabled:false,publishEnabled:false,syncEnabled:false}},
+      {read:'read_owner_profile_sharing_state',change:'change_owner_profile_sharing',
+       table:'profile_sharing_preferences',ownerKey:'user_id',
+       first:{shareDisplayName:true,shareHeadline:true,shareBio:false,publicationRequested:true},
+       second:{shareDisplayName:true,shareHeadline:false,shareBio:true,publicationRequested:true},
+       off:{shareDisplayName:false,shareHeadline:false,shareBio:false,publicationRequested:false}}
+    ];
+    const exactRead=async(actor,d)=>successful(await preferenceRpc(actor,d.read),'Read actual CAS state');
+    const deniedConflict=r=>{assert.ok(!r.ok);assert.equal(r.data?.code,'40001');};
+    for(const d of domains){
+      assert.deepEqual(await exactRead(owner,d),absent);
+      assert.deepEqual(await exactRead(second,d),absent);
+      const make=(s,desired,operationId=randomUUID())=>({p_expected_version:s.version,
+        p_expected:s.preferences,p_desired:desired,p_operation_id:operationId});
+      const inputA=make(absent,d.first),inputB=make(absent,d.second);
+      const anonymous=await send('/rest/v1/rpc/'+d.read,{method:'POST',headers:{'Content-Type':'application/json'},body:{}});
+      assert.ok(!anonymous.ok);
+      const serviceRead=await send('/rest/v1/rpc/'+d.read,{method:'POST',key:cfg.service,bearer:cfg.service,
+        headers:{'Content-Type':'application/json'},body:{}});
+      assert.ok(!serviceRead.ok);
+      const results=await Promise.all([preferenceRpc(owner,d.change,inputA),preferenceRpc(second,d.change,inputB)]);
+      assert.equal(results.filter(r=>r.ok).length,1,'Exactly one real concurrent first writer must win');
+      const i=results.findIndex(r=>r.ok),win=i===0?inputA:inputB;
+      deniedConflict(results[1-i]);
+      const applied=successful(results[i],'Concurrent CAS winner');
+      assert.deepEqual(applied,{status:'APPLIED',ownerUserId:owner.id,version:1,preferences:win.p_desired});
+      assert.deepEqual(await exactRead(second,d),{ownerUserId:owner.id,version:1,preferences:win.p_desired});
+      assert.deepEqual(successful(await preferenceRpc(second,d.change,win),'Exact ambiguous-ack replay'),
+        {...applied,status:'REPLAYED'});
+      deniedConflict(await preferenceRpc(owner,d.change,{...win,p_desired:d.off}));
+      assert.deepEqual(await exactRead(other,d),{ownerUserId:other.id,version:0,preferences:null});
+      const captured=await exactRead(owner,d);
+      assert.deepEqual(successful(await preferenceRpc(owner,d.change,make(captured,captured.preferences)),'No-change receipt'),
+        {status:'NO_CHANGE',...captured});
+      const changed=successful(await preferenceRpc(owner,d.change,make(captured,d.off)),'CAS to alternate tuple');
+      assert.equal(changed.version,2);
+      const restored=successful(await preferenceRpc(second,d.change,make(changed,captured.preferences)),'Restore identical values via new CAS');
+      assert.equal(restored.version,3);
+      assert.deepEqual(restored.preferences,captured.preferences);
+      deniedConflict(await preferenceRpc(owner,d.change,make(captured,d.off)));
+      deniedConflict(await preferenceRpc(owner,d.change,win));
+      // A real PostgREST 40001 must map to typed CONFLICT at the consumer,
+      // regardless of whether the gateway selects 409 or 500 for SQLSTATE.
+      // No retry or stale state mutation is permissible.
+      const stale={expected:captured,desired:d.off,operationId:randomUUID()};
+      const client=d.table==='private_notification_preferences'
+        ?new SupabasePrivateNotificationsService(cfg.origin,cfg.anon,owner.id,async()=>owner.token,fetch,()=>true)
+        :new SupabasePrivateIdentityService(cfg.origin,cfg.anon,async()=>owner.token,fetch,owner.id,()=>true);
+      await assert.rejects(d.table==='private_notification_preferences'
+        ?client.changePreferences(stale):client.requestPublicIdentity(stale),{code:'CONFLICT'});
+      assert.equal((await exactRead(owner,d)).version,3);
+
+      for(const method of ['POST','PATCH','DELETE']){
+        const body=method==='DELETE'?undefined:{[d.ownerKey]:owner.id};
+        const result=await send('/rest/v1/'+d.table+(method==='POST'?'':'?'+d.ownerKey+'=eq.'+owner.id),
+          {...json(owner),method,body});
+        assert.ok(!result.ok,'Direct legacy preference write bypassed CAS');
+      }
+      assert.equal((await exactRead(owner,d)).version,3);
+      const malformed=await preferenceRpc(owner,d.change,make(restored,{...d.off,unexpected:true}));
+      assert.ok(!malformed.ok);assert.equal(malformed.data?.code,'22023');
+    }
+    assert.ok(!(await preferenceRpc(owner,'owner_set_notification_preferences',{
+      p_reviewer_enabled:true,p_publish_enabled:true,p_sync_enabled:true})).ok,'Legacy unconditional setter still callable');
+  });
+
+test('C08 physical terminal ledger, privacy reduction, tombstone and expired-session denial',
+  {timeout:120_000},async()=>{
+    const actor=await adminUser('c08-terminal'),other=await adminUser('c08-terminal-other');
+    const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+    const match=raw.match(/^(?:export )?DB_URL=(.+)$/m);
+    assert.ok(match,'Disposable local DB URL required');
+    const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+    assert.equal(db.protocol,'postgresql:');assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+    assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+    const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+      user:'postgres',password:decodeURIComponent(db.password),ssl:false});
+    const max=Number.MAX_SAFE_INTEGER;
+    const on={shareDisplayName:true,shareHeadline:true,shareBio:false,publicationRequested:true};
+    const withdrawn={...on,publicationRequested:false};
+    const reduced={...withdrawn,shareHeadline:false};
+    const allOff={reviewerEnabled:false,publishEnabled:false,syncEnabled:false};
+    const noteOn={...allOff,publishEnabled:true};
+    const read=(who,name)=>preferenceRpc(who,name);
+    const mutate=(who,name,expected,desired,operationId=randomUUID())=>preferenceRpc(who,name,{
+      p_expected_version:expected.version,p_expected:expected.preferences,p_desired:desired,p_operation_id:operationId
+    });
+    const assertConflict=r=>{assert.ok(!r.ok);assert.equal(r.data?.code,'40001');};
+    const sread='read_owner_profile_sharing_state',schange='change_owner_profile_sharing';
+    const nread='read_owner_notification_preferences_state',nchange='change_owner_notification_preferences';
+    const first=successful(await setPreferenceFixture(actor,'sharing',on),'Initialize sharing');
+    const firstNote=successful(await setPreferenceFixture(actor,'notification',noteOn),'Initialize notifications');
+    assert.equal(first.version,1);assert.equal(firstNote.version,1);
+    try{
+      await pg.connect();
+      // Privileged fixtures are restricted to generated disposable users. Jump the
+      // ledger counter without billions of writes; clear the previous replay binding.
+      const jumped=await pg.query('UPDATE kadmeion_private.owner_preference_cas_state SET version=$2::bigint,last_operation_id=NULL,last_expected_version=NULL,last_expected=NULL,last_desired=NULL WHERE owner_user_id=$1::uuid',[actor.id,String(max-1)]);
+      assert.equal(jumped.rowCount,2);
+      const s=successful(await read(actor,sread),'Read sharing near exhaustion');
+      const n=successful(await read(actor,nread),'Read notifications near exhaustion');
+      assert.deepEqual(s,{ownerUserId:actor.id,version:max-1,preferences:on});
+      assert.deepEqual(n,{ownerUserId:actor.id,version:max-1,preferences:noteOn});
+      assertConflict(await mutate(actor,schange,s,{...on,shareBio:true}));
+      assertConflict(await mutate(actor,nchange,n,{...noteOn,syncEnabled:true}));
+      const operation=randomUUID();
+      const held=successful(await mutate(actor,schange,s,withdrawn,operation),'Privacy withdrawal reaches terminal');
+      assert.deepEqual(held,{status:'APPLIED',ownerUserId:actor.id,version:max,preferences:withdrawn});
+      assertConflict(await mutate(actor,schange,s,withdrawn,operation));
+      const redact=successful(await mutate(actor,schange,held,reduced),'Further privacy reduction at M');
+      assert.deepEqual(redact,{status:'APPLIED',ownerUserId:actor.id,version:max,preferences:reduced});
+      assertConflict(await mutate(actor,schange,redact,withdrawn));
+      assert.deepEqual(successful(await mutate(actor,schange,redact,reduced),'Terminal no change'),
+        {...redact,status:'NO_CHANGE'});
+      const disabled=successful(await mutate(actor,nchange,n,allOff),'Disable notifications at M');
+      assert.deepEqual(disabled,{status:'APPLIED',ownerUserId:actor.id,version:max,preferences:allOff});
+      assertConflict(await mutate(actor,nchange,disabled,noteOn));
+      assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1 AND (last_operation_id IS NOT NULL OR last_expected_version IS NOT NULL OR last_expected IS NOT NULL OR last_desired IS NOT NULL)',[actor.id])).rows[0].n,0);
+      // Internal deletion is not a public setter; retain its terminal tombstone.
+      assert.equal((await pg.query('DELETE FROM public.profile_sharing_preferences WHERE user_id=$1',[actor.id])).rowCount,1);
+      assert.equal((await pg.query('DELETE FROM public.private_notification_preferences WHERE owner_user_id=$1',[actor.id])).rowCount,1);
+      const tombstone={ownerUserId:actor.id,version:max,preferences:null};
+      assert.deepEqual(successful(await read(actor,sread),'Terminal sharing tombstone'),tombstone);
+      assert.deepEqual(successful(await read(actor,nread),'Terminal notification tombstone'),tombstone);
+      assertConflict(await mutate(actor,schange,tombstone,reduced));
+      assertConflict(await mutate(actor,nchange,tombstone,allOff));
+      assert.equal(successful(await read(other,sread),'Other user unaffected').ownerUserId,other.id);
+      const claims=JSON.parse(Buffer.from(actor.token.split('.')[1],'base64url').toString('utf8'));
+      assert.equal(claims.sub,actor.id);assert.match(claims.session_id,/^[0-9a-f-]{36}$/i);
+      assert.equal((await pg.query("UPDATE auth.sessions SET not_after=clock_timestamp()-interval '1 minute' WHERE id=$1 AND user_id=$2",[claims.session_id,actor.id])).rowCount,1);
+      for(const name of [sread,nread]){
+        const denied=await read(actor,name);assert.ok(!denied.ok,'Expired real owner session reached CAS state');
+      }
+      // Cascade must not recreate a private ledger or block real account cleanup.
+      assert.equal((await pg.query('DELETE FROM auth.users WHERE id=$1',[actor.id])).rowCount,1);
+      assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1',[actor.id])).rows[0].n,0);
+    }finally{await pg.end();}
+  });
