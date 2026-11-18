@@ -500,6 +500,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const sourceDirty=!!head&&unappliedSourceBufferCount(sourceDrafts,head.snapshot.files)>0;
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
   const [recoveryNotice,setRecoveryNotice]=useState('');
+  const [savedHistoryNotice,setSavedHistoryNotice]=useState('');
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
@@ -528,20 +529,34 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const importedRecoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
   const [sourceReset,setSourceReset]=useState(0);
   useEffect(() => {
-    const key = id + ':' + attempt;
-    if (!allowed || !verifiedOwner || loaded.current === key) return;
+    if(!allowed||!verifiedOwner)return;
+    const key=verifiedOwner.id+':'+verifiedOwner.epoch+':'+id+':'+attempt;
+    if(loaded.current===key)return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(verifiedOwner.epoch!==epoch)return;
     let active = true;
     const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
-    void port.readOwnerPortfolio(id).then(result => {
+    void port.readOwnerPortfolio(id).then(async result => {
       if(!current())return;
       if(!result.data||result.data.id!==id){
         setError(result.error?.message??'Portfolio unavailable.');return;
       }
       const snapshot=result.data.snapshot;
-      const nextHead=snapshot?createEditorHead(snapshot):null;
+      let nextHead=snapshot?createEditorHead(snapshot):null;
+      let historyNotice='';
+      if(snapshot){
+        try{
+          const cached=await new IndexedDbEditorDraftStore().loadCommittedHistory(
+            verifiedOwner.id,id,result.data.revision,snapshot);
+          if(!current())return;
+          if(cached){nextHead=cached;historyNotice='Saved Undo/Redo history restored from this browser.';}
+        }catch{
+          if(!current())return;
+          historyNotice='Saved cloud draft loaded; browser Undo/Redo history could not be read.';
+        }
+      }
       if(!current())return;
+      setSavedHistoryNotice(historyNotice);
       loaded.current = key;
       setRecord(result.data);
       setHead(nextHead);
@@ -692,6 +707,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       return !!current&&current.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
         scopeCurrent(view)&&current.record===record&&current.head===head&&current.operation===operation;
     };
+    async function persistAcknowledgedHistory(revision:number){
+      if(!currentSave())return;
+      try{
+        const accepted=await new IndexedDbEditorDraftStore().saveCommittedHistory(
+          verifiedOwner!.id,id,revision,head!);
+        if(currentSave())setSavedHistoryNotice(accepted?
+          'Undo/Redo history saved on this browser.':
+          'Cloud draft saved; a different or newer browser history was retained.');
+      }catch{
+        if(currentSave())setSavedHistoryNotice('Cloud draft saved; browser history not confirmed. Export a working recovery copy before leaving.');
+      }
+    }
     saveFlight.current=true;
     setSaving(true);setError('');setNotice('');
     try{
@@ -706,6 +733,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         if(!currentSave())return;
       }
       if(confirmed!==null){
+        await persistAcknowledgedHistory(confirmed);
+        if(!currentSave())return;
         setRecord({...record,revision:confirmed,snapshot:head.snapshot});
         setOperation('');setNotice('Private portfolio draft saved.');return;
       }
@@ -718,6 +747,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         if(!currentSave())return;
         if(fresh.data?.id===id&&fresh.data.revision===record.revision+1&&
            sameDraftSnapshot(fresh.data.snapshot,head.snapshot)){
+          await persistAcknowledgedHistory(fresh.data.revision);
+          if(!currentSave())return;
           setRecord(fresh.data);setOperation('');
           setNotice('Saved private revision verified by readback.');return;
         }
@@ -872,7 +903,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(!canDropCanvasComponent(key))return false;
     const drag=componentDrag.current!;
     componentDrag.current=null;
-    return placeComponent(drag.pin,key);
+    const placed=placeComponent(drag.pin,key);
+    if(placed)setPickedComponent(drag.pin);
+    return placed;
   }
   function canDropCanvasSection(before:string|null):boolean{
     const drag=sectionDrag.current,view=latestRecovery.current;
@@ -1003,6 +1036,21 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setSlot(orderedLayerGroups(fresh.snapshot).flatMap(group=>group.slots).find(item=>item.name==='title')?.key??'');
     setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
     setSourceReset(value=>value+1);setError('');setNotice('');
+  }
+  async function forgetSavedHistory(){
+    const view=captureRecovery();
+    if(!view?.record||!view.head||view.dirty||recoveryLock.current)return;
+    if(!window.confirm('Forget the saved Undo/Redo cache on this browser? Your current working stack, browser recovery copies and cloud draft will not be changed.'))return;
+    if(!draftCurrent(view))return;
+    recoveryLock.current=true;setRecoveryBusy(true);
+    try{
+      const removed=await new IndexedDbEditorDraftStore().forgetCommittedHistory(
+        view.owner!.id,view.id,view.record.revision);
+      if(scopeCurrent(view))setSavedHistoryNotice(removed?
+        'Saved history removed from this browser. Current editor history and cloud draft remain unchanged.':
+        'A newer saved history exists in another tab. Nothing was removed.');
+    }catch{if(scopeCurrent(view))setSavedHistoryNotice('Browser history removal was not confirmed.');}
+    finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   async function preserveRecovery(keepBoth:boolean){
     const view=captureRecovery();
@@ -1479,6 +1527,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       onToggle={event=>setRecoveryExpanded(event.currentTarget.open)}>
       <summary>Browser recovery &amp; Keep Both</summary>
       <p>Copies stay on this device, separate from the saved cloud draft. Browser storage can be cleared; export important work. Opening requires a verified owner and fresh cloud read.</p>
+      <p>Confirmed cloud saves also keep a bounded Undo/Redo history on this browser. It is restored only when the exact saved cloud revision and snapshot match, and is not synced to other devices. Unsaved automatic checkpoints remain optional.</p>
+      {savedHistoryNotice&&<p role="status">{savedHistoryNotice}</p>}
+      <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+        onClick={()=>void forgetSavedHistory()}>Forget saved history on this browser</button>
       <label><input type="checkbox" checked={autoRecovery} onChange={event=>{
         checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
         if(!event.target.checked)setCheckpointState('idle');
@@ -1648,10 +1700,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             onDragStart={event=>{
               const view=latestRecovery.current;
               if(!hasTarget||!head||!view||!draftCurrent(view)){event.preventDefault();return;}
+              // Keep layout stable during native drag. Selection/target lists
+              // must not reflow under the pointer before the actual drop.
               componentDrag.current={head,pin:item.id};
               event.dataTransfer.effectAllowed='copy';
               event.dataTransfer.setData('application/x-kadmeion-component','pinned');
-              setPickedComponent(item.id);
             }}
             onDragEnd={()=>{componentDrag.current=null;}}
             onClick={()=>setPickedComponent(item.id)}>
