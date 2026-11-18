@@ -15,7 +15,7 @@ import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
 import { MoveToTrash } from './settings.tsx';
-import { AssetList, ComponentLibrary, LayoutTools, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, type ComponentSaveRetryState } from './portfolio-tools.tsx';
+import { AssetList, ComponentLibrary, LayoutTools, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, usePinnedCatalogueFavorites, type ComponentSaveRetryState } from './portfolio-tools.tsx';
 
 const presets = [
   {id: 'arc', title: 'Arc', tone: 'curved', detail: 'Curved hero and a project showcase.'},
@@ -482,6 +482,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [linkNotice,setLinkNotice]=useState('');
   const [tool, setTool] = useState<string>('Content');
   const [componentSearch,setComponentSearch]=useState('');
+  // Device-only public pinned IDs, shared with S7's placement board; never private component IDs.
+  const {favorites,toggle:toggleFavorite,storageAvailable}=usePinnedCatalogueFavorites();
+  const [favoriteComponentsOnly,setFavoriteComponentsOnly]=useState(false);
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
   const componentDrag=useRef<{head:EditorHead;pin:string}|null>(null);
@@ -1540,7 +1543,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
               aria-pressed={componentCategory===category} onClick={()=>setComponentCategory(category)}>
               {category}</button>)}
         </div>
+        <label><input type="checkbox" checked={favoriteComponentsOnly}
+          onChange={event=>setFavoriteComponentsOnly(event.target.checked)}/> Show only favorite components</label>
+        <p className="ws-footnote">Device favorites are not account-synced.{storageAvailable===false?' Storage is unavailable; changes may last only for this visit.':''}</p>
         <ul className="ws-editor-component-list">{insertableComponentPins.filter(item=>
+          (!favoriteComponentsOnly||favorites.includes(item.id))&&
           (componentCategory==='All'||categoryFor(item.id)===componentCategory)&&
           (item.label.toLowerCase().includes(componentSearch.trim().toLowerCase())||
            item.id.toLowerCase().includes(componentSearch.trim().toLowerCase()))
@@ -1563,8 +1570,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             <strong>{item.label}</strong>
             <small>{item.id}</small>
             <span>{fit?'Compatible with selected slot':hasTarget?'Compatible empty targets available':'Choose another slot'}</span>
-          </button></li>;
+          </button><button type="button" className="ws-secondary" aria-pressed={favorites.includes(item.id)}
+            aria-label={(favorites.includes(item.id)?'Remove favorite: ':'Add favorite: ')+item.label}
+            onClick={()=>toggleFavorite(item.id)}>{favorites.includes(item.id)?'Remove favorite':'Favorite'}</button></li>;
         })}</ul>
+        {favoriteComponentsOnly&&!insertableComponentPins.some(item=>favorites.includes(item.id)&&
+          (componentCategory==='All'||categoryFor(item.id)===componentCategory)&&
+          (item.label.toLowerCase().includes(componentSearch.trim().toLowerCase())||item.id.toLowerCase().includes(componentSearch.trim().toLowerCase())))&&
+          <p role="status">No favorites match these filters. <button type="button" className="ws-secondary" onClick={()=>{setFavoriteComponentsOnly(false);setComponentSearch('');setComponentCategory('All');}}>Clear filters</button></p>}
         {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before replacing components.</p>}
         {targetPin&&<section aria-label="Compatible empty component targets">
           <h3>Place {targetPin.label}</h3>
