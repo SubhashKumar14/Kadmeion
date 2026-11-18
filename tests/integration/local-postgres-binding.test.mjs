@@ -327,11 +327,34 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     }));
     await once(server, 'listening');
     const deliveryOrigin = 'http://127.0.0.1:' + server.address().port;
+    const serviceRpc = (operation, body) => api('/rest/v1/rpc/' + operation, {
+      method: 'POST', key: cfg.service, jwt: cfg.service, body
+    });
+    let authoritativePublicAcks = 0;
     const verificationPorts = {
       origin: deliveryOrigin,
-      rpc: async (operation, body) => ok(await api('/rest/v1/rpc/' + operation, {
-        method: 'POST', key: cfg.service, jwt: cfg.service, body
-      }), operation)
+      rpc: async (operation, body) => ok(await serviceRpc(operation, body), operation),
+      publicAuthority: async (operation, body) => {
+        if (operation === 'service_acknowledge_public_delivery') {
+          const receipt = body.p_expected_receipt;
+          assert.equal(receipt.visibility, 'PUBLIC');
+          assert.equal(receipt.verifiedAt, null);
+          assert.ok(Number.isSafeInteger(receipt.deliveryEpoch) && receipt.deliveryEpoch > 0);
+          const legacy = await serviceRpc('service_acknowledge_unlisted_release', {
+            p_portfolio_id: receipt.portfolioId, p_intent_id: receipt.intentId,
+            p_html_sha256: receipt.storedHtmlSha256
+          });
+          assert.equal(legacy.ok, false, 'The old PUBLIC ACK must be denied');
+          assert.equal(legacy.data?.code, '40001');
+          const acknowledged = ok(await serviceRpc(operation, body), operation);
+          assert.equal(acknowledged.deliveryEpoch, receipt.deliveryEpoch + 1);
+          assert.equal(acknowledged.intentId, receipt.intentId);
+          assert.ok(acknowledged.verifiedAt);
+          authoritativePublicAcks++;
+          return acknowledged;
+        }
+        return ok(await serviceRpc(operation, body), operation);
+      }
     };
     const verifyDelivery = (probe) => verifyActivatedUnlistedRelease({
       portfolioId, intentId: probe.intentId, htmlSha256: probe.htmlSha256
@@ -627,6 +650,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.equal((await publishConsentedUnlistedRelease(publicRollback.intentId,verificationPorts)).status,
       'DELIVERY_ACKNOWLEDGED');
     assert.match(await (await fetch(canonical)).text(),/Owner&#39;s checked artifact/);
+    assert.equal(authoritativePublicAcks, 3, 'A, B and explicit rollback use the authoritative PUBLIC ACK');
     for(const method of ['GET','HEAD'])
       assert.equal((await fetch(directImage,{method})).status,404,'Rollback withdraws replaced media');
     assert.equal((await publicHostRead()).statusCode,404,'Public rollback must keep the unlisted alias unavailable');
