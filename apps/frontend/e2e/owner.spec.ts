@@ -4358,3 +4358,63 @@ test('B16 R9 guarded project autosave rejects a delayed acknowledgement after ac
     await expect(auto).not.toBeChecked();
   }finally{accept();await control.close();}
 });
+
+test('B16 UI-043 guarded autosave never saves changed external destinations without refreshed explicit manual consent',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(80_000);
+  const owner=await localUser('R10 destination review owner');
+  await signIn(page,owner);await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('R10 destination consent');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await page.getByRole('link',{name:'R10 destination consent',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const form=page.locator('form.ws-project-fields');
+  const auto=form.getByRole('checkbox',{name:'Autosave private project overview'});
+  const summary=form.getByLabel('Short description');
+  const link=form.getByLabel('Repository URL (optional)');
+  const save=form.getByRole('button',{name:'Save changes',exact:true});
+  const review=form.getByRole('group',{name:'Review changed external destinations'});
+  const confirm=review.getByRole('checkbox',{name:'I confirm these destination changes for this private revision.'});
+  const id=new URL(page.url()).pathname.split('/').pop()!;
+  expect(id).toMatch(/^[0-9a-f-]{36}$/i);
+  const read=()=>JSON.parse(runLocalFixtureSql("select jsonb_build_object('revision',revision,'summary',summary,'repositoryUrl',repository_url)::text from public.projects where id=:'item_id'::uuid and owner_user_id=:'actor_id'::uuid;",owner.id,id));
+  const writes:{revision:number;url:string|null;confirmation:boolean}[]=[];let legacy=0;
+  await page.route(url=>url.origin===origin&&(url.pathname==='/rest/v1/rpc/owner_save_private_project_draft'||url.pathname==='/rest/v1/rpc/update_private_project'),async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    if(new URL(route.request().url()).pathname==='/rest/v1/rpc/update_private_project'){legacy++;return route.continue();}
+    const body=route.request().postDataJSON();
+    writes.push({revision:body.p_base_revision,url:body.p_repository_url,confirmation:body.p_confirm_projection_withdrawal});
+    await route.continue();
+  });
+  await expect(link).toHaveValue('');await expect(auto).not.toBeChecked();
+  expect(read()).toEqual({revision:0,summary:'',repositoryUrl:null});
+  await auto.check();
+  await link.fill('https://example.com/r10-first');
+  await summary.fill('Pending link and overview');
+  await expect(review).toBeVisible();await expect(confirm).not.toBeChecked();await expect(save).toBeDisabled();
+  // A negative test must wait longer than the real 1200ms debounce.
+  await page.waitForTimeout(1700);expect(writes).toHaveLength(0);expect(legacy).toBe(0);
+  expect(read()).toEqual({revision:0,summary:'',repositoryUrl:null});
+  await confirm.check();await expect(save).toBeEnabled();
+  await page.waitForTimeout(1700);expect(writes).toHaveLength(0);expect(read().revision).toBe(0);
+  // A changed address invalidates even already confirmed destination consent.
+  await link.fill('https://example.com/r10-second');
+  await expect(confirm).not.toBeChecked();await expect(save).toBeDisabled();
+  await expect(review.getByText('Proposed: https://example.com/r10-second',{exact:true})).toBeVisible();
+  await confirm.check();await save.click();
+  await expect(form.getByText('Private draft saved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{revision:0,url:'https://example.com/r10-second',confirmation:false}]);
+  expect(read()).toEqual({revision:1,summary:'Pending link and overview',repositoryUrl:'https://example.com/r10-second'});
+  await page.reload();await expect(link).toHaveValue('https://example.com/r10-second');await expect(auto).not.toBeChecked();
+  await auto.check();await link.fill('');
+  await expect(confirm).not.toBeChecked();await expect(save).toBeDisabled();
+  await page.waitForTimeout(1700);expect(writes).toHaveLength(1);expect(read().repositoryUrl).toBe('https://example.com/r10-second');
+  await confirm.check();await save.click();
+  await expect(form.getByText('Private draft saved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{revision:0,url:'https://example.com/r10-second',confirmation:false},{revision:1,url:null,confirmation:false}]);
+  expect(legacy).toBe(0);
+  await page.reload();await expect(link).toHaveValue('');
+  expect(read()).toEqual({revision:2,summary:'Pending link and overview',repositoryUrl:null});
+});
