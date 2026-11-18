@@ -17,6 +17,7 @@ type Owner = { id: string; email?: string };
 type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'unavailable'; message: string } | { status: 'verified'; owner: Owner; epoch: number; portGeneration: number };
 type SnapshotState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; value: OwnerWorkspaceSnapshot };
 type StartChoice = PrivateStep;
+type SkipOutcome = 'confirmed' | 'unconfirmed' | 'offline' | 'completed';
 
 /** Transport errors never establish logout; all nonverified outcomes stay private. */
 function ownerVerificationUnavailable(message: string | undefined, online: boolean): boolean {
@@ -64,8 +65,22 @@ function workspacePageTitle(path: string): string {
   const release = releaseRoute(path);
   if (release) return ({staging:'Reviewer staging',publish:'Publish preflight',releases:'Releases & rollback',share:'Sharing controls'} as const)[release.mode];
   if (portfolio) return 'Portfolio editor';
-  if (isSettingsRoute(path)) return 'Account settings';
-  if (isOperatorRoute(path)) return 'Restricted operations';
+  if (isSettingsRoute(path)) {
+    const titles: Record<string,string> = {
+      '/app/settings':'Account settings', '/app/settings/privacy':'Privacy & sharing',
+      '/app/notifications':'Notifications', '/app/settings/security':'Account security',
+      '/app/trash':'Trash', '/app/export':'Export center',
+      '/app/settings/account/delete':'Account exit', '/app/settings/cases':'Your cases and appeals'
+    };
+    return titles[path] ?? 'Account settings';
+  }
+  if (isOperatorRoute(path)) {
+    const titles: Record<string,string> = {
+      '/app/operations/users':'Admin users', '/app/operations/moderation':'Portfolio moderation',
+      '/app/operations/appeals':'Appeals & case history'
+    };
+    return titles[path] ?? 'Restricted operations';
+  }
   if (isGrowthRoute(path)) {
     const titles: Record<string,string> = {
       '/app/growth':'Personal growth', '/app/growth/activity':'Developer activity',
@@ -77,8 +92,8 @@ function workspacePageTitle(path: string): string {
   return 'Workspace';
 }
 
-function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
-  owner: Owner; children: ReactNode; onSignOut: () => void; signOutPending: boolean; message: string;
+function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message, offline }: {
+  owner: Owner; children: ReactNode; onSignOut: () => void; signOutPending: boolean; message: string; offline: boolean;
 }) {
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -87,9 +102,12 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     const rail = railRef.current;
     const trigger = rail?.querySelector<HTMLButtonElement>('.ws-mobile-menu');
     const nav = rail?.querySelector<HTMLElement>('#ws-nav');
-    if (!trigger || !nav) return;
+    if (!rail || !trigger || !nav) return;
     // Keep this media query aligned with the compact rail in workspace.css.
     const media = window.matchMedia('(max-width:720px)');
+    const editorMedia = window.matchMedia('(min-width:901px)');
+    const railTheme = rail.querySelector<HTMLButtonElement>('.ws-editor-theme-switch');
+    const headerTheme = rail.closest('.ws-shell')?.querySelector<HTMLButtonElement>('.ws-topbar .ws-theme');
     let previousFocus: Element | null = document.activeElement;
     const rememberFocus = (event: FocusEvent) => {
       previousFocus = event.target instanceof Element ? event.target : null;
@@ -108,24 +126,22 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       }
       if (!event.matches) setMenuOpen(false);
     };
+    const onEditorViewportChange = (event: MediaQueryListEvent) => {
+      if (!railTheme || !headerTheme || !document.hasFocus()) return;
+      const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
+      const hidden = event.matches ? headerTheme : railTheme;
+      const visible = event.matches ? railTheme : headerTheme;
+      if (focused === hidden && visible.getClientRects().length) visible.focus();
+    };
     document.addEventListener('focusin', rememberFocus);
     document.addEventListener('pointerdown', clearPointerFocus);
     media.addEventListener('change', onViewportChange);
+    editorMedia.addEventListener('change', onEditorViewportChange);
     return () => {
       document.removeEventListener('focusin', rememberFocus);
       document.removeEventListener('pointerdown', clearPointerFocus);
       media.removeEventListener('change', onViewportChange);
-    };
-  }, []);
-  const [offline, setOffline] = useState(() => !navigator.onLine);
-  useEffect(() => {
-    const update = () => setOffline(!navigator.onLine);
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    update();
-    return () => {
-      window.removeEventListener('online', update);
-      window.removeEventListener('offline', update);
+      editorMedia.removeEventListener('change', onEditorViewportChange);
     };
   }, []);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
@@ -199,11 +215,22 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
   </div>;
 }
 
-function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<boolean> }) {
-  const [choice, setChoice] = useState<StartChoice>('portfolio');
+function preferredOnboardingChoice(steps: OwnerWorkspaceSnapshot['onboarding']): StartChoice {
+  // Resume an unfinished step when the verified initial snapshot has one.
+  // Do not move the user's choice automatically after a later skip receipt.
+  const priority: readonly StartChoice[] = ['portfolio','profile','connections'];
+  return priority.find(choice => {
+    const status=steps.find(step=>step.step===choice)?.status;
+    return status===undefined || status==='pending';
+  }) ?? 'portfolio';
+}
+
+function Onboarding({ steps, onSkip, offline }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<SkipOutcome>; offline: boolean }) {
+  const [choice, setChoice] = useState<StartChoice>(()=>preferredOnboardingChoice(steps));
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const skipFlight = useRef(false);
+  const selectedStatus = steps.find(step=>step.step===choice)?.status;
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Private portfolio chooser available' },
@@ -235,13 +262,16 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
     <p role="status" className={note ? "ws-onboarding-note ws-inline-alert" : "ws-onboarding-note"}>{note}</p>
     <div className="ws-actions">
       <button type="button" className="ws-primary" disabled={saving} onClick={choose}>Choose next step <Icon name="arrow" size={16}/></button>
-      <button type="button" className="ws-secondary" aria-disabled={saving} onClick={() => {
-        if (skipFlight.current) return;
+      <button type="button" className="ws-secondary" aria-disabled={saving || offline || selectedStatus === 'completed' || selectedStatus === 'skipped'} onClick={() => {
+        if (skipFlight.current || selectedStatus === 'completed' || selectedStatus === 'skipped') return;
+        if (offline || !navigator.onLine) return;
         skipFlight.current = true;
         const selectedStep = choice;
         setSaving(true); setNote('Saving selected step…');
-        void onSkip(selectedStep).then(saved => {
-          setNote(saved ? 'The current private account record is saved as skipped. You can return later.' :
+        void onSkip(selectedStep).then(outcome => {
+          setNote(outcome === 'confirmed' ? 'The current private account record is saved as skipped. You can return later.' :
+            outcome === 'offline' ? 'Browser reports offline. No skip request was sent. You can leave without saving; the destination may not load until you reconnect.' :
+            outcome === 'completed' ? 'The current private account record is completed. No skipped state was confirmed.' :
             'The server did not confirm this skipped step. Nothing was marked saved. Reopen Welcome to check the account before retrying; the write outcome may be uncertain.');
         }).catch(() => {
           setNote('The private onboarding update could not be confirmed. Reopen Welcome to check the account before retrying.');
@@ -252,6 +282,9 @@ function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboardi
       }}>{saving ? 'Saving…' : 'Skip selected step'}</button>
       <a href="/app" className="ws-secondary">{saving ? "Open workspace (save may still finish)" : "Open workspace without saving"}</a>
     </div>
+    {offline && <p className="ws-footnote">Saving a skipped step requires a connection. You can leave without saving, but the workspace may not load until you reconnect and verify your owner session.</p>}
+    {selectedStatus === 'completed' && <p className="ws-footnote">This step was marked completed in the loaded account records. You can open it again without changing its status.</p>}
+    {selectedStatus === 'skipped' && <p className="ws-footnote">This step was already marked skipped in the loaded account records. You can open it again whenever you are ready.</p>}
     <p className="ws-footnote">You can get started without connecting a developer account.</p>
   </section>;
 }
@@ -309,6 +342,7 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
         <ul>
           <li><a href="/app/profile">Complete your profile <Icon name="arrow" size={15}/></a></li>
           <li><a href="/app/projects">Add a project <Icon name="arrow" size={15}/></a></li>
+          <li><a href="/app/integrations">Connect developer accounts <Icon name="arrow" size={15}/></a></li>
           <li><a href="/app/onboarding">Open welcome steps <Icon name="arrow" size={15}/></a></li>
         </ul>
       </nav>
@@ -317,6 +351,19 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
 }
 
 export function WorkspaceApp() {
+  // Connection hints are not authorization. Share one browser subscription across
+  // the gate, workspace and onboarding; reconnect never initiates verification.
+  const [offline, setOffline] = useState(() => !navigator.onLine);
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
   const [gate, setGate] = useState<Gate>({ status: 'checking' });
   const [snapshot, setSnapshot] = useState<SnapshotState>({status:'loading'});
   const [message, setMessage] = useState('');
@@ -403,8 +450,9 @@ export function WorkspaceApp() {
           }
           const owner = { id: result.data.user.id, email: result.data.user.email };
           setGate({status:'verified',owner,epoch,portGeneration:generation});
-          if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') ||
-              isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
+          // Every feature route owns its own verified data-loading contract.
+          // Only Overview and Welcome consume the aggregate workspace records.
+          if (route !== '/app' && route !== '/app/onboarding') return;
           // The owner gate stays mounted while only its overview records retry.
           // Never reuse a callback after the initiating port/owner epoch changes.
           let reading = false;
@@ -449,15 +497,19 @@ export function WorkspaceApp() {
     }
     return () => { cancelled = true; ++attempt; unsubscribe(); retryRecordsRef.current = null; authRef.current = null; };
   }, [route, verificationAttempt]);
-  async function skipChoice(choice: PrivateStep): Promise<boolean> {
+  async function skipChoice(choice: PrivateStep): Promise<SkipOutcome> {
     const port=authRef.current;
-    if (!port || gate.status !== 'verified') return false;
+    if (!port || gate.status !== 'verified') return 'unconfirmed';
     const ownerEpoch = port.getOwnerSessionEpoch();
     const current = () => authRef.current === port && port.getOwnerSessionEpoch() === ownerEpoch;
-    if (ownerEpoch !== gate.epoch || !current()) return false;
+    if (ownerEpoch !== gate.epoch || !current()) return 'unconfirmed';
+    if (!navigator.onLine) return 'offline';
+    // This protects a loaded completed record, not a server-side CAS guarantee.
+    if (snapshot.status !== 'ready') return 'unconfirmed';
+    if (snapshot.value.onboarding.some(step=>step.step===choice && step.status==='completed')) return 'completed';
     try {
       const result=await port.setPrivateOnboardingStep(choice,'skipped');
-      if (!current()) return false;
+      if (!current()) return 'unconfirmed';
       if (!result.error && result.data?.step === choice && result.data.status === 'skipped') {
         setSnapshot(state=>state.status !== 'ready' ? state : {
           status:'ready',value:{...state.value,onboarding:[
@@ -465,21 +517,22 @@ export function WorkspaceApp() {
             {step:choice,status:'skipped' as PrivateStepStatus}
           ]}
         });
-        return true;
+        return 'confirmed';
       }
     } catch {
       // An absent acknowledgement does not establish whether the write committed.
     }
-    if (!current()) return false;
+    if (!current() || !navigator.onLine) return 'unconfirmed';
     try {
       const read=await port.readOwnerWorkspace();
-      if (!current() || read.error || !read.data) return false;
+      if (!current() || read.error || !read.data) return 'unconfirmed';
       const steps=read.data.onboarding;
       setSnapshot(state=>state.status !== 'ready' ? state : {
         status:'ready',value:{...state.value,onboarding:steps}
       });
-      return steps.some(step=>step.step===choice && step.status==='skipped');
-    } catch { return false; }
+      const status=steps.find(step=>step.step===choice)?.status;
+      return status==='skipped' ? 'confirmed' : status==='completed' ? 'completed' : 'unconfirmed';
+    } catch { return 'unconfirmed'; }
   }
   async function signOut() {
     const port = authRef.current;
@@ -506,6 +559,9 @@ export function WorkspaceApp() {
     <p className="ws-kicker">OWNER VERIFICATION UNAVAILABLE</p>
     <h1>Owner verification unavailable.</h1>
     <p role="alert">{gate.message}</p>
+    <p className="ws-network-status" data-state={offline ? 'offline' : 'online'} aria-live="polite" aria-atomic="true">
+      {offline ? 'Browser offline · owner verification requires a connection.' : 'Browser online · retry to verify your owner session.'}
+    </p>
     <div className="ws-actions"><button type="button" className="ws-primary" onClick={retryVerification}>Retry verification</button>
       <a className="ws-secondary" href="/signin">Go to sign in</a></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
@@ -514,6 +570,9 @@ export function WorkspaceApp() {
     <p className="ws-kicker">OWNER ACCESS REQUIRED</p>
     <h1>Sign in required.</h1>
     <p role="alert">{gate.message}</p>
+    <p className="ws-network-status" data-state={offline ? 'offline' : 'online'} aria-live="polite" aria-atomic="true">
+      {offline ? 'Browser offline · owner verification requires a connection.' : 'Browser online · sign in or retry verification.'}
+    </p>
     <div className="ws-actions"><a className="ws-primary" href="/signin">Go to sign in <Icon name="arrow" size={16}/></a>
       <button type="button" className="ws-secondary" onClick={retryVerification}>Retry verification</button></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
@@ -521,7 +580,7 @@ export function WorkspaceApp() {
   const ownerKey = gate.owner.id + ':' + gate.portGeneration + ':' + gate.epoch;
   if (route.endsWith('/preview/fullscreen') && portfolioId && authRef.current)
     return <FullscreenPortfolioPreview key={ownerKey} port={authRef.current} id={portfolioId}/>;
-  return <WorkspaceFrame key={ownerKey} owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
+  return <WorkspaceFrame key={ownerKey} owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message} offline={offline}>
     {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       route === '/app/profile' && authRef.current ? <DeveloperProfile port={authRef.current}/> :
@@ -565,7 +624,7 @@ export function WorkspaceApp() {
         retryRecordsRef.current?.();
       }}>Retry securely</button>
     </section> : route === '/app/onboarding' ?
-      <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
+      <Onboarding offline={offline} steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
       <Home snapshot={snapshot.value}/>}
   </WorkspaceFrame>;
 }
