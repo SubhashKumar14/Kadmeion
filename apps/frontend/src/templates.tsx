@@ -158,19 +158,57 @@ function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
       <ActionLink href={getAuthHref()}>Sign in to begin</ActionLink></div>
   </dialog>;
 }
+function presetPreviewId(search:string,allowed:readonly string[]):string|null {
+  const values=new URLSearchParams(search).getAll('preview');
+  return values.length===1&&allowed.includes(values[0]??'')?values[0]!:null;
+}
+function presetPreviewAddress(href:string,id:string|null,allowed:readonly string[]):string {
+  const url=new URL(href);
+  // The browser's current path is retained; no navigation to an input URL.
+  if(id!==null&&!allowed.includes(id))throw new Error('Unknown template preview.');
+  if(id===null)url.searchParams.delete('preview');
+  else url.searchParams.set('preview',id);
+  return url.pathname+url.search+url.hash;
+}
+const previewIds=PRESET_PREVIEWS.map(item=>item.id);
+function presetAtLocation():Preset|null{
+  const id=presetPreviewId(window.location.search,previewIds);
+  return PRESET_PREVIEWS.find(item=>item.id===id)??null;
+}
 export function TemplateExplorer(){
   const [theme,toggleTheme]=useTheme();
   const [query,setQuery]=useState('');
   const [category,setCategory]=useState<PresetCategory>('All categories');
   const [layout,setLayout]=useState<LayoutFilter>('All layouts');
   const [sort,setSort]=useState<'Featured'|'A–Z'>('Featured');
-  const [preview,setPreview]=useState<Preset|null>(null);
+  const [preview,setPreview]=useState<Preset|null>(()=>presetAtLocation());
   const previewOpener=useRef<HTMLButtonElement|null>(null);
-  const closePreview=()=>{
-    setPreview(null);
-    // Native <dialog> handles Escape and the inert background while open.
-    requestAnimationFrame(()=>previewOpener.current?.focus());
+  const updatePreviewAddress=(id:string|null)=>{
+    try{
+      window.history.replaceState(window.history.state,'',presetPreviewAddress(window.location.href,id,previewIds));
+    }catch{/* Navigation state is optional; the demo remains usable. */}
   };
+  const openPreview=(item:Preset,opener:HTMLButtonElement)=>{
+    previewOpener.current=opener;
+    updatePreviewAddress(item.id);
+    setPreview(item);
+  };
+  const closePreview=()=>{
+    updatePreviewAddress(null);
+    setPreview(null);
+    // Direct/reloaded previews may not have a live trigger.
+    requestAnimationFrame(()=>{
+      const opener=previewOpener.current;
+      if(opener?.isConnected)opener.focus();
+      else document.getElementById('templates-main')?.focus();
+      previewOpener.current=null;
+    });
+  };
+  useEffect(()=>{
+    const sync=()=>{previewOpener.current=null;setPreview(presetAtLocation());};
+    window.addEventListener('popstate',sync);
+    return ()=>window.removeEventListener('popstate',sync);
+  },[]);
   const available=filterPresets(PRESET_PREVIEWS,query,category,layout,sort);
   return <>
     <a className="skip-link" href="#templates-main">Skip to templates</a>
@@ -233,7 +271,7 @@ export function TemplateExplorer(){
               </div>
             </div>
             <div className="template-card-actions">
-              <button type="button" className="outline-small" onClick={event=>{previewOpener.current=event.currentTarget;setPreview(item);}}>Preview</button>
+              <button type="button" className="outline-small" onClick={event=>openPreview(item,event.currentTarget)}>Preview</button>
               <a className="header-signin" href={getAuthHref()} aria-label={'Sign in to build — ' + item.title + ' concept preview'}>Sign in to build <Icon name="arrow" size={16}/></a>
             </div>
           </article>)}</div>}
@@ -245,6 +283,6 @@ export function TemplateExplorer(){
         </section>
       </main>
     </div>
-    {preview && <PreviewDialog preset={preview} onClose={closePreview}/>}
+    {preview && <PreviewDialog key={preview.id} preset={preview} onClose={closePreview}/>}
   </>;
 }
