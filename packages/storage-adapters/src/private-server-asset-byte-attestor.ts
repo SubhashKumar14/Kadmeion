@@ -203,6 +203,65 @@ export class PrivateServerAssetByteAttestor {
       bytes:Uint8Array.from(response.raw)};
   }
 
+  /** PROFILE assets are independently scoped. No fallback to PROJECT, even
+   * when the same UUID exists in both registries. A live owner pin read
+   * authorizes the exact registered object/version before privileged writes. */
+  async attestProfile(assetId:string,ownerJwt:string):Promise<{
+    assetId:string;status:'WRITE_ONCE_ATTESTED'
+  }>{
+    requireValid(typeof assetId==='string'&&UUID.test(assetId)&&typeof ownerJwt==='string'&&ownerJwt.length>0,'VALIDATION');
+    const {data:user}=await this.get('/auth/v1/user',ownerJwt);
+    requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id)&&user.is_anonymous!==true,'AUTH');
+    const ownerId=user.id;
+    const {data:rows}=await this.get('/rest/v1/profile_assets?select=id,owner_user_id,operation_id,object_path,mime_type,byte_size,state,storage_object_id,storage_version&id=eq.'+
+      encodeURIComponent(assetId)+'&limit=2',ownerJwt);
+    requireValid(Array.isArray(rows)&&rows.length===1&&obj(rows[0]),'AUTH');
+    const a=rows[0] as Json;
+    const path=a.object_path,mime=a.mime_type,size=a.byte_size,objectId=a.storage_object_id,version=a.storage_version;
+    requireValid(a.id===assetId&&a.owner_user_id===ownerId&&a.state==='REGISTERED'&&
+      typeof a.operation_id==='string'&&UUID.test(a.operation_id)&&
+      typeof path==='string'&&path===ownerId+'/profile/'+a.operation_id+'.img'&&
+      typeof mime==='string'&&['image/png','image/jpeg','image/webp'].includes(mime)&&
+      typeof size==='number'&&Number.isSafeInteger(size)&&size>=12&&size<=MAX_BYTES&&
+      typeof objectId==='string'&&UUID.test(objectId)&&typeof version==='string'&&version.length>0&&version.length<=128,'INTEGRITY');
+    const readPin=async()=>{
+      const {data:p}=await this.get('/rest/v1/rpc/read_owner_private_asset_pin',ownerJwt,false,
+        {p_scope:'PROFILE',p_asset_id:assetId,p_project_id:null});
+      requireValid(obj(p)&&p.scope==='PROFILE'&&p.assetId===assetId&&p.ownerUserId===ownerId&&p.projectId===null&&
+        p.objectId===objectId&&p.version===version&&p.mimeType===mime&&p.byteSize===size&&
+        ((p.status==='UNPINNED'&&p.expectedSha256===null)||
+         (p.status==='SERVER_HASH_PINNED'&&typeof p.expectedSha256==='string'&&/^[0-9a-f]{64}$/.test(p.expectedSha256))),'INTEGRITY');
+      return p;
+    };
+    const pin=await readPin();
+    const before=await this.info(path,ownerJwt,ownerId,mime,size);
+    requireValid(before.id===objectId&&before.version===version,'INTEGRITY');
+    const response=await this.get('/storage/v1/object/authenticated/kadmeion-private-assets/'+
+      path.split('/').map(encodeURIComponent).join('/'),ownerJwt);
+    requireValid(response.raw?.length===size&&
+      (response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase()===mime&&
+      plausibleRaster(mime,response.raw),'INTEGRITY');
+    const hash=createHash('sha256').update(response.raw).digest('hex');
+    const after=await this.info(path,ownerJwt,ownerId,mime,size);
+    requireValid(before.id===after.id&&before.version===after.version&&before.modified===after.modified,'INTEGRITY');
+    // Re-read the live-session gated owner pin after bytes; a concurrent
+    // identical successful pin is idempotent, a different digest is denied.
+    const current=await readPin();
+    requireValid((pin.expectedSha256===null||pin.expectedSha256===hash)&&
+      (current.expectedSha256===null||current.expectedSha256===hash),'INTEGRITY');
+    if(current.status==='UNPINNED'){
+      const {data:receipt}=await this.get('/rest/v1/rpc/record_private_profile_asset_content_attestation',
+        ownerJwt,true,{p_asset_id:assetId,p_owner_user_id:ownerId,p_storage_object_id:objectId,
+          p_storage_version:version,p_expected_sha256:hash});
+      requireValid(obj(receipt)&&Object.keys(receipt).length===5&&receipt.assetId===assetId&&
+        receipt.scope==='PROFILE'&&receipt.status==='WRITE_ONCE_ATTESTED'&&
+        receipt.providerSigned===false&&receipt.deletionAllowed===false,'INTEGRITY');
+    }
+    const confirmed=await readPin();
+    requireValid(confirmed.status==='SERVER_HASH_PINNED'&&confirmed.expectedSha256===hash,'INTEGRITY');
+    return {assetId,status:'WRITE_ONCE_ATTESTED'};
+  }
+
   async attest(assetId:string,ownerJwt:string):Promise<{
     assetId:string;status:'WRITE_ONCE_ATTESTED'
   }>{
