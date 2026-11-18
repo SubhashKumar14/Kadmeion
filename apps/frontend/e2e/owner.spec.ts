@@ -461,8 +461,8 @@ test('real owner onboarding and project revision are private across browser sess
     buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64')
   });
   await page.getByRole('button',{name:'Upload private image'}).click();
-  await expect(page.locator('.ws-asset-manager').getByRole('status'))
-    .toContainText('Image uploaded and privately registered.');
+  await expect(page.locator('.ws-asset-manager').getByRole('status').filter({hasText:'Image uploaded and privately registered.'}))
+    .toBeVisible();
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
   // The portfolio has local revision operations at this point. Saving before
@@ -2567,7 +2567,8 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
   expect(resendCalls).toBe(5);
   await noWorkspace();
   await page.goto('/app');
-  await expect(page).toHaveURL(/\/signin(?:[?#].*)?$/);
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('link',{name:'Go to sign in'})).toBeVisible();
   await expect(page.locator('.ws-shell')).toHaveCount(0);
 });
 
