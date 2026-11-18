@@ -93,7 +93,6 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const profileLifetime=useRef(0);
   const autoTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const autoEnabled=useRef(false);
-  const pendingSkill=useRef(false);
   function cancelScheduledSave(){
     if(autoTimer.current!==null)clearTimeout(autoTimer.current);
     autoTimer.current=null;
@@ -139,7 +138,6 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       if (!data || error) { failRead(error?.message ?? 'Private profile is unavailable.'); return; }
       setSaved(data);
       setDraft(data);
-      pendingSkill.current=false;
       setSkill('');
       setSkillError('');
       setError('');
@@ -191,7 +189,6 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       return;
     }
     setDraft({...draft, skills: [...draft.skills, value]});
-    pendingSkill.current=false;
     setSkill('');
     setSkillError('');
     setWithdrawal(false);
@@ -207,7 +204,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   async function persistProfile(mode:'manual'|'auto'){
     cancelScheduledSave();
     if(!saved||!draft||operationPending.current||needsReload||!validEpoch())return;
-    if(mode==='auto'&&(!autoEnabled.current||withdrawal||pendingSkill.current))return;
+    if(mode==='auto'&&(!autoEnabled.current||withdrawal))return;
     const validation=profileDraftError(draft);
     if(validation){if(mode==='manual'){setError(validation);setPanel('Profile');}return;}
     const desired=canonicalProfileDraft(draft),expected={...saved,skills:[...saved.skills]};
@@ -295,10 +292,10 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   useEffect(()=>{
     cancelScheduledSave();
     if(!autosave||!autoEnabled.current||!dirty||!draft||locked||needsReload||withdrawal||latestProfile||
-      skill.trim()||pendingSkill.current||profileDraftError(draft)||!validEpoch())return;
+      profileDraftError(draft)||!validEpoch())return;
     autoTimer.current=setTimeout(()=>{autoTimer.current=null;void persistProfile('auto');},1200);
     return cancelScheduledSave;
-  },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port,skill]);
+  },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port]);
   useEffect(()=>{
     if(!dirty&&!skill.trim()&&!busy&&!checkingLatest)return;
     const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
@@ -395,12 +392,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
                 }}>{item} ×</button></li>)}</ul>
             <label>Add skill<input value={skill} maxLength={40}
               aria-invalid={!!skillError} aria-describedby={skillError ? 'profile-skill-error' : undefined}
-              onChange={event => {
-                if(operationPending.current||!validEpoch())return;
-                cancelScheduledSave();
-                pendingSkill.current=!!event.target.value.trim();
-                setSkill(event.target.value);setSkillError('');
-              }}
+              onChange={event => {if (!operationPending.current) {setSkill(event.target.value); setSkillError('');}}}
               onKeyDown={event => {if (event.key === 'Enter') {event.preventDefault(); addSkill();}}}/></label>
             {skillError && <p id="profile-skill-error" role="alert" className="ws-inline-alert">{skillError}</p>}
             <p>{draft.skills.length} of 20 skills added to this private draft.</p>
