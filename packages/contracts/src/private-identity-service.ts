@@ -96,10 +96,11 @@ function validSharingState(value:unknown,owner:string,receipt=false):value is Pr
   return !receipt||value.status==='APPLIED'||value.status==='REPLAYED'||value.status==='NO_CHANGE';
 }
 // JSON.parse silently accepts repeated keys; reject ambiguous acknowledgement
-// fields even when differently escaped. Parse syntax first, then walk tokens.
+// fields even when differently escaped. Check integer lexemes before rounded
+// values can be accepted as a monotonic version. Parse syntax, then walk tokens.
 function parseUniqueSharingJson(raw:string):unknown {
   const parsed:unknown=JSON.parse(raw);
-  const tokens=raw.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]/g)??[];
+  const tokens=raw.match(/"(?:\\[\s\S]|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]:,]/g)??[];
   const stack:(Set<string>|null)[]=[];
   for(let i=0;i<tokens.length;i++){
     const token=tokens[i];
@@ -111,6 +112,9 @@ function parseUniqueSharingJson(raw:string):unknown {
       const key=JSON.parse(token) as string;
       if(!keys||keys.has(key))throw new Error('Duplicate response key');
       keys.add(key);
+    }else if(token&&/^-?\d/.test(token)&&
+      (!/^(?:0|[1-9]\d*)$/.test(token)||!Number.isSafeInteger(Number(token)))){
+      throw new Error('Invalid response integer');
     }
   }
   return parsed;
@@ -161,6 +165,17 @@ export class PrivateIdentityError extends Error {
     this.code=code;
     this.name='PrivateIdentityError';
   }
+}
+
+// Only a complete 200 RPC result may acknowledge a saved preference tuple.
+// A proxy/cache partial or alternative success status is not durable proof.
+function assertSharingResponseEnvelope(response:Response,url:string):void {
+  if(response.redirected||(response.url&&response.url!==url))
+    throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
+  if(response.status===401||response.status===403)
+    throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+  if(response.ok&&(response.status!==200||response.headers.has('content-range')))
+    throw new PrivateIdentityError('INVALID_ACK','Incomplete sharing response.');
 }
 
 export class SupabasePrivateIdentityService {
@@ -278,10 +293,7 @@ export class SupabasePrivateIdentityService {
       try{
         this.requireSharingOwner();
         if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
-        if(response.redirected||(response.url&&response.url!==url))
-          throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
-        if(response.status===401||response.status===403)
-          throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+        assertSharingResponseEnvelope(response,url);
       }catch(error){
         void response.body?.cancel().catch(()=>{});
         throw error;
@@ -307,6 +319,7 @@ export class SupabasePrivateIdentityService {
     try{
       const raw=await Promise.race([deadline,work()]);
       this.requireSharingOwner();
+      if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
       return raw;
     }catch(error){
       this.requireSharingOwner();
@@ -372,30 +385,48 @@ export class SupabasePrivateIdentityService {
       id?:unknown;email_confirmed_at?:unknown;
       user_metadata?:{handle_candidate?:unknown}|null;
     }|null;
-    if (!raw || typeof raw.id!=='string' || !/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(raw.id))
+    if (!raw || typeof raw.id!=='string' || !UUID.test(raw.id))
       throw new PrivateIdentityError('AUTH_EXPIRED','Unable to verify the current account.');
+    const owner=raw.id;
     const emailVerified=typeof raw.email_confirmed_at==='string' && raw.email_confirmed_at.length>0;
-    const rows=await this.request('/rest/v1/profiles?select=user_id,handle&user_id=eq.'+raw.id,'GET') as
-      Array<{user_id?:unknown;handle?:unknown}>|null;
-    if (!Array.isArray(rows) || rows.length!==1 || rows[0]?.user_id!==raw.id)
-      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record is missing.');
-    if (typeof rows[0].handle==='string')
-      return {status:'claimed',handle:normalizeHandle(rows[0].handle),emailVerified};
+    const profilePath='/rest/v1/profiles?select=user_id,handle&user_id=eq.'+owner;
+    const readHandle=async():Promise<string|null>=>{
+      const rows=await this.request(profilePath,'GET') as Array<{user_id?:unknown;handle?:unknown}>|null;
+      if(!Array.isArray(rows)||rows.length!==1||rows[0]?.user_id!==owner)
+        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record is missing.');
+      const value=rows[0].handle;
+      if(value===null)return null;
+      try{
+        if(typeof value==='string'&&normalizeHandle(value)===value)return value;
+      }catch{/* An invalid stored handle is not an unclaimed profile. */}
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record could not be verified.');
+    };
+    const existing=await readHandle();
+    if(existing!==null)return {status:'claimed',handle:existing,emailVerified};
     const candidate=raw.user_metadata?.handle_candidate;
-    if (typeof candidate!=='string')return {status:'needs_handle',emailVerified};
+    if(typeof candidate!=='string')return {status:'needs_handle',emailVerified};
     let handle:string;
     try { handle=normalizeHandle(candidate); }
     catch { return {status:'needs_handle',emailVerified}; }
     try {
-      const confirmed=await this.request('/rest/v1/profiles?user_id=eq.'+raw.id,'PATCH',{handle}) as
+      // The server performs this null-only update atomically. A concurrent
+      // initial claim or explicit rename must never be overwritten by metadata.
+      const confirmed=await this.request('/rest/v1/profiles?user_id=eq.'+owner+'&handle=is.null','PATCH',{handle}) as
         Array<{user_id?:unknown;handle?:unknown}>|null;
-      if (!Array.isArray(confirmed)||confirmed.length!==1||
-          confirmed[0]?.user_id!==raw.id||confirmed[0]?.handle!==handle)
-        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Handle was not durably acknowledged.');
-      return {status:'claimed',handle,emailVerified};
+      if(Array.isArray(confirmed)&&confirmed.length===1&&
+          confirmed[0]?.user_id===owner&&confirmed[0]?.handle===handle)
+        return {status:'claimed',handle,emailVerified};
+      if(Array.isArray(confirmed)&&confirmed.length===0){
+        const winner=await readHandle();
+        if(winner!==null)return {status:'claimed',handle:winner,emailVerified};
+      }
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Handle was not durably acknowledged.');
     } catch(error) {
-      if(error instanceof PrivateIdentityError && error.code==='HANDLE_CONFLICT')
+      if(error instanceof PrivateIdentityError && error.code==='HANDLE_CONFLICT'){
+        const winner=await readHandle();
+        if(winner!==null)return {status:'claimed',handle:winner,emailVerified};
         return {status:'handle_conflict',requestedHandle:handle,emailVerified};
+      }
       throw error;
     }
   }
