@@ -1262,6 +1262,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         URL.revokeObjectURL(url);
       }
       if(!bound())return false;
+      const old=view.head.snapshot.slots[target];
+      if(old?.state==='S0'&&old.content.asset_id===asset.id&&old.content.source_sha256&&
+         (old.content.source_sha256!==digest||data.serverAttestation!=='SERVER_HASH_PINNED')){
+        setError('The stored image pin no longer matches a verified server pin. Existing assignment was kept.');return false;
+      }
       recoveryLock.current=false;
       if(!apply({kind:'PLACE_PRIVATE_IMAGE',slotKey:target,assetId:asset.id,altText}))return false;
       setSlot(target);setNotice('Private image reference applied after exact byte verification and raster decoding. Save draft to persist it; no publication pin or release authority was granted.');
@@ -1269,6 +1274,65 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     }catch{
       if(scopeCurrent(view))setError('Asset validation failed. No slot was changed.');
       return false;
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
+  /** Bind a source reference only to an independently verified write-once
+   * server pin. The owner transport checks the server hash both before and
+   * after reading storage, and rejects a computed digest that disagrees.
+   * A local preview digest or successful upload alone is never sufficient.
+   * This draft field does not authorize publication; release rechecks it. */
+  async function bindServerImagePin(target:string,requestAttestation:boolean){
+    const view=captureRecovery(),assignment=view?.head?.snapshot.slots[target];
+    if(!view?.head||!view.owner||view.tool!=='Content'||view.preview||recoveryLock.current||
+       pendingFields||sourceDirty||target!==slot||assignment?.state!=='S0'||
+       assignment.componentId!=='image@1'||!canPlacePrivateImage(view.head.snapshot,target))return;
+    const assetId=assignment.content.asset_id;
+    if(!assetId)return;
+    if(requestAttestation&&!window.confirm('Request trusted server verification of this privately registered image? This may create a write-once private hash pin. It does not publish anything.'))return;
+    if(!draftCurrent(view))return;
+    recoveryLock.current=true;setRecoveryBusy(true);setError('');setNotice('');
+    const bound=()=>draftCurrent(view)&&latestRecovery.current?.tool==='Content'&&!latestRecovery.current.preview;
+    try{
+      const list=await view.port.listOwnerAssets();
+      if(!bound())return;
+      const assets=list.data?.filter(row=>row.id===assetId);
+      const asset=assets?.length===1?assets[0]:undefined;
+      if(list.error||!asset||!['image/png','image/jpeg','image/webp'].includes(asset.mime))
+        throw new Error('Owner image registration could not be verified.');
+      if(requestAttestation){
+        const receipt=await view.port.requestOwnerPrivateAssetAttestation(asset.projectId,asset.id,view.owner.epoch);
+        if(!bound())return;
+        if(receipt.error||receipt.data?.assetId!==asset.id||receipt.data.status!=='WRITE_ONCE_ATTESTED'||
+          receipt.data.publicPublishingAllowed!==false||receipt.data.accountDeletionAllowed!==false)
+          throw new Error(receipt.error?.message??'Trusted server attestation was not confirmed.');
+      }
+      const read=await view.port.readOwnerPrivateAsset(asset.projectId,asset.id,view.owner.epoch);
+      if(!bound())return;
+      const data=read.data;
+      if(read.error||!data||data.asset.id!==asset.id||data.asset.projectId!==asset.projectId||
+         data.asset.mime!==asset.mime||data.asset.size!==asset.size||data.publicDeliveryAllowed!==false||
+         data.serverAttestation!=='SERVER_HASH_PINNED'||data.integrity.status!=='OWNER_BYTES_VERIFIED'||
+         !(data.bytes instanceof Blob)||data.bytes.type!==asset.mime||data.bytes.size!==asset.size||
+         !Number.isSafeInteger(asset.size)||asset.size<1||asset.size>5*1024*1024)
+        throw new Error('No verified write-once server pin is available for this image.');
+      const bytes=await data.bytes.arrayBuffer();
+      if(!bound())return;
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+      if(!bound())return;
+      if(bytes.byteLength!==asset.size||digest!==data.integrity.computedSha256)
+        throw new Error('The server-pinned bytes disagree with the exact readback.');
+      if(assignment.content.source_sha256&&assignment.content.source_sha256!==digest)
+        throw new Error('The existing frozen source pin differs. Replace the private image explicitly; no pin was overwritten.');
+      if(assignment.content.source_sha256===digest){
+        setNotice('Existing image source pin matches the verified server hash. No draft change.');return;
+      }
+      // UPDATE_CONTENT records the reference only, as an ordinary undoable
+      // working transaction. Neither this client nor this field is authority.
+      recoveryLock.current=false;
+      if(apply({kind:'UPDATE_CONTENT',slotKey:target,content:{source_sha256:digest}}))
+        setNotice('Verified server image pin bound to the working slot. Save draft before freezing. Publication remains subject to independent release checks.');
+    }catch(cause){
+      if(bound())setError(cause instanceof Error?cause.message:'Server image pin could not be verified.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   // The explicit folder backup is a separate persistence destination and
@@ -2008,6 +2072,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           {canPlacePrivateImage(head.snapshot,slot)&&<div className="ws-editor-tool">
             {active.componentId==='image@1'&&<p>Private image reference · {active.content.alt_text||'No alt text'}.
               {active.content.source_sha256?' Stored pin; release verification required.':' Metadata only; release blocked until trusted byte attestation.'}</p>}
+            {active.state==='S0'&&active.componentId==='image@1'&&active.content.asset_id&&verifiedOwner&&<>
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+                onClick={()=>void bindServerImagePin(slot,false)}>Verify and bind server image pin</button>
+              {!active.content.source_sha256&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+                onClick={()=>void bindServerImagePin(slot,true)}>Request private image attestation</button>}
+              <p>Only the verified server pin can bind a frozen source reference. The release builder independently checks media eligibility and bytes.</p>
+            </>}
             <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
               onClick={()=>{setOpenedAssets(true);setTool('Assets');}}>{active.state==='EMPTY'?'Choose private image':'Replace private image'}</button>
           </div>}
