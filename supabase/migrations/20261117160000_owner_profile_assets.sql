@@ -704,35 +704,7 @@ begin
        o.owner_id is distinct from v_owner::text or
        lower(coalesce(o.metadata->>'mimetype',''))<>a.mime_type or
        coalesce(o.metadata->>'size','') !~ '^[0-9]{1,10}$' or
-       (case when coalesce(o.metadata->>'size','') ~ '^[0-9]{1,10}) as changed
-    from assets a
-    left join kadmeion_private.private_asset_content_attestations t on t.asset_id=a.id
-    left join storage.objects o on o.bucket_id='kadmeion-private-assets'
-      and o.name=a.object_path
-  )
-  select count(*)::integer,
-    count(expected_sha256)::integer,
-    count(*) filter(where changed or expected_sha256 is null)::integer,
-    coalesce(jsonb_agg(jsonb_build_object('assetId',id,'path',object_path,
-      'objectId',storage_object_id,'version',storage_version,
-      'expectedSha256',expected_sha256) order by object_path)
-      filter(where expected_sha256 is not null),'[]'::jsonb)
-  into v_registered,v_pinned,v_changed,v_rows from pins;
-  return jsonb_build_object('snapshotId',p_snapshot_id,
-    'status',case when v_registered<=100 and v_registered=v_pinned
-      and v_changed=0 then 'SERVER_HASH_PINNED' else 'UNVERIFIED' end,
-    'registeredAssets',least(v_registered,100),'attestedAssets',least(v_pinned,100),
-    'attestations',v_rows,'providerSigned',false,'deletionAllowed',false);
-end;
-$$;
-revoke all on function public.read_private_asset_content_attestations(uuid)
-  from public,anon,authenticated;
-grant execute on function public.read_private_asset_content_attestations(uuid)
-  to authenticated;
-comment on function public.read_private_asset_content_attestations(uuid) is
-  'Owner-only read of server-worker byte digests, bound to a live session. Not provider-signed or an atomic export snapshot.';
-
-
+       (case when coalesce(o.metadata->>'size','') ~ '^[0-9]{1,10}$'
           then (o.metadata->>'size')::bigint else null end) is distinct from a.byte_size) as changed
     from assets a
     left join kadmeion_private.private_asset_content_attestations t on t.asset_id=a.id
