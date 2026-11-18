@@ -197,6 +197,74 @@ async function verifyMetadataV2(envelope:unknown,ownerId:string,snapshotId:strin
       'INTEGRITY','Version 2 audit has an invalid or forbidden record.');
   return envelope;
 }
+type V2RegistryAsset={scope:'PROJECT'|'PROFILE';assetId:string;projectId:string|null;
+  path:string;mimeType:string;byteSize:number;objectId:string|null;version:string|null};
+type V2HashPin={scope:'PROJECT'|'PROFILE';assetId:string;projectId:string|null;
+  path:string;objectId:string;version:string;mimeType:string;byteSize:number;expectedSha256:string};
+function v2Registry(records:JsonObject,ownerId:string):Map<string,V2RegistryAsset>{
+  requireCondition(Array.isArray(records.project_assets)&&Array.isArray(records.profile_assets)&&
+    records.project_assets.length+records.profile_assets.length<=MAX_ASSETS,
+    'LIMIT_EXCEEDED','Too many private assets for bounded recovery.');
+  const result=new Map<string,V2RegistryAsset>(),ids=new Set<string>();
+  const add=(asset:V2RegistryAsset)=>{
+    requireCondition(!result.has(asset.path)&&!ids.has(asset.assetId),
+      'INTEGRITY','Duplicate private asset across the registered scopes.');
+    result.set(asset.path,asset);ids.add(asset.assetId);
+  };
+  const suffix:Record<string,string>={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'};
+  for(const row of records.project_assets){
+    requireCondition(object(row)&&row.owner_user_id===ownerId&&isUuid(row.id)&&isUuid(row.project_id)&&
+      typeof row.object_path==='string'&&typeof row.mime_type==='string'&&Object.hasOwn(suffix,row.mime_type)&&
+      typeof row.byte_size==='number'&&Number.isSafeInteger(row.byte_size)&&row.byte_size>=12&&row.byte_size<=MAX_ASSET_BYTES,
+      'INTEGRITY','Invalid project asset metadata for version 2 recovery.');
+    const parts=row.object_path.split('/');
+    const filename=parts[2]??'',dot=filename.lastIndexOf('.');
+    requireCondition(parts.length===3&&parts[0]===ownerId&&parts[1]===row.project_id&&dot>0&&
+      isUuid(filename.slice(0,dot))&&['img',suffix[row.mime_type]].includes(filename.slice(dot+1)),
+      'INTEGRITY','Project asset is outside its canonical private path.');
+    add({scope:'PROJECT',assetId:row.id,projectId:row.project_id,path:row.object_path,
+      mimeType:row.mime_type,byteSize:row.byte_size,objectId:null,version:null});
+  }
+  verifyV2ProfileAssets(records,ownerId);
+  for(const row of records.profile_assets){
+    requireCondition(object(row)&&row.state==='REGISTERED'&&isUuid(row.id)&&
+      typeof row.object_path==='string'&&typeof row.mime_type==='string'&&typeof row.byte_size==='number'&&
+      isUuid(row.storage_object_id)&&typeof row.storage_version==='string',
+      'UNVERIFIED','Pending profile uploads prevent verified byte recovery.');
+    add({scope:'PROFILE',assetId:row.id,projectId:null,path:row.object_path,mimeType:row.mime_type,
+      byteSize:row.byte_size,objectId:row.storage_object_id,version:row.storage_version});
+  }
+  return result;
+}
+function sameV2Asset(entry:JsonObject,asset:V2RegistryAsset):boolean{
+  return entry.scope===asset.scope&&entry.assetId===asset.assetId&&entry.projectId===asset.projectId&&
+    entry.path===asset.path&&entry.mimeType===asset.mimeType&&entry.byteSize===asset.byteSize;
+}
+function parseV2Pins(raw:unknown,ownerId:string,snapshotId:string,requestId:string|null,
+  registry:Map<string,V2RegistryAsset>):Map<string,V2HashPin>{
+  requireCondition(object(raw)&&exactFields(raw,['snapshotId','schemaVersion','requestId','ownerUserId','status',
+    'registeredAssets','attestedAssets','attestations','providerSigned','deletionAllowed'])&&
+    raw.schemaVersion===2&&raw.snapshotId===snapshotId&&raw.requestId===requestId&&raw.ownerUserId===ownerId&&
+    raw.status==='SERVER_HASH_PINNED'&&raw.providerSigned===false&&raw.deletionAllowed===false&&
+    raw.registeredAssets===registry.size&&raw.attestedAssets===registry.size&&
+    Array.isArray(raw.attestations)&&raw.attestations.length===registry.size,
+    'UNVERIFIED','Request-bound trusted hash pin coverage is incomplete.');
+  const pins=new Map<string,V2HashPin>(),objects=new Set<string>();
+  for(const pin of raw.attestations){
+    requireCondition(object(pin)&&exactFields(pin,['scope','assetId','projectId','path','objectId','version',
+      'mimeType','byteSize','expectedSha256'])&&typeof pin.path==='string'&&isUuid(pin.objectId)&&
+      typeof pin.version==='string'&&pin.version.length>=1&&pin.version.length<=128&&
+      typeof pin.expectedSha256==='string'&&/^[a-f0-9]{64}$/.test(pin.expectedSha256)&&
+      !pins.has(pin.path)&&!objects.has(pin.objectId),
+      'INTEGRITY','Malformed or duplicate scoped trusted asset pin.');
+    const asset=registry.get(pin.path);
+    requireCondition(asset!==undefined&&sameV2Asset(pin,asset)&&
+      (asset.scope!=='PROFILE'||(pin.objectId===asset.objectId&&pin.version===asset.version)),
+      'INTEGRITY','Scoped trusted hash pin does not match owner registry metadata.');
+    pins.set(pin.path,pin as unknown as V2HashPin);objects.add(pin.objectId);
+  }
+  return pins;
+}
 function base64(bytes:Uint8Array):string {
   let binary='';
   for(let i=0;i<bytes.length;i+=8192)
@@ -520,6 +588,115 @@ export class SupabasePrivateAccountDataExporter {
     return {filename:'kadmeion-account-metadata-v2.json',mime:'application/json',bytes,
       status:'APPLICATION_METADATA_SNAPSHOT',storageBytesIncluded:false,providerDataIncluded:false};
   }
+  /** Explicit request-bound version 2 recovery; legacy exports are never retried. */
+  async exportV2(snapshotId:string,expectedRequestId:string|null):Promise<PrivateAccountExportArtifact>{
+    requireCondition(isUuid(snapshotId)&&(expectedRequestId===null||isUuid(expectedRequestId)),
+      'VALIDATION','Explicit version 2 inventory snapshot and request scope required.');
+    const token=await this.accessToken();
+    requireCondition(typeof token==='string'&&token.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===token,'AUTH_EXPIRED','The account session changed. Start a new export.');
+      return token;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const artifact=await scoped.exportForSessionV2(snapshotId,expectedRequestId);
+    await sameSession();
+    return artifact;
+  }
+  private async exportForSessionV2(snapshotId:string,requestId:string|null):Promise<PrivateAccountExportArtifact>{
+    const owner=await this.owner();
+    const args={p_snapshot_id:snapshotId,p_expected_request_id:requestId};
+    const {SupabasePrivateAccountErasureService}=await import('../../contracts/src/private-account-erasure-service.ts');
+    const account=new SupabasePrivateAccountErasureService(this.origin,this.publishableKey,this.accessToken,this.http);
+    const reconcile=async()=>{
+      try{
+        const receipt=await account.reconcileStorageV2(snapshotId,requestId);
+        if(receipt.status==='LIMIT_EXCEEDED')throw new PrivateAccountExportError('LIMIT_EXCEEDED','Storage inventory exceeds the version 2 limit.');
+        requireCondition(receipt.status==='METADATA_MATCH_ONLY'&&receipt.profilePending===0&&receipt.inventoryDrift===false,
+          'UNVERIFIED','Version 2 storage metadata is not reconciled.');
+        return receipt;
+      }catch(error){
+        if(error instanceof PrivateAccountExportError)throw error;
+        const code=object(error)?error.code:null;
+        throw new PrivateAccountExportError(code==='AUTH_EXPIRED'||code==='FORBIDDEN'?'AUTH_EXPIRED':
+          code==='RATE_LIMITED'?'RATE_LIMITED':code==='INVALID_ACK'?'INTEGRITY':'PROVIDER_UNAVAILABLE',
+          'Could not verify scoped storage metadata.');
+      }
+    };
+    const readMetadata=async()=>verifyMetadataV2(await this.json('/rest/v1/rpc/owner_export_account_metadata_v2',
+      12*1024*1024,args),owner.id,snapshotId,requestId);
+    const before=await reconcile();
+    const metadata=await readMetadata();
+    const registry=v2Registry(metadata.records as JsonObject,owner.id);
+    requireCondition(before.registeredAssets===registry.size&&
+      before.projectRegistered===[...registry.values()].filter(a=>a.scope==='PROJECT').length&&
+      before.profileRegistered===[...registry.values()].filter(a=>a.scope==='PROFILE').length,
+      'UNVERIFIED','Version 2 registered inventory changed.');
+    let total=0,minimum=enforceExportBudget(0,encoder.encode(JSON.stringify([
+      metadata.records,metadata.restrictedAudit,metadata.verifiedReleaseHistory])).byteLength);
+    for(const asset of registry.values()){
+      total+=asset.byteSize;
+      requireCondition(total<=MAX_TOTAL_ASSET_BYTES,'LIMIT_EXCEEDED','Private asset bytes exceed recovery limits.');
+      minimum=enforceExportBudget(minimum,4*Math.ceil(asset.byteSize/3));
+    }
+    const readPins=async()=>parseV2Pins(await this.json('/rest/v1/rpc/read_private_asset_content_attestations_v2',
+      65536,args),owner.id,snapshotId,requestId,registry);
+    const pins=await readPins();
+    const infos=new Map<string,{id:string;version:string;updatedAt:string}>();
+    for(const asset of registry.values()){
+      const pin=pins.get(asset.path)!;
+      const info=await this.objectInfo(asset.path,owner.id,asset.mimeType,asset.byteSize);
+      requireCondition(info.id===pin.objectId&&info.version===pin.version,
+        'INTEGRITY','Private object identity changed before version 2 recovery.');
+      infos.set(asset.path,info);
+    }
+    const assets:JsonObject[]=[];
+    for(const asset of registry.values()){
+      const pin=pins.get(asset.path)!;
+      const response=await this.request('/storage/v1/object/authenticated/kadmeion-private-assets/'+
+        asset.path.split('/').map(encodeURIComponent).join('/'),asset.byteSize);
+      const mime=(response.headers.get('content-type')??'').split(';',1)[0]?.trim().toLowerCase();
+      requireCondition(response.bytes.byteLength===asset.byteSize&&mime===asset.mimeType&&
+        await sha256(response.bytes)===pin.expectedSha256,'INTEGRITY','Scoped asset bytes differ from trusted content pin.');
+      assets.push({scope:asset.scope,assetId:asset.assetId,projectId:asset.projectId,path:asset.path,
+        mimeType:asset.mimeType,byteSize:asset.byteSize,storageObjectId:pin.objectId,storageVersionAtRead:pin.version,
+        expectedSha256:pin.expectedSha256,downloadedSha256:pin.expectedSha256,base64:base64(response.bytes)});
+    }
+    for(const asset of registry.values()){
+      const old=infos.get(asset.path)!;
+      const info=await this.objectInfo(asset.path,owner.id,asset.mimeType,asset.byteSize);
+      requireCondition(info.id===old.id&&info.version===old.version&&info.updatedAt===old.updatedAt,
+        'INTEGRITY','Scoped private object changed during recovery.');
+    }
+    const after=await reconcile(),lastPins=await readPins(),lastMetadata=await readMetadata();
+    requireCondition(after.inventoryCapturedAt===before.inventoryCapturedAt&&after.registeredAssets===before.registeredAssets&&
+      after.projectRegistered===before.projectRegistered&&after.profileRegistered===before.profileRegistered&&
+      [...pins].every(([key,pin])=>{
+        const next=lastPins.get(key);return next!==undefined&&sameV2Asset(next as unknown as JsonObject,registry.get(key)!)&&
+          next.objectId===pin.objectId&&next.version===pin.version&&next.expectedSha256===pin.expectedSha256;
+      })&&JSON.stringify(lastMetadata.records)===JSON.stringify(metadata.records)&&
+      JSON.stringify(lastMetadata.restrictedAudit)===JSON.stringify(metadata.restrictedAudit)&&
+      JSON.stringify(lastMetadata.verifiedReleaseHistory)===JSON.stringify(metadata.verifiedReleaseHistory),
+      'UNVERIFIED','Scoped metadata or trusted asset evidence changed during recovery.');
+    const finalOwner=await this.owner();
+    requireCondition(finalOwner.id===owner.id,'AUTH_EXPIRED','Owner session changed during recovery.');
+    const envelope={kind:'kadmeion-bounded-private-account-export',schemaVersion:2,
+      exportedAt:new Date().toISOString(),metadataCapturedAt:metadata.capturedAt,
+      owner:{id:owner.id,email:owner.email},inventorySnapshotId:snapshotId,requestId,
+      records:metadata.records,restrictedAudit:metadata.restrictedAudit,verifiedReleaseHistory:metadata.verifiedReleaseHistory,
+      assets,evidence:{registeredAssets:registry.size,downloadedAssets:assets.length,downloadedByteCount:total,
+        downloadedByteHashes:'SHA-256',providerExpectedHashesVerified:false,providerObjectVersionPinned:false,
+        trustedServerWorkerHashesVerified:true,storageObjectVersionCheckedBeforeAndAfter:true,
+        crossTableAtomicSnapshot:false,storageReconciliationBeforeAndAfter:true},
+      limitations:{completeAccountExport:false,omittedCategories:['case-study revision history','reviewer grant credentials',
+        'provider integrations and backups','non-atomic provider-side histories'],
+        providerRetentionVerified:false,publicRouteRevocationVerified:false,deletionAllowed:false}};
+    const bytes=encoder.encode(JSON.stringify(envelope));
+    enforceExportBudget(0,bytes.byteLength);
+    await verifyBoundedPrivateAccountExport(bytes);
+    return {filename:'kadmeion-private-account-partial-v2.json',mime:'application/json',bytes,
+      status:'BOUNDED_PARTIAL_EXPORT',completeAccountExport:false,deletionAllowed:false};
+  }
   /** Returns JSON bytes for a user-triggered local Blob download. Never uploads them. */
   async export(snapshotId:string):Promise<PrivateAccountExportArtifact> {
     requireCondition(isUuid(snapshotId),'VALIDATION','Valid owner inventory snapshot ID required.');
@@ -657,12 +834,74 @@ export interface VerifiedPartialAccountExport {
   sha256:string;
   ownerId:string;
   inventorySnapshotId:string;
+  schemaVersion?:2;
+  requestId?:string|null;
   tablesChecked:number;
   assetsChecked:number;
   assetBytesChecked:number;
   documentAuthenticityVerified:false;
   completeAccountExport:false;
   deletionAllowed:false;
+}
+async function verifyV2Recovery(raw:JsonObject,bytes:Uint8Array):Promise<VerifiedPartialAccountExport>{
+  requireCondition(exactFields(raw,['kind','schemaVersion','exportedAt','metadataCapturedAt','owner',
+    'inventorySnapshotId','requestId','records','restrictedAudit','verifiedReleaseHistory','assets','evidence','limitations'])&&
+    raw.kind==='kadmeion-bounded-private-account-export'&&raw.schemaVersion===2&&validDate(raw.exportedAt)&&
+    validDate(raw.metadataCapturedAt)&&isUuid(raw.inventorySnapshotId)&&(raw.requestId===null||isUuid(raw.requestId))&&
+    object(raw.owner)&&exactFields(raw.owner,['id','email'])&&isUuid(raw.owner.id)&&
+    (raw.owner.email===null||typeof raw.owner.email==='string')&&object(raw.records)&&object(raw.evidence)&&
+    object(raw.limitations)&&Array.isArray(raw.assets),
+    'INTEGRITY','Invalid version 2 private recovery structure.');
+  const ownerId=raw.owner.id;
+  await verifyMetadataV2({status:'APPLICATION_METADATA_SNAPSHOT',schemaVersion:2,requestId:raw.requestId,
+    snapshotId:raw.inventorySnapshotId,ownerUserId:ownerId,capturedAt:raw.metadataCapturedAt,
+    records:raw.records,restrictedAudit:raw.restrictedAudit,verifiedReleaseHistory:raw.verifiedReleaseHistory,
+    storageBytesIncluded:false,providerDataIncluded:false,deletionAllowed:false},
+    ownerId,raw.inventorySnapshotId,raw.requestId);
+  const registry=v2Registry(raw.records,ownerId),evidence=raw.evidence,limitations=raw.limitations;
+  requireCondition(exactFields(limitations,['completeAccountExport','deletionAllowed','omittedCategories',
+    'providerRetentionVerified','publicRouteRevocationVerified'])&&limitations.completeAccountExport===false&&
+    limitations.deletionAllowed===false&&limitations.providerRetentionVerified===false&&limitations.publicRouteRevocationVerified===false&&
+    Array.isArray(limitations.omittedCategories)&&limitations.omittedCategories.length>=1&&limitations.omittedCategories.length<=16&&
+    limitations.omittedCategories.every(v=>typeof v==='string'&&v.length>=1&&v.length<=120)&&
+    exactFields(evidence,['registeredAssets','downloadedAssets','downloadedByteCount','downloadedByteHashes',
+      'providerExpectedHashesVerified','providerObjectVersionPinned','trustedServerWorkerHashesVerified',
+      'storageObjectVersionCheckedBeforeAndAfter','crossTableAtomicSnapshot','storageReconciliationBeforeAndAfter'])&&
+    evidence.registeredAssets===registry.size&&evidence.downloadedAssets===registry.size&&
+    evidence.downloadedByteHashes==='SHA-256'&&evidence.providerExpectedHashesVerified===false&&
+    evidence.providerObjectVersionPinned===false&&evidence.trustedServerWorkerHashesVerified===true&&
+    evidence.storageObjectVersionCheckedBeforeAndAfter===true&&evidence.crossTableAtomicSnapshot===false&&
+    evidence.storageReconciliationBeforeAndAfter===true&&raw.assets.length===registry.size,
+    'INTEGRITY','Version 2 recovery evidence or limitations are invalid.');
+  const seen=new Set<string>(),objects=new Set<string>();let total=0;
+  for(const entry of raw.assets){
+    requireCondition(object(entry)&&exactFields(entry,['scope','assetId','projectId','path','mimeType','byteSize','storageObjectId',
+      'storageVersionAtRead','expectedSha256','downloadedSha256','base64'])&&typeof entry.path==='string'&&
+      !seen.has(entry.path)&&isUuid(entry.storageObjectId)&&!objects.has(entry.storageObjectId)&&
+      typeof entry.storageVersionAtRead==='string'&&entry.storageVersionAtRead.length>=1&&entry.storageVersionAtRead.length<=128&&
+      typeof entry.expectedSha256==='string'&&/^[a-f0-9]{64}$/.test(entry.expectedSha256)&&
+      entry.downloadedSha256===entry.expectedSha256&&typeof entry.base64==='string'&&
+      entry.base64.length<=4*Math.ceil(MAX_ASSET_BYTES/3),
+      'INTEGRITY','Invalid version 2 recovery media entry.');
+    const asset=registry.get(entry.path);
+    requireCondition(asset!==undefined&&sameV2Asset(entry,asset)&&
+      (asset.scope!=='PROFILE'||(entry.storageObjectId===asset.objectId&&entry.storageVersionAtRead===asset.version)),
+      'INTEGRITY','Version 2 recovery media is not bound to owner registry scope.');
+    let media:Uint8Array;
+    try{media=Uint8Array.from(atob(entry.base64),ch=>ch.charCodeAt(0));}
+    catch{throw new PrivateAccountExportError('INTEGRITY','Invalid version 2 recovery media encoding.');}
+    total+=media.byteLength;
+    requireCondition(media.byteLength===asset.byteSize&&total<=MAX_TOTAL_ASSET_BYTES&&
+      base64(media)===entry.base64&&await sha256(media)===entry.expectedSha256,
+      'INTEGRITY','Version 2 recovery media bytes differ from recorded pins.');
+    seen.add(entry.path);objects.add(entry.storageObjectId);
+  }
+  requireCondition(evidence.downloadedByteCount===total&&seen.size===registry.size,
+    'INTEGRITY','Version 2 recovery media totals do not match.');
+  return {status:'LOCALLY_CONSISTENT_PARTIAL_EXPORT',sha256:await sha256(bytes),ownerId,
+    inventorySnapshotId:raw.inventorySnapshotId,schemaVersion:2,requestId:raw.requestId,
+    tablesChecked:V2_TABLES.length,assetsChecked:seen.size,assetBytesChecked:total,
+    documentAuthenticityVerified:false,completeAccountExport:false,deletionAllowed:false};
 }
 export async function verifyBoundedPrivateAccountExport(
   bytes:Uint8Array
@@ -673,6 +912,7 @@ export async function verifyBoundedPrivateAccountExport(
   let raw:unknown;
   try{raw=JSON.parse(decoder.decode(bytes));}
   catch{throw new PrivateAccountExportError('INTEGRITY','Private export is not valid UTF-8 JSON.');}
+  if(object(raw)&&raw.schemaVersion===2)return verifyV2Recovery(raw,bytes);
   const top=['assets','evidence','exportedAt','inventorySnapshotId','kind',
     'limitations','owner','records','restrictedAudit','schemaVersion'];
   requireCondition(object(raw)&&Object.keys(raw).sort().join(',')===top.join(',')&&
