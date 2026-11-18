@@ -31,6 +31,7 @@ type Activation = {
   publicPath?: string;
   releaseGeneration?: number;
   requestId?: string;
+  operationId?: string;
 };
 
 type PublicDeliveryObservation = {
@@ -348,7 +349,7 @@ export async function verifyActivatedUnlistedRelease(
       throw new Error('Invalid authoritative release generation.');
     // An explicit server authority port is a hard cutover: never fall back to
     // the legacy acknowledgement or recovery functions on missing/failed RPCs.
-    const result=await verifyAuthority({portfolioId,intentId,releaseGeneration,publicPath,htmlSha256,requestId:activation.requestId}, {
+    const result=await verifyAuthority({portfolioId,intentId,releaseGeneration,publicPath,htmlSha256,requestId:activation.requestId,operationId:activation.operationId}, {
       read:(p,i)=>publicAuthority('service_read_current_public_delivery_receipt',{p_portfolio_id:p,p_intent_id:i}),
       ack:expected=>publicAuthority('service_acknowledge_public_delivery',{p_expected_receipt:expected}),
       recover:expected=>publicAuthority('service_recover_failed_public_delivery',{p_expected_receipt:expected}),
@@ -447,12 +448,13 @@ function deliveryHost(origin: string): URL {
 }
 
 /** Owner-RLS frozen request binding for the paired C11 worker cutover. */
-export type FrozenPublicationConsent=Readonly<{portfolioId:string;requestId:string;visibility:'PUBLIC'|'UNLISTED'}>;
+export type FrozenPublicationConsent=Readonly<{portfolioId:string;requestId:string;visibility:'PUBLIC'|'UNLISTED';operationId?:string}>;
 export function validateFrozenPublicationConsent(consent:FrozenPublicationConsent,hasPublicAuthority:boolean):void{
   if(!consent||typeof consent.portfolioId!=='string'||!UUID.test(consent.portfolioId)||
      typeof consent.requestId!=='string'||!UUID.test(consent.requestId)||
      (consent.visibility!=='PUBLIC'&&consent.visibility!=='UNLISTED')||
-     (consent.visibility==='PUBLIC'&&!hasPublicAuthority))
+     (consent.operationId!==undefined&&!uuid(consent.operationId))||
+     (consent.visibility==='PUBLIC'&&(!hasPublicAuthority||!uuid(consent.operationId))))
     throw Error('Frozen publication consent was not verified.');
 }
 export function matchFrozenPublicationConsent(consent:FrozenPublicationConsent,portfolioId:string,publicPath:string|undefined):void{
@@ -485,7 +487,7 @@ export async function checkCurrentPublicDelivery(intentId:string,ports:{
      !validPortfolioRoute(raw.handle,raw.slug)||!gen(raw.releaseGeneration)||!digest(raw.storedHtmlSha256))
     throw Error('Current public delivery is not available.');
   const publicPath='/'+raw.handle+'/'+raw.slug;
-  const expected={portfolioId:consent.portfolioId,intentId,requestId:consent.requestId,
+  const expected={portfolioId:consent.portfolioId,intentId,requestId:consent.requestId,operationId:consent.operationId,
     releaseGeneration:raw.releaseGeneration,htmlSha256:raw.storedHtmlSha256,publicPath};
   const initial=parseAuthority(raw,expected,validPortfolioRoute);
   if(initial.verifiedAt===null)throw Error('Current public delivery is not acknowledged.');
@@ -519,7 +521,7 @@ export async function publishConsentedUnlistedRelease(
     });
     if(authority!==null&&(!record(authority)||
        authority.portfolioId!==consent.portfolioId||authority.intentId!==intentId||
-       authority.requestId!==consent.requestId||authority.visibility!=='PUBLIC'))
+       authority.requestId!==consent.requestId||authority.operationId!==consent.operationId||authority.visibility!=='PUBLIC'))
       throw Error('Public delivery authority is unavailable.');
   }
   const prepared = await rpc('service_prepare_unlisted_release', {p_intent_id: intentId});
@@ -541,7 +543,7 @@ export async function publishConsentedUnlistedRelease(
   switch (prepared.status) {
     case 'ACKNOWLEDGED':
       return verifyActivatedUnlistedRelease(
-        {portfolioId, intentId, htmlSha256, publicPath, releaseGeneration, requestId:consent?.requestId}, ports, 'CHECK_ACKNOWLEDGED_ONLY');
+        {portfolioId, intentId, htmlSha256, publicPath, releaseGeneration, requestId:consent?.requestId, operationId:consent?.operationId}, ports, 'CHECK_ACKNOWLEDGED_ONLY');
     case 'AWAITING_VERIFICATION':
       break;
     case 'PROBE_PENDING': {
@@ -568,7 +570,7 @@ export async function publishConsentedUnlistedRelease(
     default:
       throw new Error('Unexpected unlisted publication status.');
   }
-  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256, publicPath, releaseGeneration, requestId:consent?.requestId}, ports);
+  return verifyActivatedUnlistedRelease({portfolioId, intentId, htmlSha256, publicPath, releaseGeneration, requestId:consent?.requestId, operationId:consent?.operationId}, ports);
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -580,7 +582,7 @@ const SHA=SHA256;
 const MAX=Number.MAX_SAFE_INTEGER;
 const keys=['portfolioId','intentId','requestId','operationId','releaseGeneration','stageGeneration','pointerGeneration','revocationGeneration','deliveryEpoch','visibility','handle','slug','storedHtmlSha256','mediaManifest','assetHashes','verifiedAt'] as const;
 export type AuthorityReceipt={portfolioId:string;intentId:string;requestId:string;operationId:string;releaseGeneration:number;stageGeneration:number;pointerGeneration:number;revocationGeneration:number;deliveryEpoch:number;visibility:'PUBLIC';handle:string;slug:string;storedHtmlSha256:string;mediaManifest:string|null;assetHashes:readonly string[];verifiedAt:string|null};
-export type AuthorityIdentity={portfolioId:string;intentId:string;releaseGeneration:number;publicPath:string;htmlSha256:string;requestId?:string};
+export type AuthorityIdentity={portfolioId:string;intentId:string;releaseGeneration:number;publicPath:string;htmlSha256:string;requestId?:string;operationId?:string};
 export type AuthoritySample={htmlSha256:string;servedHtmlSha256:string;apiPath:string|null;mediaManifest:string|null;assetHashes:readonly string[];observedHttpRequests:number};
 export type AuthorityPorts={read:(portfolioId:string,intentId:string)=>Promise<unknown>;ack:(expected:AuthorityReceipt)=>Promise<unknown>;recover:(expected:AuthorityReceipt)=>Promise<unknown>;sample:(path:string,sha:string,indexable:boolean)=>Promise<AuthoritySample|null>;validRoute:(handle:string,slug:string)=>boolean};
 function fail():never{throw Error('Authoritative public delivery was not verified.');}
@@ -594,6 +596,7 @@ export function parseAuthority(raw:unknown,expected:AuthorityIdentity,validRoute
   if(!obj(raw)||!exact(raw,keys)||!uuid(raw.portfolioId)||!uuid(raw.intentId)||!uuid(raw.requestId)||!uuid(raw.operationId)||raw.visibility!=='PUBLIC'||
      raw.portfolioId!==expected.portfolioId||raw.intentId!==expected.intentId||raw.releaseGeneration!==expected.releaseGeneration||raw.storedHtmlSha256!==expected.htmlSha256||
      (expected.requestId!==undefined&&raw.requestId!==expected.requestId)||
+     (expected.operationId!==undefined&&raw.operationId!==expected.operationId)||
      !gen(raw.releaseGeneration)||!gen(raw.stageGeneration)||!gen(raw.pointerGeneration)||!gen(raw.revocationGeneration,0)||!gen(raw.deliveryEpoch)||raw.deliveryEpoch>=MAX||
      raw.stageGeneration>raw.releaseGeneration||raw.releaseGeneration>raw.pointerGeneration||raw.stageGeneration<=raw.revocationGeneration||
      typeof raw.handle!=='string'||typeof raw.slug!=='string'||!validRoute(raw.handle,raw.slug)||'/'+raw.handle+'/'+raw.slug!==expected.publicPath||!digest(raw.storedHtmlSha256)||
