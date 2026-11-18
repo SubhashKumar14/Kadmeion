@@ -3,7 +3,7 @@ import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packa
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage, OwnerPublicationIntentPage } from '../../../packages/contracts/src/private-release-service.ts';
+import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage, OwnerPublicationIntentPage, OwnerPublicStageRequest, OwnerPublicStageReceipt } from '../../../packages/contracts/src/private-release-service.ts';
 import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
@@ -1372,6 +1372,22 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       await requireOwned();
       if(!current())throw new Error('Account changed while loading release history.');
       return page;
+    });
+  }
+
+  /** Proposed S1 companion, bound to the verified owner epoch. The server
+   * independently checks the live session, exact frozen pin and pointer CAS. */
+  async stageOwnerPublicCandidate(request:OwnerPublicStageRequest):Promise<AuthOutcome<OwnerPublicStageReceipt>>{
+    return this.outcome(async()=>{
+      const {userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch;
+      const token=this.ownerEpochToken(userId,epoch);
+      const {SupabasePrivateReleaseService}=await import('../../../packages/contracts/src/private-release-service.ts');
+      if(!current())throw new Error('Owner changed before private staging.');
+      const service=new SupabasePrivateReleaseService(this.origin,this.publishableKey,token,this.fetcher);
+      const result=await service.stagePublicCandidate(request);
+      if(!current()||!await token()||!current())throw new Error('Owner changed during private staging.');
+      return result;
     });
   }
 
