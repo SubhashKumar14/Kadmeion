@@ -3917,3 +3917,73 @@ test('B16 C08 profile field selection CAS conflicts across tabs and withdraws th
     expect(projection()).toBe('ABSENT');
   }finally{await other.close();}
 });
+
+test('B16 C08 profile choice lost acknowledgement and explicit concurrent review preserve the stored CAS',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await localUser('R7 sharing recovery');
+  const saved=()=>JSON.parse(runLocalFixtureSql(
+    "select coalesce((select jsonb_build_object('display',share_display_name,'headline',share_headline,'bio',share_bio,'requested',publication_requested) from public.profile_sharing_preferences where user_id=:'actor_id'::uuid),'null'::jsonb)::text;",owner.id));
+  const second=await browser.newPage();
+  try{
+    await signIn(page,owner);await signIn(second,owner);
+    for(const tab of [page,second]){
+      await tab.goto('/app/profile');
+      await tab.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+      const fields=tab.getByRole('group',{name:'Choose fields for a future publication'});
+      await expect(fields.getByRole('checkbox',{name:'Headline',exact:true})).not.toBeChecked();
+      await expect(fields.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+    }
+    const first=page.getByRole('group',{name:'Choose fields for a future publication'});
+    const stale=second.getByRole('group',{name:'Choose fields for a future publication'});
+    let writes=0,committed=false;
+    await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/change_owner_profile_sharing',async route=>{
+      if(route.request().method()!=='POST')return route.continue();
+      writes++;
+      if(writes!==1)return route.continue();
+      const real=await route.fetch();
+      try{
+        expect(real.ok()).toBe(true);
+        committed=true;
+        await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'Disposable lost CAS acknowledgement'})});
+      }finally{await real.dispose();}
+    });
+    await first.getByRole('checkbox',{name:'Headline',exact:true}).check();
+    await first.getByRole('checkbox',{name:/I confirm these exact private sharing choices/}).check();
+    await first.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(page.getByText(/Sharing change could not be confirmed/)).toBeVisible({timeout:30000});
+    expect(committed).toBe(true);
+    expect(saved()).toMatchObject({headline:true,bio:false,requested:false});
+    await page.getByRole('button',{name:'Retry sharing preferences',exact:true}).click();
+    await expect(page.getByText('Current saved sharing choices match your request. No additional write was made.',{exact:true})).toBeVisible();
+    await expect(first.getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+    await expect(first.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    expect(writes).toBe(1);
+    let staleWrites=0;
+    await second.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/change_owner_profile_sharing',async route=>{
+      if(route.request().method()==='POST')staleWrites++;
+      await route.continue();
+    });
+    await stale.getByRole('checkbox',{name:'About you',exact:true}).check();
+    await stale.getByRole('checkbox',{name:/I confirm these exact private sharing choices/}).check();
+    await stale.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(second.getByText(/Sharing change could not be confirmed/)).toBeVisible({timeout:30000});
+    expect(staleWrites).toBe(1);
+    await second.getByRole('button',{name:'Retry sharing preferences',exact:true}).click();
+    const review=second.getByRole('group',{name:'Review conflicting sharing choices'});
+    await expect(review).toBeVisible();
+    await expect(stale.getByRole('checkbox',{name:'About you',exact:true})).toBeDisabled();
+    await expect(stale.getByRole('checkbox',{name:/I confirm these exact private sharing choices/})).toBeDisabled();
+    await review.getByRole('button',{name:'Use saved sharing choices',exact:true}).click();
+    await expect(review).toHaveCount(0);
+    await expect(stale.getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+    await expect(stale.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+    await expect(stale.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    expect(staleWrites).toBe(1);
+    expect(saved()).toMatchObject({headline:true,bio:false,requested:false});
+    await page.reload();
+    await page.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+    await expect(page.getByRole('group',{name:'Choose fields for a future publication'}).getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+    expect(writes).toBe(1);
+  }finally{await second.close();}
+});
