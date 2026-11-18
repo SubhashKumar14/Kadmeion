@@ -2459,3 +2459,98 @@ test('R9 guarded project RPC: actual password sessions, atomic CAS and explicit 
     assert.equal(dead.ok,false,'Revoked session cannot write');
     assert.equal((await read()).revision,final.revision);
   });
+
+test('160700 guarded project autosave: two real owner sessions, no silent withdrawal, exact CAS and explicit confirmation',
+  {timeout:120_000},async()=>{
+  // Only the pre-existing disposable local Auth/HTTP helpers are used.
+  // This test intentionally requires the registered 160700 migration.
+  const owner=await adminUser('guarded-draft-owner');
+  const outsider=await adminUser('guarded-draft-foreign');
+  const second=successful(await send('/auth/v1/token?grant_type=password',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:{email:owner.email,password:owner.password}
+  }),'Second independent owner password session');
+  assert.equal(second.user.id,owner.id);
+  const tab={...owner,token:second.access_token};
+  const sid=token=>JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8')).session_id;
+  assert.notEqual(sid(owner.token),sid(tab.token),'The competing write must use another real session');
+  const handle='guard_'+randomUUID().slice(0,8);
+  const slug='guarded-'+randomUUID().slice(0,8);
+  successful(await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+    ...json(owner),method:'PATCH',body:{handle}
+  }),'Set canonical fixture handle');
+  const rows=successful(await send('/rest/v1/projects?select=id,revision,title,summary,description,repository_url,live_url',{
+    ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:{owner_user_id:owner.id,slug,title:'Original project',summary:'Original public summary',description:'Owner draft'}
+  }),'Create actual private project');
+  assert.equal(rows.length,1);
+  const project=rows[0],id=project.id;
+  successful(await send('/rest/v1/project_exposure_intents',{
+    ...json(owner),method:'POST',body:{project_id:id,owner_user_id:owner.id,show_case_study:true}
+  }),'Explicit public case-study intent');
+  const rpc=(who,name,body)=>send('/rest/v1/rpc/'+name,{
+    ...json(who),method:'POST',body
+  });
+  successful(await rpc(owner,'owner_publish_case_study_projection',{
+    p_project_id:id,p_expected_revision:project.revision,p_confirmation:'PUBLISH CASE STUDY'
+  }),'Publish exact current case-study projection');
+  const publicRead=()=>send('/rest/v1/rpc/service_read_published_case_study_projection',{
+    key:cfg.service,bearer:cfg.service,method:'POST',headers:{'Content-Type':'application/json'},
+    body:{p_handle:handle,p_slug:slug}
+  });
+  const read=async()=>successful(await send('/rest/v1/projects?id=eq.'+id+
+    '&select=id,revision,title,summary,description,repository_url,live_url',bearer(owner)),
+    'Read durable actual project')[0];
+  const draft=(source,patch={})=>({
+    p_project_id:id,p_base_revision:source.revision,p_title:source.title,
+    p_summary:source.summary,p_description:source.description,
+    p_repository_url:source.repository_url,p_live_url:source.live_url,
+    p_confirm_projection_withdrawal:false,...patch
+  });
+  const save=(who,body)=>rpc(who,'owner_save_private_project_draft',body);
+  const projected=successful(await publicRead(),'Read original public projection');
+  assert.equal(projected.title,project.title);assert.equal(projected.summary,project.summary);
+  const unchanged=successful(await save(owner,draft(project)),'No-op autosave preserves revision');
+  assert.equal(unchanged.id,id);assert.equal(unchanged.revision,project.revision);
+  assert.deepEqual(successful(await publicRead(),'No-op retained original projection'),projected);
+  const changed=draft(project,{p_summary:'Private unsent draft summary'});
+  const denial=await save(tab,changed);
+  assert.equal(denial.ok,false);
+  assert.equal(denial.data?.code,'P0001');
+  assert.equal(denial.data?.message,'PROJECT_WITHDRAWAL_CONFIRMATION_REQUIRED');
+  assert.deepEqual(await read(),project);
+  assert.deepEqual(successful(await publicRead(),'Blocked autosave retains old public bytes'),projected);
+  assert.ok(!(await save(outsider,{...changed,p_confirm_projection_withdrawal:true})).ok,
+    'Foreign owner cannot confirm withdrawal or save our project');
+  assert.ok(!(await send('/rest/v1/rpc/owner_save_private_project_draft',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:changed
+  })).ok,'Anonymous draft write must be denied');
+  assert.ok(!(await send('/rest/v1/rpc/owner_save_private_project_draft',{
+    key:cfg.service,bearer:cfg.service,method:'POST',
+    headers:{'Content-Type':'application/json'},body:changed
+  })).ok,'Service role cannot impersonate owner through autosave');
+  const confirmed=successful(await save(owner,{...changed,p_confirm_projection_withdrawal:true}),
+    'Explicitly confirmed atomic save and withdrawal');
+  assert.equal(confirmed.id,id);assert.equal(confirmed.revision,project.revision+1);
+  assert.equal(successful(await publicRead(),'Explicit withdrawal removed old public bytes'),null);
+  const after=await read();
+  assert.equal(after.summary,changed.p_summary);assert.equal(after.revision,confirmed.revision);
+  const stale=await save(tab,changed);
+  assert.equal(stale.ok,false);assert.equal(stale.data?.code,'40001');
+  const competing=await Promise.all([
+    save(owner,draft(after,{p_title:'Owner session wins A'})),
+    save(tab,draft(after,{p_title:'Other session wins B'}))
+  ]);
+  assert.equal(competing.filter(x=>x.ok).length,1,'Only one same-revision owner writes may commit');
+  const loser=competing.find(x=>!x.ok);
+  assert.equal(loser.data?.code,'40001');
+  const winner=await read();
+  assert.equal(winner.revision,after.revision+1);
+  assert.ok(['Owner session wins A','Other session wins B'].includes(winner.title));
+  const reverted=successful(await save(tab,draft(winner,{p_title:project.title,p_summary:project.summary})),
+    'Restore same original field values with a new revision');
+  assert.equal(reverted.revision,winner.revision+1);
+  const aba=await save(owner,changed);
+  assert.equal(aba.ok,false);assert.equal(aba.data?.code,'40001','ABA field values cannot authorize stale revision');
+  assert.equal(successful(await publicRead(),'Reverted draft is never automatically republished'),null);
+});
