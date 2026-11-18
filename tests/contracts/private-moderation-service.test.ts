@@ -370,3 +370,36 @@ test('C14 appeal evidence is limited to the requested case and never establishes
   await assert.rejects(client(async()=>{throw Error('unreachable');},null)
     .readAppealEvidence(caseId),{code:'AUTH_EXPIRED'});
 });
+
+test('C14 private moderation acknowledgement rejects malformed streamed responses without exposing evidence',async()=>{
+  const raw=JSON.stringify({caseId,status:'OPEN',alreadyRecorded:false,restrictionEnforced:false,publicRevocationVerified:false});
+  const responses=[
+    new Response(raw,{headers:{'content-type':'application/json','content-length':'1'}}),
+    new Response(Uint8Array.of(255),{headers:{'content-type':'application/json'}}),
+    new Response(new ReadableStream<Uint8Array>({start(c){c.enqueue(new Uint8Array(262145));c.close();}}),
+      {headers:{'content-type':'application/json'}})
+  ];
+  for(const response of responses){
+    let requests=0;
+    await assert.rejects(client(async()=>{requests++;return response}).openCase(ownerId,operationId,'ABUSE',summary),
+      {code:'INVALID_ACK'});
+    assert.equal(requests,1);
+  }
+});
+test('C14 token and transport deadline cannot record a false operator action', {timeout:20000},async()=>{
+  let requests=0;
+  const noToken=new SupabasePrivateModerationService(origin,'sb_publishable_test_only',
+    ()=>new Promise<string|null>(()=>{}),async()=>{requests++;return ok([])});
+  const noResponse=client(async()=>{requests++;return new Promise<Response>(()=>{})});
+  let guard:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const watchdog=new Promise<never>((_,reject)=>{guard=setTimeout(()=>reject(Error('Moderation request exceeded deadline')),18000)});
+    const start=Date.now();
+    await Promise.race([Promise.all([
+      assert.rejects(noToken.openCase(ownerId,operationId,'ABUSE',summary),{code:'PROVIDER_UNAVAILABLE'}),
+      assert.rejects(noResponse.openCase(ownerId,operationId,'ABUSE',summary),{code:'PROVIDER_UNAVAILABLE'})
+    ]),watchdog]);
+    assert.ok(Date.now()-start<18000);
+    assert.equal(requests,1,'No token must prevent any provider call; ambiguous action must never retry');
+  }finally{if(guard!==undefined)clearTimeout(guard);}
+});

@@ -8,7 +8,7 @@ import type { FormEvent } from 'react';
 import {
   applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, planSectionLayoutChange, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
-import { portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import { canonicalLibraryComponentSource, portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
@@ -158,6 +158,15 @@ const STUDIO = '/app/portfolios';
 const editorPath = (id: string) => STUDIO + '/' + id + '/edit';
 const authoringQuery = '(min-width: 900px) and (pointer: fine) and (hover: hover)';
 type PortfolioRecord = NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['readOwnerPortfolio']>>['data']>;
+/** JSONB may reorder object keys on readback. Keep arrays and exact source
+ * strings ordered, but never confuse insertion order with a content change. */
+function stableDraftValue(value:unknown):string|undefined{
+  return JSON.stringify(value,(_key,v:unknown)=>v&&typeof v==='object'&&!Array.isArray(v)?
+    Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0)):v);
+}
+function sameDraftSnapshot(a:PortfolioSnapshot|null,b:PortfolioSnapshot|null):boolean{
+  return !!a&&!!b&&stableDraftValue(a)===stableDraftValue(b);
+}
 
 export function portfolioIdFromRoute(path: string): string | undefined {
   return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:edit|preview(?:\/fullscreen)?)$/i.exec(path)?.[1]?.toLowerCase();
@@ -352,31 +361,52 @@ export function PortfolioChooser({port}: {port: SupabaseBrowserAuthPort}) {
   const [choice, setChoice] = useState<PortfolioPresetId>('arc');
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
-  const [pending, setPending] = useState<{id: string; operation: string} | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const selected = presets.find(preset => preset.id === choice) ?? presets[0];
+  type PendingSetup={id:string;operation:string;preset:PortfolioPresetId;epoch:number;port:SupabaseBrowserAuthPort};
+  const [pending,setPending]=useState<PendingSetup|null>(null);
+  const pendingRef=useRef<PendingSetup|null>(null);
+  const flight=useRef(false);
+  const mounted=useRef(false);
+  const currentPort=useRef(port);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState('');
+  const selected=presets.find(preset=>preset.id===choice)??presets[0];
+  useLayoutEffect(()=>{
+    mounted.current=true;currentPort.current=port;
+    return()=>{mounted.current=false;};
+  },[port]);
 
-  async function create(event: FormEvent<HTMLFormElement>) {
+  async function create(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if (!allowed || saving) return;
-    setSaving(true);
-    setError('');
-    try {
-      let current = pending;
-      if (!current) {
-        const result = await port.createOwnerPortfolio(title, slug, selected.id);
-        if (!result.data) {setError(result.error?.message ?? 'Portfolio creation could not be confirmed.'); return;}
-        current = {id: result.data, operation: crypto.randomUUID()};
-        setPending(current);
+    if(!allowed||saving||flight.current||!mounted.current)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    const current=()=>mounted.current&&currentPort.current===port&&port.reconcileOwnerSessionEpoch()===epoch;
+    let setup=pendingRef.current;
+    if(setup&&(setup.epoch!==epoch||setup.port!==port)){
+      pendingRef.current=null;setPending(null);setError('Owner session changed. Review your private portfolio library before creating another draft.');return;
+    }
+    flight.current=true;setSaving(true);setError('');
+    try{
+      if(!setup){
+        const result=await port.createOwnerPortfolio(title,slug,selected.id);
+        if(!current())return;
+        if(!result.data){
+          setError((result.error?.message??'Portfolio creation could not be confirmed.')+' Check your private portfolio library before creating another draft.');return;
+        }
+        setup={id:result.data,operation:crypto.randomUUID(),preset:selected.id,epoch,port};
+        pendingRef.current=setup;setPending(setup);
       }
-      const initialized = await port.initializeOwnerPortfolio(current.id, current.operation, selected.id);
-      if (!initialized.data) {setError(initialized.error?.message ?? 'Draft created. Retry initialization to continue.'); return;}
-      window.location.assign(editorPath(current.id));
-    } catch {
-      setError('Portfolio setup could not be confirmed. Your chosen name and layout are retained.');
-    } finally {
-      setSaving(false);
+      const initialized=await port.initializeOwnerPortfolio(setup.id,setup.operation,setup.preset);
+      if(!current())return;
+      if(typeof initialized.data!=='number'||!Number.isSafeInteger(initialized.data)||initialized.data<1){
+        setError(initialized.error?.message??'Draft created. Retry the same initialization to continue.');return;
+      }
+      window.location.assign(editorPath(setup.id));
+    }catch{
+      if(current())setError(setup?'Draft setup could not be confirmed. Retry the same setup.':
+        'Portfolio creation could not be confirmed. Check your private portfolio library before creating another draft.');
+    }finally{
+      flight.current=false;
+      if(current())setSaving(false);
     }
   }
 
@@ -428,7 +458,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const allowed = useAuthoringViewport();
   const [record, setRecord] = useState<PortfolioRecord | null>(null);
   const [head, setHead] = useState<EditorHead | null>(null);
-  const layoutAppliedHead=useRef<EditorHead|null>(null);
+  const lastAppliedHead=useRef<EditorHead|null>(null);
+  const setupFlight=useRef(false);
+  const setupAttempt=useRef<{id:string;preset:PortfolioPresetId;epoch:number;operation:string}|null>(null);
   const [slot, setSlot] = useState('');
   // Secondary controls preserve malformed user input without silently
   // committing it to the private snapshot or losing it on panel changes.
@@ -451,6 +483,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [componentSearch,setComponentSearch]=useState('');
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
+  const componentDrag=useRef<{head:EditorHead;pin:string}|null>(null);
+  const sectionDrag=useRef<{head:EditorHead;id:string}|null>(null);
+  const [draggingSection,setDraggingSection]=useState<string|null>(null);
   const componentSaveRetry=useRef<ComponentSaveRetryState>({pending:null,inFlight:false});
   const [openedSource, setOpenedSource] = useState(false);
   const [openedAssets,setOpenedAssets]=useState(false);
@@ -464,7 +499,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryExpanded,setRecoveryExpanded]=useState(false);
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
-  const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;
+  const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;cloudRevision:number;format:'json'|'zip';
     changedFiles:string[];changedSlots:string[]}|null>(null);
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
     cloudRevision:number;changedFiles:string[];changedSlots:string[]}|null>(null);
@@ -529,14 +564,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }, [port,id,attempt,allowed,verifiedOwner?.id,verifiedOwner?.epoch,initialLink]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
-    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
+    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current || lastAppliedHead.current===head) return false;
+    const live=latestRecovery.current;
+    if(!live||live.head!==head||live.id!==id||live.port!==port||
+       (verifiedOwner&&!scopeCurrent(live)))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
+    const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
-    if(layoutMutation||themeMutation){
+    if(layoutMutation||themeMutation||sectionOrderMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         layoutAppliedHead.current===head||preview||(layoutMutation?tool!=='Components':tool!=='Theme')){
+         preview||(layoutMutation?tool!=='Components':themeMutation?tool!=='Theme':!canReorderSection())){
         setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
       if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
@@ -548,7 +587,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((layoutMutation||themeMutation||historyMutation) && (pendingFields || sourceDirty))||
+    if (((layoutMutation||themeMutation||historyMutation||sectionOrderMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -557,7 +596,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       return false;
     }
     try {
-      const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, {}, versions ?? {});
+      let trustedSources:Readonly<Record<string,string>>={};
+      if(intent.kind==='CUSTOMIZE_COMPONENT'){
+        const pin=head.snapshot.slots[intent.slotKey]?.componentId;
+        const canonical=pin&&canonicalLibraryComponentSource(pin);
+        if(!pin||!canonical||canonical!==intent.copiedSource||!live.owner||!draftCurrent(live)||
+          preview||tool!=='Content'||pendingFields||sourceDirty){
+          setError('A verified, current pinned source copy is required before customization.');return false;
+        }
+        trustedSources={[pin]:canonical};
+      }
+      const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, trustedSources, versions ?? {});
       if(layoutMutation||historyMutation){
         // Raw buffers have already been proven clean; do not reattach a clean
         // inspector cache to a different assignment after an explicit revision.
@@ -575,9 +624,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
         setSourceReset(value=>value+1);
       }
-      if(layoutMutation||themeMutation)layoutAppliedHead.current=head;
+      lastAppliedHead.current=head;
       setHead(next);
-      setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation?
+      setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation||sectionOrderMutation?
         'Layout transaction applied to the working draft. Save to persist, or use Undo.':themeMutation?
         'Theme transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
       return true;
@@ -616,44 +665,86 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const view=latestRecovery.current;
     if(!view||view.record!==record||view.head!==head||(view.owner&&!scopeCurrent(view)))return;
     const epoch=port.reconcileOwnerSessionEpoch();
+    const currentSave=()=>{
+      const current=latestRecovery.current;
+      return !!current&&current.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
+        (!view.owner||scopeCurrent(view))&&current.record===record&&current.head===head&&current.operation===operation;
+    };
     saveFlight.current=true;
-    setSaving(true); setError(''); setNotice('');
-    try {
-      const result = await port.saveOwnerPortfolio(id, operation, record.revision, head.snapshot);
-      const current=latestRecovery.current;
-      if(!current||current.port!==port||current.id!==id||port.reconcileOwnerSessionEpoch()!==epoch||
-        (view.owner&&!scopeCurrent(view))||current.record!==record||current.head!==head||current.operation!==operation)return;
-      if (!result.data) {
-        setError(result.error?.message ?? 'Draft save could not be confirmed.');
-        if(verifiedOwner)setRecoveryExpanded(true);
-        return;
+    setSaving(true);setError('');setNotice('');
+    try{
+      let confirmed:number|null=null;
+      let failure='Draft save could not be confirmed.';
+      try{
+        const reply=await port.saveOwnerPortfolio(id,operation,record.revision,head.snapshot);
+        if(!currentSave())return;
+        if(reply.data===record.revision+1)confirmed=reply.data;
+        else failure=reply.error?.message??failure;
+      }catch{
+        if(!currentSave())return;
       }
-      setRecord({...record, revision: result.data, snapshot: head.snapshot});
-      setOperation(''); setNotice('Private portfolio draft saved.');
-    } catch {
-      const current=latestRecovery.current;
-      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch){
-        setError('Draft save could not be verified. Your edits remain in this editor.');
+      if(confirmed!==null){
+        setRecord({...record,revision:confirmed,snapshot:head.snapshot});
+        setOperation('');setNotice('Private portfolio draft saved.');return;
+      }
+      // A lost acknowledgement is not a failed commit. Reconcile using an
+      // authenticated exact next-revision read, never a second mutation or
+      // a new operation ID. A same-content concurrent commit is only evidence
+      // that the intended draft is saved, not evidence of our operation ID.
+      try{
+        const fresh=await port.readOwnerPortfolio(id);
+        if(!currentSave())return;
+        if(fresh.data?.id===id&&fresh.data.revision===record.revision+1&&
+           sameDraftSnapshot(fresh.data.snapshot,head.snapshot)){
+          setRecord(fresh.data);setOperation('');
+          setNotice('Saved private revision verified by readback.');return;
+        }
+        if(fresh.data&&fresh.data.id===id&&fresh.data.revision!==record.revision)
+          failure='The saved cloud revision changed. Compare or preserve your working draft before retrying.';
+      }catch{
+        if(!currentSave())return;
+      }
+      if(currentSave()){
+        setError(failure);
         if(verifiedOwner)setRecoveryExpanded(true);
       }
+    }finally{
+      saveFlight.current=false;
+      const current=latestRecovery.current;
+      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
+         (!view.owner||scopeCurrent(view)))setSaving(false);
     }
-    finally {saveFlight.current=false;const current=latestRecovery.current;
-      if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch)setSaving(false);}
   }
 
   async function initialize() {
     const preset = presets.find(item => item.id === record?.templateId);
-    if (!allowed || !record || !preset || saving) return;
-    setSaving(true); setError('');
-    try {
-      const result = await port.initializeOwnerPortfolio(id, crypto.randomUUID(), preset.id);
-      if (result.data) setAttempt(current => current + 1);
-      else setError(result.error?.message ?? 'Draft setup could not be confirmed.');
-    } catch {setError('Draft setup could not be confirmed. Retry safely.');}
-    finally {setSaving(false);}
+    if(!allowed||!record||record.id!==id||!preset||saving||setupFlight.current||head)return;
+    const view=latestRecovery.current;
+    if(!view||view.record!==record||(verifiedOwner&&!scopeCurrent(view)))return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    let pending=setupAttempt.current;
+    if(!pending||pending.id!==id||pending.preset!==preset.id||pending.epoch!==epoch){
+      pending={id,preset:preset.id,epoch,operation:crypto.randomUUID()};
+      setupAttempt.current=pending;
+    }
+    const current=()=>{
+      const live=latestRecovery.current;
+      return !!live&&live.port===port&&live.id===id&&live.record===record&&
+        port.reconcileOwnerSessionEpoch()===epoch&&(!view.owner||scopeCurrent(view));
+    };
+    setupFlight.current=true;setSaving(true);setError('');
+    try{
+      const result=await port.initializeOwnerPortfolio(id,pending.operation,preset.id);
+      if(!current())return;
+      if(typeof result.data==='number'&&Number.isSafeInteger(result.data)&&result.data>0){
+        setupAttempt.current=null;setAttempt(value=>value+1);
+      }else setError(result.error?.message??'Draft setup could not be confirmed. Retry the same setup.');
+    }catch{if(current())setError('Draft setup could not be confirmed. Retry the same setup.');}
+    finally{setupFlight.current=false;if(current())setSaving(false);}
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
+  const canonicalSource=active?.state==='S0'&&active.componentId?canonicalLibraryComponentSource(active.componentId):undefined;
   // Every inspector field, including the primary textarea, uses a per-slot
   // buffer. Selecting another slot cannot silently discard typed content.
   const primaryInputKey = slot && active ? slot + ':' + primaryField(active.componentId) : '';
@@ -669,6 +760,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const selectedLayoutSectionId=selectedLayoutSections.length===1?selectedLayoutSections[0]!.id:'';
   const compatible=compatibleComponentsForSlot(slot);
   const chosenComponent=compatible.find(item=>item.id===pickedComponent)??compatible[0];
+  const targetPin=insertableComponentPins.find(item=>item.id===pickedComponent)??chosenComponent;
+  const emptyComponentTargets=layerGroups.flatMap(group=>group.slots.filter(item=>item.state==='EMPTY')
+    .map(item=>({key:item.key,label:group.title+' · '+item.name})));
   const categoryFor=(id:string):'Text'|'Links'|'Work'=>
     id==='external-link@1'?'Links':
     id==='project-card@1'||id==='skills-list@1'||id==='author-metric@1'?'Work':'Text';
@@ -716,6 +810,38 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const parent=key.slice(0,pivot),field=key.slice(pivot+1);
     return (head?.snapshot.slots[parent]?.content[field]??'')!==draft;
   }) || seoPending;
+  function canPlaceComponent(pin:string,target:string):boolean{
+    return !!head&&!!verifiedOwner&&allowed&&!preview&&tool==='Components'&&!saving&&!recoveryBusy&&
+      !pendingFields&&!sourceDirty&&head.snapshot.slots[target]?.state==='EMPTY'&&
+      emptyComponentTargets.filter(item=>item.key===target).length===1&&
+      compatibleComponentsForSlot(target).some(item=>item.id===pin);
+  }
+  function placeComponent(pin:string,target:string):boolean{
+    const view=latestRecovery.current;
+    if(!view||!head||view.head!==head||!draftCurrent(view)||!canPlaceComponent(pin,target))return false;
+    if(!apply({kind:'ASSIGN_COMPONENT',slotKey:target,componentId:pin}))return false;
+    setSlot(target);setTool('Content');return true;
+  }
+  function canReorderSection():boolean{
+    return !!head&&!!verifiedOwner&&allowed&&!preview&&!['Components','Source','Assets','History'].includes(tool)&&
+      !saving&&!recoveryBusy&&!pendingFields&&!sourceDirty&&layerGroups.length>1;
+  }
+  function sectionDropAllowed(sectionId:string,beforeSectionId:string|null):boolean{
+    if(!canReorderSection()||sectionId===beforeSectionId)return false;
+    const ids=layerGroups.map(group=>group.id);
+    if(new Set(ids).size!==ids.length||!ids.includes(sectionId))return false;
+    const next=ids.filter(id=>id!==sectionId);
+    const to=beforeSectionId===null?next.length:next.indexOf(beforeSectionId);
+    if(to<0)return false;
+    next.splice(to,0,sectionId);
+    return next.some((id,index)=>id!==ids[index]);
+  }
+  function moveSectionBefore(beforeSectionId:string|null):boolean{
+    const drag=sectionDrag.current;sectionDrag.current=null;setDraggingSection(null);
+    const view=latestRecovery.current;
+    if(!head||!drag||drag.head!==head||!view||!draftCurrent(view)||!sectionDropAllowed(drag.id,beforeSectionId))return false;
+    return apply({kind:'MOVE_SECTION_BEFORE',sectionId:drag.id,beforeSectionId,expectedRevision:head.revision});
+  }
   // Local storage is not an identity authority. Gate context is mandatory.
   type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
     record:PortfolioRecord|null;head:EditorHead|null;operation:string;fieldDrafts:Record<string,string>;
@@ -898,7 +1024,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'||(action==='open'&&stale)||view.dirty){
         const paths=new Set([...Object.keys(saved.files),...Object.keys(recovered.snapshot.files)]);
         const changedFiles=[...paths].filter(path=>saved.files[path]!==recovered.snapshot.files[path]).sort();
-        const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots)]);
+        const keys=new Set([...Object.keys(saved.slots),...Object.keys(recovered.snapshot.slots),
+          ...Object.keys(saved.stashes),...Object.keys(recovered.snapshot.stashes)]);
         const stable=(value:unknown)=>JSON.stringify(value,(_key,v:unknown)=>
           v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
         const changedSlots=[...keys].filter(key=>stable(saved.slots[key])!==stable(recovered.snapshot.slots[key])||
@@ -1002,7 +1129,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const fresh=await view.port.readOwnerPortfolio(view.id);
       if(!draftCurrent(view))return;
       if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
-         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+         !sameDraftSnapshot(fresh.data.snapshot,view.record.snapshot)){
         setFolderComparison(null);setFolderNotice('Current cloud revision could not be verified or has changed. Reload the saved draft before comparing a folder.');return;
       }
       const recovered=await store.load();
@@ -1014,7 +1141,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setFolderNotice('Compared the verified folder snapshot with the current cloud draft. Both remain separate.');return;
       }
       if(!previewed||previewed.cloudRevision!==fresh.data.revision||
-        JSON.stringify(previewed.folderHead)!==JSON.stringify(recovered)){
+        stableDraftValue(previewed.folderHead)!==stableDraftValue(recovered)){
         setFolderComparison(null);setFolderNotice('Folder or cloud version changed after comparison. Compare again; no draft was replaced.');return;
       }
       if(!window.confirm('Restore the compared folder snapshot as an unsaved working draft? The folder and currently saved cloud revision remain separate. Review private asset references before a separate Save.'))return;
@@ -1036,7 +1163,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       }
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
-  async function portableOperation(action:'export'|'compare'|'restore',file?:File){
+  async function portableOperation(action:'export'|'compare'|'restore',file?:File,format:'json'|'zip'='json'){
     const view=captureRecovery(),previewed=portableComparison;
     if(!view||!view.head||!view.record||recoveryLock.current||pendingFields||sourceDirty||
       (action!=='export'&&view.dirty))return;
@@ -1045,33 +1172,48 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if(action==='compare')setPortableComparison(null);
     try{
       if(action==='export'){
-        const data=exportPortableSnapshot(view.head.snapshot);
+        let data:Blob;
+        if(format==='zip'){
+          const {exportPortfolioSourceZip,importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+          if(!draftCurrent(view))return;
+          const archive=exportPortfolioSourceZip(view.head.snapshot);
+          if(!sameDraftSnapshot(importPortfolioSourceZip(archive),view.head.snapshot))throw new Error('Source ZIP round-trip failed.');
+          data=new Blob([new Uint8Array(archive).buffer],{type:'application/zip'});
+        }else data=new Blob([exportPortableSnapshot(view.head.snapshot)],{type:'application/json'});
         if(!draftCurrent(view))return;
-        const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+        const url=URL.createObjectURL(data);
         const link=document.createElement('a');
-        link.href=url;link.download='kadmeion-private-project-'+view.id+'.json';
+        link.href=url;link.download='kadmeion-private-project-'+view.id+'.'+format;
         try{document.body.append(link);link.click();}
         finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
         setPortableNotice('Private snapshot download requested. No cloud save or media-file export occurred.');return;
       }
-      if(action==='compare'&&(!file||file.size<1||file.size>1024*1024)){
-        setPortableNotice('Choose a Kadmeion private project JSON file within 1 MiB. Nothing was imported.');return;
+      const sizeLimit=(format==='zip'?2:1)*1024*1024;
+      if(action==='compare'&&(!file||file.size<1||file.size>sizeLimit)){
+        setPortableNotice(format==='zip'?'Choose an editable Kadmeion source ZIP within 2 MiB. Nothing was imported.':
+          'Choose a Kadmeion private project JSON file within 1 MiB. Nothing was imported.');return;
       }
       const fresh=await view.port.readOwnerPortfolio(view.id);
       if(!draftCurrent(view))return;
       if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
-         JSON.stringify(fresh.data.snapshot)!==JSON.stringify(view.record.snapshot)){
+         !sameDraftSnapshot(fresh.data.snapshot,view.record.snapshot)){
         setPortableComparison(null);setPortableNotice('Current cloud revision changed or could not be verified. Reload the saved draft and compare again.');return;
       }
       if(action==='compare'){
         const bytes=await file!.arrayBuffer();
         if(!draftCurrent(view))return;
-        if(bytes.byteLength<1||bytes.byteLength>1024*1024)throw new Error('Invalid snapshot byte length.');
-        const source=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
-        const snapshot=importPortableSnapshot(source);
-        setPortableComparison({snapshot,cloudRevision:fresh.data.revision,
+        if(bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid snapshot byte length.');
+        let snapshot:PortfolioSnapshot;
+        if(format==='zip'){
+          const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
+          if(!draftCurrent(view))return;
+          snapshot=importPortfolioSourceZip(new Uint8Array(bytes));
+        }else snapshot=importPortableSnapshot(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes));
+        if(!draftCurrent(view))return;
+        setPortableComparison({snapshot,format,cloudRevision:fresh.data.revision,
           ...portableDifference(fresh.data.snapshot,snapshot)});
-        setPortableNotice('Private project JSON parsed and compared. This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
+        setPortableNotice((format==='zip'?'Private source ZIP verified and compared.':'Private project JSON parsed and compared.')+
+          ' This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
       }
       if(!previewed||previewed.cloudRevision!==fresh.data.revision){
         setPortableComparison(null);setPortableNotice('Cloud version changed after comparison. Compare again; no draft was replaced.');return;
@@ -1085,7 +1227,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       setSourceReset(value=>value+1);setPortableComparison(null);
       setPortableNotice('Imported as an unsaved draft. Undo is available. No cloud save, media-byte verification or source execution occurred.');
     }catch{
-      if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON; your draft remains intact.');}
+      if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON or editable source ZIP; your draft remains intact.');}
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   function exportWorkingRecovery(){
@@ -1159,9 +1301,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
   },[operation,pendingFields,sourceDirty]);
-  // Width reporting is an additive S7 canvas prop. Keep the worker delta
-  // compatible with the previous panel until S15 composes the exact peers.
-  const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth};
+  // Additive S7 props: never create a private-byte context for a simulated
+  // visitor, an unverified owner, or a device that cannot author.
+  const canvasOwner=verifiedOwner&&allowed&&!preview&&record?.id===id&&
+    port.getOwnerSessionEpoch()===verifiedOwner.epoch?
+    {port,ownerKey:JSON.stringify([verifiedOwner.id,verifiedOwner.epoch,id])}:undefined;
+  const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth,privateMedia:canvasOwner,
+    onAddFirstSection:canvasOwner&&!saving&&!recoveryBusy?()=>{
+      const view=latestRecovery.current;
+      if(!view||!draftCurrent(view)||view.preview)return;
+      setTool('Content');setSectionPicker(true);
+    }:undefined};
   const themeControls={contentWidth:measuredCanvasWidth,disabled:!allowed||!verifiedOwner||preview||saving||recoveryBusy||pendingFields||sourceDirty};
   const contentPreview = <PortfolioCanvas {...canvasMeasurement} snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
@@ -1285,7 +1435,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     </details>}
     {verifiedOwner&&record&&head&&<details className="ws-editor-safety">
       <summary>Private project JSON import &amp; export</summary>
-      <p>Portable applied snapshot only (1 MiB maximum). This is not an editable ZIP, a media backup, a published page or a browser recovery file with raw buffers. Authored source and text may contain sensitive information.</p>
+      <p>Portable applied snapshots: private JSON up to 1 MiB or editable Kadmeion source ZIP up to 2 MiB. Neither includes media bytes, public pages, cloud history or unapplied buffers. Authored source and text may contain sensitive information.</p>
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
@@ -1295,6 +1445,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
               if(file)void portableOperation('compare',file);}}/>
         </label>
+        <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>void portableOperation('export',undefined,'zip')}>Export editable source ZIP</button>
+        <label>Compare editable source ZIP
+          <input type="file" accept=".zip,application/zip" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+            onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
+              if(file)void portableOperation('compare',file,'zip');}}/>
+        </label>
       </div>
       {portableNotice&&<p role="status">{portableNotice}</p>}
       {portableComparison&&<div aria-label="Portable snapshot comparison">
@@ -1303,8 +1461,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         <details><summary>Different slots or stashes</summary><ul>{portableComparison.changedSlots.map(key=><li key={key}>{key}</li>)}</ul></details>
         <div className="ws-actions">
           <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
-            onClick={()=>void portableOperation('restore')}>Restore compared JSON as unsaved draft</button>
-          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setPortableComparison(null)}>Close JSON comparison</button>
+            onClick={()=>void portableOperation('restore')}>{portableComparison.format==='zip'?'Restore compared ZIP as unsaved draft':'Restore compared JSON as unsaved draft'}</button>
+          <button type="button" className="ws-secondary" disabled={recoveryBusy} onClick={()=>setPortableComparison(null)}>{portableComparison.format==='zip'?'Close ZIP comparison':'Close JSON comparison'}</button>
         </div>
       </div>}
     </details>}
@@ -1349,15 +1507,48 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
            item.id.toLowerCase().includes(componentSearch.trim().toLowerCase()))
         ).map(item=>{
           const fit=compatible.some(candidate=>candidate.id===item.id);
-          return <li key={item.id}><button type="button" aria-pressed={chosenComponent?.id===item.id&&fit}
-            disabled={!active||!fit||saving||recoveryBusy}
+          const hasTarget=emptyComponentTargets.some(target=>canPlaceComponent(item.id,target.key));
+          return <li key={item.id}><button type="button" aria-pressed={targetPin?.id===item.id}
+            disabled={(!fit&&!hasTarget)||saving||recoveryBusy}
+            draggable={hasTarget}
+            onDragStart={event=>{
+              const view=latestRecovery.current;
+              if(!hasTarget||!head||!view||!draftCurrent(view)){event.preventDefault();return;}
+              componentDrag.current={head,pin:item.id};
+              event.dataTransfer.effectAllowed='copy';
+              event.dataTransfer.setData('application/x-kadmeion-component','pinned');
+              setPickedComponent(item.id);
+            }}
+            onDragEnd={()=>{componentDrag.current=null;}}
             onClick={()=>setPickedComponent(item.id)}>
             <strong>{item.label}</strong>
             <small>{item.id}</small>
-            <span>{fit?'Compatible with selected slot':'Choose another slot'}</span>
+            <span>{fit?'Compatible with selected slot':hasTarget?'Compatible empty targets available':'Choose another slot'}</span>
           </button></li>;
         })}</ul>
-        {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before adding or replacing components.</p>}
+        {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before replacing components.</p>}
+        {targetPin&&<section aria-label="Compatible empty component targets">
+          <h3>Place {targetPin.label}</h3>
+          <p>Drag the selected component to a compatible empty target below, or use its Add button. Existing assignments are never replaced by dropping.</p>
+          {emptyComponentTargets.filter(target=>compatibleComponentsForSlot(target.key).some(item=>item.id===targetPin.id)).length===0?
+            <p>No compatible empty slots. Add a section or clear an assignment deliberately.</p>:
+            <ul className="ws-editor-slots">{emptyComponentTargets.filter(target=>
+              compatibleComponentsForSlot(target.key).some(item=>item.id===targetPin.id)).map(target=><li key={target.key}
+                onDragOver={event=>{
+                  const drag=componentDrag.current;
+                  if(drag?.head===head&&canPlaceComponent(drag.pin,target.key)){
+                    event.preventDefault();event.dataTransfer.dropEffect='copy';
+                  }
+                }}
+                onDrop={event=>{
+                  const drag=componentDrag.current;componentDrag.current=null;
+                  if(!drag||drag.head!==head||!canPlaceComponent(drag.pin,target.key))return;
+                  event.preventDefault();placeComponent(drag.pin,target.key);
+                }}>
+                <button type="button" disabled={!canPlaceComponent(targetPin.id,target.key)}
+                  onClick={()=>placeComponent(targetPin.id,target.key)}>Add {targetPin.label} to {target.label}</button>
+              </li>)}</ul>}
+        </section>}
         <button type="button" className="ws-secondary" onClick={()=>setTool('Content')}>Return to layers</button>
         <LayoutTools head={head} sectionId={selectedLayoutSectionId}
           blocked={!verifiedOwner||!allowed||saving||recoveryBusy||pendingFields||sourceDirty}
@@ -1373,10 +1564,31 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <button type="button" className="ws-secondary" disabled={saving}
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
-        <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}>
+        <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}
+          onDragOver={event=>{
+            const drag=sectionDrag.current;
+            if(drag&&drag.head===head&&sectionDropAllowed(drag.id,group.id)){
+              event.preventDefault();event.dataTransfer.dropEffect='move';
+            }
+          }}
+          onDrop={event=>{
+            const drag=sectionDrag.current;
+            if(!drag||drag.head!==head||!sectionDropAllowed(drag.id,group.id))return;
+            event.preventDefault();moveSectionBefore(group.id);
+          }}>
           <div className="ws-editor-layer-reorder">
             <span>Section {index+1} / {layerGroups.length}</span>
             <div role="group" aria-label={'Reorder '+group.title}>
+              <button type="button" className="ws-editor-reorder-action" draggable={canReorderSection()}
+                disabled={!canReorderSection()} aria-label={'Drag '+group.title+' to reorder; use Up and Down for keyboard'}
+                onDragStart={event=>{
+                  const view=latestRecovery.current;
+                  if(!head||!view||!canReorderSection()||!draftCurrent(view)){event.preventDefault();return;}
+                  sectionDrag.current={head,id:group.id};setDraggingSection(group.id);
+                  event.dataTransfer.effectAllowed='move';
+                  event.dataTransfer.setData('application/x-kadmeion-section','section');
+                }}
+                onDragEnd={()=>{sectionDrag.current=null;setDraggingSection(null);}}>Drag</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' up'}
                 disabled={index===0||saving} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' down'}
@@ -1401,7 +1613,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
               <span className="ws-editor-layer-state">{state}</span>
             </button>
           </li>;})}</ul></details>
-        </li>)}</ol>
+        </li>)}{draggingSection&&sectionDropAllowed(draggingSection,null)&&<li
+          onDragOver={event=>{if(sectionDrag.current?.head===head){event.preventDefault();event.dataTransfer.dropEffect='move';}}}
+          onDrop={event=>{event.preventDefault();moveSectionBefore(null);}}>
+          <span>Drop here to move the section to the end</span>
+        </li>}</ol>
         </>}
       </aside>
       {contentPreview}
@@ -1470,6 +1686,19 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         {active && <><p>{active.componentId ?? 'Empty slot'}</p>
           {active.state!=='EMPTY'&&active.componentId!=='image@1'&&<button type="button" className="ws-secondary"
             disabled={saving||recoveryBusy} onClick={()=>setTool('Components')}>Review compatible replacements</button>}
+          {canonicalSource&&<div className="ws-editor-tool">
+            <h3>Customize source</h3>
+            <p>Copy this pinned block's canonical React reference source into your private owned files. The library remains unchanged. The author canvas does not execute custom code.</p>
+            <button type="button" className="ws-secondary" disabled={!verifiedOwner||saving||recoveryBusy||pendingFields||sourceDirty}
+              onClick={()=>{
+                if(!window.confirm('Create a private editable source copy of this pinned component? Its custom source will not execute or be publicly released. Undo is available.'))return;
+                if(apply({kind:'CUSTOMIZE_COMPONENT',slotKey:slot,copiedSource:canonicalSource})){
+                  setOpenedSource(true);setSourceReset(value=>value+1);setTool('Source');
+                }
+              }}>Create owned source copy</button>
+          </div>}
+          {(active.state==='S1'||active.state==='S2')&&<button type="button" className="ws-secondary"
+            disabled={saving||recoveryBusy} onClick={()=>{setOpenedSource(true);setTool('Source');}}>Edit owned source</button>}
           {canPlacePrivateImage(head.snapshot,slot)&&<div className="ws-editor-tool">
             {active.componentId==='image@1'&&<p>Private image reference · {active.content.alt_text||'No alt text'}.
               {active.content.source_sha256?' Stored pin; release verification required.':' Metadata only; release blocked until trusted byte attestation.'}</p>}

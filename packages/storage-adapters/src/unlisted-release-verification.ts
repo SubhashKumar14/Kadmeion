@@ -62,8 +62,8 @@ function safeCacheHeaders(headers:Headers):boolean {
     const directives=cacheTokens(value);
     return directives.includes('no-store')&&!directives.includes('public')&&
       !directives.includes('immutable')&&
-      directives.every(part=>!/^(?:s?max-age|stale-while-revalidate|stale-if-error)\b/.test(part)||
-        /^(?:s?max-age|stale-while-revalidate|stale-if-error)\s*=\s*(?:0+|"0+")$/.test(part));
+      directives.every(part=>!/^(?:max-age|s-maxage|s-max-age|stale-while-revalidate|stale-if-error)\b/.test(part)||
+        /^(?:max-age|s-maxage|s-max-age|stale-while-revalidate|stale-if-error)\s*=\s*(?:0+|"0+")$/.test(part));
   });
 }
 
@@ -203,13 +203,13 @@ async function readBounded(response:Response,limit:number,signal:AbortSignal):Pr
   const stop=()=>cancelQuietly(reader);
   signal.addEventListener('abort',stop,{once:true});
   const chunks:Uint8Array[]=[];
-  let size=0,empty=0;
+  let size=0,empty=0,count=0;
   try{
     for(;;){
       const chunk=await reader.read();
       if(signal.aborted)return null;
       if(chunk.done)break;
-      if(!(chunk.value instanceof Uint8Array))return null;
+      if(!(chunk.value instanceof Uint8Array)||++count>65_536)return null;
       if(chunk.value.byteLength===0){
         if(++empty>=16)return null;
         continue;

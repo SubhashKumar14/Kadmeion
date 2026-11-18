@@ -1,10 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent, Dispatch, SetStateAction } from 'react';
+import type { CSSProperties, DragEvent, KeyboardEvent, Dispatch, SetStateAction } from 'react';
 import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
-import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
+import type { OwnerPrivateAssetRead, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import { matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, resolveScopedThemeBase, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
+import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
+import { canAssignCompatibleComponent, matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, resolveScopedThemeBase, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
   '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>) => boolean;
@@ -47,6 +48,13 @@ function readTheme(snapshot: PortfolioSnapshot | null | undefined): PortfolioThe
 
 type CanvasSection={id:string;layout:string;renderId:string;slots:string[]};
 const TEXT_FIELDS=['title','text','label','description','value','items','note'] as const;
+const CANVAS_PRESETS=['arc','collage','editorial','stairs','studio','blank'] as const;
+function canvasPreset(snapshot:PortfolioSnapshot|null|undefined):string|null{
+  try{
+    const preset=objectRecord(JSON.parse(snapshot?.files['kadmeion.json']??'null'))?.preset;
+    return typeof preset==='string'&&CANVAS_PRESETS.some(id=>id===preset)?preset:null;
+  }catch{return null;}
+}
 /** Layout illustration only, not a saved author value and never emitted by fullscreen
  * preview or any delivery adapter. Actual user content always takes precedence. */
 function layoutExample(renderId:string,name:string):string|null {
@@ -83,35 +91,99 @@ function canvasSections(snapshot:PortfolioSnapshot|null|undefined):CanvasSection
     return sections;
   }catch{return [];}
 }
-/** Source bytes never execute in the app. This is only an escaped React text projection. */
-function slotDisplay(slot:PortfolioSnapshot['slots'][string]|undefined):string {
-  if(!slot||slot.state==='EMPTY')return '';
-  for(const key of TEXT_FIELDS){
-    const text=slot.content[key];
-    if(typeof text==='string'&&text.trim())return text;
+/** Project trusted component fields, not arbitrary source. React escapes every
+ * authored string. Partial values remain private draft content, not preflight proof. */
+function canvasText(value:unknown,max:number):string{
+  return typeof value==='string'&&value.trim()&&value.length<=max&&!/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)?value.trim():'';
+}
+function canvasLink(value:unknown):string|null{
+  if(typeof value!=='string'||!value.trim())return null;
+  try{return normalizeExternalHttpsUrl(value);}catch{return null;}
+}
+function slotProjection(slot:PortfolioSnapshot['slots'][string]|undefined):{parts:string[];href:string|null}{
+  const empty={parts:[],href:null};
+  if(!slot||slot.state==='EMPTY')return empty;
+  const c=slot.content;
+  const output=(parts:string[],href:string|null=null)=>({parts:parts.filter(Boolean),href});
+  if(slot.state!=='S0'){
+    for(const key of TEXT_FIELDS){
+      const text=canvasText(c[key],12000);
+      if(text)return output([text]);
+    }
+    return empty;
   }
-  return '';
+  switch(slot.componentId){
+    case 'title-stacked@1':return output([canvasText(c.title,160),canvasText(c.subtitle,500)]);
+    case 'body-copy@1':return output([canvasText(c.text,12000)]);
+    case 'external-link@1':return output([canvasText(c.label,160)],canvasLink(c.url));
+    case 'project-card@1':return output([canvasText(c.title,160),canvasText(c.summary,1000)],canvasLink(c.url));
+    case 'technology-tag@1':return output([canvasText(c.text,80)]);
+    case 'author-metric@1':return output([canvasText(c.label,120),canvasText(c.value,80)]);
+    case 'skills-list@1':case 'experience-list@1':{
+      try{
+        const items:unknown=JSON.parse(c.items??'null');
+        if(!Array.isArray(items)||items.length>24||items.some(item=>!canvasText(item,200)))return empty;
+        return output(items.map(item=>canvasText(item,200)));
+      }catch{return empty;}
+    }
+    default:return empty;
+  }
 }
 
-const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing,themeNode}:{
+/** Parent supplies guards over its actual internal drag refs and working head.
+ * The canvas never interprets DataTransfer or turns external strings into commands. */
+export type PrivateCanvasDropTargets=Readonly<{
+  canDropComponent:(key:string)=>boolean;dropComponent:(key:string)=>boolean;
+  canDropSection:(beforeSectionId:string|null)=>boolean;dropSection:(beforeSectionId:string|null)=>boolean;
+}>;
+const DROP_OUTLINE:CSSProperties={outline:'2px dashed currentColor',outlineOffset:'2px'};
+function useDropOutline(){
+  const [highlighted,setHighlighted]=useState<string|null>(null);
+  useEffect(()=>{
+    if(highlighted===null)return;
+    const clear=()=>setHighlighted(null);
+    window.addEventListener('dragend',clear);window.addEventListener('drop',clear);
+    return()=>{window.removeEventListener('dragend',clear);window.removeEventListener('drop',clear);};
+  },[highlighted]);
+  return {highlighted,setHighlighted};
+}
+const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onSelectSlot,showMissing,themeNode,privateImage,dropTargets}:{
     themeNode?:(section:CanvasSection,name:string)=>string|undefined;
+    privateImage?:{slotKey:string;url:string;onError:()=>void};dropTargets?:PrivateCanvasDropTargets;
     section:CanvasSection;name:string;kind?:'title'|'copy'|'action'|'media'|'tag';snapshot:PortfolioSnapshot|null|undefined;editing:boolean;selectedSlot?:string;onSelectSlot?:(key:string)=>void;showMissing:boolean;
   })=>{
     const key=section.id+'-'+name.toLowerCase();
+    const {highlighted,setHighlighted}=useDropOutline();
     const assignment=snapshot?.slots[key];
-    const text=slotDisplay(assignment);
+    const projection=slotProjection(assignment);
+    const text=projection.parts[0]??'';
+    const renderedText=projection.parts.length>1?<>{projection.parts.map((part,index)=><span key={index} className="pv-slot-part" style={{display:'block'}}>{part}</span>)}</>:text;
     const imageReference=assignment?.state==='S0'&&assignment.componentId==='image@1'&&!!assignment.content.asset_id;
     const imageLabel=imageReference?'Private image reference — '+(assignment.content.alt_text||'Alt text missing'):'';
+    const localImage=editing&&imageReference&&privateImage?.slotKey===key?privateImage:undefined;
     const label=SLOT_TITLES[name.toLowerCase()]??name;
-    const example=editing&&!text?layoutExample(section.renderId,name):null;
+    const example=editing&&!text&&(!assignment||assignment.state==='EMPTY'||Object.keys(assignment.content).length===0)?layoutExample(section.renderId,name):null;
     const visibleLabel=imageLabel||text|| (kind==='media' ? '' : example??('Add '+label));
     const node=(!assignment||assignment.state==='EMPTY'||assignment.state==='S0')?themeNode?.(section,name):undefined;
     const className='pv-slot pv-slot-'+kind+(text?' pv-filled':' pv-unfilled')+
       (selectedSlot===key?' pv-selected':'');
     if(editing)return <button className={className} data-k-theme-node={node} type="button"
+      data-drop-fit={highlighted===key?'compatible':undefined} style={highlighted===key?DROP_OUTLINE:undefined}
+      onDragOver={event=>{
+        if(assignment?.state==='EMPTY'&&dropTargets?.canDropComponent(key)){
+          event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy';setHighlighted(key);
+        }else setHighlighted(null);
+      }}
+      onDragLeave={()=>setHighlighted(null)}
+      onDrop={event=>{
+        setHighlighted(null);
+        if(assignment?.state!=='EMPTY'||!dropTargets?.canDropComponent(key))return;
+        event.preventDefault();event.stopPropagation();dropTargets.dropComponent(key);
+      }}
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
-      {imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:text||(
+      {localImage?<img src={localImage.url} alt={assignment?.content.alt_text??''} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
+      imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:renderedText||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
         example?<span className="pv-placeholder pv-layout-example">{example}</span>:
         <span className="pv-placeholder">Add {label}</span>
@@ -119,7 +191,13 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     </button>;
     // Reference labels are author-only, never fabricated visitor imagery.
     if(imageReference)return showMissing?<span className={className} data-k-theme-node={node}>{imageLabel} · Preview bytes unavailable</span>:null;
-    return text?<span className={className} data-k-theme-node={node}>{text}</span>:
+    // Nonediting previews can follow only explicitly authored, validated HTTPS links.
+    // Never place a nested interactive link inside an editing slot button.
+    if(text&&assignment?.state==='S0'&&assignment.componentId==='external-link@1'&&projection.href)
+      return <a className={className} data-k-theme-node={node} href={projection.href} target="_blank" rel="nofollow noopener noreferrer">{renderedText}</a>;
+    return text?<span className={className} data-k-theme-node={node}>{renderedText}
+      {assignment?.state==='S0'&&assignment.componentId==='project-card@1'&&projection.href&&
+        <a href={projection.href} target="_blank" rel="nofollow noopener noreferrer">View project</a>}</span>:
       !showMissing?null:<span className={className} data-k-theme-node={node} aria-hidden="true">Not added: {label}</span>;
   };
 
@@ -168,7 +246,7 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
       declarations.push(selector+'{'+vars.concat(properties,'--portfolio-surface:var(--k-theme-surface)').join(';')+'}');
       if(node==='root'||!slotKey)declarations.push(selector+'{border-color:var(--k-theme-accent)}');
       if(slotKey){
-        declarations.push(selector+'.pv-slot-action{color:var(--k-theme-accent);border-color:var(--k-theme-accent)}');
+        declarations.push(selector+'.pv-slot-action{color:var(--k-theme-accent);border-color:var(--k-theme-accent)}',selector+' a{color:var(--k-theme-accent)}');
         const typography=['--k-theme-font-size','--k-theme-line-height','--k-theme-font-weight']
           .filter(key=>Object.hasOwn(values,key)).map(key=>propertyMap[key]+':var('+key+')');
         if(typography.length)declarations.push(selector+' :is(span,strong,small,a){'+typography.join(';')+'}');
@@ -187,10 +265,73 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
   return base+responsive.join('');
 }
 
-export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll,onContentWidth}: {
+/** This context must come from the verified editor gate, never visitor simulation.
+ * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
+export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
+type CanvasMediaView={key:string|null;status:'idle'|'pending'|'failed'}|{key:string;status:'ready';url:string;pinned:boolean};
+function validOwnerPreview(asset:AssetPreviewRecord,data:OwnerPrivateAssetRead|null|undefined,expectedDigest?:string):data is OwnerPrivateAssetRead{
+  return !!data&&data.asset.id===asset.id&&data.asset.projectId===asset.projectId&&
+    data.asset.mime===asset.mime&&data.asset.size===asset.size&&data.bytes.size===asset.size&&
+    data.bytes.type.toLowerCase()===asset.mime.toLowerCase()&&
+    data.integrity.status==='OWNER_BYTES_VERIFIED'&&/^[a-f0-9]{64}$/.test(data.integrity.computedSha256)&&
+    (expectedDigest===undefined||(/^[a-f0-9]{64}$/.test(expectedDigest)&&data.integrity.computedSha256===expectedDigest))&&
+    data.publicDeliveryAllowed===false&&['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation);
+}
+/** The selected slot alone may request actual private bytes. No per-slot
+ * fan-out, public URLs, digest promotion, or network access in visitor mode. */
+function useSelectedCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:PortfolioSnapshot|null|undefined,
+  sections:CanvasSection[],slotKey:string|undefined,editing:boolean){
+  const assignment=editing&&slotKey&&sections.some(section=>section.slots.some(name=>section.id+'-'+name.toLowerCase()===slotKey))
+    ?snapshot?.slots[slotKey]:undefined;
+  const assetId=assignment?.state==='S0'&&assignment.componentId==='image@1'?assignment.content.asset_id:undefined;
+  const expectedDigest=assignment?.content.source_sha256;
+  const port=context?.port;
+  const key=editing&&port&&context?.ownerKey&&slotKey&&assetId?
+    JSON.stringify([context.ownerKey,slotKey,assetId,expectedDigest??null]):null;
+  const [view,setView]=useState<CanvasMediaView>({key:null,status:'idle'});
+  const generation=useRef(0),flight=useRef(false),activeUrl=useRef<string|null>(null);
+  const boundEpoch=useRef<number|null>(null);
+  function release(){if(activeUrl.current){URL.revokeObjectURL(activeUrl.current);activeUrl.current=null;}}
+  useLayoutEffect(()=>{
+    ++generation.current;flight.current=false;release();setView({key,status:'idle'});
+    boundEpoch.current=port&&key?port.reconcileOwnerSessionEpoch():null;
+    const unsubscribe=port&&key?port.subscribeOwnerSessionEpoch(()=>{
+      boundEpoch.current=null;++generation.current;flight.current=false;release();setView({key,status:'failed'});
+    }):undefined;
+    return()=>{unsubscribe?.();boundEpoch.current=null;++generation.current;flight.current=false;release();};
+  },[port,key]);
+  const current=view.key===key?view:{key,status:'idle'} as const;
+  function close(){++generation.current;flight.current=false;release();setView({key,status:'idle'});}
+  function fail(){++generation.current;flight.current=false;release();setView({key,status:'failed'});}
+  async function load(){
+    if(!port||!key||!assetId||flight.current)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(boundEpoch.current!==epoch)return;
+    const started=++generation.current;
+    const live=()=>generation.current===started&&boundEpoch.current===epoch&&port.reconcileOwnerSessionEpoch()===epoch;
+    flight.current=true;release();setView({key,status:'pending'});
+    try{
+      const list=await port.listOwnerAssets();
+      if(!live())return;
+      const asset=list.data?.find(row=>row.id===assetId);
+      if(list.error||!asset){setView({key,status:'failed'});return;}
+      const response=await port.readOwnerPrivateAsset(asset.projectId,asset.id,epoch);
+      if(!live())return;
+      if(response.error||!validOwnerPreview(asset,response.data,expectedDigest)){setView({key,status:'failed'});return;}
+      const url=URL.createObjectURL(response.data.bytes);
+      activeUrl.current=url;setView({key,status:'ready',url,pinned:response.data.serverAttestation==='SERVER_HASH_PINNED'});
+    }catch{if(live())setView({key,status:'failed'});}
+    finally{if(generation.current===started)flight.current=false;}
+  }
+  const image=key&&slotKey&&current.status==='ready'?{slotKey,url:current.url,onError:fail}:undefined;
+  return {available:!!key,status:current.status,pinned:current.status==='ready'&&current.pinned,image,load,close};
+}
+
+export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll,onContentWidth,privateMedia,onAddFirstSection,dropTargets}: {
   snapshot: PortfolioSnapshot | null | undefined; title: string; standalone?: boolean;
   simulation?:boolean; width?: number; keyboardScroll?:boolean;onContentWidth?:(width:number|null)=>void;
   selectedSlot?:string; onSelectSlot?:(key:string)=>void;
+  privateMedia?:PrivateCanvasMediaContext;onAddFirstSection?:()=>void;dropTargets?:PrivateCanvasDropTargets;
 }) {
   const theme=readTheme(snapshot);
   const style:CSSProperties & {'--portfolio-surface': string}={
@@ -199,6 +340,7 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
     borderTopColor:theme.accent,maxWidth:width
   };
   const sections=useMemo(()=>canvasSections(snapshot),[snapshot]);
+  const blank=canvasPreset(snapshot)==='blank'&&sections.length===0;
   const instance=useId().replace(/[^a-zA-Z0-9_-]/g,'');
   const measured=useRef<HTMLDivElement>(null);
   const parsed=useMemo(()=>snapshot?parseScopedTheme(snapshot):null,[snapshot]);
@@ -217,18 +359,37 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   },[scoped,onContentWidth]);
   const themeNode=(section:CanvasSection,name:string)=>scoped?'s'+sections.indexOf(section)+'c'+section.slots.indexOf(name):undefined;
   const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
-  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation,themeNode};
+  const media=useSelectedCanvasMedia(privateMedia,snapshot,sections,selectedSlot,editing);
+  const liveDrops=editing&&privateMedia?dropTargets:undefined;
+  const {highlighted:sectionHighlight,setHighlighted:setSectionHighlight}=useDropOutline();
+  function sectionDragOver(event:DragEvent<HTMLElement>,before:string|null){
+    if(!liveDrops?.canDropSection(before)){setSectionHighlight(null);return;}
+    event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='move';
+    setSectionHighlight(before??'__end__');
+  }
+  function sectionDrop(event:DragEvent<HTMLElement>,before:string|null){
+    setSectionHighlight(null);
+    if(!liveDrops?.canDropSection(before))return;
+    event.preventDefault();event.stopPropagation();liveDrops.dropSection(before);
+  }
+  const slotProps={snapshot,editing,selectedSlot,onSelectSlot,showMissing:!standalone&&!simulation,themeNode,privateImage:media.image,dropTargets:liveDrops};
   const Tag=standalone?'main':'div';
   const content=<>
-      <header className="pv-site-head"><strong>{title}</strong>
-        <span>Owner-authored portfolio</span></header>
+      {!blank&&<header className="pv-site-head"><strong>{title}</strong>
+        <span>Owner-authored portfolio</span></header>}
             {sections.length===0?<section className="pv-empty-page">
         <h2>No authored sections yet.</h2>
-        <p>{standalone?'This saved portfolio has no authored sections.':'Add a section using Structure & layers to begin building your page.'}</p>
+        <p>{standalone||simulation?'This saved portfolio has no authored sections.':blank?'Add your first section using Structure & layers. No starter sections or sample content have been inserted.':'Add a section using Structure & layers to begin building your page.'}</p>
+        {blank&&editing&&onAddFirstSection&&<button type="button" className="ws-secondary" onClick={onAddFirstSection}>Add your first section</button>}
       </section>:sections.map((section,index)=>{
         const {hero,headline,textSlot,buttons,media,note,others}=canvasSlotGroups(section);
         return <section key={section.id} className={'pv-section pv-layout-'+section.renderId+(hero?' pv-hero':' pv-content-section')}
-          data-k-theme-node={scoped?'s'+index:undefined} aria-label={'Portfolio section '+(index+1)}>
+          data-k-theme-node={scoped?'s'+index:undefined} aria-label={'Portfolio section '+(index+1)}
+          data-drop-fit={sectionHighlight===section.id?'compatible':undefined}
+          style={sectionHighlight===section.id?DROP_OUTLINE:undefined}
+          onDragOver={event=>sectionDragOver(event,section.id)}
+          onDragLeave={event=>{if(!(event.relatedTarget instanceof Node)||!event.currentTarget.contains(event.relatedTarget))setSectionHighlight(null);}}
+          onDrop={event=>sectionDrop(event,section.id)}>
           {hero?<div className="pv-hero-grid">
             <div className="pv-hero-copy">
               <span className="pv-eyebrow">{section.renderId==='L5'?'YOUR STORY':'PORTFOLIO / INTRODUCTION'}</span>
@@ -264,7 +425,12 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
           </>}
         </section>;
       })}
-      <footer className="pv-site-footer"><span>{title}</span><span>Author preview · Saved content only</span></footer>
+      {liveDrops?.canDropSection(null)&&<div role="group" aria-label="Move section to canvas end"
+        data-drop-fit={sectionHighlight==='__end__'?'compatible':undefined}
+        style={sectionHighlight==='__end__'?DROP_OUTLINE:undefined}
+        onDragOver={event=>sectionDragOver(event,null)} onDragLeave={()=>setSectionHighlight(null)}
+        onDrop={event=>sectionDrop(event,null)}>Drop here to move the section to the end</div>}
+      {!blank&&<footer className="pv-site-footer"><span>{title}</span><span>Author preview · Saved content only</span></footer>}
     </>;
   return <Tag className={standalone?'portfolio-only-preview pv-document':'ws-studio-canvas pv-document'}
     style={style} role={standalone?undefined:'region'} tabIndex={keyboardScroll?0:undefined}
@@ -275,6 +441,13 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
       <span>Illustrative empty-slot copy · Never saved or published</span>
     </div>}
     {(parsed?.status==='blocked'||(parsed?.status==='valid'&&!scoped))&&!standalone&&<p role="alert">Scoped theme could not be resolved. Showing the legacy palette only; publication is blocked for unsupported active overrides.</p>}
+    {media.available&&<div className="pv-editor-caption" aria-label="Selected private image">
+      {media.status==='pending'?<p role="status">Verifying selected private image bytes…</p>:
+        media.status==='ready'?<><span>Owner-private image preview · {media.pinned?'Server pin matched':'No server pin verified'} · Not public</span>
+          <button type="button" className="ws-secondary" onClick={media.close}>Close canvas image preview</button></>:
+          <>{media.status==='failed'&&<p role="alert">Selected image bytes unavailable or no longer match this draft.</p>}
+            <button type="button" className="ws-secondary" onClick={()=>void media.load()}>{media.status==='failed'?'Retry selected canvas image':'Preview selected image in canvas'}</button></>}
+    </div>}
     <div className="pv-site" ref={scoped?undefined:measured}>
       {scoped?<div ref={measured} data-k-theme-instance={instance} className="k-theme-container" style={{containerName:'k-portfolio-width',containerType:'inline-size',width:'100%',minWidth:0,writingMode:'horizontal-tb',padding:0,border:0}}>
         <style>{scopedCss}</style><div className="k-theme-root" data-k-theme-node="root">{content}</div>
@@ -318,9 +491,9 @@ function ScopedTokenControl({tokenKey,explicit,effective,disabled,revision,onEdi
   const color=tokenKey==='surface'||tokenKey==='text'||tokenKey==='accent';
   const numeric=!color&&tokenKey!=='fontWeight';
   return <div ref={field}>
-    {tokenKey==='fontWeight'?<label>Override value<select value={input} onChange={event=>setInput(event.target.value)} disabled={disabled}>
+    {tokenKey==='fontWeight'?<label>Override value<select aria-label="Override value" value={input} onChange={event=>setInput(event.target.value)} disabled={disabled}>
       <option value="">Choose a weight</option>{[400,500,600,700].map(value=><option key={value} value={value}>{value}</option>)}
-    </select></label>:<label>Override value<input type={numeric?'number':'text'} value={input} onChange={event=>setInput(event.target.value)}
+    </select></label>:<label>Override value<input aria-label="Override value" type={numeric?'number':'text'} value={input} onChange={event=>setInput(event.target.value)}
       min={tokenKey==='fontSizePx'?12:tokenKey==='lineHeight'?1:0} max={tokenKey==='fontSizePx'?72:tokenKey==='lineHeight'?2:tokenKey==='radiusPx'?32:64}
       step={tokenKey==='lineHeight'?'any':1} maxLength={color?7:undefined} placeholder={color?'#RRGGBB':'Enter a value'} disabled={disabled}
       aria-invalid={input!==''&&!edit}/></label>}
@@ -338,10 +511,9 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
   const [notice,setNotice]=useState('');
   const parsed=parseScopedTheme(head.snapshot);
   const sections=canvasSections(head.snapshot);
-  let preset:unknown;
-  try{preset=objectRecord(JSON.parse(head.snapshot.files['kadmeion.json']??'null'))?.preset;}catch{preset=undefined;}
+  const preset=canvasPreset(head.snapshot);
   const options:{scope:ScopedThemeScope;label:string;sectionId?:string;slotKey?:string}[]=[{scope:{kind:'global'},label:'Global'}];
-  if(typeof preset==='string'&&['arc','collage','editorial','stairs','studio','blank'].includes(preset))
+  if(preset!==null)
     options.push({scope:{kind:'template',id:preset},label:'Template · '+preset});
   for(const section of sections){
     options.push({scope:{kind:'section',id:section.id},label:'Section · '+section.id,sectionId:section.id});
@@ -368,20 +540,20 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
     return ok;
   }
   const contrast=resolved.tokens.text&&resolved.tokens.surface?themeContrast(resolved.tokens.text,resolved.tokens.surface):null;
-  return <section aria-label="Scoped theme overrides">
+  return <section role="region" aria-label="Scoped theme overrides">
     <h3>Scoped theme overrides</h3>
     <p>{actual!==null?'Measured content: '+actual+' px · '+scopedThemeBreakpoint(actual):'Measured canvas width unavailable.'} Editing a layer does not change the selected preview width.</p>
     {parsed.status==='blocked'&&<p role="alert">Unsupported theme data is preserved privately. Scoped editing and publication are blocked until it is resolved.</p>}
     {parsed.issues.some(issue=>issue.code==='ORPHAN_SCOPE'||issue.code==='UNSUPPORTED_ORPHAN')&&<p>Unplaced theme overrides are retained privately and not rendered. Reusing the same canonical scope may reactivate a retained override.</p>}
     {!matched&&<p role="alert">The previously selected scope no longer exists. Choose a current scope before applying an override.</p>}
-    <label>Scope<select value={matched?scopeId:''} onChange={event=>{setScopeId(event.target.value);setNotice('');}}>
+    <label>Scope<select aria-label="Scope" value={matched?scopeId:''} onChange={event=>{setScopeId(event.target.value);setNotice('');}}>
       {!matched&&<option value="" disabled>Choose a current scope</option>}
       {options.map(item=><option key={scopedScopeId(item.scope)} value={scopedScopeId(item.scope)}>{item.label}</option>)}
     </select></label>
-    <label>Override layer<select value={layer} onChange={event=>{const value=event.target.value;if(value==='base'||value==='phone'||value==='tablet'||value==='desktop')setLayer(value);setNotice('');}}>
+    <label>Override layer<select aria-label="Override layer" value={layer} onChange={event=>{const value=event.target.value;if(value==='base'||value==='phone'||value==='tablet'||value==='desktop')setLayer(value);setNotice('');}}>
       <option value="base">Base · all widths</option><option value="phone">Phone · up to 600 px</option><option value="tablet">Tablet · above 600 to 950 px</option><option value="desktop">Desktop · above 950 px</option>
     </select></label>
-    <label>Theme token<select value={tokenKey} onChange={event=>{const key=scopedKeys.find(k=>k===event.target.value);if(key)setTokenKey(key);setNotice('');}}>
+    <label>Theme token<select aria-label="Theme token" value={tokenKey} onChange={event=>{const key=scopedKeys.find(k=>k===event.target.value);if(key)setTokenKey(key);setNotice('');}}>
       {scopedKeys.map(key=><option value={key} key={key}>{scopedKeyLabel[key]}</option>)}
     </select></label>
     {matched&&<><dl><div><dt>Explicit value in selected layer</dt><dd>{explicit??'Inherited'}</dd></div>
@@ -424,19 +596,19 @@ export function ThemeInspector({head, apply, width, resize,contentWidth,disabled
     apply({kind:'WRITE_MANAGED_FILE',path:THEME_PATH,source:JSON.stringify({...tokens,...next,authorModePalettes:nextHistory},null,2)});
   }
   function switchMode(mode:PortfolioTheme['mode']){
-    if(!historySupported||mode===theme.mode)return;
+    if(!historySupported||(mode===theme.mode&&previous!==undefined))return;
     const saved=history?.[mode];
     const palette=validPalette(saved)?paletteOf({...saved,mode}):paletteOf(mode==='dark'?defaultDarkTheme:defaultTheme);
     setTheme({mode,...palette});
   }
   return <div className="ws-editor-tool">
     <h2>Theme &amp; responsive</h2>
-    <label>Preview width<select value={width} onChange={event => resize(Number(event.target.value))}>
+    <label>Preview width<select aria-label="Preview width" value={width} onChange={event => resize(Number(event.target.value))}>
       <option value={0}>Fit canvas</option><option value={1440}>Desktop · up to 1440 px</option><option value={768}>Tablet · 768 px</option><option value={390}>Phone · 390 px</option>
     </select></label>
-    <label>Portfolio theme<select value={theme.mode} disabled={disabled||!parsedTokens||!historySupported} onChange={event=>{
+    <label>Portfolio theme<select aria-label="Portfolio theme" value={previous===undefined?'':theme.mode} disabled={disabled||!parsedTokens||!historySupported} onChange={event=>{
       if(event.target.value==='light'||event.target.value==='dark')switchMode(event.target.value);
-    }}><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    }}>{previous===undefined&&<option value="" disabled>Choose initial palette</option>}<option value="light">Light</option><option value="dark">Dark</option></select></label>
     {!historySupported&&<p role="alert">Existing palette-history data is unsupported. The current colors can be edited, but switching modes is blocked to avoid losing data.</p>}
     {colors.map(key => <label key={key}>{key}<input type="color" disabled={disabled||!parsedTokens} value={theme[key]} onChange={event =>
       setTheme({...theme, [key]: event.target.value})}/></label>)}
@@ -566,12 +738,16 @@ export function SourceInspector({head,apply,back,buffers,setBuffers}:{
 export type ComponentSaveRetryState={
   pending:{signature:string;id:string;epoch:number}|null;inFlight:boolean;
 };
-export function ComponentLibrary({port, head, committed, slot, apply, blocked,saveRetry}: {
+export function ComponentLibrary({port, head, committed, slot, apply, blocked,saveRetry,onReuseTarget}: {
   port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;blocked:boolean;
-  saveRetry:{current:ComponentSaveRetryState};
+  saveRetry:{current:ComponentSaveRetryState};onReuseTarget?:(slotKey:string)=>void;
 }) {
   const [versions, setVersions] = useState<MyComponentVersion[] | null>(null);
   const [message, setMessage] = useState('');
+  const [listError,setListError]=useState('');
+  const [listPending,setListPending]=useState(true);
+  const listFlight=useRef(true);
+  const cataloguePort=useRef<SupabaseBrowserAuthPort|null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [query,setQuery]=useState('');
@@ -585,6 +761,8 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const searchInput=useRef<HTMLInputElement>(null);
   const componentNameInput=useRef<HTMLInputElement>(null);
   const reviewSubmitting=useRef(false);
+  const [pickedVersion,setPickedVersion]=useState<string|null>(null);
+  const savedDrag=useRef<{head:EditorHead;id:string;epoch:number;generation:number}|null>(null);
   const slotKind = slot.slice(slot.lastIndexOf('-') + 1);
   const state = head.snapshot.slots[slot]?.state;
   const owned=head.snapshot.slots[slot],savedSlot=committed?.slots[slot];
@@ -597,23 +775,76 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const mounted=useRef(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let active = true;
     const epoch=port.reconcileOwnerSessionEpoch(),generation=++componentListGeneration.current;
-    setMessage('');setVersions(null);
-    void port.listOwnerComponents().then(result => {
+    const sameBinding=cataloguePort.current===port&&catalogueEpoch.current===epoch;
+    listFlight.current=true;setListPending(true);setListError('');
+    if(!sameBinding){cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setMessage('');}
+    function fail(message:string){
+      cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setListError(message);
+      listFlight.current=false;setListPending(false);
+    }
+    const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
+      if(!active)return;
+      active=false;++componentListGeneration.current;setMessage('');
+      fail('Owner session changed. Reload the verified private component catalogue.');
+    });
+    if(active)void port.listOwnerComponents().then(result => {
       if(!active||generation!==componentListGeneration.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
-      if(result.data){catalogueEpoch.current=epoch;setVersions(result.data);}
-      else setMessage(result.error?.message??'My Components could not be loaded.');
-    }).catch(()=>{if(active&&generation===componentListGeneration.current&&port.reconcileOwnerSessionEpoch()===epoch)setMessage('My Components could not be loaded.');});
-    return ()=>{active=false;};
+      if(result.data){
+        cataloguePort.current=port;catalogueEpoch.current=epoch;setVersions(result.data);
+        listFlight.current=false;setListPending(false);
+      }else fail(result.error?.message??'My Components could not be loaded.');
+    }).catch(()=>{if(active&&generation===componentListGeneration.current&&port.reconcileOwnerSessionEpoch()===epoch)fail('My Components could not be loaded.');});
+    return ()=>{active=false;unsubscribe();};
   }, [port,refresh]);
+  const catalogueReady=versions!==null&&!listPending&&!listError&&cataloguePort.current===port;
+  const emptyReuseTargets=canvasSections(head.snapshot).flatMap(section=>section.slots.map(name=>({
+    key:section.id+'-'+name.toLowerCase(),kind:name.toLowerCase(),label:section.renderId+' · '+name+' ('+section.id+')'
+  }))).filter((item,index,all)=>all.filter(other=>other.key===item.key).length===1&&
+    Object.hasOwn(head.snapshot.slots,item.key)&&head.snapshot.slots[item.key]?.state==='EMPTY');
+  function canReuseEmpty(version:MyComponentVersion,key:string){
+    const target=emptyReuseTargets.find(item=>item.key===key);
+    return catalogueReady&&!listFlight.current&&!blocked&&!busy&&!review&&!!target&&
+      !!versions?.some(item=>item===version)&&version.compatible_slot_kinds.includes(target.kind);
+  }
+  function reuseEmpty(version:MyComponentVersion,key:string){
+    if(!canReuseEmpty(version,key)||catalogueEpoch.current!==port.reconcileOwnerSessionEpoch())return false;
+    const ok=apply({kind:'REUSE_SAVED_COMPONENT',slotKey:key,componentVersionId:version.id,
+      preserveMatchingContent:true},{[version.id]:version});
+    if(ok){setMessage('Private component applied to '+key+'. Save to persist, or use Undo. Source execution remains disabled.');onReuseTarget?.(key);}
+    else setMessage('No private component was placed. Review the current draft.');
+    return ok;
+  }
+  function beginSavedDrag(event:DragEvent<HTMLElement>,version:MyComponentVersion){
+    if(!emptyReuseTargets.some(item=>canReuseEmpty(version,item.key))){event.preventDefault();return;}
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(epoch!==catalogueEpoch.current){event.preventDefault();return;}
+    savedDrag.current={head,id:version.id,epoch,generation:componentListGeneration.current};
+    setPickedVersion(version.id);event.dataTransfer.effectAllowed='copy';
+    event.dataTransfer.setData('text/plain','kadmeion-private-component-drag');
+  }
+  function currentSavedDrag(){
+    const drag=savedDrag.current;
+    return drag&&drag.head===head&&drag.epoch===catalogueEpoch.current&&drag.generation===componentListGeneration.current&&
+      cataloguePort.current===port?versions?.find(item=>item.id===drag.id):undefined;
+  }
+  function dropSaved(event:DragEvent<HTMLElement>,key:string){
+    const version=currentSavedDrag();savedDrag.current=null;
+    if(!version||!canReuseEmpty(version,key))return;
+    event.preventDefault();event.stopPropagation();reuseEmpty(version,key);
+  }
+  function reloadCatalogue(){
+    ++componentListGeneration.current;listFlight.current=true;setListPending(true);setRefresh(n=>n+1);
+  }
 
   async function save() {
-    if(!committed||!canSave||blocked||!name.trim()||busy)return;
+    if(!catalogueReady||listFlight.current||!committed||!canSave||blocked||!name.trim()||busy)return;
     const retry=saveRetry.current;
     if(retry.inFlight){setMessage('A component save is still in progress. Retry after it completes.');return;}
     const epoch=port.reconcileOwnerSessionEpoch();
+    if(catalogueEpoch.current!==epoch)return;
     retry.inFlight=true;setBusy(true);setMessage('');
     try {
       const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55);
@@ -629,9 +860,9 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       if (!result.data) {setMessage(result.error?.message ?? 'Component save could not be confirmed.'); return;}
       const saved = result.data;
       // Invalidate an older pending catalogue read, then reload the actual list.
-      ++componentListGeneration.current;catalogueEpoch.current=epoch;
+      cataloguePort.current=port;catalogueEpoch.current=epoch;
       setVersions(current => [saved, ...(current ?? []).filter(version => version.id !== saved.id)]);
-      setRefresh(n=>n+1);
+      reloadCatalogue();
       retry.pending=null;setName('');setMessage('Private component version saved.');
     }catch(error){if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
       setMessage(error instanceof Error?error.message:'Component save could not be confirmed.');}
@@ -648,7 +879,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     (!normalizedQuery||[version.display_name,version.component_key,version.base_component_pin,
       'v'+version.version,...version.compatible_slot_kinds].some(value=>value.toLowerCase().includes(normalizedQuery))))??[];
   const reviewedVersion=review&&versions?.find(version=>version.id===review.versionId);
-  const reviewCurrent=!!review&&!!reviewedVersion&&review.slotKey===slot&&review.snapshot===head.snapshot&&
+  const reviewCurrent=catalogueReady&&!!review&&!!reviewedVersion&&review.slotKey===slot&&review.snapshot===head.snapshot&&
     review.epoch===catalogueEpoch.current&&review.generation===componentListGeneration.current&&
     !!state&&state!=='EMPTY'&&!!owned&&reviewedVersion.compatible_slot_kinds.includes(slotKind);
   const retainedFields=reviewCurrent&&owned&&reviewedVersion?
@@ -670,7 +901,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     reviewTrigger.current=null;
   }
   function openReuse(version:MyComponentVersion,trigger:HTMLButtonElement){
-    if(blocked||busy||!owned||!state||!versions?.some(item=>item.id===version.id)||
+    if(!catalogueReady||listFlight.current||blocked||busy||!owned||!state||!versions?.some(item=>item.id===version.id)||
       !version.compatible_slot_kinds.includes(slotKind))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(epoch!==catalogueEpoch.current)return;
@@ -687,7 +918,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       generation:componentListGeneration.current});
   }
   function confirmReplacement(){
-    if(reviewSubmitting.current||!reviewCurrent||!review||!reviewedVersion||blocked||busy)return;
+    if(listFlight.current||reviewSubmitting.current||!reviewCurrent||!review||!reviewedVersion||blocked||busy)return;
     if(port.reconcileOwnerSessionEpoch()!==review.epoch||
       review.generation!==componentListGeneration.current){
       closeReview();setMessage('The private component catalogue changed. Reload it and review the replacement again.');return;
@@ -701,11 +932,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   }
 
   return <div className="ws-editor-tool"><h2>My Components</h2>
-    {message && <p role="status">{message}</p>}
-    {!versions&&message&&<button type="button" className="ws-secondary" onClick={()=>setRefresh(n=>n+1)}>Retry private components</button>}
-    {!versions && !message && <><p role="status">Loading saved components…</p>
-      <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-label"/><span className="glyph-skeleton-line is-short"/></div></>}
-    {versions?.length === 0 && <p>You haven’t saved any component versions.</p>}
+    {(message||listPending)&&<p role="status">{message}{message&&listPending?' ':''}{listPending?(versions===null?'Loading saved components…':'Rechecking saved components; reuse is temporarily unavailable.'):""}</p>}
+    {listError&&!listPending&&<><p role="alert">{listError}</p><button type="button" className="ws-secondary" onClick={reloadCatalogue}>Retry private components</button></>}
+    {listPending&&versions===null&&<div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-label"/><span className="glyph-skeleton-line is-short"/></div>}
+    {catalogueReady&&versions?.length===0&&<p>You haven’t saved any component versions.</p>}
     {!!versions?.length&&<>
       <p>Selected target: {state?slotKind+' slot':'No slot selected'}. Private saved versions only.</p>
       <label>Search saved components<input ref={searchInput} type="search" value={query} maxLength={120}
@@ -716,23 +946,46 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       </select></label>
       <label><input type="checkbox" checked={compatibleOnly} disabled={!state}
         onChange={event=>setCompatibleOnly(event.target.checked)}/> Only versions compatible with the selected slot</label>
-      <p role="status">{visibleVersions.length} of {versions.length} private versions shown.</p>
+      <p>{visibleVersions.length} of {versions.length} private versions shown.</p>
       {visibleVersions.length===0&&<><p>No saved versions match these filters.</p>
         <button type="button" className="ws-secondary" onClick={()=>{setQuery('');setCategory('');setCompatibleOnly(false);searchInput.current?.focus();}}>Clear filters</button></>}
     </>}
     <ul className="ws-editor-slots">{visibleVersions.map(version=>{
       const compatible=!!state&&version.compatible_slot_kinds.includes(slotKind);
+      const hasEmpty=emptyReuseTargets.some(item=>canReuseEmpty(version,item.key));
       return <li key={version.id}>
         <strong>{version.display_name} · v{version.version}</strong>
+        {hasEmpty&&<button type="button" className="ws-secondary" draggable={hasEmpty}
+          aria-pressed={pickedVersion===version.id} onClick={()=>setPickedVersion(version.id)}
+          onDragStart={event=>beginSavedDrag(event,version)} onDragEnd={()=>{savedDrag.current=null;}}>
+          Choose or drag {version.display_name} to an empty slot
+        </button>}
         <span>Base: {version.base_component_pin} · Fits: {version.compatible_slot_kinds.join(', ')}</span>
         <small>{compatible?'Fits selected slot':state?'Not compatible with selected slot':'Select a slot first'} · Private source, not trusted public code</small>
         <button type="button" aria-expanded={review?.versionId===version.id}
-          disabled={!compatible||blocked||busy}
+          disabled={!catalogueReady||!compatible||blocked||busy}
           onClick={event=>openReuse(version,event.currentTarget)}>
           {state==='EMPTY'?'Reuse in selected slot':'Review replacement'}
         </button>
       </li>;
     })}</ul>
+    {pickedVersion&&catalogueReady&&(()=>{
+      const version=versions?.find(item=>item.id===pickedVersion);
+      if(!version)return null;
+      const available=emptyReuseTargets.filter(item=>version.compatible_slot_kinds.includes(item.kind));
+      return <section aria-label="Compatible empty private component targets">
+        <h3>Place saved version · {version.display_name}</h3>
+        <p>Choose an empty target or drag the verified saved version here. Existing assignments require the separate replacement review.</p>
+        {!available.length?<p>No compatible empty slot exists.</p>:<ul className="ws-editor-slots">{available.map(item=>
+          <li key={item.key}
+            onDragOver={event=>{const dragged=currentSavedDrag();if(dragged&&canReuseEmpty(dragged,item.key)){event.preventDefault();event.dataTransfer.dropEffect='copy';}}}
+            onDrop={event=>dropSaved(event,item.key)}>
+            <button type="button" disabled={!canReuseEmpty(version,item.key)} onClick={()=>reuseEmpty(version,item.key)}>
+              Reuse saved version in {item.label}
+            </button>
+          </li>)}</ul>}
+      </section>;
+    })()}
     {review&&<section aria-label="Replacement impact" onKeyDown={event=>{
       if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeReview();}
     }}>
@@ -746,7 +999,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
           <div><dt>Fields retained only in the outgoing stash</dt><dd>{stashedOnlyFields.join(', ')||'None'}</dd></div>
           <div><dt>Incoming source</dt><dd>Private saved version; no arbitrary source execution or public trust granted.</dd></div>
         </dl>
-        {protectedSource&&<button type="button" className="ws-secondary" disabled={!canSave||blocked||busy}
+        {protectedSource&&<button type="button" className="ws-secondary" disabled={!catalogueReady||!canSave||blocked||busy}
           onClick={()=>{closeReview(false);componentNameInput.current?.focus();setMessage('Save the committed outgoing source as a private component before reviewing replacement again.');}}>Keep as My Component</button>}
         {protectedSource&&!canSave&&<p>To keep this exact outgoing version, cancel and save the portfolio after resolving unapplied buffers.</p>}
         {blocked&&<p role="status">Resolve pending source/content edits or saves before replacement.</p>}
@@ -756,7 +1009,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       <button type="button" className="ws-secondary" onClick={()=>closeReview()}>Cancel replacement</button>
     </section>}
     {canSave && <><label>Component name<input ref={componentNameInput} disabled={busy} value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
-      <button type="button" className="ws-secondary" disabled={busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
+      <button type="button" className="ws-secondary" disabled={!catalogueReady||busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
     {!canSave&&(state==='S1'||state==='S2')&&<p>Save the portfolio and resolve unapplied source edits before keeping this exact owned version.</p>}
   </div>;
 }
@@ -771,6 +1024,7 @@ export type LayoutMappingRequest={
   mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>;
 };
 export type LayoutToolsIntent=
+  | Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'}>
   | (LayoutMappingRequest & {kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;
       confirmStash:boolean;confirmOwnedRelocation:boolean})
   | {kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
@@ -838,6 +1092,240 @@ function AssignmentImpact({assignment,snapshot}:{assignment:Assignment|undefined
 
 /** Private editor only. Structural comparison uses real pinned slot names;
  * this is not a simulated visitor render or a public preview. */
+
+/** Only public, allowlisted catalogue pins are stored on this device.
+ * No owner IDs, private versions, source, project IDs or auth data are persisted here. */
+const PLACEMENT_PINS=[
+  {pin:'title-stacked@1',label:'Heading',category:'Text'},
+  {pin:'body-copy@1',label:'Paragraph',category:'Text'},
+  {pin:'external-link@1',label:'External link',category:'Links'},
+  {pin:'project-card@1',label:'Project summary',category:'Work'},
+  {pin:'skills-list@1',label:'Skills list',category:'Work'},
+  {pin:'experience-list@1',label:'Experience list',category:'Work'},
+  {pin:'technology-tag@1',label:'Technology tag',category:'Text'},
+  {pin:'author-metric@1',label:'Author metric',category:'Work'}
+] as const;
+const PIN_FAVORITES_KEY='kadmeion.catalogue-favorites.v1';
+function readPinnedFavorites(raw:string|null):string[]{
+  if(!raw||raw.length>2048)return [];
+  try{
+    const parsed:unknown=JSON.parse(raw);
+    if(!Array.isArray(parsed))return [];
+    return PLACEMENT_PINS.map(item=>item.pin).filter(pin=>parsed.includes(pin));
+  }catch{return [];}
+}
+/** Shared by the ordinary catalogue and fallback placement board. Only a
+ * local device preference; no owner/session IDs, private versions or sync.
+ * Same-tab event contains no user data; receive by re-reading allowlisted IDs. */
+export function usePinnedCatalogueFavorites(){
+  const [favorites,setFavorites]=useState<string[]>([]);
+  const [storageAvailable,setStorageAvailable]=useState<boolean|null>(null);
+  const current=useRef<string[]>([]);
+  const eventName='kadmeion.catalogue-favorites-changed';
+  function load(){
+    try{
+      const next=readPinnedFavorites(window.localStorage.getItem(PIN_FAVORITES_KEY));
+      current.current=next;setFavorites(next);setStorageAvailable(true);
+    }catch{setStorageAvailable(false);}
+  }
+  useEffect(()=>{
+    function crossTab(event:StorageEvent){if(event.key===PIN_FAVORITES_KEY||event.key===null)load();}
+    load();window.addEventListener('storage',crossTab);window.addEventListener(eventName,load);
+    return()=>{window.removeEventListener('storage',crossTab);window.removeEventListener(eventName,load);};
+  },[]);
+  function toggle(id:string):boolean|null{
+    if(!PLACEMENT_PINS.some(item=>item.pin===id))return null;
+    // Re-read latest safe preference to avoid a stale same-device UI toggle.
+    let prior=current.current;
+    try{prior=readPinnedFavorites(window.localStorage.getItem(PIN_FAVORITES_KEY));}catch{}
+    const next=prior.includes(id)?prior.filter(value=>value!==id):[...prior,id];
+    current.current=next;setFavorites(next);
+    try{
+      window.localStorage.setItem(PIN_FAVORITES_KEY,JSON.stringify(next));
+      setStorageAvailable(true);window.dispatchEvent(new Event(eventName));return true;
+    }catch{setStorageAvailable(false);return false;}
+  }
+  return {favorites,toggle,storageAvailable};
+}
+type PlacementAction=Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'}>;
+type PlacementReview={head:EditorHead;key:string;pin?:string;kind:'replace'|'clear'};
+type PlacementDrag={head:EditorHead;kind:'pin'|'section';id:string};
+function placementRule(snapshot:PortfolioSnapshot,key:string,pin:string):'empty'|'replace'|'owned'|'same'|'incompatible'{
+  if(!PLACEMENT_PINS.some(item=>item.pin===pin)||!Object.hasOwn(snapshot.slots,key)||
+    !canAssignCompatibleComponent(snapshot,key,pin))return 'incompatible';
+  const item=snapshot.slots[key]!;
+  if(item.state==='EMPTY')return 'empty';
+  if(item.state==='S1'||item.state==='S2')return 'owned';
+  if(item.state!=='S0')return 'incompatible';
+  return item.componentId===pin?'same':'replace';
+}
+function adjacentSectionDirection(ids:readonly string[],source:string,target:string):'up'|'down'|null{
+  const from=ids.indexOf(source),to=ids.indexOf(target);
+  if(from<0||to<0||ids.lastIndexOf(source)!==from||ids.lastIndexOf(target)!==to)return null;
+  return to===from-1?'up':to===from+1?'down':null;
+}
+/** This board is mounted by the existing LayoutTools owner-gated panel.
+ * Every committed change delegates to the same typed editor transaction as
+ * the canvas/keyboard controls, rather than writing project files itself. */
+function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:boolean;apply:(intent:PlacementAction)=>boolean}){
+  const {favorites,toggle,storageAvailable}=usePinnedCatalogueFavorites();
+  const [favoritesOnly,setFavoritesOnly]=useState(false);
+  const [search,setSearch]=useState('');
+  const [category,setCategory]=useState('All');
+  const [pin,setPin]=useState('');
+  const [target,setTarget]=useState('');
+  const [review,setReview]=useState<PlacementReview|null>(null);
+  const [dragging,setDragging]=useState<PlacementDrag|null>(null);
+  const [message,setMessage]=useState('');
+  const drag=useRef<PlacementDrag|null>(null);
+  const running=useRef(false);
+  const reviewHeading=useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(()=>{if(review)reviewHeading.current?.focus();},[review]);
+  const sections=canvasSections(head.snapshot);
+  const ids=sections.map(section=>section.id);
+  const targets=sections.flatMap(section=>section.slots.map(name=>({
+    key:section.id+'-'+name.toLowerCase(),label:section.renderId+' · '+name+' ('+section.id+')'
+  }))).filter((item,index,all)=>all.filter(row=>row.key===item.key).length===1&&Object.hasOwn(head.snapshot.slots,item.key));
+  const chosen=targets.find(item=>item.key===target);
+  const selectedRule=chosen&&pin?placementRule(head.snapshot,chosen.key,pin):'incompatible';
+  const reviewed=review&&sameWorkingHead(review.head,head)?ownAssignment(head.snapshot,review.key):undefined;
+  const visible=PLACEMENT_PINS.filter(item=>(!favoritesOnly||favorites.includes(item.pin))&&
+    (category==='All'||category===item.category)&&
+    (!search.trim()||[item.label,item.pin].some(value=>value.toLowerCase().includes(search.trim().toLowerCase()))));
+  function toggleFavorite(id:string){
+    const saved=toggle(id);
+    if(saved!==null)setMessage(saved?'Device catalogue favorites updated.':'Favorites changed for this visit; device storage is unavailable.');
+  }
+  function submit(intent:PlacementAction,success:string){
+    if(blocked||running.current)return false;
+    running.current=true;
+    try{
+      const ok=apply(intent);
+      setMessage(ok?success+' Save the draft to persist, or use Undo.':'No transaction was applied. Review the current draft and try again.');
+      return ok;
+    }catch{setMessage('The transaction could not be applied. No successful change is claimed.');return false;}
+    finally{running.current=false;}
+  }
+  function place(selectedPin:string,key:string){
+    if(blocked||!targets.some(item=>item.key===key))return;
+    const rule=placementRule(head.snapshot,key,selectedPin);
+    setTarget(key);setPin(selectedPin);setReview(null);
+    if(rule==='empty')submit({kind:'ASSIGN_COMPONENT',slotKey:key,componentId:selectedPin},'Component added to the empty slot.');
+    else if(rule==='replace'||rule==='owned')setReview({head,key,pin:selectedPin,kind:'replace'});
+    else setMessage(rule==='same'?'This pristine component is already assigned.':'This component does not fit that slot. No change was made.');
+  }
+  function clear(){
+    if(blocked||!chosen||ownAssignment(head.snapshot,chosen.key)?.state==='EMPTY')return;
+    setReview({head,key:chosen.key,kind:'clear'});
+  }
+  function confirm(){
+    if(blocked||!review||!reviewed||reviewed.state==='EMPTY')return;
+    if(review.kind==='clear'){
+      if(submit({kind:'CLEAR_SLOT',slotKey:review.key},'Assignment moved to Unplaced; the slot is empty.'))setReview(null);
+      return;
+    }
+    if(!review.pin)return;
+    const rule=placementRule(head.snapshot,review.key,review.pin);
+    if(rule!=='replace'&&rule!=='owned')return;
+    // Owned source replacement remains explicit, never a drop-only mutation.
+    if(submit({kind:'ASSIGN_COMPONENT',slotKey:review.key,componentId:review.pin,
+      preserveMatchingContent:true,confirmOwnedReplacement:rule==='owned'},'Replacement applied; outgoing assignment and source stashed.'))setReview(null);
+  }
+  function beginDrag(event:DragEvent<HTMLElement>,kind:PlacementDrag['kind'],id:string){
+    if(blocked||review){event.preventDefault();return;}
+    const item={head,kind,id};
+    drag.current=item;setDragging(item);event.dataTransfer.effectAllowed='move';
+    // The transfer is a marker only. Never deserialize a payload into an editor command.
+    event.dataTransfer.setData('text/plain','kadmeion-editor-drag');
+  }
+  function finishDrag(){drag.current=null;setDragging(null);}
+  function pinDrop(event:DragEvent<HTMLElement>,key:string){
+    const item=drag.current;finishDrag();
+    if(!item||item.kind!=='pin'||!sameWorkingHead(item.head,head)||blocked)return;
+    event.preventDefault();event.stopPropagation();place(item.id,key);
+  }
+  function sectionDrop(event:DragEvent<HTMLElement>,id:string){
+    const item=drag.current;finishDrag();
+    if(!item||item.kind!=='section'||!sameWorkingHead(item.head,head)||blocked)return;
+    event.preventDefault();event.stopPropagation();
+    const direction=adjacentSectionDirection(ids,item.id,id);
+    if(direction)submit({kind:'MOVE_SECTION',sectionId:item.id,direction},'Section reordered by one position.');
+    else setMessage('Drop onto an adjacent section for one undoable move. No change was made.');
+  }
+  const liveDrag=dragging&&sameWorkingHead(dragging.head,head)&&!blocked?dragging:null;
+  return <details>
+    <summary>Component placement, Favorites and ordering</summary>
+    <section aria-label="Pinned component placement">
+      <p>Drag a pinned block to a compatible slot below, or select a component and target using the keyboard. All changes use the private draft transaction.</p>
+      <label>Search placement library<input type="search" maxLength={120} value={search} onChange={event=>setSearch(event.target.value)}/></label>
+      <label>Placement category<select aria-label="Placement category" value={category} onChange={event=>setCategory(event.target.value)}>
+        {['All','Text','Links','Work'].map(value=><option key={value}>{value}</option>)}
+      </select></label>
+      <label><input type="checkbox" checked={favoritesOnly} onChange={event=>setFavoritesOnly(event.target.checked)}/> Device favorites only</label>
+      <p>Favorites contain only public pinned component IDs on this device; they are not account-synced.{storageAvailable===false?' Device storage is unavailable; changes may last only for this visit.':''}</p>
+      <ul className="ws-editor-slots">{visible.map(item=><li key={item.pin}>
+        <button type="button" aria-pressed={pin===item.pin} draggable={!blocked&&!review}
+          disabled={blocked} onClick={()=>{setPin(item.pin);setReview(null);}}
+          onDragStart={event=>beginDrag(event,'pin',item.pin)} onDragEnd={finishDrag}>
+          {item.label} · {item.pin}
+        </button>
+        <button type="button" aria-pressed={favorites.includes(item.pin)} onClick={()=>toggleFavorite(item.pin)}>
+          {favorites.includes(item.pin)?'Remove favorite':'Favorite'} · {item.label}
+        </button>
+      </li>)}</ul>
+      {!visible.length&&<p>No pinned blocks match these filters.</p>}
+      <label>Placement target<select aria-label="Placement target" value={chosen?.key??''} disabled={blocked}
+        onChange={event=>{setTarget(event.target.value);setReview(null);}}>
+        <option value="">Choose a slot</option>{targets.map(item=><option key={item.key} value={item.key}>{item.label} · {head.snapshot.slots[item.key]?.state}</option>)}
+      </select></label>
+      <button type="button" className="ws-primary" disabled={blocked||!chosen||!pin||selectedRule==='incompatible'||selectedRule==='same'}
+        onClick={()=>chosen&&place(pin,chosen.key)}>Place selected pinned block</button>
+      <button type="button" className="ws-secondary" disabled={blocked||!chosen||head.snapshot.slots[chosen.key]?.state==='EMPTY'}
+        onClick={clear}>Move selected assignment to Unplaced</button>
+      <p>{chosen&&pin?(selectedRule==='incompatible'?'Incompatible target.':selectedRule==='owned'?'Protected owned source needs explicit review.':selectedRule==='same'?'Already assigned.':'Compatible target.'):'Choose a component and slot.'}</p>
+      <ul className="ws-editor-slots" aria-label="Declared component drop targets">{targets.map(item=>{
+        const rule=liveDrag?.kind==='pin'?placementRule(head.snapshot,item.key,liveDrag.id):null;
+        const fit=rule==='empty'||rule==='replace'||rule==='owned';
+        return <li key={item.key} data-drop-fit={fit?'compatible':undefined}
+          style={fit?{outline:'2px dashed currentColor',outlineOffset:'2px'}:undefined}
+          onDragOver={event=>{if(liveDrag?.kind==='pin'){event.preventDefault();event.dataTransfer.dropEffect=fit?'move':'none';}}}
+          onDrop={event=>pinDrop(event,item.key)}>
+          <button type="button" aria-pressed={target===item.key} disabled={blocked}
+            onClick={()=>{setTarget(item.key);setReview(null);}}>{item.label} · {head.snapshot.slots[item.key]?.state==='EMPTY'?'EMPTY':head.snapshot.slots[item.key]?.state}</button>
+        </li>;
+      })}</ul>
+      {review&&<section aria-label="Pinned placement impact">
+        <h4 ref={reviewHeading} tabIndex={-1}>Review placement impact</h4>
+        {!reviewed?<p role="alert">The working revision changed. Cancel this review; no assignment was changed.</p>:<>
+          <AssignmentImpact assignment={reviewed} snapshot={review.head.snapshot}/>
+          <p>{review.kind==='clear'?'The complete assignment is stashed and the target becomes EMPTY.':'The entire outgoing assignment is stashed. Matching declared fields only may be retained.'}</p>
+          {review.kind==='replace'&&review.pin&&<p>Matching fields: {Object.keys(matchingReplacementContent(reviewed,review.pin)).join(', ')||'None'}</p>}
+          {ownedAssignment(reviewed)&&<p>Protected owned source is retained, not executed or rewritten. To save it for reuse first, cancel, select this slot in the layers tree, and open My Components.</p>}
+          <button type="button" className="ws-primary" disabled={blocked} onClick={confirm}>
+            {review.kind==='clear'?'Confirm move to Unplaced':'Confirm replace and stash'}
+          </button>
+        </>}
+        <button type="button" className="ws-secondary" onClick={()=>setReview(null)}>Cancel placement review</button>
+      </section>}
+    </section>
+    <section aria-label="Section ordering controls">
+      <h3>Section order</h3>
+      <p>Drag a section onto an adjacent section, or move up/down. Each move is one transaction.</p>
+      <ol>{sections.map((section,index)=><li key={section.id}
+        onDragOver={event=>{if(liveDrag?.kind==='section'){event.preventDefault();event.dataTransfer.dropEffect=adjacentSectionDirection(ids,liveDrag.id,section.id)?'move':'none';}}}
+        onDrop={event=>sectionDrop(event,section.id)}>
+        <span draggable={!blocked&&!review} onDragStart={event=>beginDrag(event,'section',section.id)}
+          onDragEnd={finishDrag}>{section.renderId} · {section.id}</span>{' '}
+        <button type="button" disabled={blocked||index===0||!!review}
+          aria-label={'Move '+section.id+' one position up'} onClick={()=>submit({kind:'MOVE_SECTION',sectionId:section.id,direction:'up'},'Section reordered by one position.')}>Up</button>
+        <button type="button" disabled={blocked||index===sections.length-1||!!review}
+          aria-label={'Move '+section.id+' one position down'} onClick={()=>submit({kind:'MOVE_SECTION',sectionId:section.id,direction:'down'},'Section reordered by one position.')}>Down</button>
+      </li>)}</ol>
+    </section>
+    {message&&<p role="status">{message}</p>}
+  </details>;
+}
+
 export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:LayoutToolsProps){
   const [draft,setDraft]=useState<MappingDraft|null>(null);
   const [review,setReview]=useState<MappingReview|null>(null);
@@ -856,6 +1344,8 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   const reviewTitle=useRef<HTMLHeadingElement>(null);
   const restoreTitle=useRef<HTMLHeadingElement>(null);
   const submitting=useRef(false);
+  const mappingDrag=useRef<{draft:MappingDraft;key:string}|null>(null);
+  const [mappingFrom,setMappingFrom]=useState<string|null>(null);
   const sections=canvasSections(head.snapshot);
   const matchingSections=sections.filter(section=>section.id===sectionId);
   const section=matchingSections.length===1?matchingSections[0]:undefined;
@@ -899,21 +1389,42 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
     restoreSelectionRef.current=restore;
   },[restore]);
 
+  function mappingDestinationAllowed(from:string,to:string){
+    return !!draft&&draftCurrent&&!blocked&&assignedKeys.includes(from)&&
+      (to===C10_STASH||(targetSlots.some(item=>item.key===to)&&
+        !assignedKeys.some(other=>other!==from&&draft.choices[other]===to)));
+  }
+  function startMappingDrag(event:DragEvent<HTMLElement>,key:string){
+    if(!draft||!draftCurrent||blocked||review||!assignedKeys.includes(key)){event.preventDefault();return;}
+    mappingDrag.current={draft,key};setMappingFrom(key);
+    event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain','kadmeion-layout-map');
+  }
+  function endMappingDrag(){mappingDrag.current=null;setMappingFrom(null);}
+  function mappingDragOver(event:DragEvent<HTMLElement>,to:string){
+    const item=mappingDrag.current;
+    if(!item||item.draft!==draft||!mappingDestinationAllowed(item.key,to))return;
+    event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='move';
+  }
+  function mappingDrop(event:DragEvent<HTMLElement>,to:string){
+    const item=mappingDrag.current;endMappingDrag();
+    if(!item||item.draft!==draft||!mappingDestinationAllowed(item.key,to))return;
+    event.preventDefault();event.stopPropagation();chooseDestination(item.key,to);
+  }
   function resetReview(focus=false){
     setReview(null);setConfirmStash(false);setConfirmRelocation(false);
     if(focus)planButton.current?.focus();
   }
   function cancelMapping(){
-    resetReview();setDraft(null);setMessage('Layout change cancelled; no transaction was submitted.');
+    endMappingDrag();resetReview();setDraft(null);setMessage('Layout change cancelled; no transaction was submitted.');
     if(targetSelect.current)targetSelect.current.focus();else layoutTitle.current?.focus();
   }
   function beginMapping(targetLayout:string){
     if(blocked||!section||!portfolioLayout(targetLayout)||section.layout===targetLayout)return;
-    resetReview();setMessage('');
+    endMappingDrag();resetReview();setMessage('');
     setDraft({head,sectionId:section.id,expectedLayout:section.layout,targetLayout,choices:{}});
   }
   function chooseDestination(from:string,to:string){
-    if(blocked||!draftCurrent||!draft)return;
+    if(blocked||!draftCurrent||!draft||!assignedKeys.includes(from)||(to!==''&&!mappingDestinationAllowed(from,to)))return;
     resetReview();setMessage('');
     setDraft({...draft,choices:{...draft.choices,[from]:to}});
   }
@@ -985,6 +1496,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
 
   return <div className="ws-editor-tool">
     <h2>Layout mapping and Unplaced</h2>
+    <PinnedPlacementBoard head={head} blocked={blocked||!!draft||!!restore} apply={applyLayout}/>
     {blocked&&<p role="status">Resolve pending edits, saves or recovery before changing the layout or restoring a stash.</p>}
     {message&&<p role="status">{message}</p>}
     <section aria-label="Change section layout">
@@ -1009,19 +1521,35 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
           <section aria-label="Current layout"><h4>Current · {layoutLabel(draft.expectedLayout)}</h4>
             <ol>{sourceSlots.map(item=><li key={item.key}>
               <strong>{item.name}</strong>
+              {assignedKeys.includes(item.key)&&<button type="button" className="ws-secondary"
+                draggable={!blocked&&!review} disabled={blocked} onDragStart={event=>startMappingDrag(event,item.key)}
+                onDragEnd={endMappingDrag} onClick={()=>{
+                  const select=document.getElementById('kd-map-'+item.key);if(select instanceof HTMLSelectElement)select.focus();
+                }}>Drag or choose destination for {item.name}</button>}
               <AssignmentImpact assignment={ownAssignment(draft.head.snapshot,item.key)} snapshot={draft.head.snapshot}/>
             </li>)}</ol>
           </section>
           <section aria-label="Proposed layout"><h4>Proposed · {layoutLabel(draft.targetLayout)}</h4>
             <ol>{targetSlots.map(item=>{
               const candidates=assignedKeys.filter(key=>draft.choices[key]===item.key);
-              return <li key={item.key}><strong>{item.name}{item.required?' · Required for release':''}</strong>
+              return <li key={item.key}
+                data-drop-fit={mappingFrom&&mappingDestinationAllowed(mappingFrom,item.key)?'compatible':undefined}
+                style={mappingFrom&&mappingDestinationAllowed(mappingFrom,item.key)?DROP_OUTLINE:undefined}
+                onDragOver={event=>mappingDragOver(event,item.key)} onDrop={event=>mappingDrop(event,item.key)}>
+                <strong>{item.name}{item.required?' · Required for release':''}</strong>
                 {candidates.length===1?<AssignmentImpact assignment={ownAssignment(draft.head.snapshot,candidates[0]!)} snapshot={draft.head.snapshot}/>:
                   <p>{candidates.length?'Mapping conflict':'No assignment mapped; will be empty'}</p>}
               </li>;
             })}</ol>
           </section>
         </div>
+        <div role="group" aria-label="Map outgoing assignment to Unplaced"
+          data-drop-fit={mappingFrom&&mappingDestinationAllowed(mappingFrom,C10_STASH)?'compatible':undefined}
+          style={mappingFrom&&mappingDestinationAllowed(mappingFrom,C10_STASH)?DROP_OUTLINE:undefined}
+          onDragOver={event=>mappingDragOver(event,C10_STASH)} onDrop={event=>mappingDrop(event,C10_STASH)}>
+          Drop assignment here to preserve it in Unplaced
+        </div>
+        <p>Drag and keyboard destination controls revise this proposed mapping only. The authoritative planner validates compatibility before any transaction.</p>
         {requiredUnfilled.length>0&&<p role="status">Required target slots not yet mapped: {requiredUnfilled.map(item=>item.name).join(', ')}. A draft may retain empty slots, but release needs separate preflight.</p>}
         <p>Slot structure comparison only. Responsive appearance and static export must be checked after the layout transaction; no source is executed here.</p>
         <fieldset disabled={blocked}>
@@ -1031,7 +1559,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
             const assignment=ownAssignment(draft.head.snapshot,key);
             const choice=draft.choices[key]??'';
             return <div key={key}>
-              <label>Destination for {key}<select value={choice} onChange={event=>chooseDestination(key,event.target.value)}>
+              <label>Destination for {key}<select id={'kd-map-'+key} aria-label={'Destination for '+key} value={choice} onChange={event=>chooseDestination(key,event.target.value)}>
                 <option value="">Choose a destination</option>
                 <option value={C10_STASH}>Unplaced — stash complete assignment</option>
                 {targetSlots.map(item=><option key={item.key} value={item.key}
@@ -1122,10 +1650,60 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
 }
 
 
-export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisabled,onPlace}:{
+/** Explicit owner-only preview. The port checks actual server registration,
+ * Storage identity, pin and bytes. This UI never promotes a local digest to a publication pin. */
+type AssetPreviewRecord={id:string;projectId:string;mime:string;size:number;altText:string};
+function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort;asset:AssetPreviewRecord;epoch:number}){
+  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean}>({status:'idle'});
+  const mounted=useRef(false);
+  const activeUrl=useRef<string|null>(null);
+  const flight=useRef(false);
+  function release(){
+    if(activeUrl.current){URL.revokeObjectURL(activeUrl.current);activeUrl.current=null;}
+  }
+  useLayoutEffect(()=>{
+    mounted.current=true;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
+      mounted.current=false;release();setState({status:'failed'});
+    });
+    return()=>{mounted.current=false;unsubscribe();release();};
+  },[port,epoch]);
+  async function load(){
+    if(flight.current||!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    flight.current=true;release();setState({status:'pending'});
+    try{
+      const reply=await port.readOwnerPrivateAsset(asset.projectId,asset.id,epoch);
+      if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      const data=reply.data;
+      if(reply.error||!validOwnerPreview(asset,data)){
+        setState({status:'failed'});return;
+      }
+      const url=URL.createObjectURL(data.bytes);
+      activeUrl.current=url;setState({status:'ready',url,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
+    }catch{
+      if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setState({status:'failed'});
+    }finally{flight.current=false;}
+  }
+  return <section aria-label="Owner-private image byte preview">
+    {state.status==='ready'?<>
+      <img src={state.url} alt={asset.altText} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
+        onError={()=>{release();setState({status:'failed'});}}/>
+      <p>Owner-private bytes verified. {state.pinned?'Independent server hash pin matched.':'No independent server hash pin verified.'} Public delivery is not authorized.</p>
+      <button type="button" className="ws-secondary" onClick={()=>{release();setState({status:'idle'});}}>Close private preview</button>
+    </>:state.status==='pending'?<>
+      <p role="status">Verifying private image bytes…</p>
+      <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div>
+    </>:<>
+      {state.status==='failed'&&<p role="alert">Private image bytes could not be verified or displayed.</p>}
+      <button type="button" className="ws-secondary" onClick={()=>void load()}>{state.status==='failed'?'Retry private image preview':'Preview verified private image'}</button>
+    </>}
+  </section>;
+}
+
+export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisabled,onPlace,active=true}:{
   port:SupabaseBrowserAuthPort;back:()=>void;snapshot:PortfolioSnapshot;
   targets:readonly {key:string;label:string;state:string}[];selectedSlot:string;placementDisabled:boolean;
-  onPlace:(assetId:string,slot:string,altText:string)=>Promise<boolean>;
+  onPlace:(assetId:string,slot:string,altText:string)=>Promise<boolean>;active?:boolean;
 }) {
   const [assets,setAssets]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']>|null>(null);
   const [projects,setProjects]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerProjects']>>['data']>|null>(null);
@@ -1161,7 +1739,11 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       setRecordsError(failure);
       recordsFlight.current=false;setRecordsPending(false);
     };
-    void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
+    const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
+      if(!active)return;
+      active=false;setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
+    });
+    if(active)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
       if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!assetReply.data||!projectReply.data){
         finish(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');return;
@@ -1170,7 +1752,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       setAssets(assetReply.data);setProjects(projectReply.data);
       recordsFlight.current=false;setRecordsPending(false);
     }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)finish('Private asset records could not be loaded.');});
-    return ()=>{active=false;};
+    return ()=>{active=false;unsubscribe();};
   },[port,refresh]);
   function reloadRecords(){
     recordsFlight.current=true;setRecordsPending(true);setRefresh(n=>n+1);
@@ -1294,7 +1876,9 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
               onClick={()=>setUploadOpen(false)}>Cancel uploader</button>
           </form>}
       </>:selected?<><h2>Selected image</h2>
-        <p>Registered private metadata. Thumbnail bytes are not fetched or exposed without a verified owner-only media projection.</p>
+        <p>Registered private metadata. Preview requests verify the owner-only image bytes; they do not authorize public delivery.</p>
+        {active&&recordsReady&&recordsBinding.current&&<OwnerAssetBytesPreview key={selected.id+'|'+selected.projectId+'|'+selected.size+'|'+selected.mime+'|'+recordsBinding.current.epoch}
+          port={port} asset={selected} epoch={recordsBinding.current.epoch}/>} 
         <dl className="ws-asset-metadata">
           <div><dt>Alt text</dt><dd>{selected.altText}</dd></div>
           <div><dt>Project</dt><dd>{projects?.find(item=>item.id===selected.projectId)?.title??selected.projectId}</dd></div>

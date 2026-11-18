@@ -370,8 +370,8 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .pv-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
 .pv-actions>.pv-slot-action{width:auto;max-width:100%;padding:9px 17px;background:currentColor;
   color:inherit;border-radius:6px;min-width:105px;min-height:37px;display:flex;align-items:center}
-.pv-actions>.pv-slot-action:not(button){background:transparent;border:1px solid currentColor}
-.pv-actions>button.pv-slot-action{background:color-mix(in srgb,var(--ink) 91%,transparent);
+.pv-actions>.pv-slot-action:where(:not(button)){background:transparent;border:1px solid currentColor}
+.pv-actions>:where(button).pv-slot-action{background:color-mix(in srgb,var(--ink) 91%,transparent);
   color:var(--on-nav);border:1px solid color-mix(in srgb,var(--ink) 91%,transparent)}
 .pv-actions>button.pv-slot-action .pv-placeholder{color:inherit}
 .pv-hero-note{font-size:11px;margin-top:15px}
@@ -784,7 +784,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 }
 @media(min-width:901px){
 .ws-editor-shell .ws-editor-grid>.pv-document{padding:12px 15px}
-.ws-editor-shell .ws-editor-grid .pv-section{padding:17px clamp(16px,2vw,27px)}
+:where(.ws-editor-shell .ws-editor-grid) .pv-section{padding:17px clamp(16px,2vw,27px)}
 .ws-editor-shell .ws-editor-grid .pv-hero{min-height:258px}
 .ws-editor-shell .ws-editor-grid .pv-hero-grid{min-height:235px}
 .ws-editor-shell .ws-editor-grid .pv-hero h2{
@@ -794,7 +794,7 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-shell .ws-editor-grid .pv-hero .pv-summary{font-size:12px;line-height:1.55}
 .ws-editor-shell .ws-editor-grid .pv-hero-art{min-height:190px}
 .ws-editor-shell .ws-editor-grid .pv-actions{margin-top:11px;gap:7px}
-.ws-editor-shell .ws-editor-grid .pv-actions>.pv-slot-action{min-height:32px;padding:6px 11px;font-size:11px}
+:where(.ws-editor-shell .ws-editor-grid) .pv-actions>.pv-slot-action{min-height:32px;padding:6px 11px;font-size:11px}
 .ws-editor-shell .ws-editor-grid .pv-section-heading h2{font-size:clamp(19px,1.6vw,26px)}
 .ws-editor-shell .ws-editor-grid .pv-section-slots{gap:8px;margin-top:9px}
 .ws-editor-shell .ws-editor-grid .pv-slot-cell{padding:8px 10px;min-height:48px}
