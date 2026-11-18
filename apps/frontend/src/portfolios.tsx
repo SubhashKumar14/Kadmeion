@@ -456,6 +456,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [openedAssets,setOpenedAssets]=useState(false);
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
+  const [measuredCanvasWidth,setMeasuredCanvasWidth]=useState<number|null>(null);
   const [sourceDrafts,setSourceDrafts]=useState<Record<string,string>>({});
   const sourceDirty=!!head&&unappliedSourceBufferCount(sourceDrafts,head.snapshot.files)>0;
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
@@ -1158,7 +1159,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
   },[operation,pendingFields,sourceDirty]);
-  const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
+  // Width reporting is an additive S7 canvas prop. Keep the worker delta
+  // compatible with the previous panel until S15 composes the exact peers.
+  const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth};
+  const themeControls={contentWidth:measuredCanvasWidth,disabled:!allowed||!verifiedOwner||preview||saving||recoveryBusy||pendingFields||sourceDirty};
+  const contentPreview = <PortfolioCanvas {...canvasMeasurement} snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{
       setSlot(key);setTool('Content');
@@ -1432,7 +1437,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                 <p role="status">Use Assets for an owner-verified image placement; no generic media source is guessed.</p>}
           </>}
         </div>}
-        {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
+        {tool === 'Theme' && <ThemeInspector {...themeControls} head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
         {tool === 'Metadata' && <section className="ws-editor-tool ws-metadata-inspector" aria-labelledby="metadata-title">
           <p className="ws-kicker">RELEASE CONTENT</p><h2 id="metadata-title">Page metadata</h2>
           <p>This author-written information stays private until an independently verified release is explicitly published.</p>
