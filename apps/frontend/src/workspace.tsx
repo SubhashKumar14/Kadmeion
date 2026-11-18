@@ -14,9 +14,20 @@ import { GrowthApp, isGrowthRoute } from './growth.tsx';
 import './workspace.css';
 
 type Owner = { id: string; email?: string };
-type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'verified'; owner: Owner; epoch: number; portGeneration: number };
+type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'unavailable'; message: string } | { status: 'verified'; owner: Owner; epoch: number; portGeneration: number };
 type SnapshotState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; value: OwnerWorkspaceSnapshot };
 type StartChoice = PrivateStep;
+
+/** Transport errors never establish logout; all nonverified outcomes stay private. */
+function ownerVerificationUnavailable(message: string | undefined, online: boolean): boolean {
+  if (!online) return true;
+  if (!message) return false;
+  // Only the adapter's explicit session rejection/expiry or identity mismatch
+  // is presented as sign-in required. Unknown failures remain retryable.
+  return message !== 'Session expired.' &&
+    message !== 'The authentication session or credentials were rejected.' &&
+    message !== 'User verification did not match the active session.';
+}
 const NAV = [
   { title: 'Overview', href: '/app', icon: 'layers' },
   { title: 'Welcome', href: '/app/onboarding', icon: 'target' },
@@ -55,7 +66,14 @@ function workspacePageTitle(path: string): string {
   if (portfolio) return 'Portfolio editor';
   if (isSettingsRoute(path)) return 'Account settings';
   if (isOperatorRoute(path)) return 'Restricted operations';
-  if (isGrowthRoute(path)) return 'Personal growth';
+  if (isGrowthRoute(path)) {
+    const titles: Record<string,string> = {
+      '/app/growth':'Personal growth', '/app/growth/activity':'Developer activity',
+      '/app/growth/goals':'Your goals', '/app/growth/devscore':'Private DevScore',
+      '/app/analytics':'Portfolio analytics', '/app/integrations':'Platform connections'
+    };
+    return titles[path] ?? 'Personal growth';
+  }
   return 'Workspace';
 }
 
@@ -303,8 +321,15 @@ export function WorkspaceApp() {
   const [snapshot, setSnapshot] = useState<SnapshotState>({status:'loading'});
   const [message, setMessage] = useState('');
   const [signOutPending, setSignOutPending] = useState(false);
+  const [verificationAttempt, setVerificationAttempt] = useState(0);
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
   const portGenerationRef = useRef(0);
+  const retryRecordsRef = useRef<(() => void) | null>(null);
+  const retryFocusRef = useRef(false);
+  function retryVerification() {
+    retryFocusRef.current = true;
+    setVerificationAttempt(value=>value+1);
+  }
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
@@ -312,11 +337,18 @@ export function WorkspaceApp() {
   // Title follows access state independently of the existing provider gate.
   useEffect(() => {
     document.title = (gate.status === 'verified' ? workspacePageTitle(route) :
-      gate.status === 'checking' ? 'Verifying owner session' : 'Sign in required') + ' · Kadmeion';
+      gate.status === 'checking' ? 'Verifying owner session' :
+      gate.status === 'unavailable' ? 'Owner verification unavailable' : 'Sign in required') + ' · Kadmeion';
   }, [route, gate.status]);
   useEffect(() => {
-    if (gate.status === 'locked' && document.activeElement === document.body) {
-      document.getElementById('ws-content')?.focus();
+    const content = document.getElementById('ws-content');
+    if (retryFocusRef.current) {
+      // Restore focus after the clicked Retry control is replaced; do not
+      // move it away from a control the owner intentionally focused meanwhile.
+      if (document.activeElement === document.body || document.activeElement === content) content?.focus();
+      if (gate.status !== 'checking') retryFocusRef.current = false;
+    } else if ((gate.status === 'locked' || gate.status === 'unavailable') && document.activeElement === document.body) {
+      content?.focus();
     }
   }, [gate.status]);
   useEffect(() => {
@@ -347,29 +379,57 @@ export function WorkspaceApp() {
         attempt === seq && port.getOwnerSessionEpoch() === epoch;
       const verify = () => {
         const seq = ++attempt;
+        retryRecordsRef.current = null;
         const epoch = port.getOwnerSessionEpoch();
         setGate({status:'checking'});
         setSnapshot({status:'loading'});
+        // Do not consume a refresh token against a known offline transport.
+        // Reopening the gate ALWAYS requires fresh provider verification.
+        if (!navigator.onLine) {
+          setGate({status:'unavailable',message:'Your browser reports offline. Reconnect and retry owner verification. No private records have been requested.'});
+          return;
+        }
         void port.getUser().then(result => {
           if (!stillCurrent(seq,epoch)) return;
           if (result.error || !result.data?.user?.id) {
-            setGate({ status: 'locked', message: 'Sign in to verify your owner session before opening this workspace.' });
+            // Both branches withhold every private route and record; retryable
+            // transport, rate-limit and malformed responses are not logout.
+            if (ownerVerificationUnavailable(result.error?.message, navigator.onLine)) {
+              setGate({status:'unavailable',message:'Owner verification could not reach the authentication service. Reconnect or retry verification; no private records are shown.'});
+            } else {
+              setGate({status:'locked',message:'Sign in to verify your owner session before opening this workspace.'});
+            }
             return;
           }
           const owner = { id: result.data.user.id, email: result.data.user.email };
           setGate({status:'verified',owner,epoch,portGeneration:generation});
           if (route.startsWith('/app/projects') || route === '/app/profile' || route.startsWith('/app/portfolios') ||
               isSettingsRoute(route) || isOperatorRoute(route) || isGrowthRoute(route)) return;
-          void port.readOwnerWorkspace().then(read => {
-            if (!stillCurrent(seq,epoch)) return;
-            if (read.error || !read.data) {
-              setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
-            } else setSnapshot({status:'ready',value:read.data});
-          }).catch(() => {
-            if (stillCurrent(seq,epoch)) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
-          });
+          // The owner gate stays mounted while only its overview records retry.
+          // Never reuse a callback after the initiating port/owner epoch changes.
+          let reading = false;
+          const readRecords = async () => {
+            if (reading || !stillCurrent(seq,epoch)) return;
+            if (!navigator.onLine) {
+              setSnapshot({status:'error',message:'Your browser reports offline. Reconnect and retry these private records; no cached records are shown.'});
+              return;
+            }
+            reading = true;
+            setSnapshot({status:'loading'});
+            try {
+              const read=await port.readOwnerWorkspace();
+              if (!stillCurrent(seq,epoch)) return;
+              if (read.error || !read.data) {
+                setSnapshot({status:'error',message:'Private records could not be loaded or validated. No cached or illustrative records are shown.'});
+              } else setSnapshot({status:'ready',value:read.data});
+            } catch {
+              if (stillCurrent(seq,epoch)) setSnapshot({status:'error',message:'Private workspace data is currently unavailable.'});
+            } finally { reading = false; }
+          };
+          retryRecordsRef.current=()=>{void readRecords();};
+          void readRecords();
         }).catch(() => {
-          if (stillCurrent(seq,epoch)) setGate({status:'locked',message:'Owner session verification could not be completed. Please sign in again.'});
+          if (stillCurrent(seq,epoch)) setGate({status:'unavailable',message:'Owner session verification could not be completed. Retry verification or sign in again; no private records are shown.'});
         });
       };
       // Register before the first owner read. An epoch is an invalidation
@@ -387,8 +447,8 @@ export function WorkspaceApp() {
     } catch {
       setGate({ status: 'locked', message: 'Secure browser storage or the authentication configuration is unavailable.' });
     }
-    return () => { cancelled = true; ++attempt; unsubscribe(); authRef.current = null; };
-  }, [route]);
+    return () => { cancelled = true; ++attempt; unsubscribe(); retryRecordsRef.current = null; authRef.current = null; };
+  }, [route, verificationAttempt]);
   async function skipChoice(choice: PrivateStep): Promise<boolean> {
     const port=authRef.current;
     if (!port || gate.status !== 'verified') return false;
@@ -434,7 +494,7 @@ export function WorkspaceApp() {
       setSignOutPending(false);
     }
   }
-  if (gate.status === 'checking') return <main id="ws-content" className="ws-gate" role="main" aria-busy="true">
+  if (gate.status === 'checking') return <main id="ws-content" className="ws-gate" role="main" tabIndex={-1} aria-busy="true">
     <h1>Verifying owner session…</h1>
     <p role="status">Verifying your owner session with the authentication service…</p>
     <div className="glyph-skeleton" aria-hidden="true">
@@ -442,12 +502,20 @@ export function WorkspaceApp() {
       <span className="glyph-skeleton-line is-short"/>
     </div>
   </main>;
+  if (gate.status === 'unavailable') return <main id="ws-content" className="ws-gate" role="main" tabIndex={-1}>
+    <p className="ws-kicker">OWNER VERIFICATION UNAVAILABLE</p>
+    <h1>Owner verification unavailable.</h1>
+    <p role="alert">{gate.message}</p>
+    <div className="ws-actions"><button type="button" className="ws-primary" onClick={retryVerification}>Retry verification</button>
+      <a className="ws-secondary" href="/signin">Go to sign in</a></div>
+    <a href="/" className="ws-back-link">Return to the public website</a>
+  </main>;
   if (gate.status === 'locked') return <main id="ws-content" className="ws-gate" role="main" tabIndex={-1}>
     <p className="ws-kicker">OWNER ACCESS REQUIRED</p>
     <h1>Sign in required.</h1>
     <p role="alert">{gate.message}</p>
     <div className="ws-actions"><a className="ws-primary" href="/signin">Go to sign in <Icon name="arrow" size={16}/></a>
-      <button type="button" className="ws-secondary" onClick={() => window.location.reload()}>Retry verification</button></div>
+      <button type="button" className="ws-secondary" onClick={retryVerification}>Retry verification</button></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
   const ownerKey = gate.owner.id + ':' + gate.portGeneration + ':' + gate.epoch;
@@ -492,7 +560,10 @@ export function WorkspaceApp() {
       </div>
     </section> : snapshot.status === 'error' ? <section className="ws-error">
       <h1>Private records unavailable.</h1><p role="alert">{snapshot.message}</p>
-      <button type="button" className="ws-secondary" onClick={()=>window.location.reload()}>Retry securely</button>
+      <button type="button" className="ws-secondary" onClick={event=>{
+        event.currentTarget.closest<HTMLElement>('main')?.focus();
+        retryRecordsRef.current?.();
+      }}>Retry securely</button>
     </section> : route === '/app/onboarding' ?
       <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
       <Home snapshot={snapshot.value}/>}
