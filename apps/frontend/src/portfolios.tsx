@@ -296,7 +296,7 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
       {!request.reset && <button type="button" className="ws-secondary" disabled={loading}
         onClick={refresh}>Refresh from first page</button>}
     </div></>}
-    {!items && !error && <p role="status">Loading your portfolios…</p>}
+    {!items && !error && <><p role="status">Loading your portfolios…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {items && <div className="ws-project-detail ws-owner-columns">
       <div className="ws-studio-list">
         {items.length > 0 && <label className="ws-studio-search">Find a portfolio<input type="search" value={query} onChange={event => setQuery(event.target.value)}/></label>}
@@ -1312,7 +1312,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     </div>}
     {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
-    {!record && !error && <p role="status">Loading portfolio…</p>}
+    {!record && !error && <><p role="status">Loading portfolio…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
       onClick={() => void initialize()}>Complete draft setup</button>}
     {head&&!preview&&<nav className="ws-editor-modebar" aria-label="Editor panels">
@@ -1655,7 +1655,8 @@ function PrivateShareDialog({onClose}:{onClose:()=>void}) {
 }
 
 export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
-  const [record,setRecord]=useState<PortfolioRecord|null>(null);
+  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
+  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
   const [error,setError]=useState('');
   const [view,setView]=useState<'author'|'visitor'>('visitor');
   const [device,setDevice]=useState<0|390|768>(0);
@@ -1663,10 +1664,12 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
   const [shareOpen,setShareOpen]=useState(false);
   useEffect(()=>{
     let active=true;
-    setRecord(null);setError('');
+    setLoadedPreview(null);setError('');setShareOpen(false);
+    const epoch=port.reconcileOwnerSessionEpoch();
     void port.readOwnerPortfolio(id).then(reply=>{
       if(!active)return;
-      if(reply.data?.snapshot){setRecord(reply.data);return;}
+      if(port.reconcileOwnerSessionEpoch()!==epoch){setError('The saved private revision could not be verified.');return;}
+      if(reply.data?.snapshot&&reply.data.id===id){setLoadedPreview({port,id,record:reply.data});return;}
       setError(reply.error?.message??'A saved private portfolio revision is not available.');
     }).catch(()=>{
       if(active)setError('The saved private revision could not be verified.');
@@ -1691,7 +1694,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
       {error}
       <button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button>
     </div>}
-    {!record&&!error&&<p role="status" className="ws-preview-loading">Loading your saved, owner-scoped preview…</p>}
+    {!record&&!error&&<><p role="status" className="ws-preview-loading">Loading your saved, owner-scoped preview…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {record&&<div className="ws-preview-workbench">
       <aside className="ws-preview-sidebar" aria-label="Preview controls">
         <p className="ws-kicker">REVIEW BEFORE PUBLISHING</p>
@@ -1755,20 +1758,26 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
 }
 
 export function FullscreenPortfolioPreview({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
-  const [record, setRecord] = useState<PortfolioRecord | null>(null);
-  const [error, setError] = useState(false);
+  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
+  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
+  const [error,setError]=useState(false);
+  const [attempt,setAttempt]=useState(0);
 
-  useEffect(() => {
-    let active = true;
-    void port.readOwnerPortfolio(id).then(result => {
-      if (!active) return;
-      if (result.data?.snapshot) setRecord(result.data);
-      else setError(true);
-    });
-    return () => {active = false;};
-  }, [port, id]);
+  useEffect(()=>{
+    let active=true;
+    setLoadedPreview(null);setError(false);
+    const epoch=port.reconcileOwnerSessionEpoch();
+    void port.readOwnerPortfolio(id).then(result=>{
+      if(!active)return;
+      if(port.reconcileOwnerSessionEpoch()!==epoch||!result.data?.snapshot||result.data.id!==id){
+        setError(true);return;
+      }
+      setLoadedPreview({port,id,record:result.data});
+    }).catch(()=>{if(active)setError(true);});
+    return ()=>{active=false;};
+  },[port,id,attempt]);
 
-  if (error) return <main className="ws-gate"><h1>Portfolio unavailable.</h1><a href={STUDIO}>Return to portfolio library</a></main>;
-  if (!record) return <main className="ws-gate" aria-busy="true"><p role="status">Loading saved portfolio preview…</p></main>;
+  if(error)return <main className="ws-gate"><h1>Portfolio unavailable.</h1><button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button><a href={STUDIO}>Return to portfolio library</a></main>;
+  if(!record)return <main className="ws-gate"><p role="status">Loading saved portfolio preview…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></main>;
   return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone/>;
 }
