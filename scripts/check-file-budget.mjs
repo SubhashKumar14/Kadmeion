@@ -13,6 +13,9 @@ const baselinePaths = new Set(execFileSync('git', ['ls-tree', '-r', '--name-only
 const authorizedAdditionPaths = [
   // RESERVE-B16-S01-001; WF-009/013/041; S1; exact authorized migration path.
   'supabase/migrations/20261117083520_owner_private_project_thumbnails.sql',
+  // S15-013 / S00-016: isolated C13 S12/S13 service and test only.
+  'packages/contracts/src/private-analytics-service.ts',
+  'tests/contracts/private-analytics.test.ts',
 ];
 const reservedAdditions = new Set(authorizedAdditionPaths);
 // Exact reservations must not collide with the grandfathered baseline or each other.
