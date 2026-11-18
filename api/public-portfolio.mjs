@@ -14,6 +14,41 @@ const reportIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f
 const reportReasons = new Set(['ABUSE', 'SECURITY', 'LEGAL', 'SPAM']);
 const reportBytes = 4096;
 
+async function readReportStream(req,timeoutMs=5000) {
+  const iterator=req[Symbol.asyncIterator]();
+  let timer,finished=false,expired=false;
+  const chunks=[];
+  let total=0,count=0;
+  const deadline=new Promise((_,reject)=>{
+    timer=setTimeout(()=>{expired=true;reject(Error('Report body timed out'));},timeoutMs);
+  });
+  try {
+    const drain=(async()=>{
+      for(;;){
+        const part=await iterator.next();
+        if(expired)throw Error('Report body expired');
+        if(part.done){finished=true;break;}
+        if(++count>1024||
+           !(typeof part.value==='string'||part.value instanceof Uint8Array))
+          throw Error('Invalid report stream');
+        const chunk=Buffer.from(part.value);
+        total+=chunk.length;
+        if(total>reportBytes)throw Error('Report body too large');
+        if(chunk.length)chunks.push(chunk);
+      }
+      return Buffer.concat(chunks,total);
+    })();
+    return await Promise.race([drain,deadline]);
+  } finally {
+    clearTimeout(timer);
+    if(!finished){
+      expired=true;
+      // A disconnected or stalled sender must not keep a report handler alive.
+      try{void Promise.resolve(iterator.return?.()).catch(()=>{});}catch{}
+    }
+  }
+}
+
 async function reportBody(req) {
   const type = req.headers?.['content-type'];
   const size = req.headers?.['content-length'];
@@ -23,19 +58,12 @@ async function reportBody(req) {
       (encoding !== undefined && encoding !== 'identity')) return null;
   let candidate = req.body;
   if (candidate === undefined && req[Symbol.asyncIterator]) {
-    const chunks = [];
-    let total = 0;
-    for await (const part of req) {
-      const chunk = Buffer.from(part);
-      total += chunk.length;
-      if (total > reportBytes) return null;
-      chunks.push(chunk);
-    }
-    candidate = Buffer.concat(chunks, total);
+    candidate = await readReportStream(req);
   }
   if (typeof candidate === 'string' || Buffer.isBuffer(candidate)) {
-    if (Buffer.byteLength(candidate) > reportBytes) return null;
-    candidate = JSON.parse(new TextDecoder('utf-8', {fatal:true}).decode(Buffer.from(candidate)));
+    const bytes=Buffer.from(candidate);
+    if (bytes.length > reportBytes || (size !== undefined && Number(size)!==bytes.length)) return null;
+    candidate = JSON.parse(new TextDecoder('utf-8', {fatal:true}).decode(bytes));
   }
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
       Object.keys(candidate).sort().join(',') !== 'evidence,operationId,reason' ||
