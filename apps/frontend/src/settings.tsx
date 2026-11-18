@@ -1081,6 +1081,13 @@ function sameExitScope(scope:{schemaVersion:number;requestId:string|null;snapsho
   return scope!==null&&scope.schemaVersion===2&&scope.requestId===requestId;
 }
 
+function validExitReadiness(review:{requestId:string;challengeId:string;count:number;checkedAt:number}|null,requestId:string,challengeId:string,expiresAt:string,now:number):boolean {
+  return review!==null&&review.requestId===requestId&&review.challengeId===challengeId&&
+    Number.isSafeInteger(review.count)&&review.count>=0&&review.count<=100&&
+    Number.isFinite(now)&&Number.isFinite(review.checkedAt)&&review.checkedAt<=now&&
+    now-review.checkedAt<=60_000&&Number.isFinite(Date.parse(expiresAt))&&Date.parse(expiresAt)>now;
+}
+
 function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const service=services.account;
   // The shell mounts this consumer only after live owner verification.
@@ -1106,11 +1113,25 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
   const [recoveredProof, setRecoveredProof] = useState<{requestId:string;verification:AccountExitReauthVerification}|null>(null);
   const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
   const withdrawalOperation = useRef<string|null>(null);
+  const [cleanupReview,setCleanupReview]=useState<{requestId:string;challengeId:string;count:number;checkedAt:number;paths:readonly string[]}|null>(null);
+  const [cleanupConfirmation,setCleanupConfirmation]=useState('');
+  const [finalConfirmation,setFinalConfirmation]=useState('');
+  const [executionUncertain,setExecutionUncertain]=useState(false);
+  const [readinessNow,setReadinessNow]=useState(Date.now);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
   const activeScope=activeRequest&&sameExitScope(exitScope,activeRequest.id)?exitScope:null;
   const activeStorage=activeScope&&exitStorage?.snapshotId===activeScope.snapshotId&&exitStorage.requestId===activeScope.requestId?exitStorage:null;
   const activeExport=activeScope&&exitExport?.snapshotId===activeScope.snapshotId&&exitExport.requestId===activeScope.requestId?exitExport:null;
   const reauth = recoveredProof && activeRequest?.id === recoveredProof.requestId ? recoveredProof.verification : null;
+  const ready=!!activeRequest&&!!reauth&&validExitReadiness(cleanupReview,activeRequest.id,reauth.challengeId,reauth.expiresAt,readinessNow);
+  const mayExecute=ready&&cleanupReview?.count===0&&!executionUncertain;
+  useEffect(()=>{
+    if(!cleanupReview)return;
+    const refresh=()=>setReadinessNow(Date.now());
+    const timer=window.setTimeout(refresh,Math.max(1,cleanupReview.checkedAt+60_001-Date.now()));
+    window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
+    return()=>{window.clearTimeout(timer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
+  },[cleanupReview]);
 
   const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
   useEffect(() => {
@@ -1147,7 +1168,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
           }
           setInventory(result);
           setRequests(history);
-          setRecoveredProof({requestId,verification});
+          setRecoveredProof({requestId,verification});setExecutionUncertain(false);
         }
         setRecovery('ready');
       } catch (error) {
@@ -1253,6 +1274,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     setRecoveredProof(null);
     setWithdrawConfirmation('');
     withdrawalOperation.current = null;
+    setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
   }
 
   // A confirmed challenge is short-lived. Do not leave a success receipt or
@@ -1269,6 +1291,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
         setRecoveredProof(null);
         setWithdrawConfirmation('');
         withdrawalOperation.current = null;
+        setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
         setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
         return;
       }
@@ -1416,6 +1439,106 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     }
   }
 
+  async function reviewCleanup(){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!reauth||executionUncertain||!current()||Date.parse(reauth.expiresAt)<=Date.now())return;
+    const requestId=activeRequest.id,challengeId=reauth.challengeId;
+    inFlight.current=true;setBusy(true);setMessage(null);setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
+    try{
+      const history=await service.list();
+      if(!current())return;
+      setRequests(history);
+      if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+        history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId)
+        throw new Error('The pending request changed. Review it again.');
+      const paths=await service.reviewUploadPaths();
+      if(!current())return;
+      const checkedAt=Date.now();
+      if(Date.parse(reauth.expiresAt)<=checkedAt)throw new Error('Identity verification expired.');
+      setReadinessNow(checkedAt);setCleanupReview({requestId,challengeId,count:paths.length,checkedAt,paths:Object.freeze([...paths])});
+    }catch(error){if(current())setMessage(failure(error));}
+    finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
+  async function removeReviewedUploads(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!reauth||!current()||executionUncertain||
+      cleanupConfirmation!=='REMOVE PRIVATE UPLOADS'||!cleanupReview||cleanupReview.count===0||
+      cleanupReview.paths.length!==cleanupReview.count||
+      !validExitReadiness(cleanupReview,activeRequest.id,reauth.challengeId,reauth.expiresAt,Date.now()))return;
+    const requestId=activeRequest.id,challengeId=reauth.challengeId,review=cleanupReview;
+    inFlight.current=true;setBusy(true);setMessage(null);
+    setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
+    let dispatched=false;
+    try{
+      const history=await service.list();
+      if(!current())return;
+      setRequests(history);
+      if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+        history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId||
+        !validExitReadiness(review,requestId,challengeId,reauth.expiresAt,Date.now()))
+        throw new Error('The request or cleanup review changed. No removal was sent.');
+      dispatched=true;
+      const removed=await service.removeUploadBatch(review.paths);
+      if(!current())return;
+      if(removed!==review.count)throw new Error('The reviewed upload batch was not fully acknowledged.');
+      setExitStorage(null);setMessage({error:false,text:'Removal of '+removed+' reviewed private uploads was acknowledged. Review cleanup again before final erasure. Backups and external copies remain unverified.'});
+    }catch(error){
+      if(!current())return;
+      setExitStorage(null);
+      setMessage(dispatched?{error:true,text:'Upload removal was not confirmed. Review the remaining server inventory before any further removal; do not assume files were retained or erased.'}:failure(error));
+    }finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
+  async function executeFinal(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!reauth||!current()||executionUncertain||
+      finalConfirmation!=='DELETE MY ACCOUNT'||cleanupReview?.count!==0||
+      !validExitReadiness(cleanupReview,activeRequest.id,reauth.challengeId,reauth.expiresAt,Date.now()))return;
+    const requestId=activeRequest.id,challengeId=reauth.challengeId;
+    inFlight.current=true;setBusy(true);setMessage(null);setCleanupReview(null);setCleanupConfirmation('');setFinalConfirmation('');
+    let dispatched=false;
+    try{
+      const history=await service.list();
+      if(!current())return;
+      setRequests(history);
+      if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+        history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId)
+        throw new Error('The pending request changed. No erasure request was sent.');
+      const paths=await service.reviewUploadPaths();
+      if(!current())return;
+      if(paths.length!==0||Date.parse(reauth.expiresAt)<=Date.now())
+        throw new Error('Storage cleanup or fresh identity verification is still required.');
+      // This RPC is the only final authority. Its transaction rechecks exact
+      // request, live session, current challenge, scoped host proof and all Storage.
+      dispatched=true;
+      const receipt=await service.execute(requestId,challengeId,'DELETE MY ACCOUNT');
+      if(!current())return;
+      discardProof();setRequests(null);setInventory(null);setExitScope(null);
+      setExitStorage(null);setExitExport(null);
+      setMessage({error:false,text:'Active application account erasure acknowledged. Existing signed tokens, backups and external copies are not proven erased.'});
+      // The explicitly labeled submit action includes a local, nonsecret receipt.
+      try{
+        downloadPrivateFile('kadmeion-account-erasure-receipt.json',
+          new TextEncoder().encode(JSON.stringify(receipt)),'application/json');
+      }catch{/* The authoritative erasure receipt is not invalidated by a browser download failure. */}
+      // The confirmed erasure and this device's local sign-out are separate
+      // outcomes. Never reinterpret a confirmed receipt as an unknown write.
+      if(current()){
+        try{
+          await port.signOut({scope:'local'});
+        }catch{/* Local sign-out failure must not invalidate the erasure receipt. */}
+        if(current())setMessage({error:true,text:'Active account erasure was acknowledged. Local sign-out could not be confirmed; close this session. Backup and external copies remain unverified.'});
+      }
+    }catch(error){
+      if(!current())return;
+      const code=typeof error==='object'&&error!==null&&'code' in error?error.code:null;
+      if(dispatched&&code!=='CONFLICT'&&code!=='REAUTH_REQUIRED'&&code!=='CHALLENGE_EXPIRED'&&code!=='VALIDATION'){
+        setExecutionUncertain(true);discardProof();setRequests(null);
+        setMessage({error:true,text:'Final erasure could not be confirmed. Do not repeat it from this session. Sign in again to review whether the account still exists.'});
+      }else setMessage(failure(error));
+    }finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Deletion prerequisites">
       {recovery === 'checking' && <p role="status">Checking current identity verification…</p>}
@@ -1489,6 +1612,26 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
               Withdraw app-managed public content
             </button>
           </form>
+          <section aria-label="Irreversible account erasure">
+            <h3>Final erasure</h3>
+            <p>Prepare your export first. Review the actual server-gated cleanup prerequisites. A zero count covers only the eligible private bucket, not all Storage or external copies.</p>
+            <button className="ws-secondary" type="button" disabled={busy||executionUncertain} onClick={()=>void reviewCleanup()}>Review server-gated cleanup readiness</button>
+            {ready&&cleanupReview&&<p role="status">Eligible uploads in the next bounded batch: {cleanupReview.count}. {cleanupReview.count>0?'Confirm the exact reviewed batch below; final erasure remains blocked.':'No eligible uploads returned; final server checks are still required.'}</p>}
+            {ready&&cleanupReview&&cleanupReview.count>0&&<form onSubmit={event=>void removeReviewedUploads(event)}>
+              <p>Irreversibly remove only the {cleanupReview.count} reviewed objects in the application private asset bucket. Download any needed recovery files first. This is not account erasure.</p>
+              <label className="ws-export-select">Type REMOVE PRIVATE UPLOADS to confirm this batch
+                <input autoComplete="off" value={cleanupConfirmation} disabled={busy} onChange={event=>setCleanupConfirmation(event.target.value)}/>
+              </label>
+              <button type="submit" className="ws-secondary" disabled={busy||cleanupConfirmation!=='REMOVE PRIVATE UPLOADS'}>Remove reviewed private uploads</button>
+            </form>}
+            {mayExecute&&<form onSubmit={event=>void executeFinal(event)}>
+              <p>Irreversible removal of the active application account. Existing signed tokens may remain valid until expiry. Backup and external-copy erasure are not verified.</p>
+              <label className="ws-export-select">Type DELETE MY ACCOUNT for final erasure
+                <input autoComplete="off" value={finalConfirmation} disabled={busy} onChange={event=>setFinalConfirmation(event.target.value)}/>
+              </label>
+              <button type="submit" className="ws-secondary" disabled={busy||finalConfirmation!=='DELETE MY ACCOUNT'}>Permanently erase account and prepare receipt</button>
+            </form>}
+          </section>
         </>}
       </>}
       {requests && !activeRequest && <form onSubmit={event=>{event.preventDefault();void changeRequest(null);}}>
