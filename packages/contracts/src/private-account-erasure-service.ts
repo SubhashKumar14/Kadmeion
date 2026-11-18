@@ -77,6 +77,14 @@ export interface AccountExitInventoryReceipt {
   };
   deletionAllowed:false;
 }
+/** Explicit version-2 inventory scope, distinct from historical schema 1. */
+export interface AccountExitInventoryReceiptV2 extends Omit<AccountExitInventoryReceipt,'schemaVersion'|'inventory'> {
+  schemaVersion:2;
+  requestId:string|null;
+  inventory:Omit<AccountExitInventoryReceipt['inventory'],'counts'>&{
+    counts:AccountExitPreflight['counts']&{profileAssetMetadata:number};
+  };
+}
 /** Live, bounded Storage metadata comparison. This never proves object bytes or export readiness. */
 export interface AccountExitStorageReconciliation {
   snapshotId:string;
@@ -98,6 +106,14 @@ export interface AccountExitStorageReconciliation {
   publicRevocationVerified:false;
   deletionAllowed:false;
 }
+export interface AccountExitStorageReconciliationV2 extends AccountExitStorageReconciliation {
+  schemaVersion:2;
+  requestId:string|null;
+  projectRegistered:number;
+  profileRegistered:number;
+  profilePending:number;
+  profilePendingWithBytes:number;
+}
 export interface PrivateAccountErasureEntry {
   id:string;
   status:AccountErasureRequestStatus;
@@ -111,7 +127,7 @@ export interface PrivateAccountErasureEntry {
 }
 export class PrivateAccountErasureError extends Error {
   readonly code:'AUTH_EXPIRED'|'FORBIDDEN'|'VALIDATION'|'CONFLICT'|
-    'REAUTH_REQUIRED'|'CHALLENGE_EXPIRED'|'QUOTA_EXCEEDED'|'RATE_LIMITED'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK';
+    'REAUTH_REQUIRED'|'CHALLENGE_EXPIRED'|'QUOTA_EXCEEDED'|'RATE_LIMITED'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK'|'VERSION_REQUIRED';
   constructor(code:PrivateAccountErasureError['code'],message:string){
     super(message);this.name='PrivateAccountErasureError';this.code=code;
   }
@@ -227,6 +243,49 @@ function inventoryReceipt(raw:unknown,expectedId?:string):AccountExitInventoryRe
     }
   };
 }
+const exactKeys=(row:Record<string,unknown>,keys:readonly string[])=>
+  Object.keys(row).sort().join(',')===[...keys].sort().join(',');
+const validCount=(value:unknown,max:number):value is number=>
+  typeof value==='number'&&Number.isSafeInteger(value)&&value>=0&&value<=max;
+function inventoryReceiptV2(raw:unknown,requestId:string|null,expectedId?:string):AccountExitInventoryReceiptV2 {
+  if(!record(raw)||!exactKeys(raw,['snapshotId','schemaVersion','requestId','capturedAt','alreadyCaptured','inventory','deletionAllowed'])||
+    raw.schemaVersion!==2||raw.requestId!==requestId||(expectedId!==undefined&&raw.alreadyCaptured!==true)||
+    !record(raw.inventory)||!exactKeys(raw.inventory,['status','maxCountPerCategory','countsCapped','counts','consistency',
+      'publicRoutes','objectStorage','exports','integrations','backupRetention','recentReauthVerified','publicRevocationVerified','deletionAllowed'])||
+    !record(raw.inventory.counts)||!exactKeys(raw.inventory.counts,['projects','portfolios','portfolioRevisions',
+      'projectExposureIntents','projectAssetMetadata','profileAssetMetadata','frozenReleaseRequests','reviewerGrants','trashRecords','accountExitRequests'])||
+    !validCount(raw.inventory.counts.profileAssetMetadata,1000))
+    throw new PrivateAccountErasureError('INVALID_ACK','Unverified scoped account-exit inventory.');
+  const legacy=inventoryReceipt({...raw,schemaVersion:1},expectedId);
+  return {...legacy,schemaVersion:2,requestId,inventory:{...legacy.inventory,
+    counts:{...legacy.inventory.counts,profileAssetMetadata:raw.inventory.counts.profileAssetMetadata}}};
+}
+function reconciliationReceiptV2(raw:unknown,snapshotId:string,requestId:string|null):AccountExitStorageReconciliationV2 {
+  const counters=['registeredAssets','projectRegistered','profileRegistered','profilePending','profilePendingWithBytes',
+    'storageObjects','missingObjects','orphanObjects','metadataMismatches'] as const;
+  if(!record(raw)||!exactKeys(raw,['snapshotId','schemaVersion','requestId','inventoryCapturedAt','status','maxObjectsPerSide',
+    'limitExceeded',...counters,'inventoryDrift','consistency','storageBytesVerified','downloadableExportReady','externalProviders',
+    'backupRetention','publicRevocationVerified','deletionAllowed'])||
+    raw.schemaVersion!==2||raw.snapshotId!==snapshotId||raw.requestId!==requestId||!date(raw.inventoryCapturedAt)||
+    !['METADATA_MATCH_ONLY','DISCREPANCY','LIMIT_EXCEEDED'].includes(String(raw.status))||raw.maxObjectsPerSide!==100||
+    typeof raw.limitExceeded!=='boolean'||typeof raw.inventoryDrift!=='boolean'||!counters.every(k=>validCount(raw[k],100))||
+    raw.consistency!=='LIVE_METADATA_NOT_ATOMIC_WITH_INVENTORY'||raw.storageBytesVerified!==false||
+    raw.downloadableExportReady!==false||raw.externalProviders!=='UNVERIFIED'||raw.backupRetention!=='UNVERIFIED'||
+    raw.publicRevocationVerified!==false||raw.deletionAllowed!==false)
+    throw new PrivateAccountErasureError('INVALID_ACK','Unverified scoped Storage reconciliation.');
+  const receipt=raw as unknown as AccountExitStorageReconciliationV2;
+  const discrepancy=receipt.inventoryDrift||receipt.profilePending>0||receipt.missingObjects>0||
+    receipt.orphanObjects>0||receipt.metadataMismatches>0;
+  if(receipt.registeredAssets!==Math.min(100,receipt.projectRegistered+receipt.profileRegistered)||
+    receipt.profilePendingWithBytes>receipt.profilePending||
+    receipt.limitExceeded!==(receipt.status==='LIMIT_EXCEEDED')||
+    (receipt.limitExceeded&&!receipt.inventoryDrift)||
+    (!receipt.limitExceeded&&receipt.projectRegistered+receipt.profileRegistered+receipt.profilePending>100)||
+    (receipt.status==='METADATA_MATCH_ONLY'&&(discrepancy||receipt.registeredAssets!==receipt.storageObjects))||
+    (receipt.status==='DISCREPANCY'&&!discrepancy))
+    throw new PrivateAccountErasureError('INVALID_ACK','Inconsistent scoped Storage reconciliation.');
+  return receipt;
+}
 function receipt(raw:unknown,expectedId?:string,withdraw=false):AccountErasureReceipt {
   if(!record(raw)||!uuid(raw.requestId)||!status(raw.status)||
     !proofFlags(raw)||(expectedId!==undefined&&raw.requestId!==expectedId)||
@@ -285,6 +344,8 @@ export class SupabasePrivateAccountErasureService {
       }
       const error=await boundedLifecycleJson(response,16*1024,signal).catch(()=>null);
       const message=record(error)?error.message:null;
+      if(record(error)&&error.code==='55000'&&message==='PROFILE_ASSET_EXPORT_VERSION_REQUIRED')
+        throw new PrivateAccountErasureError('VERSION_REQUIRED','Use the profile-inclusive version 2 export; legacy scope cannot cover this account.');
       if(message==='LIVE_SESSION_REQUIRED')
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
       if(message==='NEW_SIGN_IN_REQUIRED'||message==='ERASURE_REAUTH_REQUIRED')
@@ -406,6 +467,38 @@ export class SupabasePrivateAccountErasureService {
       externalProviders:'UNVERIFIED',backupRetention:'UNVERIFIED',
       publicRevocationVerified:false,deletionAllowed:false
     };
+  }
+  private async inventoryV2Request(path:string,payload:Record<string,unknown>):Promise<unknown>{
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in to review account inventory.');
+    const raw=await this.send(path,payload,jwt);
+    if(await this.token()!==jwt)
+      throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during inventory verification.');
+    return raw;
+  }
+  async captureInventoryV2(operationId:string,requestId:string|null):Promise<AccountExitInventoryReceiptV2>{
+    if(!uuid(operationId)||(requestId!==null&&!uuid(requestId)))
+      throw new ContractError('VALIDATION','Explicit inventory operation and request scope required.');
+    const raw=await this.inventoryV2Request('rpc/create_private_account_exit_inventory_v2',{
+      p_operation_id:operationId,p_request_id:requestId
+    });
+    return inventoryReceiptV2(raw,requestId);
+  }
+  async getInventoryV2(snapshotId:string,expectedRequestId:string|null):Promise<AccountExitInventoryReceiptV2>{
+    if(!uuid(snapshotId)||(expectedRequestId!==null&&!uuid(expectedRequestId)))
+      throw new ContractError('VALIDATION','Explicit inventory snapshot and request scope required.');
+    const raw=await this.inventoryV2Request('rpc/get_private_account_exit_inventory_v2',{
+      p_snapshot_id:snapshotId,p_expected_request_id:expectedRequestId
+    });
+    return inventoryReceiptV2(raw,expectedRequestId,snapshotId);
+  }
+  async reconcileStorageV2(snapshotId:string,expectedRequestId:string|null):Promise<AccountExitStorageReconciliationV2>{
+    if(!uuid(snapshotId)||(expectedRequestId!==null&&!uuid(expectedRequestId)))
+      throw new ContractError('VALIDATION','Explicit inventory snapshot and request scope required.');
+    const raw=await this.inventoryV2Request('rpc/reconcile_private_account_exit_storage_v2',{
+      p_snapshot_id:snapshotId,p_expected_request_id:expectedRequestId
+    });
+    return reconciliationReceiptV2(raw,snapshotId,expectedRequestId);
   }
   /** Advisory only: session presence/fresh login is NOT an erasure authorisation. */
   async preflight():Promise<AccountExitPreflight>{
