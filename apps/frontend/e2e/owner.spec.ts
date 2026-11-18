@@ -2541,7 +2541,7 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
   test.setTimeout(60_000);
   const owner=await localUser('S6 confirmation boundary');
   let tokenCalls=0, resendCalls=0;
-  let mode:'deny'|'rate'|'outage'|'transport'|'accepted'='deny';
+  let mode:'deny'|'rate'|'outage'|'transport'|'nonjson'|'null'|'unexpected'|'empty204'|'accepted'='deny';
   await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/token'&&url.searchParams.get('grant_type')==='password',async route=>{
     if(route.request().method()!=='POST')return route.continue();
     tokenCalls++;
@@ -2554,6 +2554,10 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
     expect(body.type==='signup'&&body.email===owner.email).toBe(true);
     expect(new URL(route.request().url()).searchParams.get('redirect_to')).toBe(new URL('/auth/callback',page.url()).href);
     if(mode==='transport')return route.abort('failed');
+    if(mode==='nonjson')return route.fulfill({status:200,contentType:'text/html',body:'S6_RAW_PROVIDER_MARKER'});
+    if(mode==='null')return route.fulfill({status:200,contentType:'application/json',body:'null'});
+    if(mode==='unexpected')return route.fulfill({status:200,json:{access_token:'S6_RAW_PROVIDER_MARKER'}});
+    if(mode==='empty204')return route.fulfill({status:204});
     if(mode==='accepted')return route.fulfill({status:200,json:{}});
     await route.fulfill({status:mode==='deny'?403:mode==='rate'?429:503,json:{message:'S6_RAW_PROVIDER_MARKER'}});
   });
@@ -2568,7 +2572,7 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
     await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
     await expect(page.getByText('S6_RAW_PROVIDER_MARKER',{exact:false})).toHaveCount(0);
   };
-  for(const failure of ['deny','rate','outage','transport'] as const){
+  for(const failure of ['deny','rate','outage','transport','nonjson','null','unexpected','empty204'] as const){
     mode=failure;
     await resend.click();
     await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
@@ -2577,11 +2581,11 @@ test('B16 auth confirmation denial, neutral resend failures and explicit retry (
     await expect(resend).toBeEnabled();
     await noWorkspace();
   }
-  expect(resendCalls).toBe(4);
+  expect(resendCalls).toBe(8);
   mode='accepted';
   await resend.click();
   await expect(page.getByRole('status')).toContainText('Email delivery is not confirmed.');
-  expect(resendCalls).toBe(5);
+  expect(resendCalls).toBe(9);
   await noWorkspace();
   await page.goto('/app');
   await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
@@ -2738,3 +2742,53 @@ test('B16 C06 committed autosave with lost acknowledgement reconciles without se
   await expect(auto).not.toBeChecked();
 });
 
+
+test('B16 ordinary recovery rejects malformed provider acknowledgement and retries real GoTrue',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase and strict OWNER-AUTH policy.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 recovery receipt');
+  let mode:'rate'|'outage'|'transport'|'nonjson'|'null'|'unexpected'|'empty204'|'real'='rate';
+  let calls=0,realReceipt=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/recover',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    calls++;
+    expect(route.request().postDataJSON().email===owner.email).toBe(true);
+    expect(new URL(route.request().url()).searchParams.get('redirect_to')).toBe(new URL('/reset-password',page.url()).href);
+    if(mode==='real'){
+      const response=await route.fetch();
+      try{realReceipt=response.status()===200&&JSON.stringify(await response.json())==='{}';
+        await route.fulfill({response});
+      }finally{await response.dispose();}
+      return;
+    }
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='nonjson')return route.fulfill({status:200,contentType:'text/html',body:'S6_RAW_PROVIDER_MARKER'});
+    if(mode==='null')return route.fulfill({status:200,contentType:'application/json',body:'null'});
+    if(mode==='unexpected')return route.fulfill({status:200,json:{access_token:'S6_RAW_PROVIDER_MARKER'}});
+    if(mode==='empty204')return route.fulfill({status:204});
+    await route.fulfill({status:mode==='rate'?429:503,json:{message:'S6_RAW_PROVIDER_MARKER'}});
+  });
+  await page.goto('/forgot-password');
+  await page.getByRole('textbox',{name:'Email address'}).fill(owner.email);
+  const request=page.getByRole('button',{name:'Request recovery link'});
+  for(const failure of ['rate','outage','transport','nonjson','null','unexpected','empty204'] as const){
+    mode=failure;
+    await request.click();
+    await expect(page.getByRole('alert')).toContainText('Unable to submit the recovery request.');
+    await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'Check your inbox'})).toHaveCount(0);
+    await expect(page.getByText('S6_RAW_PROVIDER_MARKER',{exact:false})).toHaveCount(0);
+    await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+    await expect(request).toBeEnabled();
+  }
+  expect(calls).toBe(7);
+  mode='real';
+  await request.click();
+  await expect(page.getByRole('heading',{name:'Check your inbox'})).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('Delivery is not confirmed.');
+  expect(realReceipt).toBe(true);
+  expect(calls).toBe(8);
+  await page.goto('/app');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+});
