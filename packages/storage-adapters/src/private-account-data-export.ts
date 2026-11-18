@@ -487,6 +487,46 @@ export class SupabasePrivateAccountDataExporter {
     requireCondition(object(raw)&&isUuid(raw.id),'UNVERIFIED','Owner identity was not verified.');
     return {id:raw.id,email:typeof raw.email==='string'?raw.email:null};
   }
+  /** Read-only evidence prior to execution. No claim about erased data, external
+   * copies, backups, or a transaction shared by the two producer domains. */
+  async reviewExitRetainedDomains():Promise<{
+    checkedAt:string;
+    provider:{status:'READ';links:number;enabled:number;facts:number;candidates:number}|{status:'UNAVAILABLE'};
+    analytics:{status:'READ';portfolios:number;enabled:number;aggregates:number}|{status:'UNAVAILABLE'};
+    postErasureVerified:false;
+  }>{
+    const jwt=await this.accessToken();
+    requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to review retained data.');
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===jwt,'AUTH_EXPIRED','The account session changed.');
+      return jwt;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const owner=await scoped.owner();
+    const [provider,analytics]=await Promise.allSettled([
+      scoped.exportProviderFactsAnnex().then(artifact=>{
+        const raw:unknown=JSON.parse(decoder.decode(artifact.bytes));
+        requireCondition(object(raw)&&raw.ownerUserId===owner.id&&raw.kind==='KADMEION_GITHUB_FACTS_ANNEX'&&
+          Array.isArray(raw.records)&&raw.records.length===artifact.records&&raw.records.every(object),
+          'INTEGRITY','Invalid retained provider evidence.');
+        return {status:'READ' as const,links:raw.records.length,enabled:raw.records.filter(row=>row.consent===true).length,
+          facts:raw.records.filter(row=>row.facts!==null).length,candidates:raw.records.filter(row=>row.candidate!==null).length};
+      }),
+      scoped.exportAnalyticsAnnex().then(artifact=>{
+        const raw:unknown=JSON.parse(decoder.decode(artifact.bytes));
+        requireCondition(object(raw)&&raw.ownerUserId===owner.id&&raw.kind==='KADMEION_PORTFOLIO_ANALYTICS_ANNEX'&&
+          Array.isArray(raw.consents)&&raw.consents.every(object)&&Array.isArray(raw.aggregates)&&raw.aggregates.length===artifact.records,
+          'INTEGRITY','Invalid retained analytics evidence.');
+        return {status:'READ' as const,portfolios:raw.consents.length,enabled:raw.consents.filter(row=>row.enabled===true).length,
+          aggregates:raw.aggregates.length};
+      })
+    ]);
+    requireCondition((await scoped.owner()).id===owner.id,'AUTH_EXPIRED','The account changed during retained-data review.');
+    await sameSession();
+    return {checkedAt:new Date().toISOString(),
+      provider:provider.status==='fulfilled'?provider.value:{status:'UNAVAILABLE'},
+      analytics:analytics.status==='fulfilled'?analytics.value:{status:'UNAVAILABLE'},postErasureVerified:false};
+  }
   /** Retained owner-visible GitHub records only. Never fetch external provider data. */
   async exportProviderFactsAnnex():Promise<PrivateOwnerAnnexArtifact>{
     const jwt=await this.accessToken();
