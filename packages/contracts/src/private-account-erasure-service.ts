@@ -145,28 +145,49 @@ function uploadPaths(raw:unknown):string[] {
   }
   return raw;
 }
-async function confirmedRemoval(response:Response,paths:readonly string[]):Promise<boolean>{
+/** Bounded lifecycle transport: never wait for a producer's cancellation. */
+async function boundedLifecycleJson(response:Response,max:number,signal:AbortSignal):Promise<unknown>{
+  const length=response.headers.get('content-length');
+  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>max)){
+    void response.body?.cancel().catch(()=>{});throw new Error('Invalid lifecycle body');
+  }
   const reader=response.body?.getReader();
-  if(!reader)return false;
+  if(!reader)throw new Error('Missing lifecycle body');
   const decoder=new TextDecoder('utf-8',{fatal:true});
-  let bytes=0,body='';
+  let bytes=0,body='',complete=false;
   try{
     for(;;){
-      const chunk=await reader.read();
+      signal.throwIfAborted();
+      let onAbort=()=>{};
+      const aborted=new Promise<never>((_,reject)=>{
+        onAbort=()=>reject(signal.reason);signal.addEventListener('abort',onAbort,{once:true});
+      });
+      let chunk:ReadableStreamReadResult<Uint8Array>;
+      try{chunk=await Promise.race([reader.read(),aborted]);}
+      finally{signal.removeEventListener('abort',onAbort);}
+      signal.throwIfAborted();
       if(chunk.done)break;
+      if(!(chunk.value instanceof Uint8Array))throw new Error('Invalid lifecycle bytes');
       bytes+=chunk.value.byteLength;
-      if(bytes>256*1024)return false;
+      if(bytes>max)throw new Error('Oversized lifecycle body');
       body+=decoder.decode(chunk.value,{stream:true});
     }
-    const raw:unknown=JSON.parse(body+decoder.decode());
+    const encoding=response.headers.get('content-encoding');
+    if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&bytes!==Number(length))
+      throw new Error('Incomplete lifecycle body');
+    const parsed:unknown=JSON.parse(body+decoder.decode());complete=true;return parsed;
+  }finally{
+    if(!complete)void reader.cancel().catch(()=>{});
+    reader.releaseLock();
+  }
+}
+async function confirmedRemoval(response:Response,paths:readonly string[],signal:AbortSignal):Promise<boolean>{
+  try{
+    const raw=await boundedLifecycleJson(response,256*1024,signal);
     if(!Array.isArray(raw)||raw.length!==paths.length)return false;
     const remaining=new Set(paths);
     return raw.every(entry=>record(entry)&&typeof entry.name==='string'&&remaining.delete(entry.name));
   }catch{return false;}
-  finally{
-    await reader.cancel().catch(()=>{});
-    reader.releaseLock();
-  }
 }
 function inventoryReceipt(raw:unknown,expectedId?:string):AccountExitInventoryReceipt {
   const names=[
@@ -242,13 +263,14 @@ export class SupabasePrivateAccountErasureService {
     const jwt=session??await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in to review account exit.');
     let response:Response;
+    const signal=AbortSignal.timeout(15_000);
     try{
       response=await this.http(this.origin+'/rest/v1/'+path,{
         method:payload===undefined?'GET':'POST',
         headers:{apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
           ...(payload===undefined?{}:{'Content-Type':'application/json'})},
         body:payload===undefined?undefined:JSON.stringify(payload),
-        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15_000)
+        credentials:'omit',cache:'no-store',redirect:'error',signal
       });
     }catch{
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit request was not acknowledged.');
@@ -260,7 +282,7 @@ export class SupabasePrivateAccountErasureService {
         void response.body?.cancel().catch(()=>{});
         throw new PrivateAccountErasureError('RATE_LIMITED','Too many account requests. Try again later.');
       }
-      const error:unknown=await response.json().catch(()=>null);
+      const error=await boundedLifecycleJson(response,16*1024,signal).catch(()=>null);
       const message=record(error)?error.message:null;
       if(message==='LIVE_SESSION_REQUIRED')
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
@@ -290,8 +312,9 @@ export class SupabasePrivateAccountErasureService {
         throw new PrivateAccountErasureError('CONFLICT','Account exit request conflicts with existing state.');
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit operation failed.');
     }
-    return response.json().catch(()=>{
-      throw new PrivateAccountErasureError('INVALID_ACK','Invalid account exit response.');
+    return boundedLifecycleJson(response,256*1024,signal).catch(()=>{
+      throw new PrivateAccountErasureError(signal.aborted?'PROVIDER_UNAVAILABLE':'INVALID_ACK',
+        'Invalid or incomplete account exit response.');
     });
   }
   /** An explicit owner challenge; a new login must establish a different session. */
@@ -447,11 +470,12 @@ export class SupabasePrivateAccountErasureService {
     if(await this.token()!==jwt)
       throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed before upload removal.');
     let response:Response;
+    const signal=AbortSignal.timeout(15_000);
     try{
       response=await this.http(this.origin+'/storage/v1/object/kadmeion-private-assets',{
         method:'DELETE',headers:{apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json'},
         credentials:'omit',cache:'no-store',redirect:'error',body:JSON.stringify({prefixes:paths}),
-        signal:AbortSignal.timeout(15_000)
+        signal
       });
     }catch{
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Private upload removal was not confirmed.');
@@ -466,10 +490,12 @@ export class SupabasePrivateAccountErasureService {
       if(await this.token()!==jwt)
         throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during upload removal.');
       // A full first page could hide an undeleted path after a concurrent upload.
-      if(remaining.length===100&&!(await confirmedRemoval(response,paths)))
+      if(remaining.length===100&&!(await confirmedRemoval(response,paths,signal)))
         throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Storage could not confirm this batch. Retry cleanup.');
+      if(await this.token()!==jwt)
+        throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during upload confirmation.');
       return paths.length;
-    }finally{await response.body?.cancel().catch(()=>{});}
+    }finally{void response.body?.cancel().catch(()=>{});}
   }
   async execute(requestId:string,challengeId:string,confirmation:'DELETE MY ACCOUNT'):Promise<{
     status:'ACTIVE_ACCOUNT_ERASED';
