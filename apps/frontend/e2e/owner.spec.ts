@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { expect, test, type Page } from '@playwright/test';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { chromium, expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
 import { PrivateServerAssetByteAttestor } from '../../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
@@ -3669,4 +3671,161 @@ test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreig
   await expect(avatar.getByText('Avatar detached. Stored private assets have not been permanently deleted.',{exact:true})).toBeVisible();
   await expect(avatar.getByRole('img')).toHaveCount(0);
   await page.reload();await expect(avatar.getByText(/Saved avatar revision 3 · No selected image/)).toBeVisible();
+});
+
+test('B16 WF-020/021/023/025 R5 native pinned placement, EMPTY undo, device favorites and section reorder persist',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and paired S3/S7 placement panel required.');
+  test.setTimeout(115_000);
+  const owner=await localUser('S6 R5 placement owner');
+  await page.setViewportSize({width:2200,height:1500});
+  await signIn(page,owner);await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 native placement fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 native placement fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:/arc hero title Starter/i}).click();
+  await page.getByLabel('Text content').fill('R5 preserved outgoing title');
+  await page.getByRole('button',{name:'Apply text',exact:true}).click();
+  await page.getByRole('button',{name:'Components',exact:true}).click();
+  await page.getByText('Component placement, Favorites and ordering',{exact:true}).click();
+  const board=page.getByRole('region',{name:'Pinned component placement'});
+  const order=page.getByRole('region',{name:'Section ordering controls'});
+  const target=board.getByRole('combobox',{name:'Placement target',exact:true});
+  const heading=board.getByRole('button',{name:'Heading · title-stacked@1',exact:true});
+  const empty=board.getByRole('button',{name:'L1 · title (arc-hero) · EMPTY',exact:true});
+  const starter=board.getByRole('button',{name:'L1 · title (arc-hero) · S0',exact:true});
+  await target.selectOption('arc-hero-title');
+  await board.getByRole('button',{name:'Favorite · Heading',exact:true}).click();
+  await board.getByRole('checkbox',{name:'Device favorites only'}).check();
+  await expect(heading).toBeVisible();
+  await expect(board.getByRole('button',{name:'Paragraph · body-copy@1',exact:true})).toHaveCount(0);
+  await board.getByRole('checkbox',{name:'Device favorites only'}).uncheck();
+  await board.getByRole('button',{name:'Move selected assignment to Unplaced'}).click();
+  const review=board.getByRole('region',{name:'Pinned placement impact'});
+  await expect(review.getByRole('heading',{name:'Review placement impact'})).toBeFocused();
+  await expect(starter).toBeVisible();
+  await review.getByRole('button',{name:'Cancel placement review'}).click();
+  await expect(starter).toBeVisible();
+  await board.getByRole('button',{name:'Move selected assignment to Unplaced'}).click();
+  await review.getByRole('button',{name:'Confirm move to Unplaced'}).click();
+  await expect(empty).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(starter).toBeVisible();
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(empty).toBeVisible();
+  // Exercise genuine browser drag events, not a fabricated transaction or serialized edit payload.
+  // Keep both live controls in view; Chromium requires a second mouse move
+  // over the destination to dispatch dragover reliably. Never synthesize Drop
+  // or call the editor transaction from the test.
+  await board.getByLabel('Search placement library').fill('title-stacked@1');
+  await expect(heading).toHaveAttribute('draggable','true');
+  await expect(heading).toBeEnabled();
+  await expect(empty).toBeVisible();
+  await heading.hover();
+  await page.mouse.down();
+  try{
+    await empty.hover();
+    await empty.hover();
+    await expect(empty.locator('..')).toHaveAttribute('data-drop-fit','compatible');
+  }finally{await page.mouse.up();}
+  await expect(starter).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(empty).toBeVisible();
+  // The keyboard-equivalent selection must use the same declared assignment transaction.
+  await heading.focus();await heading.press('Enter');
+  await target.selectOption('arc-hero-title');
+  await board.getByRole('button',{name:'Place selected pinned block'}).press('Enter');
+  await expect(starter).toBeVisible();
+  await order.getByLabel('Section to move').selectOption('contact');
+  await order.getByLabel('Move before').selectOption('arc-hero');
+  await order.getByRole('button',{name:'Move section to chosen position'}).press('Enter');
+  await expect(order.locator('ol li').first()).toContainText('contact');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(order.locator('ol li').first()).toContainText('arc-hero');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await expect(order.locator('ol li').first()).toContainText('contact');
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'Components',exact:true}).click();
+  await page.getByText('Component placement, Favorites and ordering',{exact:true}).click();
+  await expect(board.getByRole('button',{name:'Remove favorite · Heading',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(order.locator('ol li').first()).toContainText('contact');
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const path=await download.path();if(!path)throw new Error('Private export missing.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(path)));
+  expect(JSON.parse(snapshot.files['pages/home.page.json']).sections.map((row:{id:string})=>row.id))
+    .toEqual(['contact','arc-hero','project-showcase','editorial-bento','skills']);
+  expect(snapshot.slots['arc-hero-title']).toMatchObject({state:'S0',componentId:'title-stacked@1',content:{}});
+  expect(JSON.stringify(snapshot.stashes['arc-hero-title'])).toContain('R5 preserved outgoing title');
+  expect(Object.values(snapshot.files).join('')).not.toContain('Optional supporting text');
+});
+
+test('B16 WF-019/027 R6 cold browser profile preserves individual editor transaction history',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local GoTrue only; actual persistent Chromium process restart.');
+  test.setTimeout(150_000);
+  const owner=await localUser('R6 cold history owner');
+  const profile=await mkdtemp(join(tmpdir(),'kadmeion-s6-cold-profile-'));
+  const start=()=>chromium.launchPersistentContext(profile,{
+    executablePath:process.env.KADMEION_CHROME_PATH||'/usr/bin/google-chrome',
+    headless:true,baseURL:'http://127.0.0.1:5173',viewport:{width:1600,height:1000}
+  });
+  let context:BrowserContext|null=null;
+  const saved='R6 cold saved',first='R6 first independent transaction',second='R6 second independent transaction';
+  const title='R6 cold recovery portfolio';
+  let editorPath='';
+  try{
+    context=await start();let page=context.pages()[0]??await context.newPage();
+    await signIn(page,owner);
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:'Arc',exact:true}).check();
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    editorPath=new URL(page.url()).pathname;
+    const field=()=>page.getByLabel('Text content');
+    const apply=async(value:string)=>{
+      await field().fill(value);
+      await page.getByRole('button',{name:'Apply text',exact:true}).click();
+      await expect(field()).toHaveValue(value);
+    };
+    const undo=()=>page.getByRole('button',{name:'Undo',exact:true});
+    const redo=()=>page.getByRole('button',{name:'Redo',exact:true});
+    await apply(saved);await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await apply(first);await apply(second);
+    await undo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    const details=()=>page.locator('details.ws-editor-safety').filter({hasText:'Browser recovery & Keep Both'});
+    const expand=async()=>{
+      await expect(details()).toBeVisible();
+      if(await details().getAttribute('open')===null)await details().locator('summary').click();
+    };
+    await expand();
+    await details().getByRole('button',{name:'Save browser recovery copy',exact:true}).click();
+    await expect(details().getByText('Recovery copy saved on this browser only. Cloud draft unchanged.',{exact:true})).toBeVisible();
+    await expect(details().getByRole('button',{name:'Open recovery copy',exact:true})).toHaveCount(1);
+    // Actual Chrome exit. No storage-state export, IDB injection, mocked auth, or page.reload substitute.
+    await context.close();context=null;
+    context=await start();page=context.pages()[0]??await context.newPage();
+    await page.goto(editorPath);
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    await expect(field()).toHaveValue(saved);
+    await expand();
+    await details().getByRole('button',{name:'Open recovery copy',exact:true}).click();
+    await expect(details().getByText('Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.',{exact:true})).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    // Snapshot-only restore would jump directly to saved; that is not persistent history (UI-054).
+    await undo().click();await expect(field(),'cold restart must restore preceding individual edit, not just the saved snapshot').toHaveValue(first);
+    await undo().click();await expect(field()).toHaveValue(saved);
+    await redo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(field()).toHaveValue(second);
+  }finally{
+    await context?.close().catch(()=>undefined);
+    await rm(profile,{recursive:true,force:true});
+  }
 });
