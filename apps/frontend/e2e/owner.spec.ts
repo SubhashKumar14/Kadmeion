@@ -2686,3 +2686,70 @@ test('B16 C10 real trusted static scoped-theme CSS uses measured 600/950 boundar
   head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,intent:{kind:'UNDO'}});
   expect(head.snapshot).toEqual(before);
 });
+
+test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP persistence',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires real mounted R4 editor and disposable local Supabase.');
+  test.setTimeout(95_000);
+  const owner=await localUser('S6 mounted scoped theme');
+  await page.setViewportSize({width:2200,height:1100});
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill('S6 mounted scoped fixture');
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:'S6 mounted scoped fixture',level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  await page.getByRole('button',{name:'Theme',exact:true}).click();
+  await page.getByLabel('Portfolio theme').selectOption('light');
+  const scope=page.getByRole('region',{name:'Scoped theme overrides'});
+  const token=scope.getByLabel('Theme token'),layer=scope.getByLabel('Override layer');
+  const value=scope.getByLabel('Override value');
+  async function set(scopeId:string,bucket:string,color:string){
+    await scope.getByLabel('Scope',{exact:true}).selectOption(scopeId);
+    await layer.selectOption(bucket);
+    await token.selectOption('text');
+    await value.fill(color);
+    await scope.getByRole('button',{name:'Apply override',exact:true}).click();
+    await expect(scope.getByText('Override applied to the working draft. Save to persist, or use Undo.',{exact:true})).toBeVisible();
+    await expect(value).toHaveValue(color);
+  }
+  await set('global','base','#112233');
+  await set('section:arc-hero','base','#334455');
+  await set('component:arc-hero-title','phone','#224466');
+  await set('component:arc-hero-title','desktop','#663344');
+  const canvas=page.locator('.ws-studio-editor .k-theme-container');
+  const title=canvas.getByRole('button',{name:/^Edit L1 title slot in preview/});
+  const measure=()=>canvas.evaluate(node=>node.getBoundingClientRect().width);
+  await page.getByLabel('Preview width').selectOption('390');
+  await expect.poll(measure).toBeLessThanOrEqual(600);
+  await expect(title).toHaveCSS('color','rgb(34, 68, 102)');
+  await page.getByLabel('Preview width').selectOption('1440');
+  await expect.poll(measure).toBeGreaterThan(950);
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await scope.getByRole('button',{name:'Reset selected override'}).click();
+  await expect(title).toHaveCSS('color','rgb(51, 68, 85)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(51, 68, 85)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'Theme',exact:true}).click();
+  await page.getByLabel('Preview width').selectOption('390');
+  await expect(title).toHaveCSS('color','rgb(34, 68, 102)');
+  await page.getByLabel('Preview width').selectOption('1440');
+  await expect(title).toHaveCSS('color','rgb(102, 51, 68)');
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const downloadedPath=await download.path();if(!downloadedPath)throw new Error('Private source export absent.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(downloadedPath)));
+  const {resolveScopedTheme}=await import('../../../packages/editor-core/src/index.ts');
+  for(const [widthPx,text] of [[390,'#224466'],[768,'#334455'],[1440,'#663344']] as const){
+    const resolved=resolveScopedTheme(snapshot,{mode:'light',sectionId:'arc-hero',slotKey:'arc-hero-title',widthPx});
+    expect(resolved.status).toBe('resolved');expect(resolved.tokens.text).toBe(text);
+  }
+});

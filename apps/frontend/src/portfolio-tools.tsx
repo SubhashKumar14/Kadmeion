@@ -4,7 +4,7 @@ import {unappliedSourceBufferCount} from './behavior.ts';
 import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import { matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
+import { matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, resolveScopedThemeBase, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
   '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>) => boolean;
@@ -153,11 +153,10 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
     '--k-theme-font-size':'font-size','--k-theme-line-height':'line-height',
     '--k-theme-font-weight':'font-weight','--k-theme-spacing':'padding','--k-theme-radius':'border-radius'
   };
-  const rules:string[]=[];
-  for(const [index,widthPx] of SCOPED_WIDTHS.entries()){
+  const rules=(widthPx:number,baseOnly=false):string|null=>{
     const declarations:string[]=[];
     for(const {node,sectionId,slotKey} of targets){
-      const resolved=resolveScopedTheme(snapshot,{mode,sectionId,slotKey,widthPx});
+      const resolved=(baseOnly?resolveScopedThemeBase:resolveScopedTheme)(snapshot,{mode,sectionId,slotKey,widthPx});
       if(resolved.status!=='resolved')return null;
       const values=scopedThemeCssVariables(resolved.tokens);
       const properties=Object.keys(values).flatMap(key=>{
@@ -168,11 +167,24 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
       const vars=Object.entries(values).map(([key,value])=>key+':'+value);
       declarations.push(selector+'{'+vars.concat(properties,'--portfolio-surface:var(--k-theme-surface)').join(';')+'}');
       if(node==='root'||!slotKey)declarations.push(selector+'{border-color:var(--k-theme-accent)}');
-      if(slotKey)declarations.push(selector+'.pv-slot-action{color:var(--k-theme-accent);border-color:var(--k-theme-accent)}');
+      if(slotKey){
+        declarations.push(selector+'.pv-slot-action{color:var(--k-theme-accent);border-color:var(--k-theme-accent)}');
+        const typography=['--k-theme-font-size','--k-theme-line-height','--k-theme-font-weight']
+          .filter(key=>Object.hasOwn(values,key)).map(key=>propertyMap[key]+':var('+key+')');
+        if(typography.length)declarations.push(selector+' :is(span,strong,small,a){'+typography.join(';')+'}');
+      }
     }
-    rules.push('@container k-portfolio-width ('+query[index]+'){'+declarations.join('')+'}');
+    return declarations.join('');
+  };
+  const base=rules(768,true);
+  if(base===null)return null;
+  const responsive:string[]=[];
+  for(const [index,widthPx] of SCOPED_WIDTHS.entries()){
+    const css=rules(widthPx);
+    if(css===null)return null;
+    responsive.push('@container k-portfolio-width ('+query[index]+'){'+css+'}');
   }
-  return rules.join('');
+  return base+responsive.join('');
 }
 
 export function PortfolioCanvas({snapshot, title, standalone, simulation, width, selectedSlot, onSelectSlot, keyboardScroll,onContentWidth}: {
@@ -343,6 +355,7 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
   const actual=typeof contentWidth==='number'&&scopedThemeBreakpoint(contentWidth)?contentWidth:null;
   const widthPx=layer==='phone'?390:layer==='tablet'?768:layer==='desktop'?1440:actual??768;
   const resolved=resolveScopedTheme(head.snapshot,{mode,sectionId:selected.sectionId,slotKey:selected.slotKey,widthPx});
+  const inheritedBase=layer==='base'?resolveScopedThemeBase(head.snapshot,{mode,sectionId:selected.sectionId,slotKey:selected.slotKey,widthPx}):null;
   const entry=parsed.entries.find(item=>item.active&&item.mode===mode&&scopedScopeId(item.scope)===scopedScopeId(selected.scope));
   const explicit=(layer==='base'?entry?.base:entry?.breakpoints?.[layer])?.[tokenKey];
   const effective=resolved.tokens[tokenKey],origin=resolved.origins[tokenKey];
@@ -373,7 +386,8 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
     </select></label>
     {matched&&<><dl><div><dt>Explicit value in selected layer</dt><dd>{explicit??'Inherited'}</dd></div>
       <div><dt>Effective value at {widthPx} px{actual===widthPx?' measured':' reference width'}</dt><dd>{effective??'Renderer default / unavailable'}</dd></div>
-      <div><dt>Effective origin</dt><dd>{origin?(origin.scope.kind==='palette'?'Flat palette':scopedScopeId(origin.scope))+' · '+origin.layer:'Unavailable'}</dd></div></dl>
+      <div><dt>Effective origin</dt><dd>{origin?(origin.scope.kind==='palette'?'Flat palette':scopedScopeId(origin.scope))+' · '+origin.layer:'Unavailable'}</dd></div>
+      {inheritedBase?.status==='resolved'&&<div><dt>Base-only resolved value</dt><dd>{inheritedBase.tokens[tokenKey]??'Renderer default'}</dd></div>}</dl>
     {selected.scope.kind==='global'&&<p>The root effective value includes the active template; a narrower override may win.</p>}
     {contrast!==null&&<p role={contrast<4.5?'alert':undefined}>Effective text / surface contrast: {contrast.toFixed(2)}:1. This checks only these colors.</p>}
     {resolved.status!=='resolved'&&parsed.status!=='blocked'&&<p>Initialize or correct the global palette before editing scoped tokens.</p>}
@@ -1116,6 +1130,10 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [assets,setAssets]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerAssets']>>['data']>|null>(null);
   const [projects,setProjects]=useState<NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerProjects']>>['data']>|null>(null);
   const [error,setError]=useState('');
+  const [recordsError,setRecordsError]=useState('');
+  const [recordsPending,setRecordsPending]=useState(true);
+  const recordsFlight=useRef(true);
+  const recordsBinding=useRef<{port:SupabaseBrowserAuthPort;epoch:number}|null>(null);
   const [notice,setNotice]=useState('');
   const [projectId,setProjectId]=useState('');
   const [collection,setCollection]=useState('');
@@ -1132,18 +1150,33 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [alt,setAlt]=useState('');
   const [busy,setBusy]=useState(false);
   const [refresh,setRefresh]=useState(0);
-  useEffect(()=>{
-    let active=true;const epoch=port.reconcileOwnerSessionEpoch();setError('');setAssets(null);setProjects(null);
+  useLayoutEffect(()=>{
+    let active=true;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    const sameBinding=recordsBinding.current?.port===port&&recordsBinding.current?.epoch===epoch;
+    recordsFlight.current=true;setRecordsPending(true);setRecordsError('');
+    if(!sameBinding){setAssets(null);setProjects(null);recordsBinding.current=null;}
+    const finish=(failure:string)=>{
+      recordsBinding.current=null;setAssets(null);setProjects(null);
+      setRecordsError(failure);
+      recordsFlight.current=false;setRecordsPending(false);
+    };
     void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
       if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!assetReply.data||!projectReply.data){
-        setError(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');
-        setAssets(null);setProjects(null);return;
+        finish(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');return;
       }
+      recordsBinding.current={port,epoch};
       setAssets(assetReply.data);setProjects(projectReply.data);
-    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch){setError('Private asset records could not be loaded.');setAssets(null);setProjects(null);}});
+      recordsFlight.current=false;setRecordsPending(false);
+    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)finish('Private asset records could not be loaded.');});
     return ()=>{active=false;};
   },[port,refresh]);
+  function reloadRecords(){
+    recordsFlight.current=true;setRecordsPending(true);setRefresh(n=>n+1);
+  }
+  const recordsReady=!recordsPending&&!recordsError&&assets!==null&&projects!==null&&recordsBinding.current?.port===port;
+  const selectedProject=projects?.find(project=>project.id===projectId);
   const visible=assets?.filter(item=>!collection||item.projectId===collection)??[];
   const selected=visible.find(item=>item.id===selectedAssetId);
   // Explicitly selected target disappearing must not redirect a placement.
@@ -1151,8 +1184,10 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const uses=selected?Object.entries(snapshot.slots).filter(([,assignment])=>
     assignment.state!=='EMPTY'&&assignment.content.asset_id===selected.id):[];
   async function place(){
-    if(!selected||!target||placing||busy||placementFlight.current||uploadFlight.current||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
-    const epoch=port.reconcileOwnerSessionEpoch();placementFlight.current=true;setPlacing(true);setNotice('');
+    if(!recordsReady||recordsFlight.current||!selected||!target||placing||busy||placementFlight.current||uploadFlight.current||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(recordsBinding.current?.epoch!==epoch)return;
+    placementFlight.current=true;setPlacing(true);setNotice('');
     try{
       const placed=await onPlace(selected.id,target.key,placementAlt.trim());
       if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
@@ -1162,8 +1197,9 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(busy||uploadFlight.current||placementFlight.current||!file||!projectId||!alt.trim())return;
+    if(!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
     const epoch=port.reconcileOwnerSessionEpoch();
+    if(recordsBinding.current?.epoch!==epoch)return;
     uploadFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       const receipt=await port.uploadOwnerProjectImage(projectId,file,alt.trim());
@@ -1173,7 +1209,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
       setNotice('Image uploaded and privately registered. Public delivery remains blocked; a trusted byte attestation is still required.');
       setSelectedAssetId(receipt.data.id);setPlacementAlt(receipt.data.altText);setCollection('');
-      setAlt('');setFile(null);setUploadOpen(false);setRefresh(n=>n+1);
+      setAlt('');setFile(null);setUploadOpen(false);reloadRecords();
       const input=document.getElementById('kd-private-image-file');
       if(input instanceof HTMLInputElement)input.value='';
     }catch(cause){if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
@@ -1201,20 +1237,20 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     <section className="ws-asset-center" aria-label="Owner-private media records">
       <div className="ws-asset-toolbar">
         <span>PRIVATE ASSET CANVAS · {collection?'PROJECT COLLECTION':'ALL PROJECTS'}</span>
-        <span>{assets===null?'Count unavailable':`${visible.length} shown`} · Not public</span>
+        <span>{assets===null?'Count unavailable':`${visible.length} shown${recordsPending?' · rechecking':''}`} · Not public</span>
       </div>
-      {error&&<div role="alert" className="ws-inline-alert">{error}
-        <button className="ws-secondary" type="button" onClick={()=>setRefresh(n=>n+1)}>Retry private records</button></div>}
-      {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
-      {assets===null&&!error&&<><p role="status">Checking private assets and projects…</p>
-        <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
-      {assets?.length===0&&<div className="ws-asset-empty">
+      {recordsError&&!recordsPending&&<div role="alert" className="ws-inline-alert">{recordsError}
+        <button className="ws-secondary" type="button" onClick={reloadRecords}>Retry private records</button></div>}
+      {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
+      {(notice||recordsPending)&&<p role="status" className="ws-inline-alert">{notice}{notice&&recordsPending?' ':''}{recordsPending?(assets===null?'Checking private assets and projects…':'Rechecking private records; actions are temporarily unavailable.'):""}</p>}
+      {recordsPending&&assets===null&&<div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div>}
+      {recordsReady&&assets?.length===0&&<div className="ws-asset-empty">
         <div className="ws-asset-empty-glyph" aria-hidden="true"><span/></div>
         <h2>Your asset library is empty.</h2>
         <p>Upload an owner-private image with descriptive alt text. It stays unpublishable until trusted media validation and host gates pass.</p>
         <button type="button" className="ws-primary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
       </div>}
-      {assets!==null&&assets.length>0&&visible.length===0&&<div className="ws-asset-empty">
+      {recordsReady&&assets!==null&&assets.length>0&&visible.length===0&&<div className="ws-asset-empty">
         <h2>No images in this project.</h2><p>Choose a different owner collection or add a private image.</p>
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
       </div>}
@@ -1226,7 +1262,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
           <small>Private metadata · No public image URL</small>
         </button></li>)}</ul>}
       {assets?.length===100&&<p className="ws-asset-limits">At most 100 recent private records returned; older records may exist.</p>}
-      {assets?.length!==0&&<div className="ws-asset-add">
+      {recordsReady&&assets?.length!==0&&<div className="ws-asset-add">
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
       </div>}
       <footer className="ws-asset-center-foot">Actual private records only · No public asset serving or verified media bytes</footer>
@@ -1252,7 +1288,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
               Failed registration may leave private bytes needing administrator cleanup.
               A registered asset is not SHA-attested or publishable.</p>
             <button className="ws-primary" type="submit"
-              disabled={busy||!projects||!file||!projectId||!alt.trim()}>
+              disabled={busy||!recordsReady||!file||!selectedProject||!alt.trim()}>
               {busy?'Registering private image…':'Upload private image'}</button>
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={()=>setUploadOpen(false)}>Cancel uploader</button>
@@ -1277,7 +1313,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
             aria-invalid={!placementAlt.trim()||placementAlt.length>300}
             onChange={event=>setPlacementAlt(event.target.value)}/></label>
           <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
-          <button type="button" className="ws-primary" disabled={!target||placementDisabled||busy||placing||!placementAlt.trim()||placementAlt.length>300}
+          <button type="button" className="ws-primary" disabled={!recordsReady||!target||placementDisabled||busy||placing||!placementAlt.trim()||placementAlt.length>300}
             onClick={()=>void place()}>{placing?'Verifying placement…':target?.state==='S0'?'Replace image and stash previous':'Assign image to selected slot'}</button>
         </>}
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Register another image</button>

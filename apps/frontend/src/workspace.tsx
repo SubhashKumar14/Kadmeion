@@ -64,6 +64,41 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
 }) {
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
+  const railRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const rail = railRef.current;
+    const trigger = rail?.querySelector<HTMLButtonElement>('.ws-mobile-menu');
+    const nav = rail?.querySelector<HTMLElement>('#ws-nav');
+    if (!trigger || !nav) return;
+    // Keep this media query aligned with the compact rail in workspace.css.
+    const media = window.matchMedia('(max-width:720px)');
+    let previousFocus: Element | null = document.activeElement;
+    const rememberFocus = (event: FocusEvent) => {
+      previousFocus = event.target instanceof Element ? event.target : null;
+    };
+    const clearPointerFocus = () => { previousFocus = null; };
+    const onViewportChange = (event: MediaQueryListEvent) => {
+      // CSS can hide a focused control before the media change event fires.
+      const active = document.activeElement;
+      const focused = active === document.body ? previousFocus : active;
+      if (document.hasFocus()) {
+        if (event.matches && focused && nav.contains(focused) && !nav.getClientRects().length) {
+          trigger.focus();
+        } else if (!event.matches && focused === trigger) {
+          (nav.querySelector<HTMLAnchorElement>('[aria-current="page"]') ?? nav.querySelector<HTMLAnchorElement>('a'))?.focus();
+        }
+      }
+      if (!event.matches) setMenuOpen(false);
+    };
+    document.addEventListener('focusin', rememberFocus);
+    document.addEventListener('pointerdown', clearPointerFocus);
+    media.addEventListener('change', onViewportChange);
+    return () => {
+      document.removeEventListener('focusin', rememberFocus);
+      document.removeEventListener('pointerdown', clearPointerFocus);
+      media.removeEventListener('change', onViewportChange);
+    };
+  }, []);
   const [offline, setOffline] = useState(() => !navigator.onLine);
   useEffect(() => {
     const update = () => setOffline(!navigator.onLine);
@@ -83,7 +118,7 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       const content = document.getElementById('ws-content');
       if (content) { event.preventDefault(); content.focus(); }
     }}>Skip to workspace content</a>
-    <aside className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
+    <aside ref={railRef} className="ws-rail" aria-label="Workspace sidebar" onKeyDown={event => {
       if (event.key === 'Escape' && menuOpen) {
         setMenuOpen(false);
         const trigger = event.currentTarget.querySelector<HTMLButtonElement>('.ws-mobile-menu');
