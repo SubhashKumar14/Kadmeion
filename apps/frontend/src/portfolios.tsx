@@ -1252,9 +1252,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
   },[operation,pendingFields,sourceDirty]);
-  // Width reporting is an additive S7 canvas prop. Keep the worker delta
-  // compatible with the previous panel until S15 composes the exact peers.
-  const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth};
+  // Additive S7 props: never create a private-byte context for a simulated
+  // visitor, an unverified owner, or a device that cannot author.
+  const canvasOwner=verifiedOwner&&allowed&&!preview&&record?.id===id&&
+    port.getOwnerSessionEpoch()===verifiedOwner.epoch?
+    {port,ownerKey:JSON.stringify([verifiedOwner.id,verifiedOwner.epoch,id])}:undefined;
+  const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth,privateMedia:canvasOwner,
+    onAddFirstSection:canvasOwner&&!saving&&!recoveryBusy?()=>{
+      const view=latestRecovery.current;
+      if(!view||!draftCurrent(view)||view.preview)return;
+      setTool('Content');setSectionPicker(true);
+    }:undefined};
   const themeControls={contentWidth:measuredCanvasWidth,disabled:!allowed||!verifiedOwner||preview||saving||recoveryBusy||pendingFields||sourceDirty};
   const contentPreview = <PortfolioCanvas {...canvasMeasurement} snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
