@@ -487,6 +487,70 @@ export class SupabasePrivateAccountDataExporter {
     requireCondition(object(raw)&&isUuid(raw.id),'UNVERIFIED','Owner identity was not verified.');
     return {id:raw.id,email:typeof raw.email==='string'?raw.email:null};
   }
+  /** Retained owner-visible GitHub records only. Never fetch external provider data. */
+  async exportProviderFactsAnnex():Promise<PrivateOwnerAnnexArtifact>{
+    const jwt=await this.accessToken();
+    requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const deadline=performance.now()+30_000;
+    const sameSession=async()=>{
+      requireCondition(await this.accessToken()===jwt,'AUTH_EXPIRED','The account session changed.');
+      requireCondition(performance.now()<deadline,'PROVIDER_UNAVAILABLE','The provider annex exceeded its preparation deadline.');
+      return jwt;
+    };
+    const scoped=new SupabasePrivateAccountDataExporter(this.origin,this.publishableKey,sameSession,this.http);
+    const owner=await scoped.owner();
+    const list=async()=>{
+      const raw=await scoped.json('/rest/v1/private_platform_links?select=id,owner_user_id,provider,handle&owner_user_id=eq.'+
+        encodeURIComponent(owner.id)+'&provider=eq.GITHUB&order=id.asc&limit=21',65536);
+      requireCondition(Array.isArray(raw)&&raw.length<=20,'LIMIT_EXCEEDED','GitHub link inventory exceeds the bounded annex limit of 20.');
+      const ids=new Set<string>(),links:{id:string;handle:string}[]=[];
+      for(const row of raw){
+        requireCondition(object(row)&&exactFields(row,['id','owner_user_id','provider','handle'])&&
+          row.owner_user_id===owner.id&&row.provider==='GITHUB'&&isUuid(row.id)&&!ids.has(row.id)&&
+          typeof row.handle==='string'&&row.handle.length>=2&&row.handle.length<=39&&/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(row.handle),
+          'INTEGRITY','Invalid or foreign provider link inventory.');
+        ids.add(row.id);links.push({id:row.id,handle:row.handle});
+      }
+      return links;
+    };
+    const {parseProviderState}=await import('../../contracts/src/private-provider-facts-service.ts');
+    const read=async(link:{id:string;handle:string})=>{
+      const raw=await scoped.json('/rest/v1/rpc/read_owner_github_provider_state',65536,{p_link_id:link.id});
+      let state:ReturnType<typeof parseProviderState>;
+      try{state=parseProviderState(raw,owner.id,link.id);}
+      catch{throw new PrivateAccountExportError('INTEGRITY','Provider annex state was not verified.');}
+      requireCondition(state.handle===link.handle,'UNVERIFIED','Provider link changed while exporting retained facts.');
+      // Do not export credentials, raw responses, quota counters, leases or
+      // operation/session identifiers. Candidate is explicitly unconfirmed.
+      return {linkId:state.linkId,provider:state.provider,handle:state.handle,version:state.version,
+        consent:state.consent,status:state.status,facts:state.facts,candidate:state.candidate,
+        candidateExpiresAt:state.candidateExpiresAt,lastAttemptAt:state.lastAttemptAt,
+        lastError:state.lastError,freshness:state.freshness,ownershipVerified:false};
+    };
+    const links=await list(),records=[];
+    for(const link of links)records.push(await read(link));
+    // Re-read every revision and link identity before returning local bytes.
+    // No claim of a cross-domain atomic snapshot or current upstream data.
+    for(let i=0;i<links.length;i++){
+      const current=await read(links[i]!);
+      requireCondition(JSON.stringify(current)===JSON.stringify(records[i]),
+        'UNVERIFIED','Provider consent or retained facts changed during export.');
+    }
+    requireCondition(JSON.stringify(await list())===JSON.stringify(links),'UNVERIFIED','Provider link inventory changed during export.');
+    requireCondition((await scoped.owner()).id===owner.id,'AUTH_EXPIRED','The account changed during provider export.');
+    const now=new Date();
+    requireCondition(records.every(r=>r.candidateExpiresAt===null||Date.parse(r.candidateExpiresAt)>now.getTime()),
+      'UNVERIFIED','An unconfirmed provider candidate expired during export.');
+    const bytes=encoder.encode(JSON.stringify({kind:'KADMEION_GITHUB_FACTS_ANNEX',schemaVersion:1,
+      scope:'OWNER_RETAINED_GITHUB_FACTS',ownerUserId:owner.id,asOfUtc:now.toISOString(),records,
+      limitations:{completeAccountExport:false,externalProviderDataIncluded:false,ownershipVerified:false,
+        crossTableAtomicSnapshot:false,operationalQuotaValuesIncluded:false,backupErasureVerified:false,deletionAllowed:false}}));
+    enforceExportBudget(0,bytes.byteLength,1024*1024);
+    const digest=await sha256(bytes);
+    await sameSession();
+    return {filename:'kadmeion-github-facts-annex.json',mime:'application/json',bytes,sha256:digest,
+      records:records.length,status:'BOUNDED_OWNER_ANNEX',completeAccountExport:false,deletionAllowed:false};
+  }
   /** Separate exported data annex, not a snapshot-bound or complete account archive. */
   async exportAnalyticsAnnex():Promise<PrivateOwnerAnnexArtifact>{
     const jwt=await this.accessToken();
