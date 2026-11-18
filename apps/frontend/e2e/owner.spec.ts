@@ -4114,3 +4114,95 @@ test('B16 WF-012 uncertain paged match requires exact owner readback after closi
   expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug='r7-exact-uncertain-record';",owner.id)).toBe('1');
   expect(writes).toBe(1);
 });
+
+test('B16 R10 exact private frozen history comparison, source ZIP reopen and mismatch denial',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local authenticated browser and actual frozen owner pins only.');
+  test.setTimeout(140_000);
+  if(process.env.VITE_SUPABASE_URL!==origin)throw new Error('Refusing nonlocal release test.');
+  const owner=await localUser('R10 frozen history owner'),foreign=await localUser('R10 frozen history outsider');
+  const title='R10 two immutable revisions',a='R10 exact frozen alpha',b='R10 exact frozen beta';
+  await signIn(page,owner);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Arc',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill(title);
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const staging=editorPath.replace('/edit','/staging'),releases=editorPath.replace('/edit','/releases');
+  const save=async(value:string)=>{
+    await page.getByLabel('Text content').fill(value);
+    await page.getByRole('button',{name:'Apply text',exact:true}).click();
+    await page.getByRole('button',{name:'Save draft',exact:true}).click();
+    await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  };
+  const freeze=async(revision:number)=>{
+    await page.goto(staging);
+    const select=page.getByRole('combobox',{name:'Saved revision',exact:true});
+    await expect(select).toBeEnabled();
+    await select.selectOption(String(revision));
+    await page.getByRole('button',{name:'Freeze private revision',exact:true}).click();
+    await expect(page.getByRole('status').filter({hasText:'Private revision '+revision+' frozen.'})).toBeVisible();
+  };
+  await save(a);await freeze(2);
+  await page.goto(editorPath);await save(b);await freeze(3);
+  await page.goto(releases);
+  const history=page.getByRole('group',{name:'Frozen private requests'});
+  const pick=async(revision:number)=>{
+    const row=history.locator('li').filter({hasText:'Private revision '+revision+' ·'});
+    await expect(row).toHaveCount(1);
+    const selected=row.getByRole('button',{name:'Frozen request selected',exact:true});
+    if(!await selected.isVisible())await row.getByRole('button',{name:'Use frozen revision '+revision,exact:true}).click();
+    await expect(selected).toHaveAttribute('aria-pressed','true');
+    await expect(page.getByRole('heading',{name:'Compare private revision '+revision,exact:true})).toBeVisible();
+  };
+  await pick(2);
+  await page.getByRole('button',{name:'Compare frozen revision with saved draft',exact:true}).click();
+  const comparison=page.locator('[aria-label="Verified private snapshot comparison"]');
+  await expect(comparison.getByRole('status')).toHaveText('Private frozen revision 2 compared with saved draft revision 3.');
+  await comparison.locator('summary').filter({hasText:/Component slots: [1-9]/}).click();
+  await expect(comparison.getByText('arc-hero-title',{exact:true})).toBeVisible();
+  await comparison.getByText('Open owner-private visual comparison',{exact:true}).click();
+  await expect(comparison.getByText(a,{exact:true})).toBeVisible();
+  await expect(comparison.getByText(b,{exact:true})).toBeVisible();
+  const target=page.getByRole('combobox',{name:'Other frozen request',exact:true});
+  await target.selectOption({label:(await target.locator('option').filter({hasText:/^Revision 3 ·/}).textContent())!});
+  await page.getByRole('button',{name:'Compare two frozen requests',exact:true}).click();
+  await expect(comparison.getByRole('status')).toHaveText('Private frozen revision 2 compared with frozen revision 3.');
+  const download=async(revision:number,expected:string)=>{
+    await page.getByLabel('I understand this ZIP contains private editable source.').check();
+    const [receipt]=await Promise.all([page.waitForEvent('download',{timeout:20000}),page.getByRole('button',{name:'Download editable frozen project ZIP',exact:true}).click()]);
+    expect(receipt.suggestedFilename()).toBe('kadmeion-editable-frozen-revision-'+revision+'.zip');
+    const file=await receipt.path();if(!file)throw Error('Missing actual frozen source archive.');
+    const bytes=await readFile(file);
+    expect(importPortfolioSourceZip(new Uint8Array(bytes)).slots['arc-hero-title'].content.title).toBe(expected);
+    return bytes;
+  };
+  const first=await download(2,a);
+  const reopen=page.getByRole('group',{name:'Reopen editable frozen archive'});
+  const selectArchive=async(bytes:Buffer)=>{
+    await reopen.getByLabel('Editable source ZIP').setInputFiles({name:'frozen.zip',mimeType:'application/zip',buffer:bytes});
+  };
+  await selectArchive(first);
+  await expect(reopen.getByRole('status')).toContainText('Archive contents match the frozen snapshot:');
+  await expect(reopen.locator('code')).toHaveText(createHash('sha256').update(first).digest('hex'));
+  const corrupt=Buffer.from(first);corrupt[50]^=1;
+  await selectArchive(corrupt);
+  await expect(reopen.getByRole('alert')).toContainText('No project was changed.');
+  await pick(3);
+  await selectArchive(first);
+  await expect(reopen.getByRole('alert')).toContainText('No project was changed.');
+  const second=await download(3,b);
+  expect(createHash('sha256').update(second).digest('hex')).not.toBe(createHash('sha256').update(first).digest('hex'));
+  await selectArchive(second);
+  await expect(reopen.getByRole('status')).toContainText('Archive contents match the frozen snapshot:');
+  await expect(reopen.locator('code')).toHaveText(createHash('sha256').update(second).digest('hex'));
+  await expect(page.getByRole('button',{name:'Copy public link unavailable',exact:true})).toBeDisabled();
+  await page.goto(editorPath);await expect(page.getByLabel('Text content')).toHaveValue(b);
+  const outsider=await browser.newPage({baseURL:'http://127.0.0.1:5173'});
+  try{
+    await signIn(outsider,foreign);await outsider.goto(releases);
+    await expect(outsider.getByRole('alert')).toContainText('Portfolio unavailable.');
+    await expect(outsider.getByRole('group',{name:'Frozen private requests'})).toHaveCount(0);
+    await expect(outsider.getByRole('button',{name:'Download editable frozen project ZIP'})).toHaveCount(0);
+  }finally{await outsider.close();}
+});
