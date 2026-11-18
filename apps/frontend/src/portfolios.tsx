@@ -169,6 +169,28 @@ function sameDraftSnapshot(a:PortfolioSnapshot|null,b:PortfolioSnapshot|null):bo
   return !!a&&!!b&&stableDraftValue(a)===stableDraftValue(b);
 }
 
+/** Keep placement and pin binding within the same raster limits as the
+ * owner transport and private canvas. A compressed-size limit alone is not
+ * a decoded-pixel limit. This decoder is never a server attestation. */
+async function decodeVerifiedOwnerRaster(blob:Blob):Promise<{width:number;height:number}>{
+  const probe=new Image(),url=URL.createObjectURL(blob);
+  let deadline:number|undefined;
+  try{
+    probe.src=url;
+    await Promise.race([probe.decode(),new Promise<never>((_,reject)=>{
+      deadline=window.setTimeout(()=>reject(new Error('Image decode timed out.')),10000);
+    })]);
+    const width=probe.naturalWidth,height=probe.naturalHeight;
+    if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<1||height<1||
+       width>8192||height>8192||width*height>24_000_000)
+      throw new Error('Private raster dimensions exceed the verified limits.');
+    return {width,height};
+  }finally{
+    if(deadline!==undefined)window.clearTimeout(deadline);
+    probe.removeAttribute('src');URL.revokeObjectURL(url);
+  }
+}
+
 export function portfolioIdFromRoute(path: string): string | undefined {
   return /^\/app\/portfolios\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:edit|preview(?:\/fullscreen)?)$/i.exec(path)?.[1]?.toLowerCase();
 }
@@ -1206,7 +1228,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     try{
       const response=await view.port.listOwnerAssets();
       if(!draftCurrent(view)||latestRecovery.current?.tool!=='Assets'||latestRecovery.current.preview)return false;
-      const asset=response.data?.find(row=>row.id===assetId);
+      const candidates=response.data?.filter(row=>row.id===assetId);
+      const asset=candidates?.length===1?candidates[0]:undefined;
       if(response.error||!asset||!['image/png','image/jpeg','image/webp'].includes(asset.mime)||
          !Number.isSafeInteger(asset.size)||asset.size<1||asset.size>5*1024*1024){
         setError('Current owner image registration could not be verified. No slot was changed.');return false;
@@ -1242,24 +1265,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(digest!==data.integrity.computedSha256){
         setError('Image bytes do not match the verified digest. Existing assignment was kept.');return false;
       }
-      const probe=new Image();
-      const url=URL.createObjectURL(data.bytes);
-      let deadline:number|undefined;
-      try{
-        probe.src=url;
-        await Promise.race([probe.decode(),new Promise<never>((_,reject)=>{
-          deadline=window.setTimeout(()=>reject(new Error('Image decode timed out.')),10000);
-        })]);
-        if(!bound())return false;
-        if(!Number.isSafeInteger(probe.naturalWidth)||!Number.isSafeInteger(probe.naturalHeight)||
-          probe.naturalWidth<1||probe.naturalHeight<1)throw new Error('Empty image decode.');
-      }catch{
-        if(bound())setError('The private raster could not be decoded. Existing assignment was kept.');
+      try{await decodeVerifiedOwnerRaster(data.bytes);}
+      catch{
+        if(bound())setError('The private raster could not be decoded within the verified limits. Existing assignment was kept.');
         return false;
-      }finally{
-        if(deadline!==undefined)window.clearTimeout(deadline);
-        probe.removeAttribute('src');
-        URL.revokeObjectURL(url);
       }
       if(!bound())return false;
       const old=view.head.snapshot.slots[target];
@@ -1321,6 +1330,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(!bound())return;
       if(bytes.byteLength!==asset.size||digest!==data.integrity.computedSha256)
         throw new Error('The server-pinned bytes disagree with the exact readback.');
+      const dimensions=await decodeVerifiedOwnerRaster(data.bytes);
+      if(!bound())return;
       if(assignment.content.source_sha256&&assignment.content.source_sha256!==digest)
         throw new Error('The existing frozen source pin differs. Replace the private image explicitly; no pin was overwritten.');
       if(assignment.content.source_sha256===digest){
@@ -1330,7 +1341,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       // working transaction. Neither this client nor this field is authority.
       recoveryLock.current=false;
       if(apply({kind:'UPDATE_CONTENT',slotKey:target,content:{source_sha256:digest}}))
-        setNotice('Verified server image pin bound to the working slot. Save draft before freezing. Publication remains subject to independent release checks.');
+        setNotice('Verified server image pin bound to the working slot. Save draft before freezing. Publication remains subject to independent release checks.'+
+          (asset.mime!=='image/png'||dimensions.width>4096||dimensions.height>4096?
+            ' The current frozen static PNG builder cannot export this raster format or size.':''));
+
     }catch(cause){
       if(bound())setError(cause instanceof Error?cause.message:'Server image pin could not be verified.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
