@@ -1,5 +1,5 @@
 import { normalizeExternalHttpsUrl } from '../../contracts/src/project.ts';
-import { validateSnapshot, parseScopedTheme, resolveScopedTheme, scopedThemeCssVariables, type ScopedThemeTarget, type PortfolioSnapshot } from './portfolio-revision-transactions.ts';
+import { validateSnapshot, parseScopedTheme, resolveScopedTheme, resolveScopedThemeBase, scopedThemeCssVariables, type ScopedThemeTarget, type PortfolioSnapshot } from './portfolio-revision-transactions.ts';
 import {portfolioLayout} from './managed-project-files.ts';
 
 /** Trusted, TEXT-ONLY private preview; not a release renderer or public access proof. */
@@ -371,17 +371,17 @@ export function prepareSafeStaticPreview(
           if(!html)return '';
           const slotSelector='k-theme-slot-'+ordinal++;
           nodes.push({selector:'.'+slotSelector,target:{mode,sectionId:section.id,slotKey:key}});
-          return '<div class="k-theme-node '+slotSelector+'">'+html+'</div>';
+          return '<div class="k-theme-node '+slotSelector+(html.startsWith('<section>')?' k-theme-section-slot':'')+'">'+html+'</div>';
         }).join('');
         return '<section class="k-theme-node '+sectionSelector+' k-layout k-'+section.layout.toLowerCase()+
           '" data-layout="'+section.layout+'" data-section="'+section.id+'">'+slots+'</section>';
       }).join('');
       // All selectors are generated ordinals and all values pass the same
       // typed validation used by the editor. Never serialize user CSS.
-      const rules=(widthPx:number):string=>{
+      const rules=(widthPx:number,baseOnly=false):string=>{
         let css='';
         for(const node of nodes){
-          const resolved=resolveScopedTheme(input.snapshot,{...node.target,widthPx});
+          const resolved=(baseOnly?resolveScopedThemeBase:resolveScopedTheme)(input.snapshot,{...node.target,widthPx});
           if(resolved.status!=='resolved'){
             block('UNSUPPORTED_SCOPED_TARGET','theme/tokens.json','A trusted scoped theme target cannot be resolved.');
             return '';
@@ -393,12 +393,14 @@ export function prepareSafeStaticPreview(
       };
       scopedRoot=true;
       scopedStyle='.k-theme-container{container-name:k-portfolio-width;container-type:inline-size;width:100%;min-width:0;writing-mode:horizontal-tb}'+
-        '.k-theme-root,.k-theme-node{background:var(--k-theme-surface);color:var(--k-theme-text);font-size:var(--k-theme-font-size,inherit);line-height:var(--k-theme-line-height,inherit);font-weight:var(--k-theme-font-weight,inherit);border-radius:var(--k-theme-radius,0);padding:var(--k-theme-spacing,0)}'+
+        '.k-theme-root,.k-theme-node{background:var(--k-theme-surface);color:var(--k-theme-text);font-size:var(--k-theme-font-size,inherit);line-height:var(--k-theme-line-height,inherit);font-weight:var(--k-theme-font-weight,inherit);border-radius:var(--k-theme-radius,0)}'+
+        '.k-theme-root{padding:var(--k-theme-spacing,0)}.k-theme-node.k-layout{padding:var(--k-theme-spacing,clamp(1rem,3vw,2rem))}.k-theme-node:not(.k-layout){padding:var(--k-theme-spacing,0);min-width:0}'+
+        '.k-theme-root .k-l2>.k-theme-section-slot:first-child,.k-theme-root .k-l3>.k-theme-section-slot:first-child,.k-theme-root .k-l4>.k-theme-section-slot:first-child{grid-column:1/-1}'+
         '.k-theme-root.k-theme-root,.k-theme-node.k-layout{border-color:var(--k-theme-accent)}'+
-        '.k-theme-root a{color:var(--k-theme-accent)}'+
-        '@container k-portfolio-width (width <= 600px){'+rules(390)+'}'+
-        '@container k-portfolio-width (600px < width <= 950px){'+rules(768)+'}'+
-        '@container k-portfolio-width (width > 950px){'+rules(1440)+'}';
+        '.k-theme-root a{color:var(--k-theme-accent)}'+rules(768,true)+
+        '@container k-portfolio-width (width <= 600px){.k-theme-root :is(.k-l2,.k-l3,.k-l4){grid-template-columns:1fr}'+rules(390)+'}'+
+        '@container k-portfolio-width (600px < width <= 950px){.k-theme-root :is(.k-l2,.k-l3,.k-l4){grid-template-columns:repeat(2,minmax(0,1fr))}'+rules(768)+'}'+
+        '@container k-portfolio-width (width > 950px){.k-theme-root :is(.k-l2,.k-l4){grid-template-columns:repeat(2,minmax(0,1fr))}.k-theme-root .k-l3{grid-template-columns:repeat(3,minmax(0,1fr))}'+rules(1440)+'}';
     }
   }
 
