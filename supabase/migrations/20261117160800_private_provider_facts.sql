@@ -149,6 +149,44 @@ end;$$;
 revoke all on function public.read_owner_github_provider_state(uuid) from public,anon,authenticated,service_role;
 grant execute on function public.read_owner_github_provider_state(uuid) to authenticated;
 
+-- Separate bounded current-owner application annex. It does not change the
+-- v1/v2 account metadata or ZIP schemas, claim provider authenticity, or grant
+-- deletion authority. Exact inventory and optional exit request scope required.
+create function public.owner_export_github_provider_annex_v1(p_snapshot_id uuid,p_expected_request_id uuid)
+returns jsonb language plpgsql security definer set search_path='' set lock_timeout='250ms' as $$
+declare
+ o uuid:=auth.uid();sess uuid:=kadmeion_private.require_live_exit_auth_session();
+ inventory public.private_account_exit_inventory_snapshots;t timestamptz;items jsonb;result jsonb;
+begin
+ perform kadmeion_private.github_lock_owner(o,sess,false);
+ inventory:=kadmeion_private.require_inventory_v2(p_snapshot_id,p_expected_request_id);
+ if inventory.owner_user_id is distinct from o then
+   raise exception using errcode='42501',message='OWNER_DENIED';
+ end if;
+ t:=clock_timestamp();
+ select coalesce(jsonb_agg(item.state order by item.link_id),'[]'::jsonb) into items
+ from (
+   select l.id as link_id,kadmeion_private.github_state_json(l,s,t) as state
+   from public.private_platform_links l
+   left join kadmeion_private.github_provider_state s on s.link_id=l.id
+   where l.owner_user_id=o and l.provider='GITHUB'
+   order by l.id limit 2
+ ) item;
+ if jsonb_array_length(items)>1 then
+   raise exception using errcode='54000',message='PROVIDER_ANNEX_LIMIT_EXCEEDED';
+ end if;
+ result:=jsonb_build_object('status','PROVIDER_FACTS_ANNEX','schemaVersion',1,
+   'ownerId',o,'snapshotId',inventory.id,'requestId',inventory.request_id,'capturedAt',t,
+   'sourceMode','ISOLATED_LOCAL','states',items,'providerAuthenticityVerified',false,
+   'completeAccountExport',false,'crossTableAtomicSnapshot',false,'deletionAllowed',false);
+ if octet_length(result::text)>16384 then
+   raise exception using errcode='54000',message='PROVIDER_ANNEX_LIMIT_EXCEEDED';
+ end if;
+ return result;
+end;$$;
+revoke all on function public.owner_export_github_provider_annex_v1(uuid,uuid) from public,anon,authenticated,service_role;
+grant execute on function public.owner_export_github_provider_annex_v1(uuid,uuid) to authenticated;
+
 create function kadmeion_private.github_change(p_link_id uuid,p_action text,p_expected_version bigint,p_operation_id uuid,p_policy_version smallint) returns jsonb language plpgsql security definer set search_path='' set lock_timeout='250ms' as $$
 declare o uuid:=auth.uid();sess uuid:=kadmeion_private.require_live_exit_auth_session();l public.private_platform_links;s kadmeion_private.github_provider_state;t timestamptz;
 begin
