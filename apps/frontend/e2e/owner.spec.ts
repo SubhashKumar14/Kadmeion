@@ -1346,6 +1346,11 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
   await expect(drawer.getByLabel('Summary (optional)')).toHaveValue('Preserve this private form on conflict');
   await expect(drawer).toBeVisible();
+  // Paired S2 consumer fences uncertain insert receipts; require real lookup first.
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await drawer.getByRole('button',{name:'Check saved project before retry'}).click();
+  await expect(drawer.getByRole('alert')).toContainText('No matching saved project was found');
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeEnabled();
   await drawer.getByRole('button',{name:'Save project'}).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
@@ -2991,7 +2996,7 @@ test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreig
     const receipt=await signed.json();
     if(typeof receipt.access_token!=='string')throw new Error('Local foreign owner token absent.');
     const leak=await fetch(origin+storageRead!,{headers:{apikey:key,Authorization:'Bearer '+receipt.access_token},redirect:'error'});
-    expect(leak.ok()).toBe(false);await leak.body?.cancel();
+    expect(leak.ok).toBe(false);expect([400,401,403,404]).toContain(leak.status);await leak.body?.cancel();
   }finally{await isolated.close();}
   const remove=avatar.getByRole('button',{name:'Remove avatar selection'});
   await expect(remove).toBeDisabled();
