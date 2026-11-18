@@ -172,3 +172,38 @@ export function hasPrivateNoindexMeta(html, expectedTag) {
     ? /^<meta\s+name="robots"\s+content="noindex(?:,nofollow(?:,noarchive)?)?"\s*\/?>$/i.test(robotTags[0])
     : robotTags[0] === expectedTag;
 }
+
+/** Bound both headers and body; never accept a redirected or late receipt. */
+export async function withDeliveryRpc(http,target,init,consume) {
+  const url=new URL(target).href;
+  const controller=new AbortController();
+  const started=performance.now();
+  let response,timer,headerTimer;
+  const deadline=new Promise((_,reject)=>{
+    timer=setTimeout(()=>{reject(Error('Delivery RPC deadline'));controller.abort();},10_000);
+  });
+  try {
+    const operation=(async()=>{
+      const headerDeadline=new Promise((_,reject)=>{
+        headerTimer=setTimeout(()=>{reject(Error('Delivery RPC header timeout'));controller.abort();},5000);
+      });
+      const pending=Promise.resolve().then(()=>http(target,{...init,signal:controller.signal,redirect:'error',cache:'no-store',credentials:'omit'})).then(received=>{
+        if(controller.signal.aborted){cancelRpcBody(received.body);throw Error('Delivery RPC expired');}
+        return received;
+      });
+      response=await Promise.race([pending,headerDeadline]);
+      clearTimeout(headerTimer);
+      if(controller.signal.aborted||performance.now()-started>=5000||response.redirected||
+         (response.url!==''&&response.url!==url)){
+        cancelRpcBody(response.body);throw Error('Delivery RPC response not verified');
+      }
+      const value=await consume(response);
+      if(controller.signal.aborted||performance.now()-started>=10_000)throw Error('Delivery RPC deadline');
+      return value;
+    })();
+    return await Promise.race([operation,deadline]);
+  } finally {
+    clearTimeout(timer);clearTimeout(headerTimer);controller.abort();
+    if(response?.body&&!response.body.locked)cancelRpcBody(response.body);
+  }
+}
