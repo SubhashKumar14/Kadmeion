@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyEditorTransaction, createEditorHead, createPortfolioPresetDraft, restoreHistoricalSnapshot, savedComponentInputFromOwnedSlot, planSectionLayoutChange, type LayoutMappingRequest, type ChangeSectionLayoutIntent, type RestoreLayoutStashIntent, type EditorHead, type PortfolioSnapshot } from '../../packages/editor-core/src/index.ts';
 
+import {parseScopedTheme,resolveScopedTheme,scopedThemeBreakpoint,scopedThemeCssVariables,type EditScopedThemeIntent} from '../../packages/editor-core/src/portfolio-revision-transactions.ts';
+
 const make = (): EditorHead => createEditorHead({
   formatVersion:1,
   files:{'kadmeion.json':'{"formatVersion":1}', 'pages/home.page.json':'{}'},
@@ -513,4 +515,72 @@ test('C10 legacy owned CSS or unknown pin may stash without relocation; overflow
   assert.throws(()=>planSectionLayoutChange(tooMany,request),{code:'VALIDATION'});
   assert.throws(()=>c10Apply(tooMany,intent),{code:'VALIDATION'});
   assert.deepEqual(tooMany,held);
+});
+
+const scopedFixture=()=>{
+  const snapshot=createPortfolioPresetDraft('arc');
+  const raw={mode:'light',surface:'#f9f9f9',text:'#222222',accent:'#111111',
+    authorModePalettes:{dark:{surface:'#18181b',text:'#fafafa',accent:'#ce8f56'}},
+    scopedTokens:{version:1,light:[
+      {scope:{kind:'global'},base:{accent:'#123456',spacingPx:12},breakpoints:{phone:{accent:'#654321'}}},
+      {scope:{kind:'template',id:'arc'},base:{fontSizePx:24}},
+      {scope:{kind:'section',id:'arc-hero'},base:{accent:'#abcdef'},breakpoints:{tablet:{spacingPx:20}}},
+      {scope:{kind:'component',id:'arc-hero-title'},base:{fontWeight:600},breakpoints:{phone:{accent:'#fedcba'}}},
+      {scope:{kind:'component',id:'orphan-private'},base:{unknownPrivate:'preserve-only'}}
+    ]}};
+  snapshot.files['theme/tokens.json']=JSON.stringify(raw);
+  return {head:createEditorHead(snapshot),raw};
+};
+test('C10 R4 shared resolver applies exact content-width boundaries and authoritative scope precedence',()=>{
+  const {head}=scopedFixture(),snapshot=head.snapshot;
+  const target={mode:'light' as const,sectionId:'arc-hero',slotKey:'arc-hero-title'};
+  for(const [width,bucket,accent,spacing] of [[600,'phone','#fedcba',12],[600.01,'tablet','#abcdef',20],
+    [950,'tablet','#abcdef',20],[950.01,'desktop','#abcdef',12]] as const){
+    assert.equal(scopedThemeBreakpoint(width),bucket);
+    const resolution=resolveScopedTheme(snapshot,{...target,widthPx:width});
+    assert.equal(resolution.status,'resolved');assert.equal(resolution.breakpoint,bucket);
+    assert.equal(resolution.tokens.accent,accent);assert.equal(resolution.tokens.spacingPx,spacing);
+    assert.equal(resolution.tokens.fontSizePx,24);assert.equal(resolution.tokens.fontWeight,600);
+    assert.equal(scopedThemeCssVariables(resolution.tokens)['--k-theme-spacing'],spacing+'px');
+  }
+  for(const width of [0,-1,NaN,Infinity])assert.equal(scopedThemeBreakpoint(width),null);
+  assert.equal(resolveScopedTheme(snapshot,{mode:'dark',widthPx:600}).tokens.surface,'#18181b');
+  assert.equal(resolveScopedTheme(snapshot,{...target,sectionId:'contact',widthPx:600}).status,'blocked');
+  assert.equal(parseScopedTheme(snapshot).status,'valid');
+  assert.ok(parseScopedTheme(snapshot).issues.some(i=>i.code==='UNSUPPORTED_ORPHAN'));
+  assert.equal(JSON.stringify(resolveScopedTheme(snapshot,{...target,widthPx:600}).tokens).includes('preserve-only'),false);
+});
+test('C10 R4 typed set/reset, operation replay, stale edit and single Undo preserve unrelated private bytes',()=>{
+  const {head,raw}=scopedFixture(),before=structuredClone(head);
+  const intent:EditScopedThemeIntent={kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',
+    scope:{kind:'component',id:'arc-hero-title'},layer:'phone',edit:{kind:'reset',key:'accent'}};
+  const command=op(head,intent);
+  const changed=applyEditorTransaction(head,command);
+  assert.equal(changed.revision,head.revision+1);
+  assert.equal(changed.undo.length,head.undo.length+1);
+  assert.equal(resolveScopedTheme(changed.snapshot,{mode:'light',slotKey:'arc-hero-title',widthPx:600}).tokens.accent,'#abcdef');
+  assert.deepEqual(JSON.parse(changed.snapshot.files['theme/tokens.json']).scopedTokens.light.at(-1),raw.scopedTokens.light.at(-1));
+  assert.deepEqual(applyEditorTransaction(changed,command),changed);
+  assert.throws(()=>applyEditorTransaction(changed,op(changed,intent)),{code:'REVISION_CONFLICT'});
+  const set:EditScopedThemeIntent={...intent,expectedRevision:changed.revision,edit:{kind:'set',key:'accent',value:'#123abc'}};
+  const next=applyEditorTransaction(changed,op(changed,set));
+  assert.equal(resolveScopedTheme(next.snapshot,{mode:'light',slotKey:'arc-hero-title',widthPx:600}).tokens.accent,'#123abc');
+  assert.deepEqual(applyEditorTransaction(next,op(next,{kind:'UNDO'})).snapshot,changed.snapshot);
+  assert.deepEqual(applyEditorTransaction(changed,op(changed,{kind:'UNDO'})).snapshot,before.snapshot);
+  assert.deepEqual(head,before);
+});
+test('C10 R4 rejects unsafe active tokens without normalizing input or allowing raw managed-write bypass',()=>{
+  const {head,raw}=scopedFixture();
+  for(const base of [{accent:'url(https://unsafe.invalid)'},{fontSizePx:73},{lineHeight:0.5},{fontWeight:450},{radiusPx:33},{spacingPx:-1},{unknown:true}]){
+    const snapshot=structuredClone(head.snapshot);
+    snapshot.files['theme/tokens.json']=JSON.stringify({...raw,scopedTokens:{version:1,light:[{scope:{kind:'global'},base}]}});
+    const before=structuredClone(snapshot);
+    assert.equal(parseScopedTheme(snapshot).status,'blocked');
+    assert.equal(resolveScopedTheme(snapshot,{mode:'light',widthPx:600}).status,'blocked');
+    assert.deepEqual(snapshot,before);
+  }
+  const before=structuredClone(head);
+  assert.throws(()=>applyEditorTransaction(head,op(head,{kind:'WRITE_MANAGED_FILE',path:'theme/tokens.json',
+    source:JSON.stringify({...raw,scopedTokens:{version:1,light:[]}})})),{code:'VALIDATION'});
+  assert.deepEqual(head,before);
 });

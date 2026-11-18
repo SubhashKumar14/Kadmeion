@@ -44,12 +44,16 @@ export interface StaticPreviewArchive {
  * No editor files, private asset URLs, scripts, user-owned TSX or credentials
  * are copied into this archive. It is not input to the public host publisher.
  */
-export async function exportStandaloneStaticPreview(input:SafePreviewInput):Promise<StaticPreviewArchive> {
+export async function exportStandaloneStaticPreview(input:SafePreviewInput,expectedPreviewHtml?:string):Promise<StaticPreviewArchive> {
   const result=prepareSafeStaticPreview(input);
   if(result.status!=='PREVIEW_ONLY'||result.publicationReady!==false||!result.previewHtml||
     result.blockers.length!==1||result.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')
     throw new ContractError('VALIDATION','Private static preview preflight is not valid.');
   assertCanonicalSlotOrder(input);
+  // Bind a download to its already-reviewed preflight output when supplied.
+  // Compare before writing ZIP bytes or returning any integrity receipt.
+  if(expectedPreviewHtml!==undefined&&result.previewHtml!==expectedPreviewHtml)
+    throw new ContractError('VALIDATION','Static preview no longer matches the reviewed preflight.');
   const html=encoder.encode(result.previewHtml);
   const htmlSha256=await sha256(html);
   // Export deliberately omits owner ID, raw snapshot SHA, access tokens and project paths.
