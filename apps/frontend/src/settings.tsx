@@ -537,6 +537,52 @@ function LinkedMethods({port}: {port:SupabaseBrowserAuthPort}){
   </SettingsCard>;
 }
 
+type EmailVerificationState='CONFIRMED'|'UNCONFIRMED'|'UNKNOWN';
+type EmailVerificationPort={
+  reconcileOwnerSessionEpoch():number;
+  getUser():Promise<{data:{user:{id:string;email?:string;email_confirmed_at?:string|null}|null}|null;error?:{message:string}|null}>;
+};
+async function readOwnerEmailVerification(port:EmailVerificationPort,epoch:number):Promise<EmailVerificationState>{
+  if(port.reconcileOwnerSessionEpoch()!==epoch)throw new Error('Owner session changed.');
+  const result=await port.getUser();
+  if(port.reconcileOwnerSessionEpoch()!==epoch||result.error||!result.data?.user)
+    throw new Error('Email verification status could not be confirmed.');
+  const user=result.data.user;
+  if(typeof user.email!=='string'||!user.email.trim())return 'UNKNOWN';
+  if(user.email_confirmed_at===null)return 'UNCONFIRMED';
+  return typeof user.email_confirmed_at==='string'&&Number.isFinite(Date.parse(user.email_confirmed_at))?'CONFIRMED':'UNKNOWN';
+}
+
+function EmailVerification({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const [attempt,setAttempt]=useState(0);
+  const [result,setResult]=useState<{attempt:number;state:EmailVerificationState|null}|null>(null);
+  const visible=result?.attempt===attempt?result:null;
+  const running=useRef(true);
+  useEffect(()=>{
+    let active=true;running.current=true;
+    const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
+    void readOwnerEmailVerification(port,epoch).then(state=>{
+      if(current())setResult({attempt,state});
+    }).catch(()=>{
+      if(current())setResult({attempt,state:null});
+    }).finally(()=>{if(current())running.current=false;});
+    return()=>{active=false;};
+  },[port,epoch,attempt]);
+  const label=visible?.state==='CONFIRMED'?'Email confirmation reported by the authentication provider.':
+    visible?.state==='UNCONFIRMED'?'The provider reports that email confirmation is pending.':
+    'The provider did not return conclusive email confirmation evidence.';
+  return <SettingsCard title="Email verification">
+    {!visible&&<p role="status">Checking email verification…</p>}
+    {visible?.state===null?<p role="alert">Email verification could not be checked. Retry when available.</p>:
+      visible&&<p role="status">{label}</p>}
+    <p>This is private account evidence. It does not grant a public verification badge or establish a password sign-in method.</p>
+    <button type="button" className="ws-secondary" disabled={!visible} onClick={()=>{
+      if(!running.current&&port.reconcileOwnerSessionEpoch()===epoch){running.current=true;setAttempt(value=>value+1);}
+    }}>{visible?.state===null?'Retry email verification':'Refresh email verification'}</button>
+  </SettingsCard>;
+}
+
 function acquireSecurityAction(lock:{current:boolean},isCurrent:()=>boolean):boolean{
   if(lock.current||!isCurrent())return false;
   lock.current=true;
@@ -624,6 +670,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
           onClick={() => {setConfirmOthers(false); otherSessionsTrigger.current?.focus();}}>Cancel</button>
       </div>}</SettingsCard>
     <LinkedMethods port={port}/>
+    <EmailVerification port={port}/>
     </div>
     <section className="ws-security-guidance" aria-labelledby="security-guidance-title">
       <h2 id="security-guidance-title">Security confirmations</h2>
