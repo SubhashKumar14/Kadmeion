@@ -408,24 +408,59 @@ export class SupabasePrivateModerationService {
   }
   async listOwnerCases(): Promise<OwnerModerationCase[]> {
     const raw = await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at&order=created_at.desc&limit=50');
-    if (!Array.isArray(raw) || raw.length > 50)
+    return this.ownerCaseRows(raw,50);
+  }
+  /** Bounded owner-only keyset page over existing RLS-protected records.
+   * UUID ordering is stable across identical timestamps; never infer that a
+   * short page includes cases written after the read. */
+  async listOwnerCasePage(after:string|null=null,max=25):Promise<OwnerModerationCase[]>{
+    if(after!==null)requireUUID(after);
+    if(!Number.isSafeInteger(max)||max<1||max>50)
+      throw new ContractError('VALIDATION','Invalid owner case page size.');
+    const cursor=after?.toLowerCase()??null;
+    const raw=await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at'+
+      (cursor===null?'':'&id=gt.'+cursor)+'&order=id.asc&limit='+max);
+    const rows=this.ownerCaseRows(raw,max);
+    let previous=cursor;
+    for(const row of rows){
+      const id=row.id.toLowerCase();
+      if(previous!==null&&id<=previous)
+        throw new PrivateModerationError('INVALID_ACK','Invalid owner case cursor ordering.');
+      previous=id;
+    }
+    return rows;
+  }
+  private ownerCaseRows(raw:unknown,max:number):OwnerModerationCase[]{
+    if (!Array.isArray(raw) || raw.length > max)
       throw new PrivateModerationError('INVALID_ACK','Invalid private case list.');
+    const seen=new Set<string>();
     return raw.map((entry: unknown): OwnerModerationCase => {
       if (!isRecord(entry) || !isUUID(entry.id) || !isEnum(entry.reason_code,REASONS) ||
           !isEnum(entry.status,STATUSES) || !isDate(entry.created_at) ||
           !isDate(entry.updated_at) || typeof entry.summary !== 'string' ||
           entry.summary.length > 500 || entry.summary.trim().length < 20)
         throw new PrivateModerationError('INVALID_ACK','Invalid private case metadata.');
+      const key=entry.id.toLowerCase();
+      if(seen.has(key))throw new PrivateModerationError('INVALID_ACK','Duplicate private case metadata.');
+      seen.add(key);
       return {id:entry.id,reason_code:entry.reason_code,summary:entry.summary,
         status:entry.status,created_at:entry.created_at,updated_at:entry.updated_at};
     });
   }
-  async listOwnerEvents(): Promise<OwnerModerationEvent[]> {
-    const raw = await this.request('private_moderation_events?select=id,case_id,actor_user_id,event_type,detail,created_at&order=created_at.desc&limit=100');
+  async listOwnerEvents(caseId?:string): Promise<OwnerModerationEvent[]> {
+    // The existing owner-role/RLS read remains authoritative. A selected case
+    // receives its own bounded event history instead of filtering a global
+    // 100-event page that may contain no events for older cases.
+    if(caseId!==undefined)requireUUID(caseId);
+    const query='private_moderation_events?select=id,case_id,actor_user_id,event_type,detail,created_at'+
+      (caseId===undefined?'&order=created_at.desc':'&case_id=eq.'+caseId+'&order=created_at.desc,id.desc')+
+      '&limit=100';
+    const raw = await this.request(query);
     if (!Array.isArray(raw) || raw.length > 100)
       throw new PrivateModerationError('INVALID_ACK','Invalid private event list.');
     return raw.map((entry: unknown): OwnerModerationEvent => {
       if (!isRecord(entry) || !isUUID(entry.id) || !isUUID(entry.case_id) ||
+          (caseId!==undefined && entry.case_id!==caseId) ||
           (entry.actor_user_id !== null && !isUUID(entry.actor_user_id)) ||
           !isEnum(entry.event_type,EVENTS) || !isDate(entry.created_at) ||
           typeof entry.detail !== 'string' || entry.detail.length > 2000 ||

@@ -31,24 +31,33 @@ type Props = {service: SupabasePrivateModerationService; cases: OperatorModerati
 // The server remains the authority; this gate only synchronizes form submissions
 // and discards completions from a panel that has been removed or reverified.
 function useScopedActionGate(scope: object) {
-  const active = useRef(false);
+  const active = useRef<object|null>(null);
   const pending = useRef<symbol|null>(null);
   useLayoutEffect(() => {
-    active.current = true;
-    return () => { active.current = false; pending.current = null; };
+    active.current = scope;
+    pending.current = null;
+    return () => {
+      if(active.current===scope){active.current=null;pending.current=null;}
+    };
   }, [scope]);
   return {
+    invalidate(): boolean {
+      if(active.current!==scope)return false;
+      active.current=null;
+      pending.current=null;
+      return true;
+    },
     begin(): symbol|null {
-      if (!active.current || pending.current !== null) return null;
+      if (active.current!==scope || pending.current !== null) return null;
       const token = Symbol();
       pending.current = token;
       return token;
     },
     current(token: symbol): boolean {
-      return active.current && pending.current === token;
+      return active.current===scope && pending.current === token;
     },
     finish(token: symbol): boolean {
-      if (!active.current || pending.current !== token) return false;
+      if (active.current!==scope || pending.current !== token) return false;
       pending.current = null;
       return true;
     }
@@ -69,26 +78,34 @@ function Users({service, cases, committed, recheck}: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const gate = useScopedActionGate(service);
+  const [retry,setRetry]=useState<{target:string;operation:string;reason:ModerationReason;summary:string}|null>(null);
+  const [conflict,setConflict]=useState(false);
   const filtered = cases.filter(item =>
     item.targetUserId.toLowerCase().includes(query.trim().toLowerCase()) ||
     item.caseId.toLowerCase().includes(query.trim().toLowerCase()));
   async function open(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !confirmed || summary.trim().length < 20) return;
+    if (busy || conflict || (!retry&&(!confirmed || summary.trim().length < 20))) return;
+    const submitted=retry??{target:target.trim(),operation,reason,summary:summary.trim()};
     const token = gate.begin();
     if (token === null) return;
     setBusy(true);setError('');
     try {
-      const receipt = await service.openCase(target.trim(), operation, reason, summary);
+      const receipt = await service.openCase(submitted.target,submitted.operation,submitted.reason,submitted.summary);
       if (!gate.current(token)) return;
       if (receipt.status !== 'OPEN' || receipt.restrictionEnforced !== false)
         throw new Error('Audit-only case receipt was not confirmed.');
-      setOperation(crypto.randomUUID());setTarget('');setSummary('');setConfirmed(false);
+      setRetry(null);setConflict(false);setOperation(crypto.randomUUID());setTarget('');setSummary('');setConfirmed(false);
       committed('Private audit case recorded. No account restriction or public suspension was performed.');
     } catch (error) {
       if (gate.current(token)) {
         if (accessMustBeRechecked(error)) recheck();
-        else setError(errorMessage(error));
+        else if(!retry&&error instanceof Error&&'code' in error&&error.code==='VALIDATION'){
+          setConfirmed(false);setError('The case was rejected as invalid. Review the details.');
+        }else{
+          setRetry(submitted);setConflict(error instanceof Error&&'code' in error&&error.code==='CONFLICT');
+          setError('The case outcome is unconfirmed. Retry the exact request or reload the case list.');
+        }
       }
     } finally {if (gate.finish(token)) setBusy(false);}
   }
@@ -112,23 +129,24 @@ function Users({service, cases, committed, recheck}: Props) {
       <p>Opening a case creates an audit record, not an account ban, content edit, or verified public takedown.</p>
       <form className="ws-ops-form" onSubmit={event => void open(event)}>
         <label className="ws-ops-field">Exact target user ID
-          <input required pattern={uuidPattern} value={target} disabled={busy} onChange={event => {setTarget(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}
+          <input required pattern={uuidPattern} value={target} disabled={busy||!!retry} onChange={event => {setTarget(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}
             autoComplete="off" placeholder="UUID from a verified report"/></label>
         <label className="ws-ops-field">Documented reason
-          <select value={reason} disabled={busy} onChange={event => {setReason(event.target.value as ModerationReason);setOperation(crypto.randomUUID());setConfirmed(false);}}>
+          <select value={reason} disabled={busy||!!retry} onChange={event => {setReason(event.target.value as ModerationReason);setOperation(crypto.randomUUID());setConfirmed(false);}}>
             {reasons.map(item => <option key={item} value={item}>{item}</option>)}
           </select></label>
         <label className="ws-ops-field">Case summary
-          <textarea required minLength={20} maxLength={500} value={summary} rows={5} disabled={busy}
+          <textarea required minLength={20} maxLength={500} value={summary} rows={5} disabled={busy||!!retry}
             onChange={event => {setSummary(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed} disabled={busy}
+        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed} disabled={busy||!!retry}
           onChange={event => setConfirmed(event.target.checked)}/>
           I confirm the serious-abuse scope and understand this is audit-only.
         </label>
         {error && <p role="alert" className="ws-inline-alert">{error}</p>}
-        <button type="submit" className="ws-primary" disabled={busy || !confirmed || summary.trim().length < 20}>
-          {busy ? 'Recording…' : 'Record private case'}
+        <button type="submit" className="ws-primary" disabled={busy || conflict || (!retry&&(!confirmed || summary.trim().length < 20))}>
+          {busy ? 'Recording…' : retry?'Retry exact case':'Record private case'}
         </button>
+        {retry&&<button type="button" className="ws-secondary" disabled={busy} onClick={recheck}>Reload cases (outcome unverified)</button>}
       </form>
     </section>
   </div>;
@@ -154,6 +172,8 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
   const [portfolio, setPortfolio] = useState('');
   const [holdConfirmed, setHoldConfirmed] = useState(false);
   const [holdOperation, setHoldOperation] = useState(() => crypto.randomUUID());
+  const [holdRetry,setHoldRetry]=useState<{caseId:string;portfolioId:string;operation:string}|null>(null);
+  const [holdConflict,setHoldConflict]=useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const gate = useScopedActionGate(service);
@@ -163,7 +183,7 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
   }
   // Keep one bounded page. Every page is a fresh role-checked RPC.
   async function loadPage(after:string|null) {
-    if(busy||selected||uncertain)return;
+    if(busy||selected||uncertain||holdRetry)return;
     const token=gate.begin();
     if(token===null)return;
     setBusy(true);setPageError('');setFailedCursor(null);
@@ -181,7 +201,7 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
   }
   async function review(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(busy||reviewConflict)return;
+    if(busy||reviewConflict||holdRetry)return;
     if(!uncertain&&(!selected||!confirmed||rationale.trim().length<20||
       !page.rows.some(report=>report.id===selected)))return;
     // The server's replay identity is actor+report+decision+trimmed rationale.
@@ -216,21 +236,27 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
   }
   async function hold(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!holdConfirmed || busy || !!selected || !!uncertain) return;
+    if ((!holdRetry&&!holdConfirmed) || busy || !!selected || !!uncertain || holdConflict) return;
+    const submitted=holdRetry??{caseId:holdCase,portfolioId:portfolio.trim(),operation:holdOperation};
     const token = gate.begin();
     if (token === null) return;
     setBusy(true);setError('');
     try {
-      const receipt = await service.blockPrivatePortfolio(holdCase, portfolio, holdOperation);
+      const receipt = await service.blockPrivatePortfolio(submitted.caseId,submitted.portfolioId,submitted.operation);
       if (!gate.current(token)) return;
       if (!receipt.stillBlocked || receipt.publicServingEnabled !== false)
         throw new Error('Unverified hold receipt.');
-      setHoldConfirmed(false);setPortfolio('');setHoldOperation(crypto.randomUUID());
+      setHoldRetry(null);setHoldConflict(false);setHoldConfirmed(false);setPortfolio('');setHoldOperation(crypto.randomUUID());
       committed('Case-bound private portfolio hold confirmed. This is NOT public host revocation.');
     } catch (error) {
       if (gate.current(token)) {
         if (accessMustBeRechecked(error)) recheck();
-        else setError(errorMessage(error));
+        else if(!holdRetry&&error instanceof Error&&'code' in error&&error.code==='VALIDATION'){
+          setHoldConfirmed(false);setError('The hold request was rejected as invalid. Review the target.');
+        }else{
+          setHoldRetry(submitted);setHoldConflict(error instanceof Error&&'code' in error&&error.code==='CONFLICT');
+          setError('The hold outcome is unconfirmed. Retry the exact hold or reload before another action.');
+        }
       }
     } finally {if (gate.finish(token)) setBusy(false);}
   }
@@ -242,19 +268,19 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
       {page.rows.length===0&&<p>{page.after===null?'No pending abuse reports were returned.':'No further pending reports were returned.'}</p>}
       {pageError&&<p role="alert">{pageError}</p>}
       <div className="ws-ops-nav" aria-label="Report queue pages">
-        <button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain}
+        <button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain||!!holdRetry}
           onClick={()=>void loadPage(null)}>{page.after===null?'Refresh first page':'Return to first page'}</button>
         {page.rows.length===pageSize&&<button type="button" className="ws-secondary"
-          disabled={busy||!!selected||!!uncertain}
+          disabled={busy||!!selected||!!uncertain||!!holdRetry}
           onClick={()=>void loadPage(page.rows[page.rows.length-1]!.id)}>Next reports</button>}
-        {failedCursor&&<button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain}
+        {failedCursor&&<button type="button" className="ws-secondary" disabled={busy||!!selected||!!uncertain||!!holdRetry}
           onClick={()=>void loadPage(failedCursor.after)}>Retry requested page</button>}
       </div>
       <ul className="ws-ops-records">{page.rows.map(report => <li key={report.id}>
         <strong>{report.reason_code} · {report.target_path}</strong>
         <small>{dateText(report.created_at)}</small>
         <p className="ws-ops-evidence">{report.evidence}</p>
-        <button type="button" className="ws-secondary" aria-pressed={selected === report.id} disabled={busy||!!uncertain||!!selected}
+        <button type="button" className="ws-secondary" aria-pressed={selected === report.id} disabled={busy||!!uncertain||!!selected||!!holdRetry}
           onClick={() => {setSelected(report.id);setRationale('');setConfirmed(false);setReviewError('');}}>Review report</button>
       </li>)}</ul>
       {selected && <form className="ws-ops-form" onSubmit={event => void review(event)}>
@@ -292,13 +318,14 @@ function Moderation({service, cases, reports, committed, recheck}: Props & {
             <option key={item.caseId} value={item.caseId}>{item.caseId} ({item.status})</option>)}
         </select></label>
         <label className="ws-ops-field">Private portfolio ID
-          <input required pattern={uuidPattern} value={portfolio} disabled={busy} onChange={event => {setPortfolio(event.target.value);setHoldConfirmed(false);setHoldOperation(crypto.randomUUID());}}/>
+          <input required pattern={uuidPattern} value={portfolio} disabled={busy||!!holdRetry} onChange={event => {setPortfolio(event.target.value);setHoldConfirmed(false);setHoldOperation(crypto.randomUUID());}}/>
         </label>
-        <label className="ws-ops-confirm"><input type="checkbox" checked={holdConfirmed} required disabled={busy}
+        <label className="ws-ops-confirm"><input type="checkbox" checked={holdConfirmed} required disabled={busy||!!holdRetry}
           onChange={event => setHoldConfirmed(event.target.checked)}/>Apply only a case-bound private hold.</label>
         {error && <p role="alert">{error}</p>}
-        <button className="ws-primary" type="submit" disabled={!holdCase || !holdConfirmed || busy || !!selected || !!uncertain}>
-          {busy ? 'Applying…' : 'Apply private hold'}</button>
+        <button className="ws-primary" type="submit" disabled={busy || !!selected || !!uncertain || holdConflict || (!holdRetry&&(!holdCase || !holdConfirmed))}>
+          {busy ? 'Applying…' : holdRetry?'Retry exact hold':'Apply private hold'}</button>
+        {holdRetry&&<button type="button" className="ws-secondary" disabled={busy} onClick={recheck}>Reload case state (outcome unverified)</button>}
       </form>
     </section>
   </div>;
@@ -320,6 +347,8 @@ function Appeals({service, cases, committed, recheck}: Props) {
   const [liftReason, setLiftReason] = useState('');
   const [liftConfirm, setLiftConfirm] = useState(false);
   const [liftOperation, setLiftOperation] = useState(() => crypto.randomUUID());
+  const [retry,setRetry]=useState<{kind:'close';caseId:string;operation:string;rationale:string}|{kind:'lift';caseId:string;portfolioId:string;operation:string;rationale:string}|null>(null);
+  const [conflict,setConflict]=useState(false);
   useEffect(()=>{
     let active=true;
     setEvidence(null);
@@ -337,40 +366,52 @@ function Appeals({service, cases, committed, recheck}: Props) {
   },[service,chosen,evidenceAttempt,recheck]);
   async function close(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!chosen || evidence?.caseId!==chosen || !confirmed || rationale.trim().length < 20 || busy) return;
+    if(busy||conflict||retry?.kind==='lift'||(!retry&&(!chosen || evidence?.caseId!==chosen || !confirmed || rationale.trim().length < 20)))return;
+    const submitted=retry?.kind==='close'?retry:{kind:'close' as const,caseId:chosen,operation,rationale:rationale.trim()};
     const token = gate.begin();
     if (token === null) return;
     setBusy(true);setError('');
     try {
-      const receipt = await service.closeCase(chosen, operation, rationale);
+      const receipt = await service.closeCase(submitted.caseId,submitted.operation,submitted.rationale);
       if (!gate.current(token)) return;
       if (receipt.status !== 'CLOSED' || receipt.restrictionEnforced !== false)
         throw new Error('Unverified case closure.');
-      setOperation(crypto.randomUUID());setChosen('');setRationale('');setConfirmed(false);
+      setRetry(null);setConflict(false);setOperation(crypto.randomUUID());setChosen('');setRationale('');setConfirmed(false);
       committed('Case closed with an audit decision. No public release or account restoration was asserted.');
     } catch (error) {
       if (gate.current(token)) {
         if (accessMustBeRechecked(error)) recheck();
-        else setError(errorMessage(error));
+        else if(!retry&&error instanceof Error&&'code' in error&&error.code==='VALIDATION'){
+          setError('The case action was rejected as invalid. Review the details.');
+        }else{
+          setRetry(submitted);setConflict(error instanceof Error&&'code' in error&&error.code==='CONFLICT');
+          setError('The action outcome is unconfirmed. Retry the exact action or reload before continuing.');
+        }
       }
     } finally {if (gate.finish(token)) setBusy(false);}
   }
   async function lift(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!liftCase || !liftConfirm || liftReason.trim().length < 20 || busy) return;
+    if(busy||conflict||retry?.kind==='close'||(!retry&&(!liftCase || !liftConfirm || liftReason.trim().length < 20)))return;
+    const submitted=retry?.kind==='lift'?retry:{kind:'lift' as const,caseId:liftCase,portfolioId:holdPortfolio.trim(),operation:liftOperation,rationale:liftReason.trim()};
     const token = gate.begin();
     if (token === null) return;
     setBusy(true);setError('');
     try {
-      const receipt = await service.liftPrivateHold(liftCase, holdPortfolio, liftOperation, liftReason);
+      const receipt = await service.liftPrivateHold(submitted.caseId,submitted.portfolioId,submitted.operation,submitted.rationale);
       if (!gate.current(token)) return;
       if (receipt.publicServingEnabled !== false) throw new Error('Unverified release state.');
-      setLiftCase('');setHoldPortfolio('');setLiftReason('');setLiftConfirm(false);setLiftOperation(crypto.randomUUID());
+      setRetry(null);setConflict(false);setLiftCase('');setHoldPortfolio('');setLiftReason('');setLiftConfirm(false);setLiftOperation(crypto.randomUUID());
       committed('Private hold released after case review; public delivery remains blocked.');
     } catch (error) {
       if (gate.current(token)) {
         if (accessMustBeRechecked(error)) recheck();
-        else setError(errorMessage(error));
+        else if(!retry&&error instanceof Error&&'code' in error&&error.code==='VALIDATION'){
+          setError('The case action was rejected as invalid. Review the details.');
+        }else{
+          setRetry(submitted);setConflict(error instanceof Error&&'code' in error&&error.code==='CONFLICT');
+          setError('The action outcome is unconfirmed. Retry the exact action or reload before continuing.');
+        }
       }
     } finally {if (gate.finish(token)) setBusy(false);}
   }
@@ -382,7 +423,7 @@ function Appeals({service, cases, committed, recheck}: Props) {
       <ul className="ws-ops-records">{cases.filter(item => item.status === 'APPEAL_PENDING').map(item => <li key={item.caseId}>
         <strong>{item.reasonCode} · Appeal pending</strong><span>Case {item.caseId}</span>
         <span>Owner ID {item.targetUserId}</span>
-        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{
+        <button type="button" className="ws-secondary" disabled={busy||!!retry} onClick={()=>{
           if(chosen===item.caseId)return;
           setChosen(item.caseId);setEvidence(null);setEvidenceError(false);
           setConfirmed(false);setRationale('');setError('');setOperation(crypto.randomUUID());
@@ -391,7 +432,7 @@ function Appeals({service, cases, committed, recheck}: Props) {
       </li>)}</ul>
       {chosen && !evidence && (evidenceError ? <div>
         <p role="alert">Evidence could not be verified. A decision requires the owner statement.</p>
-        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>{setConfirmed(false);setEvidenceAttempt(value=>value+1);}}>Retry appeal evidence</button>
+        <button type="button" className="ws-secondary" disabled={busy||!!retry} onClick={()=>{setConfirmed(false);setEvidenceAttempt(value=>value+1);}}>Retry appeal evidence</button>
       </div> : <p role="status">Loading private appeal evidence…</p>)}
       {evidence?.caseId===chosen && <form className="ws-ops-form" onSubmit={event => void close(event)}>
         <h3>Resolve a verified case</h3>
@@ -399,33 +440,34 @@ function Appeals({service, cases, committed, recheck}: Props) {
           <dt>Owner statement</dt><dd>{evidence.statement}</dd>
           <dt>Submitted</dt><dd><time dateTime={evidence.submittedAt}>{dateText(evidence.submittedAt)}</time></dd></dl>
         <label className="ws-ops-field">Decision rationale<textarea required rows={4} minLength={20} maxLength={2000}
-          value={rationale} disabled={busy} onChange={event => {setRationale(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed} disabled={busy}
+          value={rationale} disabled={busy||!!retry} onChange={event => {setRationale(event.target.value);setOperation(crypto.randomUUID());setConfirmed(false);}}/></label>
+        <label className="ws-ops-confirm"><input type="checkbox" required checked={confirmed} disabled={busy||!!retry}
           onChange={event => setConfirmed(event.target.checked)}/>Close only the selected audited case.</label>
         {error && <p role="alert">{error}</p>}
-        <button className="ws-primary" disabled={busy || !confirmed || rationale.trim().length < 20} type="submit">
-          {busy ? 'Recording…' : 'Record case decision'}</button>
+        <button className="ws-primary" disabled={busy||conflict||retry?.kind==='lift'||(!retry&&(!confirmed||rationale.trim().length<20))} type="submit">
+          {busy ? 'Recording…' : retry?.kind==='close'?'Retry exact decision':'Record case decision'}</button>
       </form>}
     </section>
     <section className="ws-project-aside">
       <h2>Internal hold release</h2>
       <p>Administrator-only. Requires a resolved case and a matching private portfolio hold. This does not republish content.</p>
       <form className="ws-ops-form" onSubmit={event => void lift(event)}>
-        <label className="ws-ops-field">Resolved case<select required value={liftCase} disabled={busy}
+        <label className="ws-ops-field">Resolved case<select required value={liftCase} disabled={busy||!!retry}
           onChange={event => {setLiftCase(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}>
           <option value="">Select closed case</option>
           {cases.filter(item => item.status === 'CLOSED').map(item =>
             <option key={item.caseId} value={item.caseId}>{item.caseId}</option>)}
         </select></label>
         <label className="ws-ops-field">Portfolio ID
-          <input required value={holdPortfolio} pattern={uuidPattern} disabled={busy} onChange={event => {setHoldPortfolio(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}/></label>
+          <input required value={holdPortfolio} pattern={uuidPattern} disabled={busy||!!retry} onChange={event => {setHoldPortfolio(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}/></label>
         <label className="ws-ops-field">Hold-release rationale<textarea required minLength={20} maxLength={2000}
-          rows={4} value={liftReason} disabled={busy} onChange={event => {setLiftReason(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}/></label>
-        <label className="ws-ops-confirm"><input type="checkbox" checked={liftConfirm} required disabled={busy}
+          rows={4} value={liftReason} disabled={busy||!!retry} onChange={event => {setLiftReason(event.target.value);setLiftConfirm(false);setLiftOperation(crypto.randomUUID());}}/></label>
+        <label className="ws-ops-confirm"><input type="checkbox" checked={liftConfirm} required disabled={busy||!!retry}
           onChange={event => setLiftConfirm(event.target.checked)}/>No public publication is authorized by this action.</label>
         {error && <p role="alert">{error}</p>}
-        <button type="submit" className="ws-primary" disabled={busy || !liftConfirm || !liftCase || liftReason.trim().length < 20}>
-          {busy ? 'Recording…' : 'Release private hold'}</button>
+        <button type="submit" className="ws-primary" disabled={busy||conflict||retry?.kind==='close'||(!retry&&(!liftConfirm||!liftCase||liftReason.trim().length<20))}>
+          {busy ? 'Recording…' : retry?.kind==='lift'?'Retry exact release':'Release private hold'}</button>
+        {retry&&<button type="button" className="ws-secondary" disabled={busy} onClick={recheck}>Reload cases (outcome unverified)</button>}
       </form>
     </section>
   </div>;
@@ -521,10 +563,13 @@ const ownerEventTitle = {OPENED:'Case opened',OWNER_APPEAL:'Appeal submitted',
 
 export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   const [attempt,setAttempt]=useState(0);
-  const scope=useMemo(()=>({port,attempt}),[port,attempt]);
+  const [cursorState,setCursorState]=useState<{port:SupabaseBrowserAuthPort;after:string|null}|null>(null);
+  const after=cursorState?.port===port?cursorState.after:null;
+  const pageSize=25;
+  const scope=useMemo(()=>({port,attempt,after}),[port,attempt,after]);
   const [loaded,setLoaded]=useState<{
     scope:typeof scope;service:SupabasePrivateModerationService;
-    cases:OwnerModerationCase[];events:OwnerModerationEvent[];
+    cases:OwnerModerationCase[];
   }|null>(null);
   const records=loaded?.scope===scope?loaded:null;
   // Preserve the selected case across this owner's post-appeal refresh, but
@@ -543,6 +588,13 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   const [messageState,setMessage]=useState<{port:SupabaseBrowserAuthPort;error:boolean;text:string}|null>(null);
   const message=messageState?.port===port?messageState:null;
   const current=records?.cases.find(item=>item.id===selected);
+  const currentId=current?.id??null;
+  const [eventAttempt,setEventAttempt]=useState(0);
+  const [eventState,setEventState]=useState<{
+    scope:typeof scope;caseId:string;attempt:number;events:OwnerModerationEvent[]|null;
+  }|null>(null);
+  const caseEvents=eventState?.scope===scope && eventState.caseId===currentId &&
+    eventState.attempt===eventAttempt ? eventState : null;
   useEffect(()=>{
     let active=true;
     setLoaded(null);
@@ -552,12 +604,36 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
     void (async()=>{
       const {data:service}=await port.privateModeration();
       if (!service) throw new Error('Owner moderation service unavailable.');
-      const [cases,events]=await Promise.all([service.listOwnerCases(),service.listOwnerEvents()]);
-      if (active) setLoaded({scope,service,cases,events});
+      const cases=await service.listOwnerCasePage(after,pageSize);
+      if (active) setLoaded({scope,service,cases});
     })().catch(()=>{if(active) setFailedScope(scope);});
     return ()=>{active=false;};
-  },[scope,port]);
+  },[scope,port,after]);
+  useLayoutEffect(()=>{
+    let active=true;
+    setEventState(null);
+    if(!records || !currentId)return ()=>{active=false;};
+    void records.service.listOwnerEvents(currentId).then(events=>{
+      if(active)setEventState({scope,caseId:currentId,attempt:eventAttempt,events});
+    }).catch(error=>{
+      if(!active)return;
+      if(accessMustBeRechecked(error)){
+        // Fail closed and wait for explicit re-verification; do not loop on
+        // a denied event endpoint when the case-list endpoint still responds.
+        if(gate.invalidate()){
+          setPendingScope(null);setLoaded(null);setFailedScope(scope);
+        }
+      }else setEventState({scope,caseId:currentId,attempt:eventAttempt,events:null});
+    });
+    return ()=>{active=false;};
+  },[scope,records,currentId,eventAttempt]);
 
+  function openCasePage(cursor:string|null){
+    if(busy||retry||!records||cursor===after)return;
+    if(!gate.invalidate())return;
+    setSelection(null);setStatement('');setMessage(null);setOperation(crypto.randomUUID());
+    setCursorState({port,after:cursor});setAttempt(value=>value+1);
+  }
   async function appeal(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || !records || !current || current.status!=='OPEN' || statement.trim().length<20) return;
@@ -611,10 +687,17 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       {!records && !loadError && <p role="status">Loading your private cases…</p>}
       {loadError && <><p role="alert">Your cases could not be verified.</p>
         <button className="ws-secondary" type="button" onClick={()=>setAttempt(value=>value+1)}>Retry cases</button></>}
-      {records?.cases.length===0 && <p>There are no cases for this account.</p>}
+      {records?.cases.length===0 && <p>{after===null?'No cases were returned for this account.':'No further cases were returned.'}</p>}
+      {records && <div className="ws-ops-nav" aria-label="Owner case pages">
+        <p>Cases are ordered by case ID, not recency. New cases may appear on a fresh read.</p>
+        <button type="button" className="ws-secondary" disabled={busy||!!retry||after===null} onClick={()=>openCasePage(null)}>First cases</button>
+        <button type="button" className="ws-secondary" disabled={busy||!!retry||records.cases.length!==pageSize}
+          onClick={()=>{const last=records.cases.at(-1);if(last)openCasePage(last.id);}}>Next cases</button>
+      </div>}
       {!!records?.cases.length && <label className="ws-ops-field">Case to review
         <select value={selected} disabled={busy||!!retry} onChange={event=>{
           if(busy||retry)return;
+          setEventState(null);setEventAttempt(value=>value+1);
           setSelection({port,id:event.target.value});setStatement('');setMessage(null);setOperation(crypto.randomUUID());
         }}>
           <option value="">Choose a case</option>
@@ -626,8 +709,15 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       {current && <>
         <h3>{ownerCaseStatus[current.status]}</h3>
         <p>{current.summary}</p>
+        {!caseEvents && <p role="status">Loading this case's events…</p>}
+        {caseEvents && caseEvents.events===null && <div>
+          <p role="alert">This case's events could not be verified.</p>
+          <button type="button" className="ws-secondary" disabled={busy} onClick={()=>setEventAttempt(value=>value+1)}>Retry case events</button>
+        </div>}
+        {caseEvents?.events?.length===0 && <p>No events were returned for this case.</p>}
+        {caseEvents?.events?.length===100 && <p>Showing the latest 100 events for this case.</p>}
         <ol className="ws-ops-records" aria-label="Case events">
-          {records?.events.filter(item=>item.case_id===current.id).map(item=><li key={item.id}>
+          {caseEvents?.events?.map(item=><li key={item.id}>
             <strong>{ownerEventTitle[item.event_type]}</strong>
             <time dateTime={item.created_at}>{dateText(item.created_at)}</time><p>{item.detail}</p>
           </li>)}
