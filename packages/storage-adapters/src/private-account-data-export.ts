@@ -141,7 +141,7 @@ function verifyV2ProfileAssets(records:JsonObject,ownerId:string):void {
       'byte_size','alt_text','state','storage_object_id','storage_version','created_at','registered_at'])&&
       isUuid(item.id)&&item.owner_user_id===ownerId&&isUuid(item.operation_id)&&
       item.object_path===ownerId+'/profile/'+item.operation_id+'.img'&&
-      ['image/png','image/jpeg','image/webp'].includes(String(item.mime_type))&&
+      typeof item.mime_type==='string'&&['image/png','image/jpeg','image/webp'].includes(item.mime_type)&&
       typeof item.byte_size==='number'&&Number.isSafeInteger(item.byte_size)&&item.byte_size>=12&&item.byte_size<=MAX_ASSET_BYTES&&
       typeof item.alt_text==='string'&&item.alt_text===item.alt_text.trim()&&
       Array.from(item.alt_text).length>=1&&Array.from(item.alt_text).length<=500&&validDate(item.created_at)&&
