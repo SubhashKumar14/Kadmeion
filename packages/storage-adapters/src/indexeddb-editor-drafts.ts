@@ -12,6 +12,8 @@ export interface EditorRecoveryPayload {
   cloudBaseRevision: number;
   /** Older v1 copies remain readable; new editor writes include the local counter. */
   localRevision?: number;
+  /** Optional v1 extension: exact bounded history, never operation replay IDs. */
+  history?: {undo:PortfolioSnapshot[];redo:PortfolioSnapshot[]};
   cloudOperationId: string | null;
   snapshot: PortfolioSnapshot;
   fieldDrafts: Record<string,string>;
@@ -56,16 +58,26 @@ function validateRecoveryStrings(value:unknown,limit:number,checkKey:(key:string
     if(typeof text!=='string')throw recoveryFailure('Recovery buffers must be text.');
   }
 }
-function validateRecoveryPayload(value:EditorRecoveryPayload):void {
+export function validateRecoveryPayload(value:EditorRecoveryPayload):void {
   if(!isPlainRecord(value)||!exactKeys(value,[
     'formatVersion','cloudBaseRevision','cloudOperationId','snapshot','fieldDrafts','sourceDrafts','seoDraft',
-    ...(Object.hasOwn(value,'localRevision')?['localRevision']:[])
+    ...(Object.hasOwn(value,'localRevision')?['localRevision']:[]),
+    ...(Object.hasOwn(value,'history')?['history']:[])
   ])||value.formatVersion!==1||!Number.isSafeInteger(value.cloudBaseRevision)||value.cloudBaseRevision<0||
      (Object.hasOwn(value,'localRevision')&&
       (!Number.isSafeInteger(value.localRevision)||typeof value.localRevision!=='number'||value.localRevision<0)))
     throw recoveryFailure('Invalid recovery payload.');
   if(value.cloudOperationId!==null)assertRecoveryId(value.cloudOperationId);
   validateSnapshot(value.snapshot);
+  if(Object.hasOwn(value,'history')){
+    const history=value.history;
+    if(!isPlainRecord(history)||!exactKeys(history,['undo','redo'])||
+       !Array.isArray(history.undo)||!Array.isArray(history.redo)||
+       history.undo.length+history.redo.length>30||
+       typeof value.localRevision!=='number'||value.localRevision<history.undo.length+history.redo.length)
+      throw recoveryFailure('Invalid recovery Undo/Redo history.');
+    for(const snapshot of [...history.undo,...history.redo])validateSnapshot(snapshot);
+  }
   validateRecoveryStrings(value.fieldDrafts,500,key=>{
     if(!/^[a-z0-9_-]{1,64}:[a-z0-9_-]{1,64}$/.test(key))
       throw recoveryFailure('Invalid recovery field key.');
@@ -77,6 +89,15 @@ function validateRecoveryPayload(value:EditorRecoveryPayload):void {
     throw recoveryFailure('Invalid recovery metadata buffer.');
   if(new TextEncoder().encode(JSON.stringify(value)).byteLength>MAX_RECOVERY_BYTES)
     throw recoveryFailure('Recovery copy exceeds the browser storage limit. Preserve or export your edits before leaving.');
+}
+/** Reopen only against the current authenticated cloud base, as checked by
+ * the caller. Stale copies instead use the explicit historical-restore path.
+ * Never reinstate untrusted operation IDs or authorize a cloud retry. */
+export function recoverEditorHistory(value:EditorRecoveryPayload):EditorHead|null {
+  validateRecoveryPayload(value);
+  if(!value.history)return null;
+  return {revision:value.localRevision!,snapshot:structuredClone(value.snapshot),
+    undo:structuredClone(value.history.undo),redo:structuredClone(value.history.redo),operations:{}};
 }
 function validateStoredRecovery(value:unknown,ownerId:string,portfolioId:string,copyId?:string):EditorRecoveryCopy {
   if(!isPlainRecord(value)||!exactKeys(value,['ownerId','portfolioId','copyId','savedAt','cloudBaseRevision','payload',
