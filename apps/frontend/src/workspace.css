@@ -755,7 +755,8 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-editor-shell .ws-source-explorer,.ws-editor-shell .ws-asset-library,
 .ws-editor-shell .ws-preview-workbench{min-height:calc(100dvh - 108px)}
 }
-@media(max-width:900px){.ws-editor-theme-switch{display:none}}
+/* Match the desktop header swap even at fractional CSS widths caused by zoom. */
+@media(width < 901px){.ws-editor-theme-switch{display:none}}
 
 /* EDIT-02: keep malformed author URLs in an unsaved, accessible field buffer.
    Never quietly persist javascript:, non-HTTPS or credential-bearing links. */
