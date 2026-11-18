@@ -105,6 +105,9 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
     if (!trigger || !nav) return;
     // Keep this media query aligned with the compact rail in workspace.css.
     const media = window.matchMedia('(max-width:720px)');
+    const editorMedia = window.matchMedia('(min-width:901px)');
+    const railTheme = rail.querySelector<HTMLButtonElement>('.ws-editor-theme-switch');
+    const headerTheme = rail.closest('.ws-shell')?.querySelector<HTMLButtonElement>('.ws-topbar .ws-theme');
     let previousFocus: Element | null = document.activeElement;
     const rememberFocus = (event: FocusEvent) => {
       previousFocus = event.target instanceof Element ? event.target : null;
@@ -123,13 +126,22 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       }
       if (!event.matches) setMenuOpen(false);
     };
+    const onEditorViewportChange = (event: MediaQueryListEvent) => {
+      if (!railTheme || !headerTheme || !document.hasFocus()) return;
+      const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
+      const hidden = event.matches ? headerTheme : railTheme;
+      const visible = event.matches ? railTheme : headerTheme;
+      if (focused === hidden && visible.getClientRects().length) visible.focus();
+    };
     document.addEventListener('focusin', rememberFocus);
     document.addEventListener('pointerdown', clearPointerFocus);
     media.addEventListener('change', onViewportChange);
+    editorMedia.addEventListener('change', onEditorViewportChange);
     return () => {
       document.removeEventListener('focusin', rememberFocus);
       document.removeEventListener('pointerdown', clearPointerFocus);
       media.removeEventListener('change', onViewportChange);
+      editorMedia.removeEventListener('change', onEditorViewportChange);
     };
   }, []);
   const [offline, setOffline] = useState(() => !navigator.onLine);
