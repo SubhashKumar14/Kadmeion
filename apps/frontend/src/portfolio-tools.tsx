@@ -269,10 +269,14 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
  * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
 export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
 type CanvasMediaView={key:string|null;status:'idle'|'pending'|'failed'}|{key:string;status:'ready';url:string;pinned:boolean};
+/** Only bounded raster Blob receipts can reach an ephemeral image URL.
+ * The owner adapter still performs byte/hash, Storage identity and pin verification. */
 function validOwnerPreview(asset:AssetPreviewRecord,data:OwnerPrivateAssetRead|null|undefined,expectedDigest?:string):data is OwnerPrivateAssetRead{
-  return !!data&&data.asset.id===asset.id&&data.asset.projectId===asset.projectId&&
+  return !!data&&['image/png','image/jpeg','image/webp'].includes(asset.mime)&&
+    Number.isSafeInteger(asset.size)&&asset.size>0&&asset.size<=5*1024*1024&&
+    data.bytes instanceof Blob&&data.asset.id===asset.id&&data.asset.projectId===asset.projectId&&
     data.asset.mime===asset.mime&&data.asset.size===asset.size&&data.bytes.size===asset.size&&
-    data.bytes.type.toLowerCase()===asset.mime.toLowerCase()&&
+    data.bytes.type===asset.mime&&
     data.integrity.status==='OWNER_BYTES_VERIFIED'&&/^[a-f0-9]{64}$/.test(data.integrity.computedSha256)&&
     (expectedDigest===undefined||(/^[a-f0-9]{64}$/.test(expectedDigest)&&data.integrity.computedSha256===expectedDigest))&&
     data.publicDeliveryAllowed===false&&['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation);
@@ -479,25 +483,43 @@ function ScopedTokenControl({tokenKey,explicit,effective,disabled,revision,onEdi
   const [input,setInput]=useState(String(explicit??effective??''));
   const field=useRef<HTMLDivElement>(null);
   const previousRevision=useRef(revision);
+  const edited=useRef(false);
   useLayoutEffect(()=>{
-    if(previousRevision.current!==revision){
-      previousRevision.current=revision;setInput(String(explicit??effective??''));
+    // A resize can change an inherited value without a revision. Reflect it
+    // only when the author has not typed; never overwrite a local input on
+    // an unrelated measurement update. Undo/Redo changes the revision.
+    const revisionChanged=previousRevision.current!==revision;
+    if(revisionChanged||!edited.current){
+      previousRevision.current=revision;edited.current=false;setInput(String(explicit??effective??''));
     }
   },[revision,explicit,effective]);
+  function changeInput(value:string){edited.current=true;setInput(value);}
+  function discardInput(){edited.current=false;setInput(String(explicit??effective??''));}
   function submit(change:ScopedThemeEdit){
-    if(onEdit(change))field.current?.querySelector<HTMLElement>('input,select')?.focus();
+    if(disabled)return;
+    if(onEdit(change)){edited.current=false;field.current?.querySelector<HTMLElement>('input,select')?.focus();}
   }
   const edit=scopedSetEdit(tokenKey,input);
   const color=tokenKey==='surface'||tokenKey==='text'||tokenKey==='accent';
   const numeric=!color&&tokenKey!=='fontWeight';
-  return <div ref={field}>
-    {tokenKey==='fontWeight'?<label>Override value<select aria-label="Override value" value={input} onChange={event=>setInput(event.target.value)} disabled={disabled}>
+  return <div ref={field} onKeyDown={event=>{
+    if(event.key==='Enter'&&!disabled&&edit&&!(edit.kind==='set'&&edit.value===explicit)&&event.target instanceof HTMLInputElement&&event.target.type!=='color'){
+      event.preventDefault();event.stopPropagation();submit(edit);
+    }else if(event.key==='Escape'&&edited.current){
+      event.preventDefault();event.stopPropagation();discardInput();
+    }
+  }}>
+    {tokenKey==='fontWeight'?<label>Override value<select aria-label="Override value" value={input} onChange={event=>changeInput(event.target.value)} disabled={disabled}>
       <option value="">Choose a weight</option>{[400,500,600,700].map(value=><option key={value} value={value}>{value}</option>)}
-    </select></label>:<label>Override value<input aria-label="Override value" type={numeric?'number':'text'} value={input} onChange={event=>setInput(event.target.value)}
+    </select></label>:<label>Override value<input aria-label="Override value" type={numeric?'number':'text'} value={input} onChange={event=>changeInput(event.target.value)}
       min={tokenKey==='fontSizePx'?12:tokenKey==='lineHeight'?1:0} max={tokenKey==='fontSizePx'?72:tokenKey==='lineHeight'?2:tokenKey==='radiusPx'?32:64}
       step={tokenKey==='lineHeight'?'any':1} maxLength={color?7:undefined} placeholder={color?'#RRGGBB':'Enter a value'} disabled={disabled}
       aria-invalid={input!==''&&!edit}/></label>}
+    {color&&<label>Override color picker<input aria-label="Override color picker" type="color"
+      value={/^#[0-9a-f]{6}$/i.test(input)?input:typeof effective==='string'&&/^#[0-9a-f]{6}$/i.test(effective)?effective:'#000000'}
+      disabled={disabled} onChange={event=>changeInput(event.target.value)}/></label>}
     {input!==''&&!edit&&<p role="alert">Enter a value within the supported token bounds.</p>}
+    {input!==String(explicit??effective??'')&&<button type="button" className="ws-secondary" disabled={disabled} onClick={discardInput}>Discard unsaved token input</button>}
     <button type="button" className="ws-primary" disabled={disabled||!edit||(edit.kind==='set'&&edit.value===explicit)} onClick={()=>edit&&submit(edit)}>Apply override</button>
     <button type="button" className="ws-secondary" disabled={disabled||explicit===undefined} onClick={()=>submit({kind:'reset',key:tokenKey})}>Reset selected override</button>
   </div>;
@@ -531,7 +553,10 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
   const entry=parsed.entries.find(item=>item.active&&item.mode===mode&&scopedScopeId(item.scope)===scopedScopeId(selected.scope));
   const explicit=(layer==='base'?entry?.base:entry?.breakpoints?.[layer])?.[tokenKey];
   const effective=resolved.tokens[tokenKey],origin=resolved.origins[tokenKey];
-  const blocked=disabled||!matched||parsed.status==='blocked'||resolved.status!=='resolved';
+  // A Base edit must not copy a responsive override into the Base layer.
+  // The measured-width effective readout below remains independent.
+  const inputEffective=layer==='base'?inheritedBase?.status==='resolved'?inheritedBase.tokens[tokenKey]:undefined:effective;
+  const blocked=disabled||!matched||parsed.status==='blocked'||resolved.status!=='resolved'||(layer==='base'&&inheritedBase?.status!=='resolved');
   function edit(change:ScopedThemeEdit){
     setNotice('');
     if(blocked)return false;
@@ -563,7 +588,7 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
     {selected.scope.kind==='global'&&<p>The root effective value includes the active template; a narrower override may win.</p>}
     {contrast!==null&&<p role={contrast<4.5?'alert':undefined}>Effective text / surface contrast: {contrast.toFixed(2)}:1. This checks only these colors.</p>}
     {resolved.status!=='resolved'&&parsed.status!=='blocked'&&<p>Initialize or correct the global palette before editing scoped tokens.</p>}
-    <ScopedTokenControl key={mode+'|'+scopeId+'|'+layer+'|'+tokenKey} revision={head.revision} tokenKey={tokenKey} explicit={explicit} effective={effective} disabled={blocked} onEdit={edit}/></>}
+    <ScopedTokenControl key={mode+'|'+scopeId+'|'+layer+'|'+tokenKey} revision={head.revision} tokenKey={tokenKey} explicit={explicit} effective={inputEffective} disabled={blocked} onEdit={edit}/></>}
     {notice&&<p role="status">{notice}</p>}
     <p>Only supported trusted preview content is styled. Custom source is not executed. A reset removes this key from this layer only.</p>
   </section>;
@@ -738,6 +763,28 @@ export function SourceInspector({head,apply,back,buffers,setBuffers}:{
 export type ComponentSaveRetryState={
   pending:{signature:string;id:string;epoch:number}|null;inFlight:boolean;
 };
+/** Match the engine's unique declared slot rule. Legacy layoutless snapshots
+ * retain suffix compatibility, but malformed/ambiguous manifests do not. */
+function savedReuseSlotKind(snapshot:PortfolioSnapshot,key:string):string|null{
+  if(!key||!Object.hasOwn(snapshot.slots,key))return null;
+  try{
+    const page:unknown=JSON.parse(snapshot.files['pages/home.page.json']??'null');
+    const record=objectRecord(page);
+    if(!record||!Object.hasOwn(record,'sections'))return key.slice(key.lastIndexOf('-')+1);
+    if(!Array.isArray(record.sections))return null;
+    const kinds:string[]=[];
+    for(const raw of record.sections){
+      const section=objectRecord(raw);
+      if(!section||typeof section.id!=='string'||typeof section.layout!=='string')continue;
+      for(const name of portfolioLayout(section.layout)?.slots??[]){
+        const kind=name.toLowerCase();
+        if(section.id+'-'+kind===key)kinds.push(kind);
+      }
+    }
+    return kinds.length===1?kinds[0]!:null;
+  }catch{return null;}
+}
+
 export function ComponentLibrary({port, head, committed, slot, apply, blocked,saveRetry,onReuseTarget}: {
   port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;blocked:boolean;
   saveRetry:{current:ComponentSaveRetryState};onReuseTarget?:(slotKey:string)=>void;
@@ -754,8 +801,9 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const [category,setCategory]=useState('');
   const [compatibleOnly,setCompatibleOnly]=useState(false);
   const [review,setReview]=useState<{
-    versionId:string;slotKey:string;snapshot:PortfolioSnapshot;epoch:number;generation:number
+    versionId:string;slotKey:string;head:EditorHead;epoch:number;generation:number
   }|null>(null);
+  const [inspectVersion,setInspectVersion]=useState<string|null>(null);
   const reviewHeading=useRef<HTMLHeadingElement>(null);
   const reviewTrigger=useRef<HTMLButtonElement|null>(null);
   const searchInput=useRef<HTMLInputElement>(null);
@@ -763,10 +811,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const reviewSubmitting=useRef(false);
   const [pickedVersion,setPickedVersion]=useState<string|null>(null);
   const savedDrag=useRef<{head:EditorHead;id:string;epoch:number;generation:number}|null>(null);
-  const slotKind = slot.slice(slot.lastIndexOf('-') + 1);
-  const state = head.snapshot.slots[slot]?.state;
-  const owned=head.snapshot.slots[slot],savedSlot=committed?.slots[slot];
-  const canSave=!!owned?.sourcePath&&!!savedSlot?.sourcePath&&['S1','S2'].includes(savedSlot.state)&&
+  const slotKind=savedReuseSlotKind(head.snapshot,slot)??'';
+  const state=slotKind?head.snapshot.slots[slot]?.state:undefined;
+  const owned=slotKind?head.snapshot.slots[slot]:undefined,savedSlot=committed&&slotKind?committed.slots[slot]:undefined;
+  const canSave=!!slotKind&&!!owned?.sourcePath&&!!savedSlot?.sourcePath&&['S1','S2'].includes(savedSlot.state)&&
     owned.sourcePath===savedSlot.sourcePath&&owned.originalSource===savedSlot.originalSource&&
     owned.componentId===savedSlot.componentId&&head.snapshot.files[owned.sourcePath]===committed?.files[savedSlot.sourcePath];
   const [refresh,setRefresh]=useState(0);
@@ -780,9 +828,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     const epoch=port.reconcileOwnerSessionEpoch(),generation=++componentListGeneration.current;
     const sameBinding=cataloguePort.current===port&&catalogueEpoch.current===epoch;
     listFlight.current=true;setListPending(true);setListError('');
-    if(!sameBinding){cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setMessage('');}
+    if(!sameBinding){cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setMessage('');setInspectVersion(null);setPickedVersion(null);setReview(null);savedDrag.current=null;}
     function fail(message:string){
       cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setListError(message);
+      setInspectVersion(null);setPickedVersion(null);setReview(null);savedDrag.current=null;
       listFlight.current=false;setListPending(false);
     }
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
@@ -803,7 +852,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const emptyReuseTargets=canvasSections(head.snapshot).flatMap(section=>section.slots.map(name=>({
     key:section.id+'-'+name.toLowerCase(),kind:name.toLowerCase(),label:section.renderId+' · '+name+' ('+section.id+')'
   }))).filter((item,index,all)=>all.filter(other=>other.key===item.key).length===1&&
-    Object.hasOwn(head.snapshot.slots,item.key)&&head.snapshot.slots[item.key]?.state==='EMPTY');
+    savedReuseSlotKind(head.snapshot,item.key)===item.kind&&head.snapshot.slots[item.key]?.state==='EMPTY');
   function canReuseEmpty(version:MyComponentVersion,key:string){
     const target=emptyReuseTargets.find(item=>item.key===key);
     return catalogueReady&&!listFlight.current&&!blocked&&!busy&&!review&&!!target&&
@@ -879,7 +928,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     (!normalizedQuery||[version.display_name,version.component_key,version.base_component_pin,
       'v'+version.version,...version.compatible_slot_kinds].some(value=>value.toLowerCase().includes(normalizedQuery))))??[];
   const reviewedVersion=review&&versions?.find(version=>version.id===review.versionId);
-  const reviewCurrent=catalogueReady&&!!review&&!!reviewedVersion&&review.slotKey===slot&&review.snapshot===head.snapshot&&
+  const reviewCurrent=catalogueReady&&!!review&&!!reviewedVersion&&review.slotKey===slot&&review.head===head&&
     review.epoch===catalogueEpoch.current&&review.generation===componentListGeneration.current&&
     !!state&&state!=='EMPTY'&&!!owned&&reviewedVersion.compatible_slot_kinds.includes(slotKind);
   const retainedFields=reviewCurrent&&owned&&reviewedVersion?
@@ -901,7 +950,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     reviewTrigger.current=null;
   }
   function openReuse(version:MyComponentVersion,trigger:HTMLButtonElement){
-    if(!catalogueReady||listFlight.current||blocked||busy||!owned||!state||!versions?.some(item=>item.id===version.id)||
+    if(!catalogueReady||listFlight.current||blocked||busy||!owned||!state||!versions?.some(item=>item===version)||
       !version.compatible_slot_kinds.includes(slotKind))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(epoch!==catalogueEpoch.current)return;
@@ -910,11 +959,12 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       closeReview(false);
       const ok=apply({kind:'REUSE_SAVED_COMPONENT',slotKey:slot,componentVersionId:version.id,
         preserveMatchingContent:true},{[version.id]:version});
-      if(ok)setMessage('Private component applied to the working draft. Save to persist; source execution remains disabled.');
+      if(ok){setMessage('Private component applied to the working draft. Save to persist; source execution remains disabled.');onReuseTarget?.(slot);}
+      else setMessage('No private component was placed. Review the current draft.');
       return;
     }
     reviewTrigger.current=trigger;reviewSubmitting.current=false;
-    setReview({versionId:version.id,slotKey:slot,snapshot:head.snapshot,epoch,
+    setReview({versionId:version.id,slotKey:slot,head,epoch,
       generation:componentListGeneration.current});
   }
   function confirmReplacement(){
@@ -931,6 +981,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     else setMessage('Replacement was not applied. Review current draft and resolve outstanding edits before retrying.');
   }
 
+  const inspected=catalogueReady&&inspectVersion?versions?.find(version=>version.id===inspectVersion):undefined;
   return <div className="ws-editor-tool"><h2>My Components</h2>
     {(message||listPending)&&<p role="status">{message}{message&&listPending?' ':''}{listPending?(versions===null?'Loading saved components…':'Rechecking saved components; reuse is temporarily unavailable.'):""}</p>}
     {listError&&!listPending&&<><p role="alert">{listError}</p><button type="button" className="ws-secondary" onClick={reloadCatalogue}>Retry private components</button></>}
@@ -961,6 +1012,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
           Choose or drag {version.display_name} to an empty slot
         </button>}
         <span>Base: {version.base_component_pin} · Fits: {version.compatible_slot_kinds.join(', ')}</span>
+        <button type="button" className="ws-secondary" aria-expanded={!!inspected&&inspected.id===version.id}
+          disabled={!catalogueReady||busy} onClick={()=>{if(catalogueEpoch.current===port.reconcileOwnerSessionEpoch())setInspectVersion(current=>current===version.id?null:version.id);}}>
+          {inspected?.id===version.id?'Close saved source':'Inspect saved source'} · {version.display_name}
+        </button>
         <small>{compatible?'Fits selected slot':state?'Not compatible with selected slot':'Select a slot first'} · Private source, not trusted public code</small>
         <button type="button" aria-expanded={review?.versionId===version.id}
           disabled={!catalogueReady||!compatible||blocked||busy}
@@ -969,6 +1024,16 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
         </button>
       </li>;
     })}</ul>
+    {inspected&&<section aria-label="Verified private saved component source">
+      <h3>{inspected.display_name} · v{inspected.version}</h3>
+      <p>Exact private source text from the verified owner catalogue. Displayed as text only, never compiled, executed, or treated as trusted public source.</p>
+      <dl><div><dt>Base pin</dt><dd>{inspected.base_component_pin}</dd></div>
+        <div><dt>Stored source bytes</dt><dd>{new TextEncoder().encode(inspected.source_code).byteLength}</dd></div>
+        <div><dt>Source SHA-256 (catalogue receipt)</dt><dd><code>{inspected.source_sha256}</code></dd></div>
+        <div><dt>Stored pristine text comparison</dt><dd>{inspected.source_code===inspected.pristine_source?'Matches stored original; app provenance still requires separate verification':'Modified from stored original'}</dd></div></dl>
+      <pre tabIndex={0} aria-label="Saved component source text" style={{maxHeight:320,overflow:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}><code>{inspected.source_code}</code></pre>
+      <button type="button" className="ws-secondary" onClick={()=>setInspectVersion(null)}>Close source inspection</button>
+    </section>}
     {pickedVersion&&catalogueReady&&(()=>{
       const version=versions?.find(item=>item.id===pickedVersion);
       if(!version)return null;
@@ -1024,7 +1089,7 @@ export type LayoutMappingRequest={
   mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>;
 };
 export type LayoutToolsIntent=
-  | Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'}>
+  | Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'|'MOVE_SECTION_BEFORE'}>
   | (LayoutMappingRequest & {kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;
       confirmStash:boolean;confirmOwnedRelocation:boolean})
   | {kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
@@ -1105,6 +1170,32 @@ const PLACEMENT_PINS=[
   {pin:'technology-tag@1',label:'Technology tag',category:'Text'},
   {pin:'author-metric@1',label:'Author metric',category:'Work'}
 ] as const;
+/** The catalogue preview describes the actual pinned field shape. It never
+ * invents author data, resolves private URLs, or executes component source. */
+const PINNED_PREVIEW_CONTENT:Readonly<Record<string,Record<string,string>>>=Object.freeze({
+  'title-stacked@1':{title:'Heading',subtitle:'Optional supporting text'},
+  'body-copy@1':{text:'Your paragraph text'},
+  'external-link@1':{label:'Link label'},
+  'project-card@1':{title:'Project title',summary:'Project summary'},
+  'skills-list@1':{items:'["Skill one","Skill two"]'},
+  'experience-list@1':{items:'["Experience entry one","Experience entry two"]'},
+  'technology-tag@1':{text:'Tag label'},
+  'author-metric@1':{label:'Metric label',value:'Author-supplied value'}
+});
+function PinnedComponentPreview({pin}:{pin:string}){
+  if(!PLACEMENT_PINS.some(item=>item.pin===pin)||!Object.hasOwn(PINNED_PREVIEW_CONTENT,pin))return null;
+  const content=PINNED_PREVIEW_CONTENT[pin]!;
+  const projection=slotProjection({state:'S0',componentId:pin,content});
+  return <div role="group" aria-label="Illustrative pinned component preview">
+    <p>Example field shape only · never inserted into your draft</p>
+    {pin==='skills-list@1'||pin==='experience-list@1'?<ul>{projection.parts.map((part,index)=><li key={index}>{part}</li>)}</ul>:
+      pin==='title-stacked@1'?<><h4>{projection.parts[0]}</h4><p>{projection.parts[1]}</p></>:
+      pin==='project-card@1'?<article><strong>{projection.parts[0]}</strong><p>{projection.parts[1]}</p></article>:
+      pin==='author-metric@1'?<dl><dt>{projection.parts[0]}</dt><dd>{projection.parts[1]}</dd></dl>:
+      <p>{projection.parts[0]}</p>}
+    <p>Fields shown: {Object.keys(content).join(', ')}{pin==='external-link@1'||pin==='project-card@1'?' · Validated HTTPS URL supported.':''}</p>
+  </div>;
+}
 const PIN_FAVORITES_KEY='kadmeion.catalogue-favorites.v1';
 function readPinnedFavorites(raw:string|null):string[]{
   if(!raw||raw.length>2048)return [];
@@ -1114,19 +1205,35 @@ function readPinnedFavorites(raw:string|null):string[]{
     return PLACEMENT_PINS.map(item=>item.pin).filter(pin=>parsed.includes(pin));
   }catch{return [];}
 }
+// Shared in-memory fallback for this tab only. If storage reads work but
+// writes fail (quota/policy), the next toggle must not resurrect stale disk IDs.
+let transientPinnedFavorites:string[]|null=null;
+function readDevicePinnedFavorites(storage:Pick<Storage,'getItem'>):{favorites:string[];available:boolean}{
+  if(transientPinnedFavorites!==null)return {favorites:transientPinnedFavorites,available:false};
+  try{return {favorites:readPinnedFavorites(storage.getItem(PIN_FAVORITES_KEY)),available:true};}
+  catch{return {favorites:[],available:false};}
+}
+function writeDevicePinnedFavorites(storage:Pick<Storage,'setItem'>,next:string[]):boolean{
+  try{
+    storage.setItem(PIN_FAVORITES_KEY,JSON.stringify(next));
+    transientPinnedFavorites=null;return true;
+  }catch{transientPinnedFavorites=next;return false;}
+}
 /** Shared by the ordinary catalogue and fallback placement board. Only a
  * local device preference; no owner/session IDs, private versions or sync.
  * Same-tab event contains no user data; receive by re-reading allowlisted IDs. */
 export function usePinnedCatalogueFavorites(){
   const [favorites,setFavorites]=useState<string[]>([]);
   const [storageAvailable,setStorageAvailable]=useState<boolean|null>(null);
-  const current=useRef<string[]>([]);
   const eventName='kadmeion.catalogue-favorites-changed';
+  // Accessing window.localStorage itself may throw, even before getItem.
+  const storage={
+    getItem:(key:string)=>window.localStorage.getItem(key),
+    setItem:(key:string,value:string)=>window.localStorage.setItem(key,value)
+  };
   function load(){
-    try{
-      const next=readPinnedFavorites(window.localStorage.getItem(PIN_FAVORITES_KEY));
-      current.current=next;setFavorites(next);setStorageAvailable(true);
-    }catch{setStorageAvailable(false);}
+    const next=readDevicePinnedFavorites(storage);
+    setFavorites(next.favorites);setStorageAvailable(next.available);
   }
   useEffect(()=>{
     function crossTab(event:StorageEvent){if(event.key===PIN_FAVORITES_KEY||event.key===null)load();}
@@ -1135,19 +1242,16 @@ export function usePinnedCatalogueFavorites(){
   },[]);
   function toggle(id:string):boolean|null{
     if(!PLACEMENT_PINS.some(item=>item.pin===id))return null;
-    // Re-read latest safe preference to avoid a stale same-device UI toggle.
-    let prior=current.current;
-    try{prior=readPinnedFavorites(window.localStorage.getItem(PIN_FAVORITES_KEY));}catch{}
+    const prior=readDevicePinnedFavorites(storage).favorites;
     const next=prior.includes(id)?prior.filter(value=>value!==id):[...prior,id];
-    current.current=next;setFavorites(next);
-    try{
-      window.localStorage.setItem(PIN_FAVORITES_KEY,JSON.stringify(next));
-      setStorageAvailable(true);window.dispatchEvent(new Event(eventName));return true;
-    }catch{setStorageAvailable(false);return false;}
+    const saved=writeDevicePinnedFavorites(storage,next);
+    setFavorites(next);setStorageAvailable(saved);
+    window.dispatchEvent(new Event(eventName));
+    return saved;
   }
   return {favorites,toggle,storageAvailable};
 }
-type PlacementAction=Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'}>;
+type PlacementAction=Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'|'MOVE_SECTION_BEFORE'}>;
 type PlacementReview={head:EditorHead;key:string;pin?:string;kind:'replace'|'clear'};
 type PlacementDrag={head:EditorHead;kind:'pin'|'section';id:string};
 function placementRule(snapshot:PortfolioSnapshot,key:string,pin:string):'empty'|'replace'|'owned'|'same'|'incompatible'{
@@ -1159,10 +1263,15 @@ function placementRule(snapshot:PortfolioSnapshot,key:string,pin:string):'empty'
   if(item.state!=='S0')return 'incompatible';
   return item.componentId===pin?'same':'replace';
 }
-function adjacentSectionDirection(ids:readonly string[],source:string,target:string):'up'|'down'|null{
-  const from=ids.indexOf(source),to=ids.indexOf(target);
-  if(from<0||to<0||ids.lastIndexOf(source)!==from||ids.lastIndexOf(target)!==to)return null;
-  return to===from-1?'up':to===from+1?'down':null;
+/** Mirror the engine's no-op/unique-destination check; the transaction still
+ * validates the whole current manifest and revision before changing anything. */
+function canReorderBefore(ids:readonly string[],source:string,before:string|null):boolean{
+  if(new Set(ids).size!==ids.length||!ids.includes(source)||source===before||
+    (before!==null&&!ids.includes(before)))return false;
+  const rest=ids.filter(id=>id!==source);
+  const to=before===null?rest.length:rest.indexOf(before);
+  rest.splice(to,0,source);
+  return rest.some((id,index)=>id!==ids[index]);
 }
 /** This board is mounted by the existing LayoutTools owner-gated panel.
  * Every committed change delegates to the same typed editor transaction as
@@ -1170,10 +1279,13 @@ function adjacentSectionDirection(ids:readonly string[],source:string,target:str
 function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:boolean;apply:(intent:PlacementAction)=>boolean}){
   const {favorites,toggle,storageAvailable}=usePinnedCatalogueFavorites();
   const [favoritesOnly,setFavoritesOnly]=useState(false);
+  const [compatibleOnly,setCompatibleOnly]=useState(false);
   const [search,setSearch]=useState('');
   const [category,setCategory]=useState('All');
   const [pin,setPin]=useState('');
   const [target,setTarget]=useState('');
+  const [orderSource,setOrderSource]=useState('');
+  const [orderBefore,setOrderBefore]=useState('');
   const [review,setReview]=useState<PlacementReview|null>(null);
   const [dragging,setDragging]=useState<PlacementDrag|null>(null);
   const [message,setMessage]=useState('');
@@ -1190,6 +1302,7 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
   const selectedRule=chosen&&pin?placementRule(head.snapshot,chosen.key,pin):'incompatible';
   const reviewed=review&&sameWorkingHead(review.head,head)?ownAssignment(head.snapshot,review.key):undefined;
   const visible=PLACEMENT_PINS.filter(item=>(!favoritesOnly||favorites.includes(item.pin))&&
+    (!compatibleOnly||!!chosen&&placementRule(head.snapshot,chosen.key,item.pin)!=='incompatible')&&
     (category==='All'||category===item.category)&&
     (!search.trim()||[item.label,item.pin].some(value=>value.toLowerCase().includes(search.trim().toLowerCase()))));
   function toggleFavorite(id:string){
@@ -1241,18 +1354,29 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
   function finishDrag(){drag.current=null;setDragging(null);}
   function pinDrop(event:DragEvent<HTMLElement>,key:string){
     const item=drag.current;finishDrag();
-    if(!item||item.kind!=='pin'||!sameWorkingHead(item.head,head)||blocked)return;
-    event.preventDefault();event.stopPropagation();place(item.id,key);
-  }
-  function sectionDrop(event:DragEvent<HTMLElement>,id:string){
-    const item=drag.current;finishDrag();
-    if(!item||item.kind!=='section'||!sameWorkingHead(item.head,head)||blocked)return;
+    if(!item||item.kind!=='pin')return;
     event.preventDefault();event.stopPropagation();
-    const direction=adjacentSectionDirection(ids,item.id,id);
-    if(direction)submit({kind:'MOVE_SECTION',sectionId:item.id,direction},'Section reordered by one position.');
-    else setMessage('Drop onto an adjacent section for one undoable move. No change was made.');
+    if(blocked||review||!sameWorkingHead(item.head,head))return;
+    const rule=placementRule(head.snapshot,key,item.id);
+    if(rule!=='empty'&&rule!=='replace'&&rule!=='owned'){
+      setMessage('This live drag is not compatible with that target. No change was made.');return;
+    }
+    place(item.id,key);
   }
-  const liveDrag=dragging&&sameWorkingHead(dragging.head,head)&&!blocked?dragging:null;
+  function moveBefore(source:string,before:string|null){
+    if(blocked||review||!canReorderBefore(ids,source,before))return false;
+    const ok=submit({kind:'MOVE_SECTION_BEFORE',sectionId:source,beforeSectionId:before,expectedRevision:head.revision},
+      'Section moved to the chosen position.');
+    if(ok){setOrderSource('');setOrderBefore('');}
+    return ok;
+  }
+  function sectionDrop(event:DragEvent<HTMLElement>,id:string|null){
+    const item=drag.current;finishDrag();
+    if(!item||item.kind!=='section'||!sameWorkingHead(item.head,head)||blocked||review)return;
+    event.preventDefault();event.stopPropagation();
+    if(!moveBefore(item.id,id))setMessage('Choose a different valid section position. No move was applied.');
+  }
+  const liveDrag=dragging&&sameWorkingHead(dragging.head,head)&&!blocked&&!review?dragging:null;
   return <details>
     <summary>Component placement, Favorites and ordering</summary>
     <section aria-label="Pinned component placement">
@@ -1262,6 +1386,9 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
         {['All','Text','Links','Work'].map(value=><option key={value}>{value}</option>)}
       </select></label>
       <label><input type="checkbox" checked={favoritesOnly} onChange={event=>setFavoritesOnly(event.target.checked)}/> Device favorites only</label>
+      <label><input type="checkbox" checked={compatibleOnly} disabled={!chosen}
+        onChange={event=>setCompatibleOnly(event.target.checked)}/> Compatible with selected placement target only</label>
+      {compatibleOnly&&!chosen&&<p role="status">Choose a placement target or clear the filters.</p>}
       <p>Favorites contain only public pinned component IDs on this device; they are not account-synced.{storageAvailable===false?' Device storage is unavailable; changes may last only for this visit.':''}</p>
       <ul className="ws-editor-slots">{visible.map(item=><li key={item.pin}>
         <button type="button" aria-pressed={pin===item.pin} draggable={!blocked&&!review}
@@ -1274,6 +1401,9 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
         </button>
       </li>)}</ul>
       {!visible.length&&<p>No pinned blocks match these filters.</p>}
+      {(search||category!=='All'||favoritesOnly||compatibleOnly)&&
+        <button type="button" className="ws-secondary" onClick={()=>{setSearch('');setCategory('All');setFavoritesOnly(false);setCompatibleOnly(false);}}>Clear placement filters</button>}
+      {pin&&<PinnedComponentPreview pin={pin}/>}
       <label>Placement target<select aria-label="Placement target" value={chosen?.key??''} disabled={blocked}
         onChange={event=>{setTarget(event.target.value);setReview(null);}}>
         <option value="">Choose a slot</option>{targets.map(item=><option key={item.key} value={item.key}>{item.label} · {head.snapshot.slots[item.key]?.state}</option>)}
@@ -1310,9 +1440,24 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
     </section>
     <section aria-label="Section ordering controls">
       <h3>Section order</h3>
-      <p>Drag a section onto an adjacent section, or move up/down. Each move is one transaction.</p>
+      <p>Drop a section before another section or at the end. Keyboard controls offer the same destinations. Each move is one transaction.</p>
+      <label>Section to move<select value={orderSource} disabled={blocked||!!review}
+        onChange={event=>{setOrderSource(event.target.value);setOrderBefore('');}}>
+        <option value="">Choose a section</option>{sections.map(section=><option key={section.id} value={section.id}>{section.renderId} · {section.id}</option>)}
+      </select></label>
+      <label>Move before<select value={orderBefore} disabled={blocked||!!review||!ids.includes(orderSource)}
+        onChange={event=>setOrderBefore(event.target.value)}>
+        <option value="">Choose destination</option>{sections.filter(section=>canReorderBefore(ids,orderSource,section.id)).map(section=>
+          <option key={section.id} value={section.id}>{section.renderId} · {section.id}</option>)}
+        {canReorderBefore(ids,orderSource,null)&&<option value=":end">End of page</option>}
+      </select></label>
+      <button type="button" className="ws-primary"
+        disabled={blocked||!!review||!orderBefore||!canReorderBefore(ids,orderSource,orderBefore===':end'?null:orderBefore)}
+        onClick={()=>moveBefore(orderSource,orderBefore===':end'?null:orderBefore)}>Move section to chosen position</button>
       <ol>{sections.map((section,index)=><li key={section.id}
-        onDragOver={event=>{if(liveDrag?.kind==='section'){event.preventDefault();event.dataTransfer.dropEffect=adjacentSectionDirection(ids,liveDrag.id,section.id)?'move':'none';}}}
+        data-drop-fit={liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,section.id)?'compatible':undefined}
+        style={liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,section.id)?DROP_OUTLINE:undefined}
+        onDragOver={event=>{if(liveDrag?.kind==='section'){event.preventDefault();event.dataTransfer.dropEffect=canReorderBefore(ids,liveDrag.id,section.id)?'move':'none';}}}
         onDrop={event=>sectionDrop(event,section.id)}>
         <span draggable={!blocked&&!review} onDragStart={event=>beginDrag(event,'section',section.id)}
           onDragEnd={finishDrag}>{section.renderId} · {section.id}</span>{' '}
@@ -1320,7 +1465,9 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
           aria-label={'Move '+section.id+' one position up'} onClick={()=>submit({kind:'MOVE_SECTION',sectionId:section.id,direction:'up'},'Section reordered by one position.')}>Up</button>
         <button type="button" disabled={blocked||index===sections.length-1||!!review}
           aria-label={'Move '+section.id+' one position down'} onClick={()=>submit({kind:'MOVE_SECTION',sectionId:section.id,direction:'down'},'Section reordered by one position.')}>Down</button>
-      </li>)}</ol>
+      </li>)}{liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,null)&&
+        <li data-drop-fit="compatible" style={DROP_OUTLINE} onDragOver={event=>{event.preventDefault();event.dataTransfer.dropEffect='move';}}
+          onDrop={event=>sectionDrop(event,null)}>Drop at end of page</li>}</ol>
     </section>
     {message&&<p role="status">{message}</p>}
   </details>;
@@ -1716,7 +1863,11 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [projectId,setProjectId]=useState('');
   const [collection,setCollection]=useState('');
   const [selectedAssetId,setSelectedAssetId]=useState('');
-  const [targetKey,setTargetKey]=useState('');
+  const [targetKey,setTargetKey]=useState<string|null>(null);
+  const [dragAsset,setDragAsset]=useState<string|null>(null);
+  const assetDrag=useRef<{snapshot:PortfolioSnapshot;asset:AssetPreviewRecord;port:SupabaseBrowserAuthPort;epoch:number;generation:number}|null>(null);
+  const recordGeneration=useRef(0);
+  const placementField=useRef<HTMLTextAreaElement>(null);
   const [placementAlt,setPlacementAlt]=useState('');
   const [placing,setPlacing]=useState(false);
   const placementFlight=useRef(false);
@@ -1731,6 +1882,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   useLayoutEffect(()=>{
     let active=true;
     const epoch=port.reconcileOwnerSessionEpoch();
+    ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
     const sameBinding=recordsBinding.current?.port===port&&recordsBinding.current?.epoch===epoch;
     recordsFlight.current=true;setRecordsPending(true);setRecordsError('');
     if(!sameBinding){setAssets(null);setProjects(null);recordsBinding.current=null;}
@@ -1741,7 +1893,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     };
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
       if(!active)return;
-      active=false;setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
+      active=false;++recordGeneration.current;assetDrag.current=null;setDragAsset(null);setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
     });
     if(active)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
       if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
@@ -1755,6 +1907,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     return ()=>{active=false;unsubscribe();};
   },[port,refresh]);
   function reloadRecords(){
+    ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
     recordsFlight.current=true;setRecordsPending(true);setRefresh(n=>n+1);
   }
   const recordsReady=!recordsPending&&!recordsError&&assets!==null&&projects!==null&&recordsBinding.current?.port===port;
@@ -1762,11 +1915,44 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const visible=assets?.filter(item=>!collection||item.projectId===collection)??[];
   const selected=visible.find(item=>item.id===selectedAssetId);
   // Explicitly selected target disappearing must not redirect a placement.
-  const target=targets.find(item=>item.key===(targetKey||selectedSlot));
+  const target=targets.find(item=>item.key===(targetKey===null?selectedSlot:targetKey));
+  const candidateTargets=targets.filter((item,index,all)=>all.filter(other=>other.key===item.key).length===1&&
+    Object.hasOwn(snapshot.slots,item.key)&&snapshot.slots[item.key]?.state===item.state&&
+    (item.state==='EMPTY'||(item.state==='S0'&&snapshot.slots[item.key]?.componentId==='image@1')));
+  const allowPlacement=active&&recordsReady&&!recordsPending&&!placementDisabled&&!busy&&!placing;
+  function finishAssetDrag(){assetDrag.current=null;setDragAsset(null);}
+  useLayoutEffect(()=>{finishAssetDrag();},[snapshot,active,port,collection]);
+  function currentAssetDrag(){
+    const drag=assetDrag.current;
+    return drag&&allowPlacement&&!recordsFlight.current&&drag.snapshot===snapshot&&drag.port===port&&
+      drag.generation===recordGeneration.current&&drag.epoch===recordsBinding.current?.epoch&&
+      visible.some(item=>item===drag.asset)?drag:null;
+  }
+  function beginAssetDrag(event:DragEvent<HTMLElement>,asset:AssetPreviewRecord){
+    if(!allowPlacement||recordsFlight.current||!candidateTargets.length||!visible.some(item=>item===asset)){
+      event.preventDefault();return;
+    }
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(epoch!==recordsBinding.current?.epoch){event.preventDefault();return;}
+    assetDrag.current={snapshot,asset,port,epoch,generation:recordGeneration.current};
+    setDragAsset(asset.id);event.dataTransfer.effectAllowed='copy';
+    // Marker only: private metadata/URLs/IDs never enter DataTransfer.
+    event.dataTransfer.setData('text/plain','kadmeion-private-image-selection');
+  }
+  function selectPlacement(asset:AssetPreviewRecord,key:string){
+    setSelectedAssetId(asset.id);setPlacementAlt(asset.altText);setTargetKey(key);setUploadOpen(false);setError('');
+    setNotice('Image and target selected. Review the alt text, then confirm the placement. No assignment has changed.');
+  }
+  function dropAsset(event:DragEvent<HTMLElement>,key:string){
+    const drag=currentAssetDrag();finishAssetDrag();
+    if(!drag||!candidateTargets.some(item=>item.key===key)||port.reconcileOwnerSessionEpoch()!==drag.epoch)return;
+    event.preventDefault();event.stopPropagation();
+    selectPlacement(drag.asset,key);
+  }
   const uses=selected?Object.entries(snapshot.slots).filter(([,assignment])=>
     assignment.state!=='EMPTY'&&assignment.content.asset_id===selected.id):[];
   async function place(){
-    if(!recordsReady||recordsFlight.current||!selected||!target||placing||busy||placementFlight.current||uploadFlight.current||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
+    if(!allowPlacement||recordsFlight.current||!selected||!target||!candidateTargets.some(item=>item.key===target.key)||placementFlight.current||uploadFlight.current||!placementAlt.trim()||placementAlt.length>300)return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
     placementFlight.current=true;setPlacing(true);setNotice('');
@@ -1775,11 +1961,13 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       setNotice(placed?'Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.':
         'Image placement was not completed. Existing assignment and selected image were retained.');
+    }catch{
+      if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setError('Image placement was not confirmed. Review the current draft before retrying.');
     }finally{placementFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setPlacing(false);}
   }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
+    if(!active||!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
     uploadFlight.current=true;setBusy(true);setError('');setNotice('');
@@ -1837,12 +2025,26 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
       </div>}
       {visible.length>0&&<ul className="ws-asset-gallery">{visible.map(asset=><li key={asset.id}>
-        <button type="button" aria-pressed={selectedAssetId===asset.id}
+        <button type="button" aria-pressed={selectedAssetId===asset.id} draggable={allowPlacement&&candidateTargets.length>0}
+          onDragStart={event=>beginAssetDrag(event,asset)} onDragEnd={finishAssetDrag}
+          disabled={!active||!recordsReady||placing||busy}
           onClick={()=>{setSelectedAssetId(asset.id);setPlacementAlt(asset.altText);setUploadOpen(false);}}>
           <span className="ws-asset-gallery-icon" aria-hidden="true">▧</span>
           <strong>{asset.altText}</strong><small>{asset.mime} · {Math.ceil(asset.size/1024)} KB</small>
           <small>Private metadata · No public image URL</small>
         </button></li>)}</ul>}
+      {allowPlacement&&candidateTargets.length>0&&visible.length>0&&<section aria-label="Compatible private image drop targets">
+        <h3>Choose an image destination</h3>
+        <p>Drag a private image here, or select it and use the destination buttons. Placement still requires explicit confirmation and valid alt text.</p>
+        <ul className="ws-editor-slots">{candidateTargets.map(item=><li key={item.key}
+          data-drop-fit={dragAsset?'compatible':undefined} style={dragAsset?DROP_OUTLINE:undefined}
+          onDragOver={event=>{if(currentAssetDrag()){event.preventDefault();event.dataTransfer.dropEffect='copy';}}}
+          onDrop={event=>dropAsset(event,item.key)}>
+          <button type="button" disabled={!selected||!allowPlacement} onClick={()=>{if(selected){selectPlacement(selected,item.key);placementField.current?.focus();}}}>
+            Choose {item.label} · {item.state==='EMPTY'?'EMPTY':'Review image replacement'}
+          </button>
+        </li>)}</ul>
+      </section>}
       {assets?.length===100&&<p className="ws-asset-limits">At most 100 recent private records returned; older records may exist.</p>}
       {recordsReady&&assets?.length!==0&&<div className="ws-asset-add">
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
@@ -1870,7 +2072,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
               Failed registration may leave private bytes needing administrator cleanup.
               A registered asset is not SHA-attested or publishable.</p>
             <button className="ws-primary" type="submit"
-              disabled={busy||!recordsReady||!file||!selectedProject||!alt.trim()}>
+              disabled={!active||busy||!recordsReady||!file||!selectedProject||!alt.trim()}>
               {busy?'Registering private image…':'Upload private image'}</button>
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={()=>setUploadOpen(false)}>Cancel uploader</button>
@@ -1888,16 +2090,17 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
           <div><dt>Focal point</dt><dd>Not stored</dd></div>
         </dl>
         <p className="ws-asset-protection">Place only a verified owner-private registration into an actual compatible slot. Replacing a pristine image stashes its previous assignment; historical asset bytes are not deleted. No public URL or digest is fabricated.</p>
-        {targets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
-          <label>Compatible image slot<select value={target?.key??''} onChange={event=>setTargetKey(event.target.value)}>
+        {candidateTargets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
+          <label>Compatible image slot<select value={candidateTargets.some(item=>item.key===target?.key)?target?.key??'':''} disabled={!allowPlacement}
+            onChange={event=>setTargetKey(event.target.value)}>
             <option value="">Choose an image-compatible slot</option>
-            {targets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
+            {candidateTargets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
           </select></label>
-          <label>Placement alt text<textarea rows={3} value={placementAlt}
+          <label>Placement alt text<textarea ref={placementField} rows={3} value={placementAlt} disabled={!allowPlacement}
             aria-invalid={!placementAlt.trim()||placementAlt.length>300}
             onChange={event=>setPlacementAlt(event.target.value)}/></label>
           <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
-          <button type="button" className="ws-primary" disabled={!recordsReady||!target||placementDisabled||busy||placing||!placementAlt.trim()||placementAlt.length>300}
+          <button type="button" className="ws-primary" disabled={!allowPlacement||!target||!candidateTargets.some(item=>item.key===target.key)||!placementAlt.trim()||placementAlt.length>300}
             onClick={()=>void place()}>{placing?'Verifying placement…':target?.state==='S0'?'Replace image and stash previous':'Assign image to selected slot'}</button>
         </>}
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Register another image</button>

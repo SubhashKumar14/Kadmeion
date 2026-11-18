@@ -9,12 +9,13 @@ import {
   applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, planSectionLayoutChange, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { canonicalLibraryComponentSource, portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import { ContractError } from '../../../packages/contracts/src/project.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
 import { TemplateGraphic } from './templates.tsx';
 import { MoveToTrash } from './settings.tsx';
-import { AssetList, ComponentLibrary, LayoutTools, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, type ComponentSaveRetryState } from './portfolio-tools.tsx';
+import { AssetList, ComponentLibrary, LayoutTools, PortfolioCanvas, RevisionWorkspace, SourceInspector, ThemeInspector, usePinnedCatalogueFavorites, type ComponentSaveRetryState } from './portfolio-tools.tsx';
 
 const presets = [
   {id: 'arc', title: 'Arc', tone: 'curved', detail: 'Curved hero and a project showcase.'},
@@ -481,6 +482,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [linkNotice,setLinkNotice]=useState('');
   const [tool, setTool] = useState<string>('Content');
   const [componentSearch,setComponentSearch]=useState('');
+  // Device-only public pinned IDs, shared with S7's placement board; never private component IDs.
+  const {favorites,toggle:toggleFavorite,storageAvailable}=usePinnedCatalogueFavorites();
+  const [favoriteComponentsOnly,setFavoriteComponentsOnly]=useState(false);
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
   const componentDrag=useRef<{head:EditorHead;pin:string}|null>(null);
@@ -511,6 +515,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const checkpointWriter=useRef<{id:string;sequence:number;signature:string}|null>(null);
   const frozenCheckpoint=useRef<{id:string;signature:string}|null>(null);
   const checkpointFlight=useRef(false);
+  // A rejected sequence must never silently recreate or replace a different tab's copy.
+  const checkpointConflict=useRef<string|null>(null);
   const checkpointEnabled=useRef(false);
   const saveFlight=useRef(false);
   const [recoveryComparison,setRecoveryComparison]=useState<{copyId:string;cloudRevision:number;
@@ -570,7 +576,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
        (verifiedOwner&&!scopeCurrent(live)))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
-    const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE';
+    const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE'||intent.kind==='MOVE_SECTION';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
     if(layoutMutation||themeMutation||sectionOrderMutation){
       const view=latestRecovery.current;
@@ -823,7 +829,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setSlot(target);setTool('Content');return true;
   }
   function canReorderSection():boolean{
-    return !!head&&!!verifiedOwner&&allowed&&!preview&&!['Components','Source','Assets','History'].includes(tool)&&
+    return !!head&&!!verifiedOwner&&allowed&&!preview&&!['Source','Assets','History'].includes(tool)&&
       !saving&&!recoveryBusy&&!pendingFields&&!sourceDirty&&layerGroups.length>1;
   }
   function sectionDropAllowed(sectionId:string,beforeSectionId:string|null):boolean{
@@ -841,6 +847,23 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const view=latestRecovery.current;
     if(!head||!drag||drag.head!==head||!view||!draftCurrent(view)||!sectionDropAllowed(drag.id,beforeSectionId))return false;
     return apply({kind:'MOVE_SECTION_BEFORE',sectionId:drag.id,beforeSectionId,expectedRevision:head.revision});
+  }
+  function canDropCanvasComponent(key:string):boolean{
+    const drag=componentDrag.current,view=latestRecovery.current;
+    return !!drag&&drag.head===head&&!!view&&view.head===head&&draftCurrent(view)&&canPlaceComponent(drag.pin,key);
+  }
+  function dropCanvasComponent(key:string):boolean{
+    if(!canDropCanvasComponent(key))return false;
+    const drag=componentDrag.current!;
+    componentDrag.current=null;
+    return placeComponent(drag.pin,key);
+  }
+  function canDropCanvasSection(before:string|null):boolean{
+    const drag=sectionDrag.current,view=latestRecovery.current;
+    return !!drag&&drag.head===head&&!!view&&view.head===head&&draftCurrent(view)&&sectionDropAllowed(drag.id,before);
+  }
+  function dropCanvasSection(before:string|null):boolean{
+    return canDropCanvasSection(before)&&moveSectionBefore(before);
   }
   // Local storage is not an identity authority. Gate context is mandatory.
   type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
@@ -912,10 +935,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setCheckpointState('pending');
     let cancelled=false;
     const timer=window.setTimeout(()=>{
-      if(cancelled||!checkpointEnabled.current||!draftCurrent(view)||checkpointFlight.current)return;
+      if(cancelled||!checkpointEnabled.current||!draftCurrent(view)||checkpointFlight.current||recoveryLock.current)return;
       let writer=checkpointWriter.current;
       if(!writer){writer={id:crypto.randomUUID(),sequence:0,signature:''};checkpointWriter.current=writer;}
       const activeWriter=writer;
+      if(checkpointConflict.current===activeWriter.id){setCheckpointState('failed');return;}
       checkpointFlight.current=true;
       void (async()=>{
         try{
@@ -925,11 +949,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             throw new Error('Invalid checkpoint acknowledgement.');
           activeWriter.sequence=receipt.checkpointSequence!;
           activeWriter.signature=signature;
+          checkpointConflict.current=null;
           if(!scopeCurrent(view))return;
           // A newer buffer may have arrived during IndexedDB I/O.
           if(draftCurrent(view))setCheckpointState('saved');else setCheckpointState('pending');
           await refreshRecovery(view,store);
-        }catch{
+        }catch(cause){
+          if(cause instanceof ContractError&&cause.code==='REVISION_CONFLICT')checkpointConflict.current=activeWriter.id;
           if(scopeCurrent(view)){setCheckpointState('failed');setRecoveryExpanded(true);}
         }finally{
           checkpointFlight.current=false;
@@ -940,6 +966,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     },650);
     return ()=>{cancelled=true;window.clearTimeout(timer);};
   },[autoRecovery,verifiedOwner?.id,verifiedOwner?.epoch,port,id,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,recoveryBusy,checkpointRetry]);
+  function retryCheckpoint(){
+    const view=captureRecovery();
+    if(!view||!view.dirty||!checkpointEnabled.current||checkpointFlight.current||recoveryLock.current)return;
+    const writer=checkpointWriter.current;
+    // Only an explicit owner retry may abandon a rejected sequence. Ordinary I/O
+    // failures retain the ID and sequence for an idempotent acknowledgement retry.
+    if(writer&&checkpointConflict.current===writer.id){
+      checkpointWriter.current=null;checkpointConflict.current=null;
+    }
+    setCheckpointRetry(n=>n+1);
+  }
   function installCloudDraft(fresh:PortfolioRecord){
     if(!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
     const next=createEditorHead(fresh.snapshot);
@@ -1277,12 +1314,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const store=new IndexedDbEditorDraftStore();
       const selected=recoveryCopies?.find(copy=>copy.copyId===copyId);
       if(!selected)return;
-      if(checkpointWriter.current?.id===copyId){
-        if(checkpointFlight.current)return;
-        setAutoRecovery(false);checkpointEnabled.current=false;checkpointWriter.current=null;setCheckpointState('idle');
-      }
+      const removingWriter=checkpointWriter.current?.id===copyId;
+      if(removingWriter&&checkpointFlight.current)return;
       await store.removeRecoveryCopy(view.owner!.id,view.id,copyId,selected.checkpointSequence);
       if(!scopeCurrent(view))return;
+      // Do not disable or forget the writer until deletion is acknowledged.
+      if(removingWriter&&checkpointWriter.current?.id===copyId){
+        setAutoRecovery(false);checkpointEnabled.current=false;checkpointWriter.current=null;
+        checkpointConflict.current=null;setCheckpointState('idle');
+      }
       recoveryAttempt.current=null;setRecoveryComparison(null);
       if(frozenCheckpoint.current?.id===copyId){frozenCheckpoint.current=null;setCheckpointRetry(n=>n+1);}
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
@@ -1307,6 +1347,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     port.getOwnerSessionEpoch()===verifiedOwner.epoch?
     {port,ownerKey:JSON.stringify([verifiedOwner.id,verifiedOwner.epoch,id])}:undefined;
   const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth,privateMedia:canvasOwner,
+    dropTargets:canvasOwner?{canDropComponent:canDropCanvasComponent,dropComponent:dropCanvasComponent,
+      canDropSection:canDropCanvasSection,dropSection:dropCanvasSection}:undefined,
     onAddFirstSection:canvasOwner&&!saving&&!recoveryBusy?()=>{
       const view=latestRecovery.current;
       if(!view||!draftCurrent(view)||view.preview)return;
@@ -1360,11 +1402,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
         if(!event.target.checked)setCheckpointState('idle');
       }}/> Automatically checkpoint unsaved edits on this browser during this editor session</label>
-      {autoRecovery&&<p role="status">{checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
+      {autoRecovery&&<p role="status">{!(operation||pendingFields||sourceDirty)?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
         checkpointState==='saved'?'Latest captured working edits acknowledged by browser storage only.':
         checkpointState==='failed'?'Browser checkpoint failed or storage is full; your current edits remain.':
         'Automatic browser checkpoints enabled; waiting for unsaved edits.'}
-        {checkpointState==='failed'&&<button type="button" className="ws-secondary" onClick={()=>setCheckpointRetry(n=>n+1)}>Retry checkpoint</button>}
+        {checkpointState==='failed'&&!!(operation||pendingFields||sourceDirty)&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
       </p>}
       <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit, never prune another copy, and are retained until explicitly removed.</p>
       <div className="ws-actions">
@@ -1501,7 +1543,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
               aria-pressed={componentCategory===category} onClick={()=>setComponentCategory(category)}>
               {category}</button>)}
         </div>
+        <label><input type="checkbox" checked={favoriteComponentsOnly}
+          onChange={event=>setFavoriteComponentsOnly(event.target.checked)}/> Show only favorite components</label>
+        <p className="ws-footnote">Device favorites are not account-synced.{storageAvailable===false?' Storage is unavailable; changes may last only for this visit.':''}</p>
         <ul className="ws-editor-component-list">{insertableComponentPins.filter(item=>
+          (!favoriteComponentsOnly||favorites.includes(item.id))&&
           (componentCategory==='All'||categoryFor(item.id)===componentCategory)&&
           (item.label.toLowerCase().includes(componentSearch.trim().toLowerCase())||
            item.id.toLowerCase().includes(componentSearch.trim().toLowerCase()))
@@ -1524,8 +1570,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             <strong>{item.label}</strong>
             <small>{item.id}</small>
             <span>{fit?'Compatible with selected slot':hasTarget?'Compatible empty targets available':'Choose another slot'}</span>
-          </button></li>;
+          </button><button type="button" className="ws-secondary" aria-pressed={favorites.includes(item.id)}
+            aria-label={(favorites.includes(item.id)?'Remove favorite: ':'Add favorite: ')+item.label}
+            onClick={()=>toggleFavorite(item.id)}>{favorites.includes(item.id)?'Remove favorite':'Favorite'}</button></li>;
         })}</ul>
+        {favoriteComponentsOnly&&!insertableComponentPins.some(item=>favorites.includes(item.id)&&
+          (componentCategory==='All'||categoryFor(item.id)===componentCategory)&&
+          (item.label.toLowerCase().includes(componentSearch.trim().toLowerCase())||item.id.toLowerCase().includes(componentSearch.trim().toLowerCase())))&&
+          <p role="status">No favorites match these filters. <button type="button" className="ws-secondary" onClick={()=>{setFavoriteComponentsOnly(false);setComponentSearch('');setComponentCategory('All');}}>Clear filters</button></p>}
         {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before replacing components.</p>}
         {targetPin&&<section aria-label="Compatible empty component targets">
           <h3>Place {targetPin.label}</h3>
@@ -1535,15 +1587,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             <ul className="ws-editor-slots">{emptyComponentTargets.filter(target=>
               compatibleComponentsForSlot(target.key).some(item=>item.id===targetPin.id)).map(target=><li key={target.key}
                 onDragOver={event=>{
-                  const drag=componentDrag.current;
-                  if(drag?.head===head&&canPlaceComponent(drag.pin,target.key)){
+                  if(canDropCanvasComponent(target.key)){
                     event.preventDefault();event.dataTransfer.dropEffect='copy';
                   }
                 }}
                 onDrop={event=>{
-                  const drag=componentDrag.current;componentDrag.current=null;
-                  if(!drag||drag.head!==head||!canPlaceComponent(drag.pin,target.key))return;
-                  event.preventDefault();placeComponent(drag.pin,target.key);
+                  if(!canDropCanvasComponent(target.key))return;
+                  event.preventDefault();dropCanvasComponent(target.key);
                 }}>
                 <button type="button" disabled={!canPlaceComponent(targetPin.id,target.key)}
                   onClick={()=>placeComponent(targetPin.id,target.key)}>Add {targetPin.label} to {target.label}</button>
@@ -1590,9 +1640,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                 }}
                 onDragEnd={()=>{sectionDrag.current=null;setDraggingSection(null);}}>Drag</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' up'}
-                disabled={index===0||saving} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
+                disabled={index===0||!canReorderSection()} onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'up'})}>Up</button>
               <button type="button" className="ws-editor-reorder-action" aria-label={'Move '+group.title+' down'}
-                disabled={index===layerGroups.length-1||saving}
+                disabled={index===layerGroups.length-1||!canReorderSection()}
                 onClick={()=>apply({kind:'MOVE_SECTION',sectionId:group.id,direction:'down'})}>Down</button>
             </div>
           </div>
@@ -1679,7 +1729,10 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
         </section>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null}
-          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}/>}
+          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+          {...{onReuseTarget:(target:string)=>{
+            if(layerGroups.flatMap(group=>group.slots).filter(item=>item.key===target).length===1)setSlot(target);
+          }}}/>}
 
         {tool === 'Content' && <><h2>Content inspector</h2>
         {!active && <p>Select a slot to inspect it.</p>}
@@ -1815,7 +1868,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       <AssetList port={port} back={()=>setTool('Content')} snapshot={head.snapshot}
         targets={verifiedOwner?layerGroups.flatMap(group=>group.slots.filter(item=>canPlacePrivateImage(head.snapshot,item.key))
           .map(item=>({key:item.key,label:group.title+' · '+item.name,state:item.state}))):[]}
-        selectedSlot={slot} placementDisabled={saving||recoveryBusy||sourceDirty} onPlace={placeAsset}/>
+        selectedSlot={slot} placementDisabled={saving||recoveryBusy||sourceDirty} onPlace={placeAsset}
+        {...{active:!!verifiedOwner&&allowed&&!preview&&tool==='Assets'&&!saving&&!recoveryBusy}}/>
     </div>}
     </>)}
     {/* Author preview may hide the source panel, but must not unmount its

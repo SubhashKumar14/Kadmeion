@@ -3150,3 +3150,49 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
     expect(resolved.status).toBe('resolved');expect(resolved.tokens.text).toBe(text);
   }
 });
+
+test('B16 WF-018 all five curated presets and genuine Blank persist exact authored skeletons',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase and mounted private editor only.');
+  test.setTimeout(100_000);
+  const owner=await localUser('S6 all preset fixtures');
+  await signIn(page,owner);
+  const cases=[
+    ['Arc','arc',['arc-hero@1','project-showcase@1','editorial-bento@1','skills@1','contact@1']],
+    ['Collage','collage',['collage-hero@1','project-showcase@1','experience@1','contact@1']],
+    ['Editorial','editorial',['editorial-bento@1','project-showcase@1','skills@1','contact@1']],
+    ['Stairs','stairs',['stepped-hero@1','editorial-bento@1','project-showcase@1','contact@1']],
+    ['Studio','studio',['arc-hero@1','project-showcase@1','experience@1','skills@1','contact@1']],
+    ['Blank','blank',[]]
+  ] as const;
+  const ids:string[]=[];
+  for(const [label,preset,layouts] of cases){
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:label,exact:true}).check();
+    await expect(page.getByRole('group',{name:'Selected layout preview'}).getByRole('heading',{name:label,exact:true})).toBeVisible();
+    const title='S6 '+label+' skeleton fixture';
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    const id=new URL(page.url()).pathname.split('/')[3]!;
+    expect(/^[0-9a-f-]{36}$/i.test(id)).toBe(true);
+    ids.push(id);
+    if(preset==='blank'){
+      await expect(page.getByText('This blank draft has no slots.',{exact:true})).toBeVisible();
+      await expect(page.getByText('No authored sections yet.',{exact:true})).toBeVisible();
+    }
+    await page.goto('/app/export');
+    await page.getByLabel('Portfolio to export').selectOption(id,{timeout:10_000});
+    const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+    const downloaded=await download.path();if(!downloaded)throw new Error('Verified private export unavailable.');
+    const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(downloaded)));
+    expect(JSON.parse(snapshot.files['kadmeion.json']).preset).toBe(preset);
+    const document=JSON.parse(snapshot.files['pages/home.page.json']);
+    expect(document.sections.map((section:{layout:string})=>section.layout)).toEqual(layouts);
+    expect(Object.values(snapshot.slots).every(slot=>Object.keys(slot.content).length===0)).toBe(true);
+    if(preset==='blank'){
+      expect(document.header).toBeNull();
+      expect(Object.keys(snapshot.slots)).toHaveLength(0);
+    }
+  }
+  expect(new Set(ids).size).toBe(cases.length);
+});
