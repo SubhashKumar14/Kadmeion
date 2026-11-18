@@ -505,7 +505,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
   const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;baseSnapshot:PortfolioSnapshot;
-    ownerKey:string;cloudRevision:number;format:'json'|'zip';archiveSha256:string;
+    ownerKey:string;cloudRevision:number;format:'json'|'zip';archiveSha256:string;archiveBytes:number;
     changedFiles:string[];changedSlots:string[]}|null>(null);
   const [portableFile,setPortableFile]=useState('');
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
@@ -1223,9 +1223,48 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
          !['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation)||data.publicDeliveryAllowed!==false){
         setError('Owner-private image bytes could not be verified. Retry from Assets; existing assignment was kept.');return false;
       }
+      // The transport receipt is necessary, but a registration or matching
+      // header alone is not a decodable image. Verify the exact immutable
+      // bytes and decode locally before committing the slot transaction.
+      const bound=()=>draftCurrent(view)&&latestRecovery.current?.tool==='Assets'&&!latestRecovery.current.preview;
+      const buffer=await data.bytes.arrayBuffer();
+      if(!bound())return false;
+      const bytes=new Uint8Array(buffer);
+      const png=bytes.length>=8&&[137,80,78,71,13,10,26,10].every((value,index)=>bytes[index]===value);
+      const jpeg=bytes.length>=3&&bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
+      const webp=bytes.length>=12&&[82,73,70,70].every((value,index)=>bytes[index]===value)&&
+        [87,69,66,80].every((value,index)=>bytes[index+8]===value);
+      if(bytes.byteLength!==asset.size||!(asset.mime==='image/png'?png:asset.mime==='image/jpeg'?jpeg:webp)){
+        setError('Image bytes do not match the verified raster format. Existing assignment was kept.');return false;
+      }
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),value=>value.toString(16).padStart(2,'0')).join('');
+      if(!bound())return false;
+      if(digest!==data.integrity.computedSha256){
+        setError('Image bytes do not match the verified digest. Existing assignment was kept.');return false;
+      }
+      const probe=new Image();
+      const url=URL.createObjectURL(data.bytes);
+      let deadline:number|undefined;
+      try{
+        probe.src=url;
+        await Promise.race([probe.decode(),new Promise<never>((_,reject)=>{
+          deadline=window.setTimeout(()=>reject(new Error('Image decode timed out.')),10000);
+        })]);
+        if(!bound())return false;
+        if(!Number.isSafeInteger(probe.naturalWidth)||!Number.isSafeInteger(probe.naturalHeight)||
+          probe.naturalWidth<1||probe.naturalHeight<1)throw new Error('Empty image decode.');
+      }catch{
+        if(bound())setError('The private raster could not be decoded. Existing assignment was kept.');
+        return false;
+      }finally{
+        if(deadline!==undefined)window.clearTimeout(deadline);
+        probe.removeAttribute('src');
+        URL.revokeObjectURL(url);
+      }
+      if(!bound())return false;
       recoveryLock.current=false;
       if(!apply({kind:'PLACE_PRIVATE_IMAGE',slotKey:target,assetId:asset.id,altText}))return false;
-      setSlot(target);setNotice('Private image reference applied after owner-byte verification. Save draft to persist it; no publication pin or release authority was granted.');
+      setSlot(target);setNotice('Private image reference applied after exact byte verification and raster decoding. Save draft to persist it; no publication pin or release authority was granted.');
       return true;
     }catch{
       if(scopeCurrent(view))setError('Asset validation failed. No slot was changed.');
@@ -1327,7 +1366,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           const archive=exportPortfolioSourceZip(view.head.snapshot);
           if(!sameDraftSnapshot(importPortfolioSourceZip(archive),view.head.snapshot))throw new Error('Source ZIP round-trip failed.');
           data=new Blob([new Uint8Array(archive).buffer],{type:'application/zip'});
-        }else data=new Blob([exportPortableSnapshot(view.head.snapshot)],{type:'application/json'});
+        }else{
+          const json=exportPortableSnapshot(view.head.snapshot);
+          if(!sameDraftSnapshot(importPortableSnapshot(json),view.head.snapshot))throw new Error('Source JSON round-trip failed.');
+          data=new Blob([json],{type:'application/json'});
+        }
         if(!draftCurrent(view))return;
         const url=URL.createObjectURL(data);
         const link=document.createElement('a');
@@ -1350,7 +1393,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'){
         const bytes=await file!.arrayBuffer();
         if(!draftCurrent(view))return;
-        if(bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid snapshot byte length.');
+        if(bytes.byteLength!==file!.size||bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid or incomplete snapshot byte length.');
         let snapshot:PortfolioSnapshot;
         if(format==='zip'){
           const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
@@ -1368,7 +1411,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setPortableFile(difference.changedFiles[0]??'');
         setPortableComparison({snapshot,baseSnapshot:fresh.data.snapshot,
           ownerKey:JSON.stringify([view.owner!.id,view.owner!.epoch,view.id]),
-          format,cloudRevision:fresh.data.revision,archiveSha256,...difference});
+          format,cloudRevision:fresh.data.revision,archiveSha256,archiveBytes:bytes.byteLength,...difference});
         setPortableNotice((format==='zip'?'Private source ZIP verified and compared.':'Private project JSON parsed and compared.')+
           ' This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
       }
@@ -1688,7 +1731,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       {portableNotice&&<p role="status">{portableNotice}</p>}
       {portableComparison&&<div aria-label="Portable snapshot comparison">
         <p>Compared to saved cloud revision {portableComparison.cloudRevision}: {portableComparison.changedFiles.length} different files and {portableComparison.changedSlots.length} different slot/stash keys.</p>
-        <p>Input file SHA-256: <code style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code>. This fingerprint identifies the compared bytes; it is not a signature or publication approval.</p>
+        <p>Reviewed local {portableComparison.format.toUpperCase()} · {portableComparison.archiveBytes} bytes</p>
+        <p>Reviewed file SHA-256: <code aria-label="Reviewed file SHA-256" style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code>. This fingerprint identifies the compared bytes; it is not a signature or publication approval.</p>
         {portableComparison.changedFiles.length>0&&<section aria-label="Exact source comparison">
           <label>Changed source file<select value={portableFile} onChange={event=>setPortableFile(event.currentTarget.value)}>
             <option value="">Select a changed file</option>{portableComparison.changedFiles.map(path=><option key={path} value={path}>{path}</option>)}
