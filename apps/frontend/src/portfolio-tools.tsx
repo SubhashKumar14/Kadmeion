@@ -184,7 +184,7 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
       }}
       aria-label={'Edit '+section.renderId+' '+name+' slot in preview'+(visibleLabel?' — '+visibleLabel:'')}
       aria-pressed={selectedSlot===key} onClick={()=>onSelectSlot?.(key)}>
-      {localImage?<img src={localImage.url} alt={imageAlt} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
+      {localImage?<img src={localImage.url} alt={imageAlt} width={localImage.dimensions.width} height={localImage.dimensions.height} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>:
       imageReference?<span>{imageLabel}<small> · Media bytes not verified in this canvas</small></span>:renderedText||(
         kind==='media'?<span className="pv-placeholder pv-media-blank" aria-hidden="true"/>:
         example?<span className="pv-placeholder pv-layout-example">{example}</span>:
@@ -193,7 +193,7 @@ const PortfolioSlot=({section,name,kind='copy',snapshot,editing,selectedSlot,onS
     </button>;
     // Reference labels are author-only, never fabricated visitor imagery.
     if(imageReference)return localImage?<span className={className} data-k-theme-node={node}>
-      <img src={localImage.url} alt={imageAlt} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>
+      <img src={localImage.url} alt={imageAlt} width={localImage.dimensions.width} height={localImage.dimensions.height} decoding="async" onError={localImage.onError} style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}/>
     </span>:showMissing?<span className={className} data-k-theme-node={node}>{imageLabel} · Preview bytes unavailable</span>:null;
     // Nonediting previews can follow only explicitly authored, validated HTTPS links.
     // Never place a nested interactive link inside an editing slot button.
@@ -273,7 +273,8 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
  * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
 export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
 type CanvasImageRef={slotKey:string;assetId:string;expectedDigest?:string};
-type CanvasImageView={status:'pending'|'failed'|'deferred'}|{status:'ready';url:string;pinned:boolean;onError:()=>void};
+type RasterDimensions=Readonly<{width:number;height:number}>;
+type CanvasImageView={status:'pending'|'failed'|'deferred'}|{status:'ready';url:string;pinned:boolean;dimensions:RasterDimensions;digest:string;frozenDigestMatched:boolean;onError:()=>void};
 type CanvasImageViews=ReadonlyMap<string,CanvasImageView>;
 /** Only unique, active manifest slots may request bytes; stashes and
  * unsupported assignments never participate. The signature is order-stable. */
@@ -294,6 +295,27 @@ function canvasImageReferences(snapshot:PortfolioSnapshot|null|undefined,section
   return refs.sort((a,b)=>a.slotKey<b.slotKey?-1:a.slotKey>b.slotKey?1:0);
 }
 const CANVAS_MEDIA_BUDGET=50*1024*1024;
+// Match the owner transport's per-raster limit, and bound total retained
+// decoded pixels independently of compressed bytes (roughly 192 MB RGBA).
+const CANVAS_PIXEL_BUDGET=48_000_000;
+const PRIVATE_IMAGE_DECODE_TIMEOUT=10_000;
+async function decodePrivateRaster(url:string):Promise<RasterDimensions>{
+  const probe=new Image();
+  let deadline:number|undefined;
+  try{
+    probe.src=url;
+    await Promise.race([probe.decode(),new Promise<never>((_,reject)=>{
+      deadline=window.setTimeout(()=>reject(new Error('Private image decode timed out.')),PRIVATE_IMAGE_DECODE_TIMEOUT);
+    })]);
+    const width=probe.naturalWidth,height=probe.naturalHeight;
+    if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<1||height<1||
+       width>8192||height>8192||width*height>24_000_000)throw new Error('Private image dimensions exceed verified bounds.');
+    return {width,height};
+  }finally{
+    if(deadline!==undefined)window.clearTimeout(deadline);
+    probe.removeAttribute('src');
+  }
+}
 
 /** Only bounded raster Blob receipts can reach an ephemeral image URL.
  * The owner adapter still performs byte/hash, Storage identity and pin verification. */
@@ -351,7 +373,8 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
     for(const ref of refs)images.set(ref.slotKey,{status:'pending'});
     publish();
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
-      ++generation.current;epoch=null;release();setView({key,images:new Map()});
+      ++generation.current;epoch=null;release();
+      setView({key,images:new Map(refs.map(ref=>[ref.slotKey,{status:'failed'} as const]))});
     });
     // Keep the explicit retry useful even when a very large document exceeds
     // the local preview budget: prioritize the current selection, not API order.
@@ -364,7 +387,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
     async function load(){
       if(!port||epoch===null||!live())return;
       const bound=epoch;
-      let used=0;
+      let used=0,decodedPixels=0;
       try{
         const list=await port.listOwnerAssets();
         if(!live())return;
@@ -389,11 +412,14 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
             for(const ref of group)if(!matches.includes(ref))images.set(ref.slotKey,{status:'failed'});
             if(!matches.length){publish();continue;}
             url=URL.createObjectURL(response.data.bytes);urls.add(url);
-            const probe=new Image();
-            probe.src=url;
-            await probe.decode();
+            const dimensions=await decodePrivateRaster(url);
             if(!live())return;
-            if(!probe.naturalWidth||!probe.naturalHeight)throw new Error('Image decode failed.');
+            const pixels=dimensions.width*dimensions.height;
+            if(decodedPixels+pixels>CANVAS_PIXEL_BUDGET){
+              if(urls.delete(url))URL.revokeObjectURL(url);
+              for(const ref of matches)images.set(ref.slotKey,{status:'deferred'});
+              publish();continue;
+            }
             // The image URL belongs to this run alone; a late error from an old
             // image can neither revoke a new URL nor publish an old receipt.
             const imageUrl=url;
@@ -406,8 +432,9 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
               }
               publish();
             };
-            used+=asset.size;
-            for(const ref of matches)images.set(ref.slotKey,{status:'ready',url:imageUrl,
+            used+=asset.size;decodedPixels+=pixels;
+            for(const ref of matches)images.set(ref.slotKey,{status:'ready',url:imageUrl,dimensions,digest,
+              frozenDigestMatched:ref.expectedDigest===digest,
               pinned:response.data.serverAttestation==='SERVER_HASH_PINNED',onError:fail});
             publish();
           }catch{
@@ -427,6 +454,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
   const count=(status:CanvasImageView['status'])=>refs.filter(ref=>images.get(ref.slotKey)?.status===status).length;
   return {available:!!key,enabled,images,total:refs.length,ready:count('ready'),failed:count('failed'),deferred:count('deferred'),
     pinned:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned;}).length,
+    frozenMatched:refs.filter(ref=>{const image=images.get(ref.slotKey);return image?.status==='ready'&&image.pinned&&image.frozenDigestMatched;}).length,
     show:()=>{setEnabled(true);setAttempt(value=>value+1);},hide:()=>setEnabled(false)};
 }
 
@@ -462,7 +490,9 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
   },[scoped,onContentWidth]);
   const themeNode=(section:CanvasSection,name:string)=>scoped?'s'+sections.indexOf(section)+'c'+section.slots.indexOf(name):undefined;
   const editing=typeof onSelectSlot==='function'&&!standalone&&!simulation;
-  const media=useCanvasMedia(privateMedia,snapshot,sections,selectedSlot,!standalone&&!simulation&&!!privateMedia);
+  // Fullscreen is still private only when the route supplies its verified
+  // owner context. Standalone share scenes without it remain byte-free.
+  const media=useCanvasMedia(privateMedia,snapshot,sections,selectedSlot,!simulation&&!!privateMedia);
   const liveDrops=editing&&privateMedia?dropTargets:undefined;
   const {highlighted:sectionHighlight,setHighlighted:setSectionHighlight}=useDropOutline();
   function sectionDragOver(event:DragEvent<HTMLElement>,before:string|null){
@@ -548,7 +578,16 @@ export function PortfolioCanvas({snapshot, title, standalone, simulation, width,
       {media.enabled?<><span role="status">{media.ready} of {media.total} owner-private image slots verified · {media.pinned} server pin matches · Not public</span>
         {media.ready+media.failed+media.deferred<media.total&&<span>Verifying private image bytes…</span>}
         {media.failed>0&&<p role="alert">{media.failed} image slots could not be verified or decoded.</p>}
-        {media.deferred>0&&<p>{media.deferred} slots exceed this view’s 50 MiB image preview budget. Select a slot and retry to prioritize it.</p>}
+        {media.frozenMatched>0&&<span>{media.frozenMatched} snapshot digest and server pin matches · Not a publication receipt</span>}
+        {media.ready>0&&<details><summary>Verified image receipts</summary>
+          <ul className="ws-editor-slots">{Array.from(media.images.entries()).flatMap(([slotKey,image])=>image.status==='ready'?[<li key={slotKey} style={{overflowWrap:'anywhere'}}>
+            <strong>{slotKey}</strong><span> · {image.dimensions.width} × {image.dimensions.height}</span>
+            <small style={{display:'block'}}>Observed SHA-256: {image.digest}</small>
+            <small style={{display:'block'}}>{image.pinned?'Server pin matched':'No verified server pin'} · {image.frozenDigestMatched?'Snapshot digest matched':'No matching snapshot digest recorded'}</small>
+          </li>]:[])}</ul>
+          <small>Local preview evidence only. These receipts never authorize publication or write a source digest.</small>
+        </details>}
+        {media.deferred>0&&<p>{media.deferred} slots exceed this view’s 50 MiB compressed or 48 megapixel decoded image budget. Select a slot and retry to prioritize it.</p>}
         {(media.failed>0||media.deferred>0)&&<button type="button" className="ws-secondary" onClick={media.show}>Retry private canvas images</button>}
         <button type="button" className="ws-secondary" onClick={media.hide}>Hide private canvas images</button></>:
         <button type="button" className="ws-secondary" onClick={media.show}>Show private canvas images</button>}
@@ -1980,7 +2019,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
  * Storage identity, pin and bytes. This UI never promotes a local digest to a publication pin. */
 type AssetPreviewRecord={id:string;projectId:string;mime:string;size:number;altText:string};
 function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort;asset:AssetPreviewRecord;epoch:number}){
-  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean}>({status:'idle'});
+  const [state,setState]=useState<{status:'idle'|'pending'|'failed'}|{status:'ready';url:string;pinned:boolean;dimensions:RasterDimensions;digest:string}>({status:'idle'});
   const mounted=useRef(false);
   const activeUrl=useRef<string|null>(null);
   const flight=useRef(false);
@@ -2011,17 +2050,21 @@ function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort
       if(!live())return;
       if(!verified){setState({status:'failed'});return;}
       const url=URL.createObjectURL(data.bytes);
-      activeUrl.current=url;setState({status:'ready',url,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
+      activeUrl.current=url;
+      const dimensions=await decodePrivateRaster(url);
+      if(!live()||activeUrl.current!==url)return;
+      setState({status:'ready',url,dimensions,digest:data.integrity.computedSha256,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
     }catch{
-      if(live())setState({status:'failed'});
+      if(live()){release();setState({status:'failed'});}
     }finally{if(generation.current===started)flight.current=false;}
   }
   return <section aria-label="Owner-private image byte preview">
     {state.status==='ready'?<>
-      <img src={state.url} alt={asset.altText} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
-        onError={()=>{release();setState({status:'failed'});}}/>
+      <img src={state.url} alt={asset.altText} width={state.dimensions.width} height={state.dimensions.height} decoding="async" style={{maxWidth:'100%',height:'auto',objectFit:'contain'}}
+        onError={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'failed'});}}/>
       <p>Owner-private bytes verified. {state.pinned?'Independent server hash pin matched.':'No independent server hash pin verified.'} Public delivery is not authorized.</p>
-      <button type="button" className="ws-secondary" onClick={()=>{release();setState({status:'idle'});}}>Close private preview</button>
+      <details><summary>Verified raster receipt</summary><dl className="ws-asset-metadata"><div><dt>Decoded dimensions</dt><dd>{state.dimensions.width} × {state.dimensions.height}</dd></div><div><dt>Observed SHA-256</dt><dd style={{overflowWrap:'anywhere'}}>{state.digest}</dd></div></dl></details>
+      <button type="button" className="ws-secondary" onClick={()=>{if(activeUrl.current!==state.url)return;release();setState({status:'idle'});}}>Close private preview</button>
     </>:state.status==='pending'?<>
       <p role="status">Verifying private image bytes…</p>
       <div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div>
