@@ -499,6 +499,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{error: boolean; text: string} | null>(null);
   const [latest, setLatest] = useState<OwnerProject | null>(null);
+  const [uncertainOverview,setUncertainOverview]=useState<{from:number;desired:PrivateProjectDraft}|null>(null);
   const [checking, setChecking] = useState(false);
   const [panel, setPanel] = useState<'details' | 'sections'>('details');
   const [openedSections, setOpenedSections] = useState(false);
@@ -551,7 +552,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     ownerEpoch.current=port.getOwnerSessionEpoch();ownerExpired.current=false;
     overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
     setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
-    setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);
+    setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
     setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
     setOpenedSections(false);setPanel('details');setDetail({status:'loading'});
     const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
@@ -559,7 +560,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       ownerExpired.current=true;++detailGeneration.current;
       overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
       setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
-      setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);
+      setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
       setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
       setOpenedSections(false);setPanel('details');setDetail({status:'unavailable'});
     });
@@ -599,9 +600,22 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         return;
       }
       observeRevision(data.revision);
+      // Readback proves current saved fields, not which request/actor wrote them.
+      // Do not advance the sibling case-study baseline without its own receipt.
+      if(uncertainOverview&&detail.status==='ready'&&data.revision===uncertainOverview.from+1){
+        try{
+          const same=(left:PrivateProjectDraft,right:PrivateProjectDraft)=>
+            JSON.stringify(normalizeProjectDraft(left))===JSON.stringify(normalizeProjectDraft(right));
+          if(same(data,uncertainOverview.desired)&&same(detail.draft,uncertainOverview.desired)){
+            setDetail({status:'ready',saved:data,draft:data});setUncertainOverview(null);
+            setOverviewConflict(false);setLatest(null);
+            setFeedback({error:false,text:'Requested overview matches the current saved revision. No additional write was made.'});return;
+          }
+        }catch{/* Invalid current draft still requires explicit comparison. */}
+      }
       setLatest(data.revision !== baseRevision ? data : null);
       if (data.revision === baseRevision) {
-        setOverviewConflict(false);
+        setUncertainOverview(null);setOverviewConflict(false);
         setFeedback({error:false,text:'You have the latest saved revision.'});
       } else setOverviewConflict(true);
     } catch {
@@ -619,7 +633,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     // own revision checks intact; changing a baseline is not a server write.
     setDetail({status:'ready',saved:latest,draft:keep?{...detail.draft,slug:latest.slug}:latest});
     setReviewedDestinationChange(null);setConfirmOverviewRebase(false);
-    setOverviewConflict(false);setLatest(null);
+    setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
     setFeedback({error:false,text:keep?'Latest saved revision compared. Your overview edits still need an explicit save.':'Loaded the latest saved draft.'});
   }
 
@@ -644,7 +658,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       if (!result.data || result.error || result.data.revision!==from+1) {
         const message=result.error?.message ?? 'Save could not be confirmed.';
         // Any unconfirmed receipt requires a fresh compare before another write.
-        setOverviewConflict(true);setReviewedDestinationChange(null);
+        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
         setFeedback({error:true,text:message});
         return;
       }
@@ -652,11 +666,11 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       observeRevision(to);
       setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
       setDetail({status:'ready',saved:result.data,draft:result.data});
-      setReviewedDestinationChange(null);
+      setReviewedDestinationChange(null);setUncertainOverview(null);
       setFeedback({error:false,text:'Private draft saved.'});
     } catch {
       if(currentDetail(generation)){
-        setOverviewConflict(true);setReviewedDestinationChange(null);
+        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
         setFeedback({error:true,text:'Project save could not be verified. Check the latest revision before retrying. Your edits remain available.'});
       }
     } finally {
