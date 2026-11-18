@@ -1117,7 +1117,7 @@ export async function recoverPortfolioSourceZipFromPartialAccountExport(
  * backup erasure, current server state or permission to delete the account.
  */
 export interface BoundedPrivateAccountRecoveryBundle {
-  filename:'kadmeion-private-account-partial.zip';
+  filename:'kadmeion-private-account-partial.zip'|'kadmeion-private-account-partial-v2.zip';
   zip:Uint8Array;
   sha256:string;
   originalExportSha256:string;
@@ -1133,6 +1133,7 @@ export async function createBoundedPrivateAccountRecoveryBundle(
   exportBytes:Uint8Array
 ):Promise<BoundedPrivateAccountRecoveryBundle>{
   const verified=await verifyBoundedPrivateAccountExport(exportBytes);
+  const isV2=verified.schemaVersion===2;
   // The verification above checks all embedded bytes and scoped owner records.
   let raw:JsonObject;
   try{raw=JSON.parse(decoder.decode(exportBytes)) as JsonObject;}
@@ -1141,7 +1142,7 @@ export async function createBoundedPrivateAccountRecoveryBundle(
   const parts:{name:string;bytes:Uint8Array}[]=[];
   const stripped:JsonObject[]=[];
   const files=new Map<string,{sha256:string;byteLength:number}>();
-  const references:{originalPath:string;archivePath:string;sha256:string}[]=[];
+  const references:JsonObject[]=[];
   const suffix:Record<string,string>={
     'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/avif':'avif'
   };
@@ -1170,7 +1171,8 @@ export async function createBoundedPrivateAccountRecoveryBundle(
     // object identity or Storage version documented in metadata.
     stripped.push({...metadata,archivePath:name});
     references.push({
-      originalPath:item.path as string,archivePath:name,sha256:digest
+      originalPath:item.path as string,archivePath:name,sha256:digest,
+      ...(isV2?{scope:item.scope,assetId:item.assetId,projectId:item.projectId}:{})
     });
     void discarded;
   }
@@ -1180,7 +1182,8 @@ export async function createBoundedPrivateAccountRecoveryBundle(
   };
   const recordsBytes=encoder.encode(JSON.stringify(records));
   const manifest={
-    kind:'kadmeion-private-account-recovery-bundle',formatVersion:1,
+    kind:'kadmeion-private-account-recovery-bundle',formatVersion:isV2?2:1,
+    ...(isV2?{schemaVersion:2,requestId:verified.requestId}:{}),
     privateData:true,completeAccountExport:false,
     providerAuthenticityVerified:false,deletionAllowed:false,
     sourceExportSha256:verified.sha256,ownerId:verified.ownerId,
@@ -1211,7 +1214,7 @@ export async function createBoundedPrivateAccountRecoveryBundle(
       'The verified partial export exceeds the safe offline ZIP capacity. Keep the original JSON instead.');
   }
   return {
-    filename:'kadmeion-private-account-partial.zip',zip,
+    filename:isV2?'kadmeion-private-account-partial-v2.zip':'kadmeion-private-account-partial.zip',zip,
     sha256:await sha256(zip),originalExportSha256:verified.sha256,
     status:'BOUNDED_PARTIAL_ACCOUNT_BUNDLE',
     assetFiles:files.size,assetsReferenced:references.length,
@@ -1254,7 +1257,7 @@ export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
   }catch{throw new PrivateAccountExportError('INTEGRITY','Invalid private recovery metadata.');}
   requireCondition(object(records)&&object(manifest)&&
     manifest.kind==='kadmeion-private-account-recovery-bundle'&&
-    manifest.formatVersion===1&&
+    (manifest.formatVersion===1||manifest.formatVersion===2)&&
     manifest.privateData===true&&manifest.completeAccountExport===false&&
     manifest.providerAuthenticityVerified===false&&
     manifest.deletionAllowed===false&&
@@ -1270,6 +1273,14 @@ export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
     Array.isArray(manifest.assetReferences)&&
     manifest.assetReferences.length===records.assets.length,
     'INTEGRITY','Invalid private recovery metadata or completeness claims.');
+  const isV2=manifest.formatVersion===2;
+  requireCondition(isV2?(
+    exactFields(manifest,['kind','formatVersion','schemaVersion','requestId','privateData','completeAccountExport',
+      'providerAuthenticityVerified','deletionAllowed','sourceExportSha256','ownerId','inventorySnapshotId','recordsPath',
+      'recordsSha256','files','assetReferences'])&&manifest.schemaVersion===2&&records.schemaVersion===2&&
+    (manifest.requestId===null||isUuid(manifest.requestId))&&manifest.requestId===records.requestId
+  ):(records.schemaVersion===1&&!Object.hasOwn(manifest,'schemaVersion')&&!Object.hasOwn(manifest,'requestId')),
+    'INTEGRITY','Recovery manifest version or request scope does not match its records.');
   const suffix:Record<string,string>={
     'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/avif':'avif'
   };
@@ -1288,6 +1299,9 @@ export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
       ref.archivePath===entry.archivePath&&
       ref.sha256===entry.expectedSha256&&
       ref.originalPath===entry.path&&
+      (isV2?exactFields(ref,['originalPath','archivePath','sha256','scope','assetId','projectId'])&&
+        ref.scope===entry.scope&&ref.assetId===entry.assetId&&ref.projectId===entry.projectId:
+        exactFields(ref,['originalPath','archivePath','sha256']))&&
       !Object.hasOwn(entry,'base64'),
       'INTEGRITY','Private recovery media reference is ambiguous.');
     const blob=archive.get(entry.archivePath as string);
@@ -1306,13 +1320,15 @@ export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
   requireCondition(manifest.files.length===actualFiles.size&&
     archive.size===actualFiles.size+3,
     'INTEGRITY','Recovery archive has unexpected, omitted or duplicate files.');
+  const manifestPaths=new Set<string>();
   for(const f of manifest.files){
     requireCondition(object(f)&&Object.keys(f).sort().join(',')===
       'byteLength,path,sha256'&&typeof f.path==='string'&&
-      actualFiles.has(f.path)&&
+      actualFiles.has(f.path)&&!manifestPaths.has(f.path)&&
       f.sha256===actualFiles.get(f.path)?.sha256&&
       f.byteLength===actualFiles.get(f.path)?.byteLength,
       'INTEGRITY','Recovery manifest differs from stored media.');
+    manifestPaths.add(f.path);
   }
   const restored={
     ...records,kind:'kadmeion-bounded-private-account-export',
@@ -1322,7 +1338,8 @@ export async function restoreBoundedPrivateAccountJsonFromRecoveryBundle(
   const inspection=await verifyBoundedPrivateAccountExport(bytes);
   requireCondition(inspection.sha256===manifest.sourceExportSha256&&
     inspection.ownerId===manifest.ownerId&&
-    inspection.inventorySnapshotId===manifest.inventorySnapshotId,
+    inspection.inventorySnapshotId===manifest.inventorySnapshotId&&
+    (isV2?(inspection.schemaVersion===2&&inspection.requestId===manifest.requestId):inspection.schemaVersion===undefined),
     'INTEGRITY','Reconstructed export does not match its original digest.');
   return {
     bytes,sha256:inspection.sha256,
