@@ -461,8 +461,8 @@ test('real owner onboarding and project revision are private across browser sess
     buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64')
   });
   await page.getByRole('button',{name:'Upload private image'}).click();
-  await expect(page.locator('.ws-asset-manager').getByRole('status'))
-    .toContainText('Image uploaded and privately registered.');
+  await expect(page.locator('.ws-asset-manager').getByRole('status').filter({hasText:'Image uploaded and privately registered.'}))
+    .toBeVisible();
   await expect(page.locator('.ws-asset-gallery').getByText('Tiny private image for an isolated browser test',{exact:true})).toBeVisible();
   await capture('23_ASSET_UPLOAD_CONFIRMED_BROWSER');
   // The portfolio has local revision operations at this point. Saving before
@@ -2557,4 +2557,59 @@ test('B16 C06 opt-in autosave coalesces private edits, stops on failure and neve
   await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
   await page.waitForTimeout(1500);
   expect(writes).toEqual([{headline:'Final private draft',withdrawal:false},{headline:'Retained after outage',withdrawal:false}]);
+});
+
+test('B16 C06 pending skill pauses scheduled autosave until add or clear',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase and S2 pending-skill successor.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 pending skill');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  const skill=page.getByLabel('Add skill',{exact:true});
+  await skill.fill('TypeScript');
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await page.getByRole('button',{name:'Save profile draft'}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Profile',exact:true}).click();
+  const writes:Array<{headline:string;skills:string[];withdrawal:boolean}>=[];
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const body=route.request().postDataJSON();
+    writes.push({headline:body.p_draft.headline,skills:body.p_draft.skills,withdrawal:body.p_confirm_projection_withdrawal});
+    await route.continue();
+  });
+  await auto.check();
+  await headline.fill('Pending skill must pause this save');
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await skill.fill('typescript');
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await expect(page.getByText('This skill is already in your profile.',{exact:true})).toBeVisible();
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await skill.fill('Rust');
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Pending skill must pause this save',skills:['TypeScript','Rust'],withdrawal:false}]);
+  await page.getByRole('button',{name:'Profile',exact:true}).click();
+  await headline.fill('Clear pending skill resumes save');
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await skill.fill('Unadded skill');
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(1);
+  await skill.fill('');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toEqual({headline:'Clear pending skill resumes save',skills:['TypeScript','Rust'],withdrawal:false});
+  await page.reload();
+  await expect(headline).toHaveValue('Clear pending skill resumes save');
+  await expect(auto).not.toBeChecked();
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Remove Rust'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Remove Unadded skill'})).toHaveCount(0);
 });
