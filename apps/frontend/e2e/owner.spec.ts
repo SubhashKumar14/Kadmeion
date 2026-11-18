@@ -1346,6 +1346,11 @@ test('S6 S2 project list 503 retries, create conflict preserves fields and priva
   await expect(drawer.getByLabel('Project title')).toHaveValue('S6 navigation retry fixture');
   await expect(drawer.getByLabel('Summary (optional)')).toHaveValue('Preserve this private form on conflict');
   await expect(drawer).toBeVisible();
+  // Paired S2 consumer fences uncertain insert receipts; require real lookup first.
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeDisabled();
+  await drawer.getByRole('button',{name:'Check saved project before retry'}).click();
+  await expect(drawer.getByRole('alert')).toContainText('No matching saved project was found');
+  await expect(drawer.getByRole('button',{name:'Save project'})).toBeEnabled();
   await drawer.getByRole('button',{name:'Save project'}).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByRole('status').filter({hasText:'Saved privately in your account.'})).toBeVisible();
@@ -2916,4 +2921,87 @@ test('B16 C06 real profile autosave cannot silently withdraw existing projection
   await page.reload();
   await expect(headline).toHaveValue('New private headline');
   await expect(auto).not.toBeChecked();
+});
+
+test('B16 C05 mounted private avatar real bytes, lost attach ACK, reload, foreign denial and detach',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local C05 SQL and real mounted avatar consumer.');
+  test.setTimeout(90_000);
+  const owner=await localUser('S6 avatar owner'),other=await localUser('S6 avatar foreign');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if(!key||process.env.VITE_SUPABASE_URL!==origin)throw new Error('C05 requires disposable loopback credentials.');
+  const firstBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const secondBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const avatar=page.getByRole('region',{name:'Private profile avatar'});
+  const file=avatar.getByLabel(/Avatar image/),alt=avatar.getByLabel('Avatar alt text');
+  await expect(file).toBeEnabled();
+  await expect(avatar.getByText('Saved avatar revision 0 · No selected image',{exact:true})).toBeVisible();
+  const ids:string[]=[];let lost=false,dropNext=false,storageRead:string|null=null;
+  page.on('response',response=>{
+    const url=new URL(response.url());
+    if(url.origin===origin&&url.pathname.includes('/storage/v1/object/')&&url.pathname.includes('/profile/')&&
+       response.ok()&&response.request().method()==='GET')storageRead=url.pathname;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/set_private_profile_avatar',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const request=route.request().postDataJSON();
+    if(typeof request.p_asset_id==='string')ids.push(request.p_asset_id);
+    if(!dropNext)return route.continue();
+    dropNext=false;const result=await route.fetch();
+    try{if(result.ok()){lost=true;await route.abort('failed');}else await route.fulfill({response:result});}
+    finally{await result.dispose();}
+  });
+  const choose=async(bytes:Buffer,name:string)=>{
+    await file.setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:bytes});
+    await alt.fill(name);
+    await avatar.getByRole('button',{name:'Save private avatar'}).click();
+  };
+  const check=async(bytes:Buffer,name:string)=>{
+    const image=avatar.getByRole('img',{name,exact:true});
+    await expect(image).toBeVisible();
+    await expect.poll(()=>image.evaluate(async(node,expected)=>{
+      const img=node as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const actual=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&actual.length===expected.length&&actual.every((byte,i)=>byte===expected[i]);
+    },Array.from(bytes))).toBe(true);
+  };
+  await choose(firstBytes,'First private avatar');
+  await expect(avatar.getByText('Private avatar selection saved. Not published.',{exact:true})).toBeVisible();
+  await check(firstBytes,'First private avatar');
+  await expect(file).toBeEnabled();
+  const retiredUrl=await avatar.getByRole('img',{name:'First private avatar'}).getAttribute('src');
+  dropNext=true;await choose(secondBytes,'Replacement private avatar');
+  await expect(avatar.getByRole('button',{name:'Check saved avatar selection'})).toBeEnabled();
+  expect(lost).toBe(true);expect(ids.length).toBe(2);expect(ids[0]!==ids[1]).toBe(true);
+  await avatar.getByRole('button',{name:'Check saved avatar selection'}).click();
+  await expect(avatar.getByText('Requested avatar matches the current saved selection. No additional write was made.',{exact:true})).toBeVisible();
+  await check(secondBytes,'Replacement private avatar');
+  expect(ids.length).toBe(2);
+  if(!retiredUrl)throw new Error('Old private image object URL missing.');
+  expect(await page.evaluate(async url=>{try{await fetch(url);return false;}catch{return true;}},retiredUrl)).toBe(true);
+  await page.reload();await check(secondBytes,'Replacement private avatar');
+  expect(storageRead!==null).toBe(true);
+  const isolated=await browser.newPage({baseURL:new URL(page.url()).origin});
+  try{
+    await signIn(isolated,other);await isolated.goto('/app/profile');
+    const foreign=isolated.getByRole('region',{name:'Private profile avatar'});
+    await expect(foreign.getByText('Saved avatar revision 0 · No selected image',{exact:true})).toBeVisible();
+    await expect(foreign.getByRole('img',{name:'Replacement private avatar'})).toHaveCount(0);
+    const signed=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',
+      headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email:other.email,password:other.password})});
+    if(!signed.ok)throw new Error('Local foreign owner authentication failed.');
+    const receipt=await signed.json();
+    if(typeof receipt.access_token!=='string')throw new Error('Local foreign owner token absent.');
+    const leak=await fetch(origin+storageRead!,{headers:{apikey:key,Authorization:'Bearer '+receipt.access_token},redirect:'error'});
+    expect(leak.ok).toBe(false);expect([400,401,403,404]).toContain(leak.status);await leak.body?.cancel();
+  }finally{await isolated.close();}
+  const remove=avatar.getByRole('button',{name:'Remove avatar selection'});
+  await expect(remove).toBeDisabled();
+  await avatar.getByRole('checkbox',{name:/Detach current avatar/}).check();await remove.click();
+  await expect(avatar.getByText('Avatar detached. Stored private assets have not been permanently deleted.',{exact:true})).toBeVisible();
+  await expect(avatar.getByRole('img')).toHaveCount(0);
+  await page.reload();await expect(avatar.getByText(/Saved avatar revision 3 · No selected image/)).toBeVisible();
 });
