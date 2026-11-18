@@ -180,6 +180,33 @@ function validateSlotAssignment(key:string,slot:SlotAssignment,snapshot:Portfoli
     throw new ContractError('VALIDATION','Owned source state disagrees with its file bytes.');
 }
 
+/** Bounded, data-only source diagnostics. Neither syntax compilation nor
+ * execution nor publication approval is implied. Positions are 1-based
+ * UTF-16 editor coordinates; CRLF counts as one new line. Existing opaque
+ * imported bytes are never normalized or discarded by this diagnostic. */
+export type OwnedSourceDiagnostic=Readonly<{code:'INVALID_SOURCE'|'SIZE_LIMIT'|'UNPAIRED_SURROGATE'|'EMPTY_SOURCE';severity:'error'|'warning';message:string;line?:number;column?:number}>;
+export function diagnoseOwnedSource(value:unknown):OwnedSourceDiagnostic[]{
+  if(typeof value!=='string')return [{code:'INVALID_SOURCE',severity:'error',message:'Owned source must be text.'}];
+  if(value.length>MAX_FILE_BYTES||new TextEncoder().encode(value).byteLength>MAX_FILE_BYTES)
+    return [{code:'SIZE_LIMIT',severity:'error',message:'Owned source exceeds the private source byte limit.'}];
+  let line=1,column=1;
+  for(let i=0;i<value.length;i++){
+    const code=value.charCodeAt(i);
+    if(code>=0xd800&&code<=0xdbff){
+      const next=value.charCodeAt(i+1);
+      if(next>=0xdc00&&next<=0xdfff){i++;column+=2;continue;}
+      return [{code:'UNPAIRED_SURROGATE',severity:'error',line,column,message:'Unpaired Unicode surrogate cannot be preserved in UTF-8 source.'}];
+    }
+    if(code>=0xdc00&&code<=0xdfff)
+      return [{code:'UNPAIRED_SURROGATE',severity:'error',line,column,message:'Unpaired Unicode surrogate cannot be preserved in UTF-8 source.'}];
+    if(code===13||code===10){
+      if(code===13&&value.charCodeAt(i+1)===10)i++;
+      line++;column=1;
+    }else column++;
+  }
+  return value.trim()?[]:[{code:'EMPTY_SOURCE',severity:'warning',message:'Source is empty. It remains private; no valid component compilation is implied.'}];
+}
+
 export function createEditorHead(snapshot: PortfolioSnapshot): EditorHead {
   validateSnapshot(snapshot);
   return {revision:0,snapshot:structuredClone(snapshot),undo:[],redo:[],operations:{}};
@@ -958,8 +985,11 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
       case 'EDIT_OWNED_SOURCE':
         if (!isOwned(slot) || !slot.sourcePath)
           throw new ContractError('VALIDATION', 'Library source is protected from editing.');
-        if (typeof intent.source!=='string' || new TextEncoder().encode(intent.source).byteLength>MAX_FILE_BYTES)
-          throw new ContractError('VALIDATION', 'Owned source too large.');
+        {
+          const issue=diagnoseOwnedSource(intent.source).find(item=>item.severity==='error');
+          if(issue)throw new ContractError('VALIDATION',issue.message+
+            (issue.line!==undefined?' Line '+issue.line+', column '+issue.column+'.':''));
+        }
         next.files[slot.sourcePath]=intent.source;
         next.slots[intent.slotKey]={...slot,state:intent.source===slot.originalSource?'S1':'S2'};
         break;
