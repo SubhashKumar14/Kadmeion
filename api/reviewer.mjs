@@ -1,4 +1,4 @@
-import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
+import {cancelRpcBody, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 /**
  * Candidate Vercel Node function for PRIVATE reviewer staging, NOT publication.
  * Deliberately disabled unless the operator explicitly proves the host, sets
@@ -95,9 +95,8 @@ export async function handleReviewerRequest(req,res,{
   }
   const cfg=config(env);
   if(!cfg){respond(res,404,'Not found','text/plain; charset=utf-8',method);return;}
-  let url;
-  try{url=new URL(req.url??'/', 'https://kadmeion.internal');}
-  catch{respond(res,404,'Not found','text/plain; charset=utf-8',method);return;}
+  const url=parseDeliveryTarget(req.url);
+  if(!url){respond(res,404,'Not found','text/plain; charset=utf-8',method);return;}
   const assetRequest=url.searchParams.has('asset')||url.searchParams.has('manifest');
   const media=assetRequest?mediaQuery(url.searchParams):null;
   if(assetRequest&&(!media||url.pathname!=='/api/reviewer')){
@@ -127,7 +126,7 @@ export async function handleReviewerRequest(req,res,{
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
   if(!upstream.ok){
-    await upstream.body?.cancel().catch(()=>{});
+    cancelRpcBody(upstream.body);
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);
     return;
   }

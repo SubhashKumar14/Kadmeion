@@ -1,0 +1,15 @@
+id,contract,producer,consumer,verifier,current_evidence,required_boundary,target
+C01,Thumbnail attachment/private bytes,S1,S2,S13/S6,#28 d3fcc31 + #24 44006a7,Existing typed methods; test combined; separate upload/attach UUID; owner epoch; CAS; denial vs transient errors,H1–H4
+C02,Verified editor owner context,S14,S3/S7,S6,Latest #20 plus existing S0 approved prop,Live verified owner id+epoch; no persisted authority; shell remount and stale response denial,H1–H3
+C03,GET/HEAD verifier + fixtures,S9 after S4,S4,S13 after S6,#21 87361bc + #25 12d70b1,Compose before acceptance; byte GET and policy/bodyless HEAD; no universal digest header,H1–H3
+C04,General editor media attestation/read,S1,S3/S7/S9,S13/S6,Not equivalent to project-thumbnail API,Owner-private bytes/hash/alt/MIME/size; immutable frozen publication; storage reconciliation,H2–H6
+C05,Standalone avatar lifecycle,S1,S2/S8,S13/S6,Missing scoped contract,No dummy project; registration/replace/delete/export/erasure; safe public projection only after consent,H2–H7
+C06,Authored profile links + projection,S1/S8,S2,S13/S6,#28 private link contract exists,Bounded HTTPS CAS; no fetch; exact published projection fields; deliberate profile action,H2–H6
+C07,Goal conditional writes + chronology,S10 after S1,S10,S13/S6,#28 additive API exists; #9 older consumer,"Consume expected timestamp, precise cursor; no automatic overwrite; legacy update not globally disabled",H2–H5
+C08,Export quotas + inventory hints,S5 after S1,S5,S13/S6,#28 typed errors; #9 export UI,10 durable inventories not daily; same-op replay; known-ID revalidation; no discovery RPC assumption,H2–H5
+C09,Editor panel/slot deep links,S3,S4/S7,S6,QUESTION-4-006,Bounded allowlist and actual slot; never fabricated query mode; pending edits not lost,H3–H6
+C10,Scoped theme/transaction/static schema,S3/S7,S4,S13/S6,Palette subset exists,Versioned backward-compatible token inheritance + declared mutation; opaque unknown fields preserved,H3–H8
+C11,Public release/identity receipts,S9/S8,S4/S2,S13/S6,Backend primitives; full hosted journey not accepted,"Exact frozen hash, owner consent, publish/republish/rollback/revoke and canonical/media proof",H4–H10
+C12,Provider facts and DevScore,S10,S10,S13/S6,P2 missing sync/score,Official permission per provider; provenance/missingness; approved score formula; no fake data,H2–H14
+C13,Opt-in analytics aggregates,S12,S10/S9,S13/S6,P2 missing,Consent-bound bounded collection; data minimization; owner-only query; retention/disable semantics,H2–H14
+C14,Moderation/appeal/cleanup hosted drift,S11,S5/S9,S13/S6,"Appeal migration source exists, hosted absence at audit",Recheck target; no hosted apply until permitted; deny owner impersonation; prove lifecycle,H3–H12

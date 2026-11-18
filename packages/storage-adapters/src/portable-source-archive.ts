@@ -4,7 +4,9 @@ import { validateSnapshot, type PortfolioSnapshot } from '../../editor-core/src/
 const LIMIT=2*1024*1024;
 const MAX_ENTRIES=101;
 const MANIFEST='kadmeion.export.json';
-const decoder=new TextDecoder('utf-8',{fatal:true});
+// Owned code is opaque. Preserve a leading UTF-8 BOM as source content,
+// and do not silently strip a BOM from a ZIP filename (path alias).
+const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
 const encoder=new TextEncoder();
 const crcTable=new Uint32Array(256);
 for(let n=0;n<256;n++){
@@ -77,6 +79,13 @@ export function writeStoredZip(parts:readonly StoredZipPart[],limits:StoredZipLi
   check(pos===total,'ZIP layout offset mismatch.');
   return out;
 }
+function encodeOwnedFile(source:string|undefined):Uint8Array {
+  check(typeof source==='string','Invalid project source.');
+  const bytes=encoder.encode(source);
+  // TextEncoder otherwise silently replaces isolated UTF-16 surrogates.
+  check(decoder.decode(bytes)===source,'Project source cannot be encoded losslessly as UTF-8.');
+  return bytes;
+}
 export function exportPortfolioSourceZip(snapshot:PortfolioSnapshot):Uint8Array {
   validateSnapshot(snapshot);
   const paths=Object.keys(snapshot.files).sort();
@@ -84,10 +93,20 @@ export function exportPortfolioSourceZip(snapshot:PortfolioSnapshot):Uint8Array 
     kind:'kadmeion-source-archive',formatVersion:1,
     files:paths,slots:snapshot.slots,stashes:snapshot.stashes
   });
-  return writeStoredZip([
+  const limits={maxEntries:MAX_ENTRIES,maxBytes:LIMIT,maxEntryBytes:256*1024};
+  const parts=[
     {name:MANIFEST,bytes:encoder.encode(manifest)},
-    ...paths.map(name=>({name,bytes:encoder.encode(snapshot.files[name])}))
-  ],{maxEntries:MAX_ENTRIES,maxBytes:LIMIT,maxEntryBytes:256*1024});
+    ...paths.map(name=>({name,bytes:encodeOwnedFile(snapshot.files[name])}))
+  ];
+  const archive=writeStoredZip(parts,limits);
+  // Reopen the actual bytes before returning a portable recovery artifact.
+  // Preserve format 1 and the original source, including BOM and line endings.
+  const stored=readStrictStoredZip(archive,limits);
+  check(stored.size===parts.length&&parts.every(({name,bytes})=>{
+    const entry=stored.get(name);
+    return !!entry&&entry.byteLength===bytes.byteLength&&entry.every((byte,i)=>byte===bytes[i]);
+  }),'Portable source archive integrity check failed.');
+  return archive;
 }
 
 export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
@@ -137,10 +156,11 @@ export function importPortfolioSourceZip(input:Uint8Array):PortfolioSnapshot {
     check(cursor+46<=end&&view.getUint32(cursor,true)===0x02014b50,'Invalid central ZIP record.');
     const flags=view.getUint16(cursor+8,true),method=view.getUint16(cursor+10,true),
       crc=view.getUint32(cursor+16,true),size=view.getUint32(cursor+20,true),
+      rawSize=view.getUint32(cursor+24,true),
       nameLength=view.getUint16(cursor+28,true),extra=view.getUint16(cursor+30,true),
       comment=view.getUint16(cursor+32,true),offset=view.getUint32(cursor+42,true);
-    check(method===0&&flags===0x800&&cursor+46+nameLength+extra+comment<=end,
-      'Unsupported central ZIP entry.');
+    check(method===0&&flags===0x800&&size===rawSize&&view.getUint16(cursor+34,true)===0&&
+      cursor+46+nameLength+extra+comment<=end,'Unsupported central ZIP entry.');
     let name:string;
     try{name=decoder.decode(data.subarray(cursor+46,cursor+46+nameLength));}
     catch{throw new ContractError('VALIDATION','Invalid central filename.');}

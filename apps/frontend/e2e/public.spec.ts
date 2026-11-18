@@ -427,3 +427,50 @@ test('F06 public route titles identify the task and keyboard skip remains visibl
   await page.keyboard.press('Enter');
   await expect(page.getByRole('main')).toBeFocused();
 });
+
+
+test('B16 all five public preset demos render actual section order, keyboard return and accessible width comparison',async({page})=>{
+  test.setTimeout(100_000);
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.goto('/templates');
+  const demoCases=[
+    {name:'Curved Hero',id:'arc',order:['L1','L3','L4','L6','L8']},
+    {name:'Interlocking Showcase',id:'collage',order:['L2','L3','L7','L8']},
+    {name:'Editorial Grid',id:'editorial',order:['L4','L3','L6','L8']},
+    {name:'Modular Portfolio',id:'studio',order:['L1','L3','L7','L6','L8']},
+    {name:'Stepped Minimal',id:'stairs',order:['L5','L4','L3','L8']}
+  ];
+  let privateRequests=0;
+  page.on('request',request=>{const path=new URL(request.url()).pathname;if(/^\/(?:auth|rest|storage)\/v1\//.test(path))privateRequests++;});
+  for(const fixture of demoCases){
+    const card=page.getByRole('article').filter({has:page.getByRole('heading',{name:fixture.name,exact:true})});
+    const opener=card.getByRole('button',{name:'Preview',exact:true});
+    await opener.focus();await page.keyboard.press('Enter');
+    const dialog=page.getByRole('dialog',{name:fixture.name});
+    await expect(dialog).toBeVisible();
+    const demo=dialog.locator('[data-public-preset="'+fixture.id+'"]');
+    const canvas=demo.getByRole('region',{name:'Simulated visitor portfolio appearance'});
+    await expect(canvas).toBeVisible();
+    const order=await canvas.locator('.pv-section').evaluateAll(nodes=>nodes.map(node=>[...node.classList].find(x=>/^pv-layout-L\d+$/.test(x))?.slice(10)));
+    expect(order).toEqual(fixture.order);
+    await expect(dialog.getByText(/Demo content only/)).toBeVisible();
+    await expect(canvas.locator('a[href],button,input')).toHaveCount(0);
+    const phone=dialog.getByRole('button',{name:'390 px (phone width)'});
+    await phone.click();await expect(phone).toHaveAttribute('aria-pressed','true');
+    expect(await canvas.evaluate(node=>getComputedStyle(node).maxWidth)).toBe('390px');
+    await dialog.getByRole('button',{name:'Fit',exact:true}).click();
+    await expect(dialog.getByRole('button',{name:'Fit',exact:true})).toHaveAttribute('aria-pressed','true');
+    if(fixture.id==='arc')await auditAccessibility(page,'B16_S8_PRESET_DIALOG',process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+    await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);await expect(opener).toBeFocused();
+  }
+  expect(privateRequests).toBe(0);
+  await page.setViewportSize({width:390,height:844});
+  const opener=page.getByRole('article').filter({has:page.getByRole('heading',{name:'Stepped Minimal',exact:true})}).getByRole('button',{name:'Preview'});
+  await opener.click();
+  const dialog=page.getByRole('dialog',{name:'Stepped Minimal'});
+  await expect(dialog.locator('[data-public-preset="stairs"] .pv-section')).toHaveCount(4);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2)).toBe(true);
+  await auditAccessibility(page,'B16_S8_PRESET_PHONE',process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+  await dialog.getByRole('button',{name:'Close template preview'}).click();
+  await expect(opener).toBeFocused();
+});

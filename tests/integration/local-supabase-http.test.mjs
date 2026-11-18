@@ -21,6 +21,7 @@ import {SupabasePrivateAccountDataExporter} from '../../packages/storage-adapter
 import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
 import {SupabasePortfolioRevisionStore} from '../../packages/storage-adapters/src/supabase-portfolio-revisions.ts';
 import {SupabaseMyComponentsService} from '../../packages/contracts/src/private-my-components-service.ts';
+import {SupabasePrivateGoalsService} from '../../packages/contracts/src/private-goals-service.ts';
 
 
 function localSupabaseCredentials() {
@@ -1858,4 +1859,227 @@ test('B08/WF-025: real GoTrue identity, private versions and replay-safe compone
     }
   });
   assert.ok(!foreignSave.ok,'A cross-account replay cannot claim an existing version ID');
+});
+
+test('C01/WF-013: real local owner thumbnail CAS and immutable private PNG bytes (migration mandatory)',
+  {timeout:120_000},async()=>{
+  // Two distinct, independently decoded, CRC-valid PNGs. Do not use the older synthetic byte fixture.
+  const thumbnailPng=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64'));
+  const replacementPng=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP44Kb8HwAF3AJZlf4qbQAAAABJRU5ErkJggg==','base64'));
+  const owner=await adminUser('thumb-owner'), stranger=await adminUser('thumb-stranger');
+  const createProject=async(actor)=>{
+    const rows=successful(await send('/rest/v1/projects?select=id,revision,owner_user_id',{
+      ...json(actor),method:'POST',
+      headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:{owner_user_id:actor.id,slug:'thumb-'+randomUUID().slice(0,8),title:'Private thumbnail fixture'}
+    }),'Create thumbnail fixture project');
+    assert.equal(rows.length,1);assert.equal(rows[0].owner_user_id,actor.id);
+    return rows[0];
+  };
+  const project=await createProject(owner), sibling=await createProject(owner),
+    foreign=await createProject(stranger);
+  const rpc=(name,body,actor=owner)=>send('/rest/v1/rpc/'+name,{
+    ...json(actor),method:'POST',body
+  });
+  const anonymousRpc=(name,body)=>send('/rest/v1/rpc/'+name,{
+    method:'POST',headers:{'Content-Type':'application/json'},body
+  });
+  const read=(actor=owner)=>rpc('read_private_project_thumbnail',{p_project_id:project.id},actor);
+  const before=successful(await read(),'Mandatory thumbnail migration/RPC present');
+  assert.equal(before.ownerUserId,owner.id);
+  assert.equal(before.projectId,project.id);
+  assert.equal(before.revision,project.revision);
+  assert.equal(before.asset,null);assert.equal(before.publicDeliveryAllowed,false);
+  const register=async(actor,p,bytes=thumbnailPng)=>{
+    const objectPath=actor.id+'/'+p.id+'/'+randomUUID()+'.png';
+    const uploadPath='/storage/v1/object/'+bucket+'/'+objectPath;
+    successful(await send(uploadPath,{...bearer(actor),method:'POST',
+      headers:{'Content-Type':'image/png','x-upsert':'false'},body:bytes}),
+      'Upload immutable private PNG');
+    const input={p_project_id:p.id,p_object_path:objectPath,p_mime_type:'image/png',
+      p_byte_size:bytes.length,p_alt_text:'Synthetic thumbnail'};
+    for(const invalid of [{p_byte_size:bytes.length+1},{p_mime_type:'image/jpeg'},
+      {p_object_path:actor.id+'/'+p.id+'/'+randomUUID()+'.png'}]){
+      assert.ok(!(await rpc('register_private_project_image',{...input,...invalid},actor)).ok,
+        'Mismatched or missing Storage metadata must not register');
+    }
+    const asset=successful(await rpc('register_private_project_image',input,actor),
+      'Register uploaded PNG metadata');
+    assert.equal(asset.storage_metadata_matched,true);
+    assert.equal(asset.object_path,objectPath);
+    assert.equal(successful(await rpc('register_private_project_image',input,actor),
+      'Replay private asset registration').id,asset.id);
+    return {id:asset.id,path:objectPath,uploadPath,bytes};
+  };
+  const first=await register(owner,project), other=await register(owner,sibling),
+    outsider=await register(stranger,foreign);
+  const input={p_project_id:project.id,p_base_revision:before.revision,
+    p_asset_id:first.id,p_operation_id:randomUUID()};
+  const set=(body,actor=owner)=>rpc('set_private_project_thumbnail',body,actor);
+  const denied=(r,code,label)=>{
+    assert.ok(!r.ok,label+' unexpectedly succeeded');
+    if(code)assert.equal(r.data?.code,code,label+' SQLSTATE');
+  };
+  denied(await anonymousRpc('read_private_project_thumbnail',{p_project_id:project.id}),null,'Anonymous read');
+  denied(await anonymousRpc('set_private_project_thumbnail',input),null,'Anonymous write');
+  denied(await read(stranger),'42501','Foreign read');
+  denied(await set(input,stranger),'42501','Foreign write');
+  denied(await set({...input,p_asset_id:other.id}),'42501','Same-owner other-project asset');
+  denied(await set({...input,p_asset_id:outsider.id}),'42501','Foreign asset');
+  const attached=successful(await set(input),'Attach valid owner thumbnail');
+  assert.equal(attached.revision,before.revision+1);
+  assert.equal(attached.asset.id,first.id);assert.equal(attached.asset.objectPath,first.path);
+  assert.equal(attached.asset.mime,'image/png');assert.equal(attached.asset.size,thumbnailPng.length);
+  assert.equal(attached.asset.altText,'Synthetic thumbnail');
+  assert.equal(attached.publicDeliveryAllowed,false);
+  assert.deepEqual(successful(await set(input),'Replay exact thumbnail operation'),attached);
+  assert.deepEqual(successful(await read(),'Reload private attachment'),attached);
+  denied(await set({...input,p_asset_id:null}),'40001','Same operation changed payload');
+  denied(await set({...input,p_operation_id:randomUUID(),p_asset_id:null}),'40001','Stale base CAS');
+  const download='/storage/v1/object/authenticated/'+bucket+'/'+first.path;
+  const owned=await send(download,bearer(owner));
+  assert.ok(owned.ok,'Owner private-byte read failed');
+  assert.match(owned.headers.get('content-type')??'',/^image\/png(?:;|$)/i);
+  assert.equal(owned.bytes.length,thumbnailPng.length);
+  assert.equal(createHash('sha256').update(owned.bytes).digest('hex'),createHash('sha256').update(thumbnailPng).digest('hex'));
+  assert.deepEqual(owned.bytes,thumbnailPng);
+  assert.ok(!(await send(download,bearer(stranger))).ok,'Foreign private-byte read');
+  assert.ok(!(await send(download)).ok,'Anonymous authenticated-path private-byte read');
+  assert.ok(!(await send('/storage/v1/object/public/'+bucket+'/'+first.path)).ok,'Public-path private-byte read');
+  assert.ok(!(await send(first.uploadPath,{...bearer(owner),method:'POST',
+    headers:{'Content-Type':'image/png','x-upsert':'true'},body:replacementPng})).ok,
+    'Owner overwrite must not mutate immutable uploaded bytes');
+  const afterOverwrite=await send(download,bearer(owner));
+  assert.ok(afterOverwrite.ok);assert.deepEqual(afterOverwrite.bytes,thumbnailPng);
+  for(const [column,value] of [['thumbnail_asset_id',null],['thumbnail_operation_id',randomUUID()],
+    ['thumbnail_operation_base_revision',0]]){
+    denied(await send('/rest/v1/projects?id=eq.'+project.id,{
+      ...json(owner),method:'PATCH',body:{[column]:value}
+    }),'42501','Direct managed-column write');
+  }
+  denied(await send('/rest/v1/projects',{...json(owner),method:'POST',body:{
+    owner_user_id:owner.id,slug:'thumb-forged-'+randomUUID().slice(0,8),title:'Forgery',
+    thumbnail_asset_id:first.id,thumbnail_operation_id:randomUUID(),thumbnail_operation_base_revision:0
+  }}),'42501','Direct managed-column insert');
+  assert.deepEqual(successful(await read(),'Prior cover retained after denials'),attached);
+  const replacement=await register(owner,project,replacementPng);
+  const replaced=successful(await set({...input,p_asset_id:replacement.id,
+    p_base_revision:attached.revision,p_operation_id:randomUUID()}),'Replace thumbnail');
+  assert.equal(replaced.revision,attached.revision+1);assert.equal(replaced.asset.id,replacement.id);
+  const replacementRead=await send('/storage/v1/object/authenticated/'+bucket+'/'+replacement.path,bearer(owner));
+  assert.ok(replacementRead.ok);assert.deepEqual(replacementRead.bytes,replacementPng);
+  assert.notEqual(createHash('sha256').update(replacementRead.bytes).digest('hex'),
+    createHash('sha256').update(thumbnailPng).digest('hex'),'Replacement must contain different bytes');
+  denied(await set(input),'40001','Superseded replay cannot restore old cover');
+  const detach={...input,p_asset_id:null,p_base_revision:replaced.revision,p_operation_id:randomUUID()};
+  const detached=successful(await set(detach),'Detach thumbnail');
+  assert.equal(detached.revision,replaced.revision+1);assert.equal(detached.asset,null);
+  assert.deepEqual(successful(await set(detach),'Replay exact detach'),detached);
+  assert.deepEqual(successful(await read(),'Reload detached thumbnail'),detached);
+  const retained=await send(download,bearer(owner));assert.ok(retained.ok);
+  assert.deepEqual(retained.bytes,thumbnailPng,'Detach is not destructive byte deletion');
+  // Browser-computed byte equality is NOT a trusted server attestation;
+  // independently existing server-attestation tests remain mandatory.
+});
+
+test('C06/WF-009: real owner authored links CAS, replay, privacy and direct mutation denial (migration mandatory)',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('authored-link-owner'), outsider=await adminUser('authored-link-outsider');
+  const read=(actor)=>send('/rest/v1/profiles?select=user_id,private_links&user_id=eq.'+owner.id,bearer(actor));
+  const save=(expected,desired,actor=owner)=>send('/rest/v1/rpc/owner_save_private_profile_links',{
+    ...json(actor),method:'POST',body:{p_expected:expected,p_links:desired}
+  });
+  const first=[{label:'Portfolio',url:'https://example.com/work'}];
+  const next=[{label:'Notes',url:'https://example.com/notes'}];
+  const start=successful(await read(owner),'Mandatory private link column present');
+  assert.equal(start.length,1);assert.equal(start[0].user_id,owner.id);assert.deepEqual(start[0].private_links,[]);
+  const anonymous=await send('/rest/v1/rpc/owner_save_private_profile_links',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:{p_expected:[],p_links:first}
+  });
+  assert.ok(!anonymous.ok,'Anonymous authored link write denied');
+  const applied=successful(await save([],first),'Owner authored link CAS');
+  assert.deepEqual(applied,{user_id:owner.id,private_links:first});
+  assert.deepEqual(successful(await save([],first),'Exact desired-state replay'),applied);
+  assert.deepEqual(successful(await read(outsider),'Foreign RLS profile read'),[]);
+  const foreign=await save([],next,outsider);
+  assert.ok(foreign.ok,'Foreign owner may change only their own row');
+  assert.equal(foreign.data?.user_id,outsider.id);
+  assert.deepEqual(successful(await read(owner),'Owner unaffected by foreign save')[0].private_links,first);
+  const stale=await save([],next);
+  assert.ok(!stale.ok);assert.equal(stale.data?.code,'40001');
+  const invalid=[
+    [{label:'No',url:'http://example.com/'}],
+    [{label:'No',url:'https://name@example.com/'}],
+    [{label:'No',url:'https://example.com:444/'}],
+    [{label:' No ',url:'https://example.com/'}],
+    [{label:'No',url:'https://example.com/',verified:true}],
+    [first[0],first[0]],
+    Array.from({length:13},(_,i)=>({label:'Too many',url:'https://example.com/'+i}))
+  ];
+  for(const desired of invalid){
+    const failure=await save(first,desired);
+    assert.ok(!failure.ok);assert.equal(failure.data?.code,'22023');
+  }
+  const direct=await send('/rest/v1/profiles?user_id=eq.'+owner.id,{
+    ...json(owner),method:'PATCH',body:{private_links:next}
+  });
+  assert.ok(!direct.ok);assert.equal(direct.data?.code,'42501');
+  assert.deepEqual(successful(await read(owner),'Invalid writes preserve prior private links')[0].private_links,first);
+  assert.deepEqual(successful(await save(first,next),'Owner replace private links').private_links,next);
+  assert.deepEqual(successful(await save(next,[]),'Owner clear links').private_links,[]);
+  assert.deepEqual(successful(await read(owner),'Reload cleared private links')[0].private_links,[]);
+});
+
+test('C07/WF-041: real owner conditional goal writes and 105-event raw chronology',
+  {timeout:120_000},async()=>{
+  const owner=await adminUser('chronological-goal-owner'), outsider=await adminUser('chronological-goal-foreign');
+  const mine=new SupabasePrivateGoalsService(cfg.origin,cfg.anon,async()=>owner.token,fetch,owner.id);
+  const foreign=new SupabasePrivateGoalsService(cfg.origin,cfg.anon,async()=>outsider.token,fetch,outsider.id);
+  const original=await mine.createGoal(randomUUID(),'Original goal','',105,'sessions');
+  const read=await mine.readGoal(original.id);
+  assert.equal(read?.updated_at,original.updated_at);
+  assert.equal(await foreign.readGoal(original.id),null);
+  const attempts=await Promise.allSettled([
+    mine.updateGoalIfUnchanged(original.id,original.updated_at,{title:'Concurrent A'}),
+    mine.updateGoalIfUnchanged(original.id,original.updated_at,{title:'Concurrent B'})
+  ]);
+  const successes=attempts.filter(x=>x.status==='fulfilled');
+  const failures=attempts.filter(x=>x.status==='rejected');
+  assert.equal(successes.length,1,'Exactly one concurrent CAS may win');
+  assert.equal(failures.length,1);assert.equal(failures[0].reason?.code,'CONFLICT');
+  const current=await mine.readGoal(original.id);
+  assert.ok(current);assert.notEqual(current.updated_at,original.updated_at);
+  assert.deepEqual(current,successes[0].value);
+  await assert.rejects(foreign.updateGoalIfUnchanged(original.id,current.updated_at,{title:'Foreign'}),{code:'CONFLICT'});
+  await assert.rejects(mine.deleteGoalIfUnchanged(original.id,original.updated_at),{code:'CONFLICT'});
+  const bulk=Array.from({length:105},(_,i)=>({goal_id:original.id,operation_id:randomUUID(),
+    value:i,note:'Synthetic manual chronological evidence'}));
+  const inserted=successful(await send('/rest/v1/private_goal_progress_events?select=*',{
+    ...json(owner),method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},body:bulk
+  }),'Insert 105 manual history fixtures');
+  assert.equal(inserted.length,105);
+  const seen=new Set();
+  let cursor=null;
+  let events=[];
+  for(let page=0;page<3;page++){
+    const part=await mine.listProgressChronologicalPage(original.id,100,cursor);
+    assert.ok(part.items.length<=100);
+    for(const item of part.items){
+      assert.equal(item.owner_user_id,owner.id);assert.equal(item.goal_id,original.id);
+      assert.equal(item.source,'MANUAL');assert.ok(!seen.has(item.id));seen.add(item.id);events.push(item);
+    }
+    if(!part.nextCursor){cursor=null;break;}
+    assert.equal(part.nextCursor.createdAt,part.items.at(-1).created_at);
+    assert.equal(part.nextCursor.id,part.items.at(-1).id);cursor=part.nextCursor;
+  }
+  assert.equal(cursor,null);assert.equal(seen.size,105);
+  const ordered=successful(await send('/rest/v1/private_goal_progress_events?'+new URLSearchParams({
+    select:'*',goal_id:'eq.'+original.id,order:'created_at.desc,id.desc',limit:'106'
+  }),bearer(owner)),'Authoritative chronological order');
+  assert.deepEqual(events,ordered);
+  const privateEvents=await foreign.listProgressChronologicalPage(original.id,100);
+  assert.deepEqual(privateEvents.items,[]);assert.equal(privateEvents.nextCursor,null);
+  await assert.rejects(foreign.deleteGoalIfUnchanged(original.id,current.updated_at),{code:'CONFLICT'});
+  assert.equal(await mine.deleteGoalIfUnchanged(original.id,current.updated_at),original.id);
+  assert.equal(await mine.readGoal(original.id),null);
 });

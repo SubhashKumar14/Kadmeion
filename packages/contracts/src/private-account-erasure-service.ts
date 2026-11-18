@@ -111,7 +111,7 @@ export interface PrivateAccountErasureEntry {
 }
 export class PrivateAccountErasureError extends Error {
   readonly code:'AUTH_EXPIRED'|'FORBIDDEN'|'VALIDATION'|'CONFLICT'|
-    'REAUTH_REQUIRED'|'CHALLENGE_EXPIRED'|'QUOTA_EXCEEDED'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK';
+    'REAUTH_REQUIRED'|'CHALLENGE_EXPIRED'|'QUOTA_EXCEEDED'|'RATE_LIMITED'|'PROVIDER_UNAVAILABLE'|'INVALID_ACK';
   constructor(code:PrivateAccountErasureError['code'],message:string){
     super(message);this.name='PrivateAccountErasureError';this.code=code;
   }
@@ -254,6 +254,12 @@ export class SupabasePrivateAccountErasureService {
       throw new PrivateAccountErasureError('PROVIDER_UNAVAILABLE','Account exit request was not acknowledged.');
     }
     if(!response.ok){
+      // Transport throttling is transient, not the durable snapshot/request
+      // quota. Do not expose or await arbitrary provider error bodies.
+      if(response.status===429){
+        void response.body?.cancel().catch(()=>{});
+        throw new PrivateAccountErasureError('RATE_LIMITED','Too many account requests. Try again later.');
+      }
       const error:unknown=await response.json().catch(()=>null);
       const message=record(error)?error.message:null;
       if(message==='LIVE_SESSION_REQUIRED')
