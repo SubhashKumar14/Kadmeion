@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {readBoundedRpcJson} from './_bounded-rpc-json.mjs';
+import {readBoundedRpcJson, cancelRpcBody} from './_bounded-rpc-json.mjs';
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const entities = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
@@ -146,19 +146,37 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
   try {
     const rpc = slug ? 'service_read_published_case_study_projection' : 'service_read_published_profile_projection';
     const rpcUrl = new URL('/rest/v1/rpc/' + rpc, supabase);
-    const upstream = await http(rpcUrl, {
-      method: 'POST', cache: 'no-store', redirect: 'error', credentials: 'omit',
-      headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
-      body: JSON.stringify(slug ? {p_handle: handle, p_slug: slug} : {p_handle: handle}),
-      signal: AbortSignal.timeout(5000)
+    const signal = AbortSignal.timeout(5000);
+    const expiresAt = performance.now() + 5000;
+    const expired = () => signal.aborted || performance.now() >= expiresAt;
+    let upstream;
+    let onAbort;
+    const deadline = new Promise((_, reject) => {
+      onAbort = () => {
+        cancelRpcBody(upstream?.body);
+        reject(Error('Public projection request expired'));
+      };
+      signal.addEventListener('abort', onAbort, {once:true});
     });
-    if (!upstream.ok || upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
-      // Cancellation of one branch of a tee can remain pending. Never let
-      // cleanup delay a fail-closed public response or leak upstream details.
-      void upstream.body?.cancel().catch(() => {});
-      return reply(503, 'Temporarily unavailable');
-    }
-    const row = await readBoundedRpcJson(upstream);
+    const load = async () => {
+      upstream = await http(rpcUrl, {
+        method: 'POST', cache: 'no-store', redirect: 'error', credentials: 'omit',
+        headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
+        body: JSON.stringify(slug ? {p_handle: handle, p_slug: slug} : {p_handle: handle}), signal
+      });
+      if (expired() || !upstream.ok || upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
+        cancelRpcBody(upstream.body);
+        throw Error('Public projection not confirmed');
+      }
+      const projection = await readBoundedRpcJson(upstream);
+      if (expired()) throw Error('Public projection request expired');
+      return projection;
+    };
+    let row;
+    try {
+      row = await Promise.race([load(), deadline]);
+      if (expired()) throw Error('Public projection request expired');
+    } finally { signal.removeEventListener('abort', onAbort); }
     if (row === null) return reply(404, 'Not found');
     if (!validProjection(row, handle, slug)) return reply(503, 'Temporarily unavailable');
     const html = render(row, slug);
