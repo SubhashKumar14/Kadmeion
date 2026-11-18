@@ -920,6 +920,9 @@ function GitHubFactsPanel({service,link,blocked,beginWrite,endWrite,onInvalidate
   const [busy,setBusy]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState('');
   const [consentReview,setConsentReview]=useState(false),[clearReview,setClearReview]=useState(false);
   const generation=useRef(0),pending=useRef(false),mounted=useRef(false);
+  const visibilityEpoch=useRef(0),refreshAfterSettle=useRef(false);
+  // Re-evaluate after each asynchronous boundary (no stale TS narrowing).
+  const isVisible=()=>document.visibilityState!=='hidden';
   function match(value:ProviderState){
     return value.ownerId===link.owner_user_id&&value.linkId===link.id&&value.handle===link.handle;
   }
@@ -933,36 +936,40 @@ function GitHubFactsPanel({service,link,blocked,beginWrite,endWrite,onInvalidate
       'The server did not confirm the current provider state. Read it again before another action. No operation was automatically retried.');
   }
   async function read(){
-    if(pending.current||document.visibilityState==='hidden')return;
-    pending.current=true;const request=++generation.current;
+    if(!isVisible())return;
+    if(pending.current){refreshAfterSettle.current=true;return;}
+    pending.current=true;const request=++generation.current,visibility=visibilityEpoch.current;
+    refreshAfterSettle.current=false;
     setState(null);setBusy(true);setError('');setMessage('');setConsentReview(false);setClearReview(false);
     try{
       const saved=await service.readState(link.id);
       if(!mounted.current||request!==generation.current)return;
       if(!match(saved)){onLinkChanged();return;}
-      if(document.visibilityState!=='hidden')setState(saved);
+      if(isVisible()&&visibility===visibilityEpoch.current)setState(saved);
     }catch(err){if(mounted.current&&request===generation.current)fault(err);}
-    finally{if(request===generation.current){pending.current=false;if(mounted.current)setBusy(false);}}
+    finally{if(request===generation.current){pending.current=false;if(mounted.current){setBusy(false);if(isVisible()&&(refreshAfterSettle.current||visibility!==visibilityEpoch.current))void read();}}}
   }
   useEffect(()=>{
     mounted.current=true;
     const refresh=()=>{
       // A hidden tab has no current visibility proof; forget displayed facts.
       // Returning performs only an owner DB read, not a provider lookup/sync.
-      if(document.visibilityState==='hidden'){
+      if(!isVisible()){
+        visibilityEpoch.current++;refreshAfterSettle.current=true;
         setState(null);setConsentReview(false);setClearReview(false);setMessage('');
       }else void read();
     };
     window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
     refresh();
-    return()=>{mounted.current=false;generation.current++;pending.current=false;
+    return()=>{mounted.current=false;generation.current++;pending.current=false;refreshAfterSettle.current=false;
       window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
   },[service,link.id,link.handle,link.owner_user_id]);
   async function act(action:ProviderUserAction){
     const prior=state;
-    if(!prior||busy||blocked||pending.current||document.visibilityState==='hidden'||!availableProviderActions(prior,Date.now()).includes(action)||
+    if(!prior||busy||blocked||pending.current||!isVisible()||!availableProviderActions(prior,Date.now()).includes(action)||
       action==='ENABLE'&&!consentReview||action==='DISABLE'&&!clearReview||!beginWrite())return;
-    pending.current=true;const request=++generation.current;
+    pending.current=true;const request=++generation.current,visibility=visibilityEpoch.current;
+    refreshAfterSettle.current=false;
     setState(null);setBusy(true);setError('');setMessage('');setConsentReview(false);setClearReview(false);
     const op={linkId:link.id,expectedVersion:prior.version,operationId:crypto.randomUUID(),policyVersion:1 as const};
     try{
@@ -976,7 +983,7 @@ function GitHubFactsPanel({service,link,blocked,beginWrite,endWrite,onInvalidate
       if(!mounted.current||request!==generation.current)return;
       if(!match(saved)){setState(null);onLinkChanged();return;}
       if(saved.version<receipt.state.version){setState(null);setError('Saved provider revision could not be confirmed. Read it again.');return;}
-      if(document.visibilityState==='hidden')return;
+      if(!isVisible()||visibility!==visibilityEpoch.current)return;
       setState(saved);
       setMessage(saved.version!==receipt.state.version?'Provider state changed after the operation. Showing the latest saved read.':
         receipt.status==='PENDING'?'Request pending on the server. Refresh saved state before another sync.':
@@ -984,7 +991,7 @@ function GitHubFactsPanel({service,link,blocked,beginWrite,endWrite,onInvalidate
         action==='DISABLE'&&!saved.consent&&saved.facts===null&&saved.candidate===null?'Sync consent revoked and current imported facts cleared. The manual link remains.':
         'Provider state read back from the private server.');
     }catch(err){if(mounted.current&&request===generation.current)fault(err);}
-    finally{endWrite();if(request===generation.current){pending.current=false;if(mounted.current)setBusy(false);}}
+    finally{endWrite();if(request===generation.current){pending.current=false;if(mounted.current){setBusy(false);if(isVisible()&&(refreshAfterSettle.current||visibility!==visibilityEpoch.current))void read();}}}
   }
   const actions=state?availableProviderActions(state,Date.now()):[];
   const disabled=busy||blocked;
