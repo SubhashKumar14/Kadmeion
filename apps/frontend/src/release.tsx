@@ -1007,7 +1007,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             {sourceArchiveSha?.requestId===frozen.requestId&&<dl className="ws-release-facts">
               <dt>Downloaded archive SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{sourceArchiveSha.sha256}</code></dd>
             </dl>}
-            <FrozenArchiveReopen key={frozen.requestId} port={port} request={frozen} disabled={readsBusy}/>
+            <FrozenArchiveReopen key={frozen.requestId+':source'} port={port} request={frozen} disabled={readsBusy} kind="source"/>
             <h4>Static preview ZIP</h4>
             <p>A separate scriptless rendered HTML preview with a SHA-256 file manifest. It excludes editable source and unsupported media; no hosted URL is created.</p>
             {mode==='releases'?<>
@@ -1022,6 +1022,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Static archive SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staticArchiveSha.sha256}</code></dd>
               <dt>Rendered HTML SHA-256</dt><dd><code style={{overflowWrap:'anywhere'}}>{staticArchiveSha.htmlSha256}</code></dd>
             </dl>}
+            <FrozenArchiveReopen key={frozen.requestId+':static'} port={port} request={frozen} disabled={readsBusy} kind="static"/>
           </section>}
       </div>
       {mode!=='staging' && mode!=='publish' && <aside className="ws-project-aside">
@@ -1178,50 +1179,69 @@ function FrozenRequestHistory({requests,error,pending,onRetry,retryDisabled,onSe
 
 /** The reopened file never leaves the device. A fresh owner-scoped pin is
  * required before claiming a match; no import, save, upload or publication. */
-function FrozenArchiveReopen({port,request,disabled}:{
-  port:SupabaseBrowserAuthPort;request:PrivateFrozenRequest;disabled:boolean;
+type ReopenedArchiveEvidence=
+  | {kind:'source';receipt:Awaited<ReturnType<typeof reopenFrozenArchive>>}
+  | {kind:'static';receipt:{archiveSha256:string;htmlSha256:string;previewOnly:true;publicUrl:null}};
+
+function FrozenArchiveReopen({port,request,disabled,kind}:{
+  port:SupabaseBrowserAuthPort;request:PrivateFrozenRequest;disabled:boolean;kind:'source'|'static';
 }){
+  const isSource=kind==='source';
   const [pending,setPending]=useState(false);
   const [error,setError]=useState('');
-  const [result,setResult]=useState<Awaited<ReturnType<typeof reopenFrozenArchive>>|null>(null);
+  const [result,setResult]=useState<ReopenedArchiveEvidence|null>(null);
   const epoch=useRef(0);
   const flight=useRef<object|null>(null);
   useLayoutEffect(()=>{
     epoch.current+=1;flight.current=null;setPending(false);setResult(null);setError('');
     return()=>{epoch.current+=1;flight.current=null;};
-  },[port,request.requestId,request.snapshotSha256]);
+  },[port,request.requestId,request.snapshotSha256,kind]);
   async function reopen(file:File){
     if(disabled||flight.current!==null)return;
     const ticket={},expected=epoch.current;
     const current=()=>flight.current===ticket&&epoch.current===expected;
     flight.current=ticket;setPending(true);setError('');setResult(null);
     try{
-      if(!Number.isSafeInteger(file.size)||file.size<22||file.size>2*1024*1024)
+      if(!Number.isSafeInteger(file.size)||file.size<22||file.size>(isSource?2:1)*1024*1024)
         throw new Error('Invalid archive size.');
       const pin=await port.loadOwnerFrozenRelease(request.requestId);
       if(!current())return;
       if(!matchesFrozenPin(pin.data,request))throw new Error('Frozen pin unavailable.');
-      const reopened=await reopenFrozenArchive(file,pin.data.snapshot);
-      if(current())setResult(reopened);
+      if(isSource){
+        const receipt=await reopenFrozenArchive(file,pin.data.snapshot);
+        if(current())setResult({kind:'source',receipt});
+      }else{
+        const bytes=new Uint8Array(await file.arrayBuffer());
+        if(!current())return;
+        if(bytes.byteLength!==file.size)throw new Error('Incomplete static preview archive read.');
+        const {verifyStandaloneStaticPreview}=await import('../../../packages/storage-adapters/src/static-preview-export.ts');
+        if(!current())return;
+        const receipt=await verifyStandaloneStaticPreview({...pin.data,plan:buildPlan(pin.data.snapshot)},bytes);
+        if(current())setResult({kind:'static',receipt});
+      }
     }catch{
       if(current())setError('The selected ZIP could not be reopened and matched to this exact owner-private frozen revision. No project was changed.');
     }finally{
       if(current()){flight.current=null;setPending(false);}
     }
   }
-  return <div className="ws-release-action" role="group" aria-label="Reopen editable frozen archive">
-    <h4>Reopen an editable archive</h4>
-    <p>Choose a downloaded source ZIP to check it against this exact frozen revision. This reads the file locally and does not import, execute, upload or change a project.</p>
-    <label>Editable source ZIP
+  return <div className="ws-release-action" role="group" aria-label={isSource?'Reopen editable frozen archive':'Reopen static frozen archive'}>
+    <h4>{isSource?'Reopen an editable archive':'Reopen a static preview archive'}</h4>
+    <p>{isSource?'Choose a downloaded source ZIP to check it against this exact frozen revision.':'Choose a downloaded static preview ZIP to verify its HTML and manifest against the current trusted renderer for this exact frozen revision. Older renderer versions may require a new download.'} This reads the file locally and does not import, execute, upload or change a project.</p>
+    <label>{isSource?'Editable source ZIP':'Static preview ZIP'}
       <input type="file" accept=".zip,application/zip" disabled={disabled||pending}
         onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';
           if(file)void reopen(file);}}/>
     </label>
     {pending&&<p role="status">Reopening and checking private archive…</p>}
     {error&&<p role="alert">{error}</p>}
-    {result&&<div role="status"><p>Archive contents match the frozen snapshot: {result.files} files, {result.slots} slots, {result.stashes} stash entries.</p>
-      <p>Reopened ZIP SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.sha256}</code></p>
+    {result?.kind==='source'&&<div role="status"><p>Archive contents match the frozen snapshot: {result.receipt.files} files, {result.receipt.slots} slots, {result.receipt.stashes} stash entries.</p>
+      <p>Reopened ZIP SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.receipt.sha256}</code></p>
       <p>Uploaded media and other revisions are not verified by this source archive.</p></div>}
+    {result?.kind==='static'&&<div role="status"><p>Static preview ZIP matches the trusted frozen renderer. No archive HTML was executed.</p>
+      <p>Reopened ZIP SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.receipt.archiveSha256}</code></p>
+      <p>Rendered HTML SHA-256 <code style={{overflowWrap:'anywhere'}}>{result.receipt.htmlSha256}</code></p>
+      <p>This is a local preview, not evidence of public delivery or media portability.</p></div>}
   </div>;
 }
 
