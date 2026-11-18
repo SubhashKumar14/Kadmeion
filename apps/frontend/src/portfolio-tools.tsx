@@ -2052,6 +2052,8 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [dragAsset,setDragAsset]=useState<string|null>(null);
   const assetDrag=useRef<{snapshot:PortfolioSnapshot;asset:AssetPreviewRecord;port:SupabaseBrowserAuthPort;epoch:number;generation:number}|null>(null);
   const recordGeneration=useRef(0);
+  const actionGeneration=useRef(0);
+  const lastScope=useRef<{port:SupabaseBrowserAuthPort;epoch:number}|null>(null);
   const placementField=useRef<HTMLTextAreaElement>(null);
   const [placementAlt,setPlacementAlt]=useState('');
   const [placing,setPlacing]=useState(false);
@@ -2067,9 +2069,19 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [alt,setAlt]=useState('');
   const [busy,setBusy]=useState(false);
   const [refresh,setRefresh]=useState(0);
+  // File objects, alt text, selected IDs and async action locks belong to
+  // the previous owner scope. Never carry them into a newly verified owner.
+  function resetPrivateInputs(){
+    ++actionGeneration.current;placementFlight.current=false;uploadFlight.current=false;
+    setSelectedAssetId('');setTargetKey(null);setCollection('');setProjectId('');
+    setPlacementAlt('');setAlt('');setFile(null);setUploadOpen(false);setBusy(false);setPlacing(false);
+    setNotice('');setError('');if(fileInput.current)fileInput.current.value='';
+  }
   useLayoutEffect(()=>{
-    let active=true;
+    let subscribed=true;
     const epoch=port.reconcileOwnerSessionEpoch();
+    if(lastScope.current&&(lastScope.current.port!==port||lastScope.current.epoch!==epoch))resetPrivateInputs();
+    lastScope.current={port,epoch};
     ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
     const sameBinding=recordsBinding.current?.port===port&&recordsBinding.current?.epoch===epoch;
     recordsFlight.current=true;setRecordsPending(true);setRecordsError('');
@@ -2080,19 +2092,20 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       recordsFlight.current=false;setRecordsPending(false);
     };
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
-      if(!active)return;
-      active=false;++recordGeneration.current;assetDrag.current=null;setDragAsset(null);setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
+      if(!subscribed)return;
+      subscribed=false;++recordGeneration.current;assetDrag.current=null;setDragAsset(null);resetPrivateInputs();
+      finish('Owner session changed. Reload verified private asset records.');
     });
-    if(active)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
-      if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    if(subscribed)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
+      if(!subscribed||port.reconcileOwnerSessionEpoch()!==epoch)return;
       if(!assetReply.data||!projectReply.data){
         finish(assetReply.error?.message??projectReply.error?.message??'Private asset records could not be verified.');return;
       }
       recordsBinding.current={port,epoch};
       setAssets(assetReply.data);setProjects(projectReply.data);
       recordsFlight.current=false;setRecordsPending(false);
-    }).catch(()=>{if(active&&port.reconcileOwnerSessionEpoch()===epoch)finish('Private asset records could not be loaded.');});
-    return ()=>{active=false;unsubscribe();};
+    }).catch(()=>{if(subscribed&&port.reconcileOwnerSessionEpoch()===epoch)finish('Private asset records could not be loaded.');});
+    return ()=>{subscribed=false;unsubscribe();};
   },[port,refresh]);
   function reloadRecords(){
     ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
@@ -2143,25 +2156,29 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     if(!allowPlacement||recordsFlight.current||!selected||!target||!candidateTargets.some(item=>item.key===target.key)||placementFlight.current||uploadFlight.current||!placementAlt.trim()||placementAlt.length>300)return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
+    const started=actionGeneration.current;
+    const current=()=>assetMounted.current&&actionGeneration.current===started&&port.reconcileOwnerSessionEpoch()===epoch;
     placementFlight.current=true;setPlacing(true);setNotice('');
     try{
       const placed=await onPlace(selected.id,target.key,placementAlt.trim());
-      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(!current())return;
       setNotice(placed?'Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.':
         'Image placement was not completed. Existing assignment and selected image were retained.');
     }catch{
-      if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setError('Image placement was not confirmed. Review the current draft before retrying.');
-    }finally{placementFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setPlacing(false);}
+      if(current())setError('Image placement was not confirmed. Review the current draft before retrying.');
+    }finally{if(current()){placementFlight.current=false;setPlacing(false);}}
   }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
     if(!active||!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
+    const started=actionGeneration.current;
+    const current=()=>assetMounted.current&&actionGeneration.current===started&&port.reconcileOwnerSessionEpoch()===epoch;
     uploadFlight.current=true;setBusy(true);setError('');setNotice('');
     try{
       const receipt=await port.uploadOwnerProjectImage(projectId,file,alt.trim());
-      if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(!current())return;
       if(!receipt.data||receipt.data.publicDeliveryAllowed!==false||
         receipt.data.verifiedMetadata!==true)
         throw new Error(receipt.error?.message??'The private registration receipt was not verified.');
@@ -2169,9 +2186,9 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       setSelectedAssetId(receipt.data.id);setPlacementAlt(receipt.data.altText);setCollection('');
       setAlt('');setFile(null);setUploadOpen(false);reloadRecords();
       if(fileInput.current)fileInput.current.value='';
-    }catch(cause){if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
+    }catch(cause){if(current())
       setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
-    finally{uploadFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
+    finally{if(current()){uploadFlight.current=false;setBusy(false);}}
   }
   return <div className="ws-asset-library ws-asset-manager" role="group" aria-label="Private asset manager">
     <aside className="ws-asset-collections">
