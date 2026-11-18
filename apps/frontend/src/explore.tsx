@@ -61,7 +61,7 @@ export function ExplorePortfolios(){
         </section>
         <section aria-labelledby="browse-title" className="explore-browse">
           <h2 id="browse-title" className="sr-only">Browse layout examples</h2>
-          <p className="explore-disclosure">Illustrative layouts only—not live published accounts or verified project ownership.</p>
+          <p className="explore-disclosure">The verified public directory is not connected to this gallery. Its availability and listing count are unconfirmed. The search and filters below apply only to illustrative layouts—not live published accounts or verified project ownership.</p>
           <form className="explore-filters" role="search" onSubmit={event=>event.preventDefault()}>
             <label className="sr-only" htmlFor="explore-search">Search concept examples</label>
             <div className="template-query"><Icon name="target" size={18}/>

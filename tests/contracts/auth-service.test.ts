@@ -132,7 +132,7 @@ test('B10 accepts real Supabase data-less signOut response without false session
 });
 
 
-test('confirmation resend requires verified delivery and submits a neutral provider request',async()=>{
+test('unconfirmed sign-in allows a neutral confirmation resend before delivery is verified',async()=>{
   const config={siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false};
   const port=mockPort();
   let attempts=0;
@@ -142,10 +142,9 @@ test('confirmation resend requires verified delivery and submits a neutral provi
       options:{emailRedirectTo:'https://app.example/auth/callback'}});
     return {data:{},error:null};
   };
-  await assert.rejects(new AuthService(port,config).resendSignupConfirmation('dev@example.com'),
-    {code:'PROVIDER_UNAVAILABLE'});
-  assert.equal(attempts,0);
-  const service=new AuthService(port,{...config,emailDeliveryVerified:true});
+  const service=new AuthService(port,config);
+  port.signInWithPassword=async()=>({data:{session:null,user:null},error:{message:'Email not confirmed',providerCode:'email_not_confirmed'}});
+  await assert.rejects(service.login('dev@example.com','test-password'),{code:'EMAIL_CONFIRMATION_REQUIRED'});
   await assert.rejects(service.resendSignupConfirmation('invalid'),{code:'VALIDATION'});
   await service.resendSignupConfirmation(' DEV@example.com ');
   assert.equal(attempts,1);

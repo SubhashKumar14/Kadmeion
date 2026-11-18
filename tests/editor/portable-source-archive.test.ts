@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { exportPortfolioSourceZip, importPortfolioSourceZip } from '../../packages/storage-adapters/src/index.ts';
-import {createEditorHead} from '../../packages/editor-core/src/index.ts';
+import {createEditorHead,restoreHistoricalSnapshot,applyEditorTransaction} from '../../packages/editor-core/src/index.ts';
+import {exportPortableSnapshot,importPortableSnapshot} from '../../packages/storage-adapters/src/portable-editor-snapshot.ts';
 
 const snapshot=createEditorHead({
  formatVersion:1,
@@ -84,4 +85,57 @@ test('ZIP importer refuses dot-segment aliases before interpreting the central d
  assert.equal(changed,true);
  assert.throws(()=>importPortfolioSourceZip(bytes),(error:unknown)=>
    error instanceof Error&&error.message==='Duplicate or unsafe ZIP filename.');
+});
+
+test('B16 portable ZIP and JSON round-trip exact BOM, CRLF, Unicode and orphan stashes',()=>{
+  const owned=structuredClone(snapshot);
+  const source='\uFEFFexport const title = "नमस्ते";\r\n// opaque relative imports\r\n';
+  owned.files['slots/hero/index.tsx']=source;
+  owned.stashes['old-slot']=[{state:'S0',componentId:'heading@1',content:{title:'Unplaced text'}}];
+  const zip=exportPortfolioSourceZip(owned);
+  const fromZip=importPortfolioSourceZip(zip);
+  const fromJson=importPortableSnapshot(exportPortableSnapshot(owned));
+  for(const result of [fromZip,fromJson]){
+    assert.deepEqual(result,owned);
+    assert.deepEqual(new TextEncoder().encode(result.files['slots/hero/index.tsx']),new TextEncoder().encode(source));
+    assert.deepEqual(result.stashes['old-slot'],owned.stashes['old-slot']);
+  }
+  assert.deepEqual(exportPortfolioSourceZip(fromZip),zip);
+});
+test('B16 ZIP rejects lone UTF-16 surrogate instead of silently replacing source bytes',()=>{
+  const invalid=structuredClone(snapshot);
+  invalid.files['slots/hero/index.tsx']='export const invalid="'+String.fromCharCode(0xd800)+'";';
+  assert.throws(()=>exportPortfolioSourceZip(invalid),{code:'VALIDATION'});
+});
+test('B16 private JSON refuses hidden envelope fields, hostile source paths and oversized input',()=>{
+  const text=exportPortableSnapshot(snapshot);
+  const envelope=JSON.parse(text);
+  for(const value of [
+    {...envelope,secret:'not part of portable format'},
+    {...envelope,formatVersion:2},
+    {...envelope,kind:'published-site'},
+    {...envelope,snapshot:{...snapshot,files:{...snapshot.files,'../credentials.json':'{}'}}},
+    {...envelope,snapshot:{...snapshot,stashes:{...snapshot.stashes,orphan:[{
+      state:'S2',componentId:'heading@1',content:{},sourcePath:'slots/orphan/index.tsx',originalSource:'old'
+    }]}}}
+  ])assert.throws(()=>importPortableSnapshot(JSON.stringify(value)),{code:'VALIDATION'});
+  assert.throws(()=>importPortableSnapshot(' '.repeat(1024*1024+1)),{code:'VALIDATION'});
+  assert.throws(()=>importPortableSnapshot('{"bad"'),{code:'VALIDATION'});
+  assert.deepEqual(importPortableSnapshot(text),snapshot);
+});
+test('B16 imported snapshot restore creates a separate undoable working revision and leaves original unchanged',()=>{
+  const original=createEditorHead(snapshot);
+  const imported=structuredClone(snapshot);
+  imported.files['slots/hero/index.tsx']='\uFEFFexport const title="Imported";\r\n';
+  imported.slots.hero.content={title:'Imported text'};
+  const parsed=importPortableSnapshot(exportPortableSnapshot(imported));
+  const restored=restoreHistoricalSnapshot(original,parsed,'71000000-0000-4000-8000-000000000001');
+  assert.deepEqual(restored.snapshot,imported);
+  assert.deepEqual(original.snapshot,snapshot);
+  assert.equal(restored.revision,original.revision+1);
+  assert.equal(restored.undo.length,original.undo.length+1);
+  const undone=applyEditorTransaction(restored,{operationId:'71000000-0000-4000-8000-000000000002',
+    baseRevision:restored.revision,intent:{kind:'UNDO'}});
+  assert.deepEqual(undone.snapshot,snapshot);
+  assert.deepEqual(parsed,imported);
 });

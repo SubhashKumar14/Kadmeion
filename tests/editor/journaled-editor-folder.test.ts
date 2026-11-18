@@ -13,6 +13,7 @@ class Disk implements FolderDirectory {
   readonly files=new Map<string,string>();
   readonly dirs=new Set<string>(['']);
   failOnWrite:string|null=null;
+  afterClose:((path:string)=>void)|null=null;
   private readonly base:string;
   constructor(base=''){this.base=base;}
   private path(name:string){return this.base?this.base+'/'+name:name;}
@@ -59,6 +60,7 @@ class Dir implements FolderDirectory {
             this.disk.failOnWrite=null;throw Error('power failure');
           }
           this.disk.files.set(path,value);
+          this.disk.afterClose?.(path);
         }
       };
     }};
@@ -163,4 +165,64 @@ test('owned source files survive zero-content edits byte-for-byte',async()=>{
   assert.equal(disk.files.get('slots/hero/index.tsx'),
     "export const Viewer = () => 'Hi';");
   assert.equal((await s.load())?.snapshot.slots.hero.state,'S2');
+});
+
+test('B16 folder backup preserves BOM, CRLF and opaque owned source; rejects unencodable Unicode before writing',async()=>{
+  const disk=new Disk(),head=first();
+  const source='\uFEFFexport const Title = "नमस्ते";\r\n// private\r\n';
+  head.snapshot.files['slots/hero/index.tsx']=source;
+  head.snapshot.slots.hero={state:'S2',componentId:'heading@1',content:{title:'Draft'},
+    sourcePath:'slots/hero/index.tsx',originalSource:'export const Title = "Original";'};
+  const service=store(disk);
+  assert.equal((await service.save(head,null,true)).status,'FOLDER_SAVED');
+  assert.equal(disk.files.get('slots/hero/index.tsx'),source);
+  assert.deepEqual(bytes.encode((await service.load())!.snapshot.files['slots/hero/index.tsx']),bytes.encode(source));
+  const invalid=structuredClone(head);invalid.snapshot.files['slots/hero/index.tsx']='unpaired '+String.fromCharCode(0xd800);
+  const untouched=new Disk();
+  await assert.rejects(store(untouched).save(invalid,null,true),{code:'INVALID'});
+  assert.equal(untouched.files.size,0);
+});
+test('B16 initialize-only refuses an existing HEAD or journal without repairing or overwriting it',async()=>{
+  const disk=new Disk(),service=store(disk),head=first();
+  await service.save(head,null,true);
+  const before=[...disk.files];
+  await assert.rejects(service.save(head,null,true),{code:'CONFLICT'});
+  assert.deepEqual([...disk.files],before);
+  const broken=new Disk();
+  broken.files.set('.kadmeion/transaction-journal.json','untrusted partial transaction');
+  broken.dirs.add('.kadmeion');
+  const original=[...broken.files];
+  await assert.rejects(store(broken).save(head,null,true),{code:'CONFLICT'});
+  assert.deepEqual([...broken.files],original);
+});
+test('B16 scope revocation after durable journal cannot continue source writes or commit HEAD',async()=>{
+  const disk=new Disk(),head=first();let current=true;
+  const scoped=new JournaledEditorFolderStore(disk,owner,portfolio,lock,()=>current);
+  disk.afterClose=path=>{if(path==='.kadmeion/transaction-journal.json')current=false;};
+  await assert.rejects(scoped.save(head,null,true),{code:'CONFLICT'});
+  assert.equal(disk.files.has('.kadmeion/editor-head.json'),false);
+  assert.equal(disk.files.has('kadmeion.json'),false);
+  assert.equal(disk.files.has('.kadmeion/transaction-journal.json'),true);
+  const evidence=[...disk.files];
+  await assert.rejects(scoped.load(),{code:'CONFLICT'});
+  assert.deepEqual([...disk.files],evidence);
+  disk.afterClose=null;
+  const reauthorized=new JournaledEditorFolderStore(disk,owner,portfolio,lock,()=>true);
+  assert.equal(await reauthorized.recover(),'ROLLED_BACK');
+  assert.equal(await reauthorized.load(),null);
+});
+test('B16 folder owner and portfolio scope are checked under one same-origin lock',async()=>{
+  const disk=new Disk(),keys:string[]=[];
+  const shared:FolderLockPort={run:async<T>(key:string,work:()=>Promise<T>)=>{keys.push(key);return work();}};
+  const service=new JournaledEditorFolderStore(disk,owner,portfolio,shared,()=>true);
+  await service.save(first(),null,true);
+  const before=[...disk.files];
+  const foreignOwner=new JournaledEditorFolderStore(disk,operation,portfolio,shared,()=>true);
+  const foreignPortfolio=new JournaledEditorFolderStore(disk,owner,operation,shared,()=>true);
+  for(const foreign of [foreignOwner,foreignPortfolio]){
+    await assert.rejects(foreign.load());
+    await assert.rejects(foreign.save(first(),null,true),{code:'CONFLICT'});
+  }
+  assert.equal(new Set(keys).size,1,'same physical folder must share an owner-independent lock');
+  assert.deepEqual([...disk.files],before);
 });
