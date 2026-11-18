@@ -39,7 +39,6 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   const [projectionFields,setProjectionFields]=useState<PreviewField[]|null>(null);
   const [projectionSnapshot,setProjectionSnapshot]=useState<OwnerProfile|null>(null);
   const [projectionRequested,setProjectionRequested]=useState(false);
-  const [projectionState,setProjectionState]=useState<{version:number;persisted:boolean}|null>(null);
   const [projectionError,setProjectionError]=useState('');
   const [projectionLoading,setProjectionLoading]=useState(false);
   const projectionAttempt=useRef(0);
@@ -47,7 +46,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   useEffect(()=>()=>{projectionAttempt.current++;projectionPending.current=false;},[port]);
   function invalidateProjection(){
     projectionAttempt.current++;projectionPending.current=false;setProjectionLoading(false);
-    setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionState(null);setProjectionError('');
+    setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
   }
   async function readProjection(){
     if(projectionPending.current||operationPending.current||!validEpoch())return;
@@ -55,29 +54,19 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     const attempt=++projectionAttempt.current,epoch=profileEpoch.current,lifetime=profileLifetime.current;
     const current=()=>attempt===projectionAttempt.current&&lifetime===profileLifetime.current&&
       epoch===profileEpoch.current&&validEpoch();
-    setProjectionLoading(true);setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionState(null);setProjectionError('');
+    setProjectionLoading(true);setProjectionFields(null);setProjectionSnapshot(null);setProjectionRequested(false);setProjectionError('');
     try{
       if(!current())return;
-      // C08 coherent cutover: the verified owner factory supplies the strict
-      // versioned read; do not fall back to an unversioned preference lookup.
-      const services=await port.ownerSettings();
+      const [result,profile]=await Promise.all([port.ownerSharingPreferences(),port.readOwnerProfile(epoch)]);
       if(!current())return;
-      if(services.error||!services.data){
-        setProjectionError('Saved sharing preferences are unavailable. Retry securely.');return;
-      }
-      const [sharing,profile]=await Promise.all([
-        services.data.identity.readProfileSharingState(),port.readOwnerProfile(epoch)
-      ]);
-      if(!current())return;
-      if(profile.error||!profile.data){
+      if(result.error||!result.data||profile.error||!profile.data){
         setProjectionError('Saved profile and sharing preferences could not both be verified. Retry to preview them.');return;
       }
-      const prefs=sharing.preferences;
+      const prefs=result.data;
       setProjectionSnapshot(profile.data);
-      setProjectionState({version:sharing.version,persisted:prefs!==null});
-      setProjectionFields([...(prefs?.shareDisplayName?['displayName' as const]:[]),
-        ...(prefs?.shareHeadline?['headline' as const]:[]),...(prefs?.shareBio?['bio' as const]:[])]);
-      setProjectionRequested(prefs?.publicationRequested===true);
+      setProjectionFields([...(prefs.shareDisplayName?['displayName' as const]:[]),
+        ...(prefs.shareHeadline?['headline' as const]:[]),...(prefs.shareBio?['bio' as const]:[])]);
+      setProjectionRequested(prefs.publicationRequested);
     }catch{if(current())setProjectionError('Saved sharing preferences are unavailable. Retry securely.');}
     finally{if(current()){projectionPending.current=false;setProjectionLoading(false);}}
   }
@@ -452,7 +441,6 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
               </div>
               {projectionMode==='preferences'?<>
                 <p>{projectionFields===null?'No verified selection.':projectionFields.length+' of 3 eligible fields selected in saved preferences.'}</p>
-                {projectionState&&<p>{projectionState.persisted?'Saved preferences · version '+projectionState.version:'No saved preference row · private defaults · version '+projectionState.version}</p>}
                 {projectionFields!==null&&<p>{projectionRequested?'A later publication request is allowed by saved preferences.':'No publication request is enabled in saved preferences.'} This does not prove live visibility.</p>}
                 <div aria-live="polite">{projectionLoading&&<p>Checking saved sharing preferences…</p>}</div>
                 {projectionError&&<p role="alert" className="ws-inline-alert">{projectionError}</p>}
