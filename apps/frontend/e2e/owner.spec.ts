@@ -4214,3 +4214,113 @@ test('B16 C12 R9 real provider consent, physical claim/finish, cooldown and late
   expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state where link_id=:'item_id'::uuid;",owner.id,link)).toBe('0');
   await expect(client.readState(link)).rejects.toThrow();
 });
+
+
+// Candidate-only mounted C12 proof; S6/S13 review. Browser sends its real
+// owner JWT. Only the upstream source bytes are injected by the local runner.
+test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and late deletion',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local stack and explicitly injected source only.');
+  test.setTimeout(140_000);
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,serviceKey=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if(!key||!serviceKey||process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal provider lifecycle.');
+  const {createLocalProviderHandler}=await import('../../../supabase/functions/sync-provider-facts/index.ts');
+  const {SupabasePrivateProviderFactsService}=await import('../../../packages/contracts/src/private-provider-facts-service.ts');
+  const owner=await localUser('R10 mounted C12 owner'),handle='ci-r10-'+randomUUID().slice(0,8);
+  const endpoint=origin+'/functions/v1/sync-provider-facts';
+  let sourceCalls=0,capabilityCalls=0,holdSource=false;
+  let enter!:()=>void,release!:()=>void;
+  const entered=new Promise<void>(resolve=>{enter=resolve;});
+  const released=new Promise<void>(resolve=>{release=resolve;});
+  const transport:typeof fetch=(input,init)=>{
+    const url=new URL(input instanceof Request?input.url:String(input));
+    if(url.origin!==origin)throw Error('No external provider network permitted.');
+    return fetch(input,init);
+  };
+  const handler=createLocalProviderHandler({origin,publishable:key,serviceRole:serviceKey,http:transport,now:Date.now,
+    allowedOrigins:['http://127.0.0.1:5173','http://localhost:5173'],
+    provider:async(saved)=>{
+      expect(saved).toBe(handle);sourceCalls++;
+      if(holdSource){enter();await released;}
+      return Response.json({login:saved,id:18005678,html_url:'https://github.com/'+saved,public_repos:sourceCalls===1?3:8,public_gists:2});
+    }});
+  await page.route(endpoint,async route=>{
+    const r=route.request(),method=r.method(),body=r.postDataBuffer();
+    if(method==='POST'&&r.postDataJSON()?.action==='CAPABILITY')capabilityCalls++;
+    const response=await handler(new Request(endpoint,{method,headers:await r.allHeaders(),
+      ...(body&&method==='POST'?{body:new Uint8Array(body)}:{})}));
+    await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
+  });
+  try{
+    await signIn(page,owner);await page.goto('/app/integrations');
+    const card=page.getByRole('article',{name:'GitHub',exact:true});
+    await card.getByLabel('Public handle').fill(handle);
+    await card.getByRole('button',{name:'Save private link',exact:true}).click();
+    const panel=card.getByRole('region',{name:'Private GitHub provider facts'});
+    await expect(panel.getByText('Consent off',{exact:false})).toBeVisible();
+    await expect(panel.getByText('Local verification only',{exact:false})).toBeVisible();
+    expect(capabilityCalls).toBeGreaterThan(0);expect(sourceCalls).toBe(0);
+    const link=runLocalFixtureSql("select id from public.private_platform_links where owner_user_id=:'actor_id'::uuid and provider='GITHUB';",owner.id);
+    expect(link).toMatch(/^[a-f0-9-]{36}$/i);
+    await panel.getByLabel('Allow explicit public GitHub lookup and private storage of the listed facts.').check();
+    await panel.getByRole('button',{name:'Enable private GitHub synchronization'}).click();
+    await expect(panel.getByText('Ready for explicit lookup',{exact:false})).toBeVisible();
+    expect(sourceCalls).toBe(0);
+    await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) and (blocked_until is null or blocked_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:25000}).toBe('1');
+    await panel.getByRole('button',{name:'Find public GitHub profile'}).click();
+    await expect(panel.getByRole('button',{name:'Confirm this public profile'})).toBeEnabled();
+    expect(sourceCalls).toBe(1);
+    await panel.getByRole('button',{name:'Confirm this public profile'}).click();
+    await expect(panel.getByText('Saved provider facts',{exact:false})).toBeVisible();
+    await expect(panel.locator('dt').filter({hasText:'Public repositories'}).locator('xpath=following-sibling::dd[1]')).toHaveText('3');
+    await expect(panel.getByRole('button',{name:'Sync Now',exact:true})).toBeDisabled();
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state where link_id=:'item_id'::uuid and (facts).provider_id=18005678;",owner.id,link)).toBe('1');
+    await page.reload();
+    await expect(panel.getByText('Saved provider facts',{exact:false})).toBeVisible();expect(sourceCalls).toBe(1);
+    await expect(panel.getByRole('button',{name:'Sync Now',exact:true})).toBeDisabled();
+    runLocalFixtureSql("update kadmeion_private.github_owner_quota set next_allowed_at=clock_timestamp()-interval '1 second' where owner_id=:'actor_id'::uuid;",owner.id);
+    await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:15000}).toBe('1');
+    await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
+    await expect(panel.getByRole('button',{name:'Sync Now',exact:true})).toBeEnabled();
+    await panel.getByRole('button',{name:'Sync Now',exact:true}).click();
+    await expect(panel.locator('dt').filter({hasText:'Public repositories'}).locator('xpath=following-sibling::dd[1]')).toHaveText('8');
+    expect(sourceCalls).toBe(2);
+    await panel.getByLabel('Revoke consent and remove current imported GitHub facts and pending candidates. Keep the manual link.').check();
+    await panel.getByRole('button',{name:'Disable sync and delete imported facts'}).click();
+    await expect(panel.getByText('Consent off',{exact:false})).toBeVisible();
+    await expect(panel.getByText('Public repositories',{exact:true})).toHaveCount(0);
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state where link_id=:'item_id'::uuid and ((facts).provider_id is not null or (candidate).provider_id is not null);",owner.id,link)).toBe('0');
+    await panel.getByLabel('Allow explicit public GitHub lookup and private storage of the listed facts.').check();
+    await panel.getByRole('button',{name:'Enable private GitHub synchronization'}).click();
+    await expect(panel.getByRole('button',{name:'Find public GitHub profile'})).toBeDisabled();
+    // Use a second real GoTrue owner session to revoke while the browser request
+    // is held. The runner never writes provider facts or bypasses owner RPCs.
+    const tokenResponse=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:key,'Content-Type':'application/json'},
+      body:JSON.stringify({email:owner.email,password:owner.password}),redirect:'error',signal:AbortSignal.timeout(10000)});
+    if(!tokenResponse.ok)throw Error('Second real owner session unavailable.');
+    const token=await tokenResponse.json();
+    if(token.user?.id!==owner.id||typeof token.access_token!=='string')throw Error('Second owner receipt mismatch.');
+    const second=new SupabasePrivateProviderFactsService(origin,key,owner.id,async()=>token.access_token,()=>true,transport);
+    runLocalFixtureSql("update kadmeion_private.github_owner_quota set next_allowed_at=clock_timestamp()-interval '1 second' where owner_id=:'actor_id'::uuid;",owner.id);
+    await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:15000}).toBe('1');
+    await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
+    await expect(panel.getByRole('button',{name:'Find public GitHub profile'})).toBeEnabled();
+    holdSource=true;
+    await panel.getByRole('button',{name:'Find public GitHub profile'}).click();
+    await Promise.race([entered,new Promise<never>((_,reject)=>setTimeout(()=>reject(Error('Mounted sync never entered local source')),4500))]);
+    try{
+      const pending=await second.readState(link);expect(pending.status).toBe('PENDING');
+      const revoked=await second.changeConsent({linkId:link,expectedVersion:pending.version,operationId:randomUUID(),policyVersion:1,action:'DISABLE'});
+      expect(revoked.state).toMatchObject({status:'OFF',consent:false,candidate:null,facts:null});
+    }finally{release();}
+    await expect(panel.getByRole('alert')).toBeVisible();
+    await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
+    await expect(panel.getByText('Consent off',{exact:false})).toBeVisible();
+    expect(sourceCalls).toBe(3);
+    await expect(panel.getByText('Public repositories',{exact:true})).toHaveCount(0);
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state where link_id=:'item_id'::uuid and ((facts).provider_id is not null or (candidate).provider_id is not null or attempt_id is not null);",owner.id,link)).toBe('0');
+    await card.getByRole('checkbox',{name:/Confirm disconnect of this stored link/}).check();
+    await card.getByRole('button',{name:'Disconnect link',exact:true}).click();
+    await expect(card.getByText('Private link disconnected.',{exact:true})).toBeVisible();
+    expect(runLocalFixtureSql("select count(*) from kadmeion_private.github_provider_state where link_id=:'item_id'::uuid;",owner.id,link)).toBe('0');
+  }finally{release();await page.unroute(endpoint);}
+});
