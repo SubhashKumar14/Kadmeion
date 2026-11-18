@@ -11,8 +11,8 @@ import type {LoadedPrivateFrozenRevision} from '../../../packages/storage-adapte
 
 /** Use the same receipt predicate for every owner-private pin consumer.
  * The loader separately validates the RPC request ID and canonical JSON digest. */
-function matchesFrozenPin(pin:LoadedPrivateFrozenRevision|null|undefined,request:Pick<PrivateFrozenRequest,'requestId'|'portfolioId'|'revision'|'snapshotSha256'|'visibilityIntent'>):pin is LoadedPrivateFrozenRevision {
-  return !!pin && pin.frozen.requestId===request.requestId && pin.loadedPortfolioId===request.portfolioId &&
+function matchesFrozenPin(pin:LoadedPrivateFrozenRevision|null|undefined,request:Pick<PrivateFrozenRequest,'portfolioId'|'revision'|'snapshotSha256'|'visibilityIntent'>):pin is LoadedPrivateFrozenRevision {
+  return !!pin && pin.loadedPortfolioId===request.portfolioId &&
     pin.loadedRevision===request.revision && pin.loadedSnapshotSha256===request.snapshotSha256 &&
     pin.frozen.portfolioId===request.portfolioId && pin.frozen.revision===request.revision &&
     pin.frozen.snapshotSha256===request.snapshotSha256 && pin.frozen.visibilityIntent===request.visibilityIntent &&
