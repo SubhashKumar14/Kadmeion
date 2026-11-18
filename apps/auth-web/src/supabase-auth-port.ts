@@ -196,6 +196,11 @@ class AuthHttpError extends Error {
   readonly status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
+/** Only a transient idempotent owner verification read may retry. */
+class AuthTransientUserReadError extends Error {
+  constructor(){super('Owner verification is temporarily unavailable. Use Retry if it persists.');}
+}
+
 
 function userFrom(value: unknown): AuthUser | null {
   if (!value || typeof value !== 'object') return null;
@@ -396,15 +401,26 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private async request(path: string, method: string, body?: Json, token?: string): Promise<Json> {
     const headers: Record<string, string> = { apikey: this.publishableKey, 'Content-Type': 'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
+    const ownerVerification=method==='GET'&&path==='/user'&&typeof token==='string';
+    const requestUrl=this.origin+'/auth/v1'+path;
     let response: Response;
     try {
-      response = await this.fetcher(this.origin + '/auth/v1' + path, {
-        method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', credentials: 'omit', redirect: 'error'
+      response = await this.fetcher(requestUrl, {
+        method,headers,body:body===undefined?undefined:JSON.stringify(body),
+        cache:'no-store',credentials:'omit',redirect:'error',
+        ...(ownerVerification?{signal:AbortSignal.timeout(10_000)}:{})
       });
-    } catch { throw new Error('Could not connect to the authentication service.'); }
+    } catch {
+      if(ownerVerification)throw new AuthTransientUserReadError();
+      throw new Error('Could not connect to the authentication service.');
+    }
+    if(ownerVerification&&(response.redirected||(response.url&&response.url!==requestUrl)||
+       response.status>=500))throw new AuthTransientUserReadError();
     const strictSignupResend = method === 'POST' && path.startsWith('/resend?redirect_to=') && body?.type === 'signup';
     const strictRecovery = method === 'POST' && path.startsWith('/recover?redirect_to=');
     const payload: unknown = await response.json().catch(() => undefined);
+    if(ownerVerification&&response.ok&&(!payload||typeof payload!=='object'||Array.isArray(payload)))
+      throw new AuthTransientUserReadError();
     if (response.ok && (strictSignupResend || strictRecovery) &&
         (response.status !== 200 || !payload || typeof payload !== 'object' ||
          Array.isArray(payload) || Object.keys(payload).length !== 0))
@@ -540,19 +556,35 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const session=await this.refreshed();
     if(!session || !this.isCurrentSession(session))throw new Error('Session expired.');
     const epoch=this.ownerSessionEpoch;
+    const current=()=>this.reconcileOwnerSessionEpoch()===epoch&&this.isCurrentSession(session);
     try{
-      const data=await this.request('/user','GET',undefined,session.access_token);
-      const user=userFrom(data);
-      if(!user || user.id!==session.user.id || !this.isCurrentSession(session) ||
-          this.ownerSessionEpoch!==epoch){
-        if(this.isCurrentSession(session))this.store(null);
-        throw new Error('User verification did not match the active session.');
+      for(let attempt=0;attempt<2;attempt++){
+        if(!current())throw new Error('Owner session changed during verification.');
+        let data:Json;
+        try{data=await this.request('/user','GET',undefined,session.access_token);}
+        catch(error){
+          if(error instanceof AuthTransientUserReadError&&attempt===0&&current())continue;
+          throw error;
+        }
+        if(!current())throw new Error('Owner session changed during verification.');
+        const user=userFrom(data);
+        if(!user){
+          if(attempt===0)continue;
+          throw new AuthTransientUserReadError();
+        }
+        if(user.id!==session.user.id){
+          if(current())this.store(null);
+          throw new Error('User verification did not match the active session.');
+        }
+        if(!current())throw new Error('Owner session changed during verification.');
+        return {session,user,epoch};
       }
-      return {session,user,epoch};
+      throw new AuthTransientUserReadError();
     }catch(error){
-      // Keep an otherwise valid session on transient network failures.
+      // A transient read never logs out the legitimate owner; a proven
+      // mismatch or 401/403 still does. No cached identity fallback.
       if(error instanceof AuthHttpError && [401,403].includes(error.status) &&
-          this.isCurrentSession(session)){
+          current()){
         try{this.store(null);}catch{/* storage already failed */}
       }
       throw error;
