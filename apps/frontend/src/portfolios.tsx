@@ -437,7 +437,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const allowed = useAuthoringViewport();
   const [record, setRecord] = useState<PortfolioRecord | null>(null);
   const [head, setHead] = useState<EditorHead | null>(null);
-  const layoutAppliedHead=useRef<EditorHead|null>(null);
+  const lastAppliedHead=useRef<EditorHead|null>(null);
+  const setupFlight=useRef(false);
+  const setupAttempt=useRef<{id:string;preset:PortfolioPresetId;epoch:number;operation:string}|null>(null);
   const [slot, setSlot] = useState('');
   // Secondary controls preserve malformed user input without silently
   // committing it to the private snapshot or losing it on panel changes.
@@ -538,14 +540,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }, [port,id,attempt,allowed,verifiedOwner?.id,verifiedOwner?.epoch,initialLink]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
-    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
+    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current || lastAppliedHead.current===head) return false;
+    const live=latestRecovery.current;
+    if(!live||live.head!==head||live.id!==id||live.port!==port||
+       (verifiedOwner&&!scopeCurrent(live)))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
     if(layoutMutation||themeMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         layoutAppliedHead.current===head||preview||(layoutMutation?tool!=='Components':tool!=='Theme')){
+         preview||(layoutMutation?tool!=='Components':tool!=='Theme')){
         setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
       if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
@@ -584,7 +589,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
         setSourceReset(value=>value+1);
       }
-      if(layoutMutation||themeMutation)layoutAppliedHead.current=head;
+      lastAppliedHead.current=head;
       setHead(next);
       setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation?
         'Layout transaction applied to the working draft. Save to persist, or use Undo.':themeMutation?
@@ -678,14 +683,29 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
 
   async function initialize() {
     const preset = presets.find(item => item.id === record?.templateId);
-    if (!allowed || !record || !preset || saving) return;
-    setSaving(true); setError('');
-    try {
-      const result = await port.initializeOwnerPortfolio(id, crypto.randomUUID(), preset.id);
-      if (result.data) setAttempt(current => current + 1);
-      else setError(result.error?.message ?? 'Draft setup could not be confirmed.');
-    } catch {setError('Draft setup could not be confirmed. Retry safely.');}
-    finally {setSaving(false);}
+    if(!allowed||!record||record.id!==id||!preset||saving||setupFlight.current||head)return;
+    const view=latestRecovery.current;
+    if(!view||view.record!==record||(verifiedOwner&&!scopeCurrent(view)))return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    let pending=setupAttempt.current;
+    if(!pending||pending.id!==id||pending.preset!==preset.id||pending.epoch!==epoch){
+      pending={id,preset:preset.id,epoch,operation:crypto.randomUUID()};
+      setupAttempt.current=pending;
+    }
+    const current=()=>{
+      const live=latestRecovery.current;
+      return !!live&&live.port===port&&live.id===id&&live.record===record&&
+        port.reconcileOwnerSessionEpoch()===epoch&&(!view.owner||scopeCurrent(view));
+    };
+    setupFlight.current=true;setSaving(true);setError('');
+    try{
+      const result=await port.initializeOwnerPortfolio(id,pending.operation,preset.id);
+      if(!current())return;
+      if(Number.isSafeInteger(result.data)&&result.data>0){
+        setupAttempt.current=null;setAttempt(value=>value+1);
+      }else setError(result.error?.message??'Draft setup could not be confirmed. Retry the same setup.');
+    }catch{if(current())setError('Draft setup could not be confirmed. Retry the same setup.');}
+    finally{setupFlight.current=false;if(current())setSaving(false);}
   }
 
   const active = slot ? head?.snapshot.slots[slot] : undefined;
