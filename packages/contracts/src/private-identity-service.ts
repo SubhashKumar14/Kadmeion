@@ -115,7 +115,7 @@ function parseUniqueSharingJson(raw:string):unknown {
   }
   return parsed;
 }
-async function readSharingJson(response:Response,signal:AbortSignal):Promise<unknown>{
+async function readSharingJson(response:Response,signal:AbortSignal,expired:()=>boolean):Promise<unknown>{
   const reader=response.body?.getReader();
   if(!reader)throw new PrivateIdentityError('INVALID_ACK','Missing sharing response.');
   const decoder=new TextDecoder('utf-8',{fatal:true});
@@ -130,9 +130,9 @@ async function readSharingJson(response:Response,signal:AbortSignal):Promise<unk
     if(length!==null&&(!/^\d+$/.test(length)||Number(length)>16*1024))
       throw new Error('Invalid response length');
     for(;;){
-      if(signal.aborted)throw new Error('Request expired');
+      if(expired())throw new Error('Request expired');
       const next=await reader.read();
-      if(signal.aborted)throw new Error('Request expired');
+      if(expired())throw new Error('Request expired');
       if(next.done)break;
       if(++chunks>1024||!(next.value instanceof Uint8Array))throw new Error('Invalid response chunks');
       bytes+=next.value.byteLength;
@@ -255,24 +255,29 @@ export class SupabasePrivateIdentityService {
     body:Record<string,unknown>):Promise<unknown>{
     const owner=this.requireSharingOwner();
     const signal=AbortSignal.timeout(10000);
+    const expiresAt=performance.now()+10000;
+    const expired=()=>signal.aborted||performance.now()>=expiresAt;
     let abort:()=>void=()=>{};
     const deadline=new Promise<never>((_,reject)=>{
       abort=()=>reject(new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.'));
       signal.addEventListener('abort',abort,{once:true});
     });
     const work=async()=>{
-      const token=await this.tokenSupplier();
+      let token:string|null;
+      try{token=await this.tokenSupplier();}
+      catch{throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');}
       this.requireSharingOwner();
       if(!token)throw new PrivateIdentityError('AUTH_EXPIRED','Sign in first.');
-      if(signal.aborted)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
+      if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
       const url=this.baseUrl+'/rest/v1/rpc/'+name;
-      const response=await this.fetcher(url,{
+      let response:Response;
+      try{response=await this.fetcher(url,{
         method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+token,'Content-Type':'application/json'},
         body:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal
-      });
+      });}catch{throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');}
       try{
         this.requireSharingOwner();
-        if(signal.aborted)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
+        if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
         if(response.redirected||(response.url&&response.url!==url))
           throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
         if(response.status===401||response.status===403)
@@ -282,16 +287,16 @@ export class SupabasePrivateIdentityService {
         throw error;
       }
       let raw:unknown;
-      try{raw=await readSharingJson(response,signal);}
+      try{raw=await readSharingJson(response,signal,expired);}
       catch(error){
         this.requireSharingOwner();
         if(!response.ok)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
         throw error;
       }
-      if(this.requireSharingOwner()!==owner||signal.aborted)
+      if(this.requireSharingOwner()!==owner||expired())
         throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
       if(!response.ok){
-        if(response.status===409&&record(raw)&&raw.code==='40001')
+        if((response.status===409||response.status===500)&&record(raw)&&raw.code==='40001')
           throw new PrivateIdentityError('CONFLICT','Sharing preferences changed. Reload and confirm again.');
         if(response.status===400&&record(raw)&&raw.code==='22023')
           throw new PrivateIdentityError('VALIDATION','Invalid sharing request.');
