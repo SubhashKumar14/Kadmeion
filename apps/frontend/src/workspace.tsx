@@ -17,6 +17,17 @@ type Owner = { id: string; email?: string };
 type Gate = { status: 'checking' } | { status: 'locked'; message: string } | { status: 'unavailable'; message: string } | { status: 'verified'; owner: Owner; epoch: number; portGeneration: number };
 type SnapshotState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; value: OwnerWorkspaceSnapshot };
 type StartChoice = PrivateStep;
+
+/** Transport errors never establish logout; all nonverified outcomes stay private. */
+function ownerVerificationUnavailable(message: string | undefined, online: boolean): boolean {
+  if (!online) return true;
+  if (!message) return false;
+  // Only the adapter's explicit session rejection/expiry or identity mismatch
+  // is presented as sign-in required. Unknown failures remain retryable.
+  return message !== 'Session expired.' &&
+    message !== 'The authentication session or credentials were rejected.' &&
+    message !== 'User verification did not match the active session.';
+}
 const NAV = [
   { title: 'Overview', href: '/app', icon: 'layers' },
   { title: 'Welcome', href: '/app/onboarding', icon: 'target' },
@@ -55,7 +66,14 @@ function workspacePageTitle(path: string): string {
   if (portfolio) return 'Portfolio editor';
   if (isSettingsRoute(path)) return 'Account settings';
   if (isOperatorRoute(path)) return 'Restricted operations';
-  if (isGrowthRoute(path)) return 'Personal growth';
+  if (isGrowthRoute(path)) {
+    const titles: Record<string,string> = {
+      '/app/growth':'Personal growth', '/app/growth/activity':'Developer activity',
+      '/app/growth/goals':'Your goals', '/app/growth/devscore':'Private DevScore',
+      '/app/analytics':'Portfolio analytics', '/app/integrations':'Platform connections'
+    };
+    return titles[path] ?? 'Personal growth';
+  }
   return 'Workspace';
 }
 
@@ -307,6 +325,11 @@ export function WorkspaceApp() {
   const authRef = useRef<SupabaseBrowserAuthPort | null>(null);
   const portGenerationRef = useRef(0);
   const retryRecordsRef = useRef<(() => void) | null>(null);
+  const retryFocusRef = useRef(false);
+  function retryVerification() {
+    retryFocusRef.current = true;
+    setVerificationAttempt(value=>value+1);
+  }
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const projectId = projectIdFromRoute(route);
   const portfolioId = portfolioIdFromRoute(route);
@@ -318,8 +341,14 @@ export function WorkspaceApp() {
       gate.status === 'unavailable' ? 'Owner verification unavailable' : 'Sign in required') + ' · Kadmeion';
   }, [route, gate.status]);
   useEffect(() => {
-    if ((gate.status === 'locked' || gate.status === 'unavailable') && document.activeElement === document.body) {
-      document.getElementById('ws-content')?.focus();
+    const content = document.getElementById('ws-content');
+    if (retryFocusRef.current) {
+      // Restore focus after the clicked Retry control is replaced; do not
+      // move it away from a control the owner intentionally focused meanwhile.
+      if (document.activeElement === document.body || document.activeElement === content) content?.focus();
+      if (gate.status !== 'checking') retryFocusRef.current = false;
+    } else if ((gate.status === 'locked' || gate.status === 'unavailable') && document.activeElement === document.body) {
+      content?.focus();
     }
   }, [gate.status]);
   useEffect(() => {
@@ -363,9 +392,9 @@ export function WorkspaceApp() {
         void port.getUser().then(result => {
           if (!stillCurrent(seq,epoch)) return;
           if (result.error || !result.data?.user?.id) {
-            // The adapter's exact transport failure is not evidence of logout.
-            // Both branches withhold every private route and record.
-            if (!navigator.onLine || result.error?.message === 'Could not connect to the authentication service.') {
+            // Both branches withhold every private route and record; retryable
+            // transport, rate-limit and malformed responses are not logout.
+            if (ownerVerificationUnavailable(result.error?.message, navigator.onLine)) {
               setGate({status:'unavailable',message:'Owner verification could not reach the authentication service. Reconnect or retry verification; no private records are shown.'});
             } else {
               setGate({status:'locked',message:'Sign in to verify your owner session before opening this workspace.'});
@@ -465,7 +494,7 @@ export function WorkspaceApp() {
       setSignOutPending(false);
     }
   }
-  if (gate.status === 'checking') return <main id="ws-content" className="ws-gate" role="main" aria-busy="true">
+  if (gate.status === 'checking') return <main id="ws-content" className="ws-gate" role="main" tabIndex={-1} aria-busy="true">
     <h1>Verifying owner session…</h1>
     <p role="status">Verifying your owner session with the authentication service…</p>
     <div className="glyph-skeleton" aria-hidden="true">
@@ -477,7 +506,7 @@ export function WorkspaceApp() {
     <p className="ws-kicker">OWNER VERIFICATION UNAVAILABLE</p>
     <h1>Owner verification unavailable.</h1>
     <p role="alert">{gate.message}</p>
-    <div className="ws-actions"><button type="button" className="ws-primary" onClick={() => setVerificationAttempt(value=>value+1)}>Retry verification</button>
+    <div className="ws-actions"><button type="button" className="ws-primary" onClick={retryVerification}>Retry verification</button>
       <a className="ws-secondary" href="/signin">Go to sign in</a></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
@@ -486,7 +515,7 @@ export function WorkspaceApp() {
     <h1>Sign in required.</h1>
     <p role="alert">{gate.message}</p>
     <div className="ws-actions"><a className="ws-primary" href="/signin">Go to sign in <Icon name="arrow" size={16}/></a>
-      <button type="button" className="ws-secondary" onClick={() => setVerificationAttempt(value=>value+1)}>Retry verification</button></div>
+      <button type="button" className="ws-secondary" onClick={retryVerification}>Retry verification</button></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
   </main>;
   const ownerKey = gate.owner.id + ':' + gate.portGeneration + ':' + gate.epoch;
