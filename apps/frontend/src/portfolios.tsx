@@ -483,6 +483,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [componentSearch,setComponentSearch]=useState('');
   const [componentCategory,setComponentCategory]=useState<'All'|'Text'|'Links'|'Work'>('All');
   const [pickedComponent,setPickedComponent]=useState('');
+  const componentDrag=useRef<{head:EditorHead;pin:string}|null>(null);
   const componentSaveRetry=useRef<ComponentSaveRetryState>({pending:null,inFlight:false});
   const [openedSource, setOpenedSource] = useState(false);
   const [openedAssets,setOpenedAssets]=useState(false);
@@ -745,6 +746,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const selectedLayoutSectionId=selectedLayoutSections.length===1?selectedLayoutSections[0]!.id:'';
   const compatible=compatibleComponentsForSlot(slot);
   const chosenComponent=compatible.find(item=>item.id===pickedComponent)??compatible[0];
+  const targetPin=insertableComponentPins.find(item=>item.id===pickedComponent)??chosenComponent;
+  const emptyComponentTargets=layerGroups.flatMap(group=>group.slots.filter(item=>item.state==='EMPTY')
+    .map(item=>({key:item.key,label:group.title+' · '+item.name})));
   const categoryFor=(id:string):'Text'|'Links'|'Work'=>
     id==='external-link@1'?'Links':
     id==='project-card@1'||id==='skills-list@1'||id==='author-metric@1'?'Work':'Text';
@@ -792,6 +796,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const parent=key.slice(0,pivot),field=key.slice(pivot+1);
     return (head?.snapshot.slots[parent]?.content[field]??'')!==draft;
   }) || seoPending;
+  function canPlaceComponent(pin:string,target:string):boolean{
+    return !!head&&!!verifiedOwner&&allowed&&!preview&&tool==='Components'&&!saving&&!recoveryBusy&&
+      !pendingFields&&!sourceDirty&&head.snapshot.slots[target]?.state==='EMPTY'&&
+      emptyComponentTargets.filter(item=>item.key===target).length===1&&
+      compatibleComponentsForSlot(target).some(item=>item.id===pin);
+  }
+  function placeComponent(pin:string,target:string):boolean{
+    const view=latestRecovery.current;
+    if(!view||!head||view.head!==head||!draftCurrent(view)||!canPlaceComponent(pin,target))return false;
+    if(!apply({kind:'ASSIGN_COMPONENT',slotKey:target,componentId:pin}))return false;
+    setSlot(target);setTool('Content');return true;
+  }
   // Local storage is not an identity authority. Gate context is mandatory.
   type RecoveryView={port:SupabaseBrowserAuthPort;id:string;owner:VerifiedEditorOwner|undefined;
     record:PortfolioRecord|null;head:EditorHead|null;operation:string;fieldDrafts:Record<string,string>;
@@ -1426,15 +1442,48 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
            item.id.toLowerCase().includes(componentSearch.trim().toLowerCase()))
         ).map(item=>{
           const fit=compatible.some(candidate=>candidate.id===item.id);
-          return <li key={item.id}><button type="button" aria-pressed={chosenComponent?.id===item.id&&fit}
-            disabled={!active||!fit||saving||recoveryBusy}
+          const hasTarget=emptyComponentTargets.some(target=>canPlaceComponent(item.id,target.key));
+          return <li key={item.id}><button type="button" aria-pressed={targetPin?.id===item.id}
+            disabled={(!fit&&!hasTarget)||saving||recoveryBusy}
+            draggable={hasTarget}
+            onDragStart={event=>{
+              const view=latestRecovery.current;
+              if(!hasTarget||!head||!view||!draftCurrent(view)){event.preventDefault();return;}
+              componentDrag.current={head,pin:item.id};
+              event.dataTransfer.effectAllowed='copy';
+              event.dataTransfer.setData('application/x-kadmeion-component','pinned');
+              setPickedComponent(item.id);
+            }}
+            onDragEnd={()=>{componentDrag.current=null;}}
             onClick={()=>setPickedComponent(item.id)}>
             <strong>{item.label}</strong>
             <small>{item.id}</small>
-            <span>{fit?'Compatible with selected slot':'Choose another slot'}</span>
+            <span>{fit?'Compatible with selected slot':hasTarget?'Compatible empty targets available':'Choose another slot'}</span>
           </button></li>;
         })}</ul>
-        {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before adding or replacing components.</p>}
+        {!active&&<p className="ws-footnote">Select a target in Structure &amp; layers before replacing components.</p>}
+        {targetPin&&<section aria-label="Compatible empty component targets">
+          <h3>Place {targetPin.label}</h3>
+          <p>Drag the selected component to a compatible empty target below, or use its Add button. Existing assignments are never replaced by dropping.</p>
+          {emptyComponentTargets.filter(target=>compatibleComponentsForSlot(target.key).some(item=>item.id===targetPin.id)).length===0?
+            <p>No compatible empty slots. Add a section or clear an assignment deliberately.</p>:
+            <ul className="ws-editor-slots">{emptyComponentTargets.filter(target=>
+              compatibleComponentsForSlot(target.key).some(item=>item.id===targetPin.id)).map(target=><li key={target.key}
+                onDragOver={event=>{
+                  const drag=componentDrag.current;
+                  if(drag?.head===head&&canPlaceComponent(drag.pin,target.key)){
+                    event.preventDefault();event.dataTransfer.dropEffect='copy';
+                  }
+                }}
+                onDrop={event=>{
+                  const drag=componentDrag.current;componentDrag.current=null;
+                  if(!drag||drag.head!==head||!canPlaceComponent(drag.pin,target.key))return;
+                  event.preventDefault();placeComponent(drag.pin,target.key);
+                }}>
+                <button type="button" disabled={!canPlaceComponent(targetPin.id,target.key)}
+                  onClick={()=>placeComponent(targetPin.id,target.key)}>Add {targetPin.label} to {target.label}</button>
+              </li>)}</ul>}
+        </section>}
         <button type="button" className="ws-secondary" onClick={()=>setTool('Content')}>Return to layers</button>
         <LayoutTools head={head} sectionId={selectedLayoutSectionId}
           blocked={!verifiedOwner||!allowed||saving||recoveryBusy||pendingFields||sourceDirty}
