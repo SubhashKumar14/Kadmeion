@@ -179,63 +179,52 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     };
   },[port,state.status,state.status==='ready'?state.ownerId:null]);
 
-  async function loadMore() {
-    if(!currentOwner()||state.status!=='ready' || !state.nextCursor || pageInFlight.current) return;
+  // Load one page or an explicitly requested bounded batch for search/sort.
+  // This is not a server-side snapshot: concurrent edits may move keyset rows.
+  async function loadMore(batch=false) {
+    if(!currentOwner()||state.status!=='ready'||!state.nextCursor||pageInFlight.current)return;
     const {ownerId,nextCursor}=state;
     const epoch=requestEpoch.current;
     const current=()=>epoch===requestEpoch.current&&currentOwner();
     const pageReader=(port as ProjectPagePort).listOwnerProjectsPage;
-    if(typeof pageReader!=='function') {
-      setPageError('Private project pagination is unavailable. Retry later.');
-      return;
-    }
-    pageInFlight.current=true;
-    setLoadingMore(true);
-    setPageError('');
-    const rejectStaleOwner=()=>{
-      if(epoch===requestEpoch.current) invalidateOwner();
-    };
-    try {
+    if(typeof pageReader!=='function'){setPageError('Private project pagination is unavailable. Retry later.');return;}
+    pageInFlight.current=true;setLoadingMore(true);setPageError('');
+    let cursor:ProjectCursor|null=nextCursor;
+    const seenCursors=new Set<string>();
+    const key=(value:ProjectCursor)=>JSON.stringify([value.updatedAt,value.id]);
+    try{
       const startIdentity=await port.getUser();
       if(!current())return;
-      if(startIdentity.error || startIdentity.data?.user?.id!==ownerId) {
-        rejectStaleOwner();return;
-      }
-      const reply=await pageReader.call(port,PAGE_SIZE,nextCursor);
-      if(!current())return;
-      const currentIdentity=await port.getUser();
-      if(!current())return;
-      if(currentIdentity.error || currentIdentity.data?.user?.id!==ownerId) {
-        rejectStaleOwner();return;
-      }
-      if(reply.error || !reply.data) {
-        setPageError(reply.error?.message??'More private projects could not be loaded. Your earlier pages remain visible.');
-        return;
-      }
-      if(!validProjectPage(reply.data,ownerId,nextCursor)) {
-        setPageError('The next page failed validation. Previously loaded projects were kept.');
-        return;
-      }
-      setState(old=>{
-        if(old.status!=='ready' || old.ownerId!==ownerId ||
-           old.nextCursor?.id!==nextCursor.id ||
-           old.nextCursor?.updatedAt!==nextCursor.updatedAt) return old;
-        const seen=new Set(old.items.map(project=>project.id));
-        const added=reply.data!.items.filter(project=>{
-          if(seen.has(project.id))return false;
-          seen.add(project.id);return true;
+      if(startIdentity.error||startIdentity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      for(let index=0;cursor&&index<(batch?10:1);index++){
+        const requested=cursor;
+        if(seenCursors.has(key(requested))){
+          setPageError('The project cursor repeated. Refresh before loading more.');return;
+        }
+        seenCursors.add(key(requested));
+        const reply=await pageReader.call(port,PAGE_SIZE,requested);
+        if(!current())return;
+        const identity=await port.getUser();
+        if(!current())return;
+        if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(reply.error||!reply.data){
+          setPageError(reply.error?.message??'More projects could not be loaded. Earlier pages remain available.');return;
+        }
+        const page=reply.data;
+        if(!validProjectPage(page,ownerId,requested)||(page.nextCursor&&seenCursors.has(key(page.nextCursor)))){
+          setPageError('The next page failed validation. Previously loaded projects were kept.');return;
+        }
+        setState(previous=>{
+          if(previous.status!=='ready'||previous.ownerId!==ownerId||
+            previous.nextCursor?.id!==requested.id||previous.nextCursor?.updatedAt!==requested.updatedAt)return previous;
+          const seen=new Set(previous.items.map(project=>project.id));
+          const added=page.items.filter(project=>{if(seen.has(project.id))return false;seen.add(project.id);return true;});
+          return {...previous,items:[...previous.items,...added],nextCursor:page.nextCursor};
         });
-        return {...old,items:[...old.items,...added],nextCursor:reply.data!.nextCursor};
-      });
-    } catch {
-      if(current())
-        setPageError('More private projects could not be loaded. Your earlier pages remain visible.');
-    } finally {
-      if(current()) {
-        pageInFlight.current=false;
-        setLoadingMore(false);
+        cursor=page.nextCursor;
       }
-    }
+    }catch{if(current())setPageError('More private projects could not be loaded. Your earlier pages remain visible.');}
+    finally{if(current()){pageInFlight.current=false;setLoadingMore(false);}}
   }
   const filtered=useMemo(()=>{
     if(state.status!=='ready')return [];
@@ -260,14 +249,14 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const hasFilters=!!search.trim() || linkFilter!=='all'||detailFilter!=='all';
   function clearFilters(){setSearch('');setLinkFilter('all');setDetailFilter('all');setSort('recent');}
   function open(event: MouseEvent<HTMLButtonElement>) {
-    if (!currentOwner()||state.status!=='ready'||!modal.current || modal.current.open) return;
+    if (!currentOwner()||state.status!=='ready'||pageInFlight.current||!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
     setError('');
     modal.current.showModal();
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(!currentOwner()||state.status!=='ready'||creationInFlight.current)return;
+    if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current)return;
     creationInFlight.current=true;
     const attempt=++creationAttempt.current;
     const sessionEpoch=port.getOwnerSessionEpoch();
@@ -325,7 +314,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         <h1 id="ws-title">Project library.</h1>
         <p>Organize your projects and case studies. New project drafts stay private.</p>
       </div>
-      <button type="button" className="ws-primary" ref={topOpener} disabled={state.status!=='ready'} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" ref={topOpener} disabled={state.status!=='ready'||loadingMore} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
     </div>
     <div className="ws-project-controls">
       <label className="ws-project-search">Search private projects
@@ -366,7 +355,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         }}>Refresh projects</button>
     </div>
     {state.status==='ready' && <div className="ws-actions">
-      <p>Filters cover loaded private records. Publication status and technology tags are not available in this index.</p>
+      <p>Search, link and description filters cover all loaded private records. Load further pages to search the rest of your library. Publication status and technology tags are not available in this index.</p>
       {(hasFilters||sort!=='recent')&&<button type="button" className="ws-secondary" onClick={clearFilters}>Clear filters</button>}
     </div>}
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
@@ -387,7 +376,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <p>{hasFilters?'Change filters or load additional private pages to search older projects.':
             'Add a project title and a short description. You can add links later.'}</p>
           {hasFilters?<button type="button" className="ws-secondary" onClick={clearFilters}>{search&&linkFilter==='all'&&detailFilter==='all'?'Clear search':'Reset project filters'}</button>:
-            <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
+            <button type="button" className="ws-primary" disabled={loadingMore} onClick={open}>Add first project</button>}
         </div>
         {!hasFilters && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
           <h2 id="ws-project-guide">Show the work behind your code.</h2>
@@ -417,10 +406,12 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       </ul>}
       {state.nextCursor && <div className="ws-actions">
         <button type="button" className="ws-secondary"
-          disabled={loadingMore} aria-busy={loadingMore}
+          disabled={loadingMore||saving} aria-busy={loadingMore}
           onClick={()=>void loadMore()}>
           {loadingMore?'Loading more…':pageError?'Retry loading more projects':'Load more projects'}
         </button>
+        <button type="button" className="ws-secondary" disabled={loadingMore||saving} onClick={()=>void loadMore(true)}>Load up to 500 more for search</button>
+        <p>Results and sort order update as pages arrive. Repeat until all available pages are loaded; refresh for recent changes.</p>
         {pageError && <p role="alert" className="ws-inline-alert">{pageError}</p>}
       </div>}
     </>}
