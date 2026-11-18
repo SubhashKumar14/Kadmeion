@@ -29,14 +29,50 @@ test('claims a normalized handle only after checking user JWT against Auth API',
   assert.equal(record.authorization.every(x=>x==='Bearer user-token'),true);
 });
 
-test('public identity request remains an intent, never a publication claim',async()=>{
-  const record={paths:[] as string[],methods:[] as string[],authorization:[] as string[]};
-  const service=serviceMock(record);
-  const status=await service.requestPublicIdentity({
-    shareDisplayName:true,shareHeadline:false,shareBio:false,publicationRequested:true
-  });
-  assert.equal(status,'saved_private_intent');
-  assert.equal(record.paths.at(-1)?.startsWith('/rest/v1/profile_sharing_preferences?'),true);
+test('C08 public identity request acknowledges private intent only, exact CAS and no publication call',async()=>{
+  const expected={ownerUserId:userId,version:0,preferences:null};
+  const desired={shareDisplayName:true,shareHeadline:false,shareBio:false,publicationRequested:true};
+  const operationId='20000000-0000-4000-8000-000000000010';
+  const receipt={status:'APPLIED',ownerUserId:userId,version:1,preferences:desired};
+  let calls=0;
+  const service=new SupabasePrivateIdentityService('https://test.supabase.co','public-key',async()=> 'user-token',
+    async(input,init)=>{
+      calls++;
+      assert.equal(init?.method,'POST');
+      if(calls===1){
+        assert.match(String(input),/\/rpc\/read_owner_profile_sharing_state$/);
+        assert.deepEqual(JSON.parse(String(init?.body)),{});
+        return Response.json(expected);
+      }
+      assert.match(String(input),/\/rpc\/change_owner_profile_sharing$/);
+      assert.deepEqual(JSON.parse(String(init?.body)),{p_expected_version:0,p_expected:null,p_desired:desired,p_operation_id:operationId});
+      return Response.json(receipt);
+    },userId,()=>true);
+  assert.deepEqual(await service.readProfileSharingState(),expected);
+  assert.deepEqual(await service.requestPublicIdentity({expected,desired,operationId}),receipt);
+  assert.equal(calls,2);
+});
+test('C08 identity CAS denies stale, malformed and terminal enable without overwriting current owner',async()=>{
+  const max=Number.MAX_SAFE_INTEGER;
+  const off={shareDisplayName:true,shareHeadline:true,shareBio:false,publicationRequested:false};
+  const reduced={...off,shareHeadline:false};
+  const expected={ownerUserId:userId,version:max,preferences:off};
+  const operationId='20000000-0000-4000-8000-000000000011';
+  const request={expected,desired:reduced,operationId};
+  const applied={status:'APPLIED',ownerUserId:userId,version:max,preferences:reduced};
+  const make=(http:typeof fetch,guard=()=>true)=>new SupabasePrivateIdentityService(
+    'https://test.supabase.co','public-key',async()=> 'user-token',http,userId,guard);
+  assert.deepEqual(await make(async()=>Response.json(applied)).requestPublicIdentity(request),applied);
+  for(const bad of [{...applied,status:'REPLAYED'},{...applied,version:max-1},{...applied,ownerUserId:'30000000-0000-4000-8000-000000000003'},{...applied,extra:true}]){
+    await assert.rejects(make(async()=>Response.json(bad)).requestPublicIdentity(request),{code:'INVALID_ACK'});
+  }
+  await assert.rejects(make(async()=>Response.json({code:'40001',message:'secret'},{status:409})).requestPublicIdentity(request),{code:'CONFLICT'});
+  let calls=0;
+  const deny=make(async()=>{calls++;return Response.json({});});
+  await assert.rejects(deny.requestPublicIdentity({...request,desired:{...off,publicationRequested:true}}),{code:'VALIDATION'});
+  await assert.rejects(deny.requestPublicIdentity({...request,expected:{...expected,preferences:null}}),{code:'VALIDATION'});
+  await assert.rejects(make(async()=>{calls++;return Response.json({});},()=>false).readProfileSharingState(),{code:'AUTH_EXPIRED'});
+  assert.equal(calls,0);
 });
 
 test('a missing access token fails closed',async()=>{

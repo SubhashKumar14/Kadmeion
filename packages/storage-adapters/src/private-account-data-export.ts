@@ -68,6 +68,14 @@ function requireCondition(condition:unknown,code:PrivateAccountExportError['code
   asserts condition {
   if(!condition)throw new PrivateAccountExportError(code,message);
 }
+// Each serialized table/audit and encoded asset is a disjoint part of the
+// final JSON envelope. Refuse a proven overflow before retaining more data.
+function enforceExportBudget(used:number,additional:number,maximum=MAX_EXPORT_BYTES):number {
+  const next=used+additional;
+  requireCondition(Number.isSafeInteger(next)&&next<=maximum,'LIMIT_EXCEEDED',
+    'Export document exceeds maximum size.');
+  return next;
+}
 function hex(bytes:Uint8Array):string {
   return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
 }
@@ -133,7 +141,7 @@ async function readExportChunk(reader:ReadableStreamDefaultReader<Uint8Array>,
     onAbort=()=>reject(signal.reason);
     signal.addEventListener('abort',onAbort,{once:true});
   });
-  try{return await Promise.race([reader.read(),aborted]);}
+  try{const chunk=await Promise.race([reader.read(),aborted]);signal.throwIfAborted();return chunk;}
   finally{signal.removeEventListener('abort',onAbort);}
 }
 async function boundedBytes(response:Response,max:number,signal:AbortSignal):Promise<Uint8Array> {
@@ -149,6 +157,7 @@ async function boundedBytes(response:Response,max:number,signal:AbortSignal):Pro
     while(true){
       const {done,value}=await readExportChunk(reader,signal);
       if(done)break;
+      requireCondition(value instanceof Uint8Array,'INTEGRITY','Invalid provider response bytes.');
       total+=value.byteLength;
       requireCondition(total<=max,'LIMIT_EXCEEDED','Provider response exceeds export limits.');
       parts.push(value);
@@ -404,9 +413,11 @@ export class SupabasePrivateAccountDataExporter {
         rows.every(row=>object(row)&&safeRestrictedAudit(row)),
       'INTEGRITY','Application metadata contains invalid restricted audit records.');
     }
+    const bytes=encoder.encode(JSON.stringify(envelope));
+    enforceExportBudget(0,bytes.byteLength,12*1024*1024);
     await sameSession();
     return {filename:'kadmeion-account-metadata.json',mime:'application/json',
-      bytes:encoder.encode(JSON.stringify(envelope)),status:'APPLICATION_METADATA_SNAPSHOT',
+      bytes,status:'APPLICATION_METADATA_SNAPSHOT',
       storageBytesIncluded:false,providerDataIncluded:false};
   }
   /** Returns JSON bytes for a user-triggered local Blob download. Never uploads them. */
@@ -430,7 +441,12 @@ export class SupabasePrivateAccountDataExporter {
     const before=await this.reconcile(snapshotId);
     const auditBefore=await this.audit(snapshotId,owner.id);
     const records:Record<string,JsonObject[]>={};
-    for(const [table,column,projection] of TABLES)records[table]=await this.rows(table,column,owner.id,projection);
+    let minimumBytes=enforceExportBudget(0,encoder.encode(JSON.stringify(auditBefore)).byteLength);
+    for(const [table,column,projection] of TABLES){
+      const rows=await this.rows(table,column,owner.id,projection);
+      minimumBytes=enforceExportBudget(minimumBytes,encoder.encode(JSON.stringify(rows)).byteLength);
+      records[table]=rows;
+    }
     const assets=records.project_assets;
     requireCondition(Array.isArray(assets),'INTEGRITY','Required private asset projection is missing.');
     requireCondition(assets.length===before,'UNVERIFIED','Asset inventory changed during export.');
@@ -454,6 +470,10 @@ export class SupabasePrivateAccountDataExporter {
         'Private Storage object no longer matches its trusted hash pin.');
       pins.set(path,current);
     }
+    // Base64 alone is a necessary lower bound; verify the registered sizes
+    // before downloads so oversized archives do not consume transfer/memory.
+    for(const asset of assets)
+      minimumBytes=enforceExportBudget(minimumBytes,4*Math.ceil((asset.byte_size as number)/3));
     let total=0;
     const verifiedAssets:JsonObject[]=[];
     for(const asset of assets){

@@ -1933,7 +1933,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   async ownerSettings() {
     return this.outcome(async () => {
-      const {userId,epoch} = await this.ownerSession();
+      const {session,userId,epoch} = await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
       const token=this.ownerEpochToken(userId,epoch);
       const [identity, notifications, trash, account, data] = await Promise.all([
         import('../../../packages/contracts/src/private-identity-service.ts'),
@@ -1942,9 +1944,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         import('../../../packages/contracts/src/private-account-erasure-service.ts'),
         import('../../../packages/storage-adapters/src/private-account-data-export.ts')
       ]);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private settings.');
       return {
-        identity: new identity.SupabasePrivateIdentityService(this.origin, this.publishableKey, token, this.fetcher),
-        notifications: new notifications.SupabasePrivateNotificationsService(this.origin, this.publishableKey, userId, token, this.fetcher),
+        identity: new identity.SupabasePrivateIdentityService(this.origin, this.publishableKey, token, this.fetcher, userId, isCurrentOwner),
+        notifications: new notifications.SupabasePrivateNotificationsService(this.origin, this.publishableKey, userId, token, this.fetcher, isCurrentOwner),
         trash: new trash.SupabasePrivateTrashService(this.origin, this.publishableKey, token, this.fetcher),
         account: new account.SupabasePrivateAccountErasureService(this.origin, this.publishableKey, token, this.fetcher),
         data: new data.SupabasePrivateAccountDataExporter(this.origin, this.publishableKey, token, this.fetcher)

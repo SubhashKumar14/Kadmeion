@@ -1,11 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
-import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { PrivateNotification, PrivateNotificationPage, NotificationPreferenceState, NotificationPreferenceChange, NotificationPreferenceInput } from '../../../packages/contracts/src/private-notifications-service.ts';
+import type { AccountErasureReceipt, AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
+import { PrivateNotificationsError } from '../../../packages/contracts/src/private-notifications-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
+import type { ProfileSharingState, ProfileSharingChange } from '../../../packages/contracts/src/private-identity-service.ts';
 import { OwnerCaseHistory } from './operations.tsx';
 
 const settingsLinks = [
@@ -126,7 +128,12 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const alive=useRef(false);
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
-  const [savedPrefs,setSavedPrefs]=useState<SharingPreferences|null>(null);
+  const [savedState,setSavedState]=useState<ProfileSharingState|null>(null);
+  const [retryChange,setRetryChange]=useState<ProfileSharingChange|null>(null);
+  const defaults:SharingPreferences={shareDisplayName:false,shareHeadline:false,shareBio:false,publicationRequested:false};
+  const savedPrefs=savedState?(savedState.preferences??defaults):null;
+  const terminal=savedState?.version===Number.MAX_SAFE_INTEGER;
+  const terminalAbsent=terminal&&savedState?.preferences===null;
   const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
   const [confirmed,setConfirmed]=useState(false);
   const [message,setMessage]=useState<Message>(emptyMessage);
@@ -145,12 +152,10 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
     a.shareBio===b.shareBio&&a.publicationRequested===b.publicationRequested;
   useEffect(()=>{
     let active=true;readPending.current=true;setReading(true);setConfirmed(false);
-    void port.ownerSharingPreferences().then(result=>{
+    void services.identity.readProfileSharingState().then(result=>{
       if(!active||!current())return;
-      if(!result.data)throw new Error('Privacy preferences are unavailable.');
-      setSavedPrefs(result.data);
-      // Refresh the confirmed state without discarding an unsaved draft.
-      setPrefs(previous=>previous??result.data!);
+      setSavedState(result);setRetryChange(null);
+      setPrefs(previous=>previous??result.preferences??defaults);
       readbackRequired.current=false;setNeedsReadback(false);setMessage(null);
     }).catch(()=>{
       if(active&&current()){
@@ -161,43 +166,37 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
       if(active&&current()){readPending.current=false;setReading(false);}
     });
     return()=>{active=false;};
-  },[port,epoch,reload]);
+  },[port,services.identity,epoch,reload]);
   function refresh(){
     if(!current()||writing.current||readPending.current)return;
-    readPending.current=true;setReading(true);setConfirmed(false);setReload(n=>n+1);
+    readPending.current=true;readbackRequired.current=true;setNeedsReadback(true);
+    setRetryChange(null);setReading(true);setConfirmed(false);setReload(n=>n+1);
   }
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!prefs||!savedPrefs||!confirmed||readbackRequired.current||readPending.current||writing.current||!current())return;
-    const desired={...prefs};const baseline={...savedPrefs};
+    if(!prefs||!savedState||terminalAbsent||!confirmed||retryChange||readbackRequired.current||readPending.current||writing.current||!current())return;
+    if(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState.preferences?.[key])))return;
+    const expected={...savedState,preferences:savedState.preferences===null?null:{...savedState.preferences}};
+    await applyChange({expected,desired:{...prefs},operationId:crypto.randomUUID()});
+  }
+  async function applyChange(change:ProfileSharingChange){
+    if(!current()||writing.current||readPending.current)return;
     writing.current=true;setBusy(true);setMessage(null);setConfirmed(false);
     try{
-      // Compare before writing using the real current owner read. This is
-      // not an atomic CAS; the acknowledged post-write read remains required.
-      const latest=await port.ownerSharingPreferences();
+      const saved=await services.identity.requestPublicIdentity(change);
       if(!current())return;
-      if(!latest.data)throw new Error('Could not verify current sharing preferences.');
-      setSavedPrefs(latest.data);
-      if(!same(latest.data,baseline)){
-        setMessage({error:true,text:'Saved sharing preferences changed. Compare the confirmed selection with your draft and confirm again before saving.'});
-        return;
-      }
-      await services.identity.requestPublicIdentity(desired);
-      if(!current())return;
-      const saved=await port.ownerSharingPreferences();
-      if(!current())return;
-      if(!saved.data)throw new Error('Sharing preferences could not be read back.');
-      setSavedPrefs(saved.data);
-      if(!same(saved.data,desired)){
-        setMessage({error:true,text:'Readback differs from your draft. Review the confirmed selection before trying again.'});
-        return;
-      }
-      setPrefs(saved.data);readbackRequired.current=false;setNeedsReadback(false);
+      setSavedState({ownerUserId:saved.ownerUserId,version:saved.version,preferences:saved.preferences});
+      setPrefs(saved.preferences??defaults);setRetryChange(null);
+      readbackRequired.current=false;setNeedsReadback(false);
       setMessage({error:false,text:'Sharing preferences saved privately.'});
-    }catch{
+    }catch(error){
       if(current()){
+        const code=error&&typeof error==='object'&&'code' in error?error.code:null;
+        setRetryChange(code==='PROVIDER_UNAVAILABLE'||code==='INVALID_ACK'?change:null);
         readbackRequired.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'The requested privacy change was not confirmed. Your draft is retained. Reload confirmed preferences before retrying.'});
+        setMessage({error:true,text:code==='CONFLICT'?
+          'Saved sharing preferences changed. Reload confirmed preferences, compare your draft and confirm again before saving.':
+          'The requested privacy change was not confirmed. Your draft is retained. Retry the same operation if available or reload confirmed preferences.'});
       }
     }finally{
       writing.current=false;if(current())setBusy(false);
@@ -216,23 +215,26 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <h3>Last confirmed private selection</h3>
         <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
           {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
+        {savedState?.preferences===null&&<p>No saved preference record; showing private defaults.</p>}
+        {terminal&&<p>Privacy changes are restricted to reducing previously selected fields. Publication cannot be enabled.</p>}
         <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
       </div>}
       {prefs&&<form onSubmit={event => void save(event)}>
         <p className="ws-settings-selection-count"><strong>{selected} of {fields.length}</strong> profile fields selected in this form.
           Selection is not publication. {dirty?'Unsaved draft differs from confirmed preferences.':'No draft differences from the last confirmed selection.'}</p>
-        <fieldset disabled={busy||reading}>
+        <fieldset disabled={busy||reading||!!retryChange||terminalAbsent}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
-            <input type="checkbox" checked={prefs[key]} onChange={event => {
+            <input type="checkbox" checked={prefs[key]} disabled={terminal&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
+              if(terminal&&event.target.checked&&!savedState?.preferences?.[key])return;
               const next = {...prefs, [key]: event.target.checked};
               if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
               setPrefs(next); setConfirmed(false);
             }}/>{label}
           </label>)}
           <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
-            disabled={!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio}
-            onChange={event => {setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+            disabled={(terminal&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
+            onChange={event => {if(terminal&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
@@ -241,7 +243,8 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
           <p>This confirms the private sharing intent and withdrawal request, not verified withdrawal. Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback}>{busy?'Saving…':'Save sharing preferences'}</button>
+          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState?.preferences?.[key])))}>{busy?'Saving…':'Save sharing preferences'}</button>
+          {retryChange&&<button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void applyChange(retryChange)}>Retry same privacy change</button>}
           <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
           <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
             onClick={()=>{if(!current()||writing.current||!savedPrefs)return;setPrefs({...savedPrefs});setConfirmed(false);setMessage(null);}}>Discard draft changes</button>
@@ -292,7 +295,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const current=()=>mounted.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const pendingAction=useRef(false);
   const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
-  const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
+  const [prefs, setPrefs] = useState<NotificationPreferenceState | undefined>(undefined);
   const [pendingPrefs, setPendingPrefs] = useState<{
     reviewerEnabled: boolean; publishEnabled: boolean; syncEnabled: boolean;
   } | null>(null);
@@ -301,10 +304,11 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [prefsReload,setPrefsReload]=useState(0);
-  type PreferenceInput={reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean};
-  const [prefRetry,setPrefRetry]=useState<{key:keyof PreferenceInput;checked:boolean}|null>(null);
+  type PreferenceInput=NotificationPreferenceInput;
+  const [prefRetry,setPrefRetry]=useState<NotificationPreferenceChange|null>(null);
   const preferencesReading=useRef(true);
   const [preferencesLoading,setPreferencesLoading]=useState(true);
+  const [preferencesStale,setPreferencesStale]=useState(true);
   const [inboxFilter, setInboxFilter] = useState<'ALL'|'UNREAD'|'HIGH'>('ALL');
   useEffect(() => {
     let active = true;
@@ -318,9 +322,9 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   useEffect(()=>{
     let active=true;
     preferencesReading.current=true;setPreferencesLoading(true);
-    setPrefs(undefined);setPreferenceMessage(null);setPrefRetry(null);
-    void service.getPreferences().then(settings=>{
-      if(active&&current())setPrefs(settings);
+    setPreferencesStale(true);setPreferenceMessage(null);setPrefRetry(null);
+    void service.readPreferenceState().then(settings=>{
+      if(active&&current()){setPrefs(settings);setPreferencesStale(false);}
     }).catch(error=>{
       if(active&&current())setPreferenceMessage(failure(error));
     }).finally(()=>{
@@ -372,55 +376,38 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
-  // An absent row has database defaults, but presence is also part of
-  // the observed state. The legacy RPC replaces all three values.
-  const effective=(row:PrivateNotificationPreferences|null|undefined):PreferenceInput=>({
-    reviewerEnabled:row?.reviewer_enabled??true,
-    publishEnabled:row?.publish_enabled??true,
-    syncEnabled:row?.sync_enabled??false
-  });
-  const equal=(a:PreferenceInput,b:PreferenceInput)=>
-    a.reviewerEnabled===b.reviewerEnabled&&a.publishEnabled===b.publishEnabled&&a.syncEnabled===b.syncEnabled;
-  const effectivePrefs=effective(prefs);
-  const displayedPrefs=pendingPrefs??effectivePrefs;
+  const effective=(state:NotificationPreferenceState|undefined):PreferenceInput=>
+    state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
+  const displayedPrefs=pendingPrefs??effective(prefs);
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
-    preferencesReading.current=true;setPreferencesLoading(true);setPrefsReload(n=>n+1);
+    preferencesReading.current=true;setPreferencesLoading(true);setPreferencesStale(true);setPrefRetry(null);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(busy||pendingAction.current||preferencesReading.current||prefs===undefined||!current())return;
-    const baseline=prefs;
-    const next={...effective(baseline),[key]:checked};
-    pendingAction.current=true;setBusy(true);setPendingPrefs(next);
+    if(busy||pendingAction.current||preferencesReading.current||preferencesStale||!prefs||prefRetry||prefs.version===Number.MAX_SAFE_INTEGER||!current())return;
+    const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
+    await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
+  }
+  async function applyPreference(change:NotificationPreferenceChange){
+    if(pendingAction.current||preferencesReading.current||!current())return;
+    pendingAction.current=true;setBusy(true);setPendingPrefs(change.desired);
     setPreferenceMessage(null);setPrefRetry(null);
     try{
-      // Bounds stale writes across tabs and after lost ACK. The existing
-      // RPC has no atomic expected version; this is comparison, not CAS.
-      const latest=await service.getPreferences();
+      const saved=await service.changePreferences(change);
       if(!current())return;
-      setPrefs(latest);
-      if((baseline===null)!==(latest===null)||!equal(effective(latest),effective(baseline))){
-        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Review the current values and choose the desired setting again. No preferences were overwritten.'});
-        return;
-      }
-      // Do not send an unnecessary whole-row write.
-      if(equal(next,effective(latest)))return;
-      await service.setPreferences(next);
-      if(!current())return;
-      const saved=await service.getPreferences();
-      if(!current())return;
-      setPrefs(saved);
-      if(!saved||!equal(effective(saved),next)){
-        setPreferenceMessage({error:true,text:'Notification preference readback differs from the requested change. Review the confirmed values and choose again.'});
-        return;
-      }
+      setPrefs({ownerUserId:saved.ownerUserId,version:saved.version,preferences:saved.preferences});setPreferencesStale(false);
       setPreferenceMessage({error:false,text:'Notification preferences saved.'});
-    }catch{
+    }catch(error){
       if(!current())return;
-      // Retain only the intended single toggle, never a stale full row.
-      // Any later retry must re-read and compare before it writes.
-      setPrefRetry({key,checked});
-      setPreferenceMessage({error:true,text:'Could not confirm the change. Showing the last confirmed preferences. Try again to compare saved values or reload to check the saved settings.'});
+      const code=error instanceof PrivateNotificationsError?error.code:null;
+      if(code==='CONFLICT'){
+        setPreferencesStale(true);
+        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Reload confirmed preferences and choose the desired setting again. No preferences were overwritten.'});
+      }else{
+        setPreferencesStale(true);
+        if(code==='PROVIDER_UNAVAILABLE'||code==='INVALID_ACK'||code==='LIMIT_EXCEEDED')setPrefRetry(change);
+        setPreferenceMessage({error:true,text:'Could not confirm the change. Retry the same operation if available or reload confirmed preferences.'});
+      }
     }finally{
       pendingAction.current=false;
       if(current()){setPendingPrefs(null);setBusy(false);}
@@ -458,23 +445,25 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
     {preferencesLoading&&<p role="status">Loading notification preferences…</p>}
-    {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" onClick={reloadPreferences}>Retry notification preferences</button>}
-    {prefs === null && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
+    {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" disabled={busy} onClick={reloadPreferences}>Retry notification preferences</button>}
+    {prefs!==undefined&&preferencesStale&&!pendingPrefs&&<p role="status">Showing last confirmed preferences; reload or resolve the pending change before making another choice.</p>}
+    {prefs?.version===Number.MAX_SAFE_INTEGER&&<p>Optional notices are disabled and cannot be re-enabled. Security and moderation notices remain required.</p>}
+    {prefs?.preferences === null && prefs.version!==Number.MAX_SAFE_INTEGER && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
       ['publishEnabled', 'Publishing activity'],
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={busy||preferencesLoading}
+        <input type="checkbox" checked={displayedPrefs[key]} disabled={busy||preferencesLoading||preferencesStale||!!prefRetry||prefs?.version===Number.MAX_SAFE_INTEGER}
           onChange={event=>void savePreference(key,event.target.checked)}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
     <Status message={preferenceMessage}/>
-    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void savePreference(prefRetry.key,prefRetry.checked)}>Retry preference change</button>
+    {prefs!==undefined&&preferencesStale&&<div className="ws-actions">{prefRetry&&<button type="button" className="ws-secondary" disabled={busy||preferencesLoading} onClick={()=>void applyPreference(prefRetry)}>Retry preference change</button>}
       <button type="button" className="ws-secondary" disabled={busy||preferencesLoading} onClick={reloadPreferences}>Reload confirmed preferences</button></div>}
-    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes compare the last confirmed values with a fresh read before writing; simultaneous updates in another tab may still race until an atomic conditional-write contract is available.</p>
+    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes are conditional on the last confirmed version and exact saved values. A conflict requires a fresh read and a new choice.</p>
   </SettingsCard></div>;
 }
 
@@ -643,7 +632,10 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
     let active=true;reading.current=true;setLoading(true);
     void service.list().then(rows=>{
       if(active&&current()){
-        setItems(rows);readbackRequired.current=false;setNeedsReadback(false);
+        setItems(rows);setNow(Date.now());
+        const visibleKeys=new Set(rows.map(row=>row.item_type+':'+row.item_id+':'+row.trashed_at));
+        setExpiredByServer(previous=>new Set([...previous].filter(key=>visibleKeys.has(key))));
+        readbackRequired.current=false;setNeedsReadback(false);
         setMessage(uncertainRestore.current?{error:false,text:'Trash refreshed. The previous restore was not acknowledged; verify your private library before retrying.'}:null);
         uncertainRestore.current=false;
       }
@@ -677,7 +669,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
 
   async function restore(item: PrivateTrashEntry) {
     const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
-    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key))return;
+    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key)||
+      !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.trashed_at===item.trashed_at))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
       setMessage({error:true,text:'The restore deadline has passed.'});
@@ -707,7 +700,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   return <div className="ws-settings-grid"><SettingsCard title="Recoverable items">
     <Status message={message}/>
     {loading&&<p role="status">Loading Trash…</p>}
-    {needsReadback&&!loading&&<button type="button" className="ws-secondary" onClick={refreshTrash}>{items?'Refresh confirmed Trash':'Retry Trash'}</button>}
+    {!loading&&(items!==null||needsReadback)&&<button type="button" className="ws-secondary" disabled={busy} onClick={refreshTrash}>{needsReadback?(items?'Refresh confirmed Trash':'Retry Trash'):'Refresh Trash'}</button>}
+    {needsReadback&&items!==null&&<p>Showing the last confirmed records. Restore remains unavailable until refresh succeeds.</p>}
     {items?.length===0&&!loading&&!needsReadback&&<p>Trash is empty.</p>}
     {items?.length===100&&<p>Showing up to 100 loaded Trash records, not an account-wide total.</p>}
     <ul className="ws-settings-records">{items?.map(item => {
@@ -976,6 +970,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   </div></>;
 }
 
+// A successful transport receipt is not sufficient to show success if the
+// subsequent authoritative history disagrees or a different request is active.
+const confirmedExit: (receipt:AccountErasureReceipt,history:PrivateAccountErasureEntry[],requestId:string|null)=>boolean = (receipt,history,requestId)=> {
+  const matching=history.find(row=>row.id===receipt.requestId);
+  if(requestId===null)
+    return receipt.status==='REQUESTED_BLOCKED'&&matching?.status==='REQUESTED_BLOCKED'&&
+      history.filter(row=>row.status==='REQUESTED_BLOCKED').length===1;
+  return receipt.requestId===requestId&&receipt.status==='WITHDRAWN'&&matching?.status==='WITHDRAWN';
+};
+
 function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
   // The shell mounts this consumer only after live owner verification.
   // Capture the mount's epoch: never adopt a newer one from an old handler.
@@ -988,6 +992,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const [confirmation, setConfirmation] = useState('');
   const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
+  const inFlight=useRef(false);
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
@@ -1086,8 +1091,8 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   }, [reauth,port,epoch]);
 
   async function check() {
-    if (busy || recovery !== 'ready' || !current()) return;
-    setBusy(true);
+    if (inFlight.current || busy || recovery !== 'ready' || !current()) return;
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     discardProof();
     challenge.current=null;
@@ -1100,50 +1105,64 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       if (!current()) return;
       setInventory(result);
       setRequests(history);
+      // Only abandon an ambiguous command when the fresh history confirms
+      // the target state. A missing record alone never permits a new UUID.
+      if(operation.current&&(operation.current.key==='request'?
+        history.some(row=>row.status==='REQUESTED_BLOCKED'):
+        history.some(row=>row.id===operation.current?.key&&row.status==='WITHDRAWN')))
+        operation.current=null;
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function changeRequest(requestId: string | null) {
-    if (busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
+    if (inFlight.current || busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
     if (requestId ? activeRequest?.id!==requestId : !!activeRequest || confirmation!=='DELETE MY ACCOUNT') return;
     discardProof();
     challenge.current=null;
     challengeOperation.current=null;
     const key = requestId ?? 'request';
     if (operation.current?.key!==key) operation.current={key,id:crypto.randomUUID()};
-    setBusy(true);
+    const command=operation.current;
+    inFlight.current=true;setBusy(true);
     setMessage(null);
+    // Do not allow reauthentication or another destructive intent while the
+    // outcome of an account request remains unknown.
+    setRequests(null);setConfirmation('');
     try {
-      if (requestId) await service.withdraw(requestId,operation.current.id);
-      else await service.request(operation.current.id,'DELETE MY ACCOUNT');
+      const receipt=requestId?await service.withdraw(requestId,command.id):
+        await service.request(command.id,'DELETE MY ACCOUNT');
       if (!current()) return;
-      // Hide old actions until a fresh read confirms the current request state.
-      setRequests(null);
-      setConfirmation('');
-      operation.current=null;
       const history=await service.list();
       if (!current()) return;
       setRequests(history);
+      if(!confirmedExit(receipt,history,requestId)){
+        if(history.some(row=>row.id===receipt.requestId&&row.status==='WITHDRAWN'))operation.current=null;
+        setMessage({error:true,text:'The account request changed or could not be confirmed by current history. Review the prerequisites before retrying.'});
+        return;
+      }
+      operation.current=null;
       setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
     } catch (error) {
-      if (current()) setMessage(failure(error));
+      if (current()) setMessage({error:true,text:'The account request was not confirmed. Review deletion prerequisites to refresh the current state before retrying.'});
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function verifyIdentity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || recovery !== 'ready' || !activeRequest || !current()) return;
+    if (inFlight.current || busy || recovery !== 'ready' || !activeRequest || !current()) return;
     const form=event.currentTarget;
     const password=new FormData(form).get('current-password');
     if (typeof password!=='string' || !password) return;
     form.reset();
-    setBusy(true);
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     discardProof();
     try {
@@ -1172,20 +1191,21 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function withdrawAppContent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
+    if (inFlight.current || busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
     if (Date.parse(reauth.expiresAt)<=Date.now()) {
       discardProof();
       setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
       return;
     }
     withdrawalOperation.current ??= crypto.randomUUID();
-    setBusy(true);
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     try {
       const receipt=await service.withdrawPublicContent(activeRequest.id,reauth.challengeId,
@@ -1197,6 +1217,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
