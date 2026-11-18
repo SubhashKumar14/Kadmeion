@@ -4266,8 +4266,25 @@ test('B16 C12 R10 mounted owner provider consent, sync, reload, revocation and l
     await expect(panel.getByText('Ready for explicit lookup',{exact:false})).toBeVisible();
     expect(sourceCalls).toBe(0);
     await expect.poll(()=>runLocalFixtureSql("select case when next_allowed_at<=clock_timestamp() and (lease_until is null or lease_until<=clock_timestamp()) and (blocked_until is null or blocked_until<=clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota where singleton;",owner.id),{timeout:25000}).toBe('1');
-    await panel.getByRole('button',{name:'Find public GitHub profile'}).click();
-    await expect(panel.getByRole('button',{name:'Confirm this public profile'})).toBeEnabled();
+    // A shared local quota can change between the SQL observation and the
+    // browser claim. Exercise explicit user recovery from a real 429; never
+    // silently bypass, reset shared quotas, or retry an uncertain write.
+    const lookup=async()=>{
+      const response=page.waitForResponse(r=>r.url()===endpoint&&r.request().method()==='POST'&&r.request().postDataJSON()?.action==='LOOKUP',{timeout:20000});
+      await panel.getByRole('button',{name:'Find public GitHub profile'}).click();
+      return (await response).status();
+    };
+    let lookupStatus=await lookup();
+    if(lookupStatus===429){
+      await expect(panel.getByRole('alert')).toContainText('The server limited this request');
+      expect(sourceCalls).toBe(0);
+      await expect.poll(()=>runLocalFixtureSql("select case when g.next_allowed_at<=clock_timestamp() and (g.lease_until is null or g.lease_until<=clock_timestamp()) and (g.blocked_until is null or g.blocked_until<=clock_timestamp()) and (g.hour_start<>date_trunc('hour',clock_timestamp(),'UTC') or g.hour_count<20) and (g.day_start<>date_trunc('day',clock_timestamp(),'UTC') or g.day_count<80) and not exists(select 1 from kadmeion_private.github_owner_quota where owner_id=:'actor_id'::uuid and next_allowed_at>clock_timestamp()) then 1 else 0 end from kadmeion_private.github_global_quota g where singleton;",owner.id),{timeout:25000}).toBe('1');
+      await panel.getByRole('button',{name:'Refresh saved GitHub state'}).click();
+      await expect(panel.getByRole('button',{name:'Find public GitHub profile'})).toBeEnabled();
+      lookupStatus=await lookup();
+    }
+    expect(lookupStatus,'Actual local Edge LOOKUP response').toBe(200);
+    await expect(panel.getByRole('button',{name:'Confirm this public profile'})).toBeEnabled({timeout:20000});
     expect(sourceCalls).toBe(1);
     await panel.getByRole('button',{name:'Confirm this public profile'}).click();
     await expect(panel.getByText('Saved provider facts',{exact:false})).toBeVisible();
