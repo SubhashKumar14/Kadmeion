@@ -150,6 +150,27 @@ test('real owner onboarding and project revision are private across browser sess
     await page.screenshot({path: captureDir + '/' + name + '.png', animations: 'disabled'});
   }
 
+  // A transient provider transport failure must never reveal the owner shell.
+  // Exercise the existing explicit retry once; do not re-sign in or bypass
+  // server /user verification. Persistent denial remains a test failure.
+  async function navigateVerified(target:string,heading:string){
+    await page.goto(target);
+    const expected=page.getByRole('heading',{name:heading,level:1});
+    const locked=page.getByRole('heading',{name:'Sign in required.',level:1});
+    await expect.poll(async()=>{
+      if(await expected.isVisible())return 'VERIFIED';
+      if(await locked.isVisible())return 'LOCKED';
+      return 'CHECKING';
+    },{timeout:12_000}).not.toBe('CHECKING');
+    if(await locked.isVisible()){
+      await expect(page.locator('.ws-shell')).toHaveCount(0);
+      const retry=page.getByRole('button',{name:'Retry verification'});
+      await expect(retry).toBeVisible();
+      await retry.click();
+      await expect(expected).toBeVisible({timeout:10_000});
+    }
+    await expect(expected).toBeVisible();
+  }
   await page.setViewportSize({width: 1600, height: 1000});
   await signIn(page, owner);
   await page.getByRole('link', {name: 'Open private workspace'}).click();
@@ -661,8 +682,7 @@ test('real owner onboarding and project revision are private across browser sess
   for(const width of [390,320]){
     await page.setViewportSize({width,height:844});
     for(const [stage,heading,label] of releaseStages){
-      await page.goto(editorPath.replace('/edit','/'+stage));
-      await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+      await navigateVerified(editorPath.replace('/edit','/'+stage),heading);
       await expect(page.getByRole('navigation',{name:'Release steps'})).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
       const sizes=await page.evaluate(()=>({
@@ -677,8 +697,7 @@ test('real owner onboarding and project revision are private across browser sess
   await page.getByRole('button',{name:'Switch to light theme'}).click();
   await page.setViewportSize({width:390,height:844});
   for(const [stage,heading,label] of releaseStages){
-    await page.goto(editorPath.replace('/edit','/'+stage));
-    await expect(page.getByRole('heading',{name:heading,level:1})).toBeVisible();
+    await navigateVerified(editorPath.replace('/edit','/'+stage),heading);
     await expect(page.locator('html')).toHaveAttribute('data-theme','light');
     const sizes=await page.evaluate(()=>({
       viewport:document.documentElement.clientWidth,
@@ -744,8 +763,7 @@ test('real owner onboarding and project revision are private across browser sess
     await touch.close();
   }
   await page.setViewportSize({width: 1600, height: 1000});
-  await page.goto('/app/settings');
-  await expect(page.getByRole('heading', {name: 'Settings', exact: true})).toBeVisible();
+  await navigateVerified('/app/settings','Settings');
   await capture('41_SETTINGS_BROWSER');
 
   await page.getByRole('link', {name: 'Open privacy & sharing'}).click();
