@@ -1,10 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
-import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
+import type { PrivateNotification, PrivateNotificationPage, NotificationPreferenceState, NotificationPreferenceChange, NotificationPreferenceInput } from '../../../packages/contracts/src/private-notifications-service.ts';
 import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
+import { PrivateNotificationsError } from '../../../packages/contracts/src/private-notifications-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
 import { OwnerCaseHistory } from './operations.tsx';
 
@@ -126,7 +127,12 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const alive=useRef(false);
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
-  const [savedPrefs,setSavedPrefs]=useState<SharingPreferences|null>(null);
+  type PrivacyState={ownerUserId:string;version:number;preferences:SharingPreferences|null};
+  type PrivacyChange={expected:PrivacyState;desired:SharingPreferences;operationId:string};
+  const [savedState,setSavedState]=useState<PrivacyState|null>(null);
+  const [retryChange,setRetryChange]=useState<PrivacyChange|null>(null);
+  const defaults:SharingPreferences={shareDisplayName:false,shareHeadline:false,shareBio:false,publicationRequested:false};
+  const savedPrefs=savedState?(savedState.preferences??defaults):null;
   const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
   const [confirmed,setConfirmed]=useState(false);
   const [message,setMessage]=useState<Message>(emptyMessage);
@@ -145,12 +151,10 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
     a.shareBio===b.shareBio&&a.publicationRequested===b.publicationRequested;
   useEffect(()=>{
     let active=true;readPending.current=true;setReading(true);setConfirmed(false);
-    void port.ownerSharingPreferences().then(result=>{
+    void services.identity.readProfileSharingState().then(result=>{
       if(!active||!current())return;
-      if(!result.data)throw new Error('Privacy preferences are unavailable.');
-      setSavedPrefs(result.data);
-      // Refresh the confirmed state without discarding an unsaved draft.
-      setPrefs(previous=>previous??result.data!);
+      setSavedState(result);setRetryChange(null);
+      setPrefs(previous=>previous??result.preferences??defaults);
       readbackRequired.current=false;setNeedsReadback(false);setMessage(null);
     }).catch(()=>{
       if(active&&current()){
@@ -161,43 +165,35 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
       if(active&&current()){readPending.current=false;setReading(false);}
     });
     return()=>{active=false;};
-  },[port,epoch,reload]);
+  },[port,services.identity,epoch,reload]);
   function refresh(){
     if(!current()||writing.current||readPending.current)return;
     readPending.current=true;setReading(true);setConfirmed(false);setReload(n=>n+1);
   }
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!prefs||!savedPrefs||!confirmed||readbackRequired.current||readPending.current||writing.current||!current())return;
-    const desired={...prefs};const baseline={...savedPrefs};
+    if(!prefs||!savedState||!confirmed||retryChange||readbackRequired.current||readPending.current||writing.current||!current())return;
+    const expected={...savedState,preferences:savedState.preferences===null?null:{...savedState.preferences}};
+    await applyChange({expected,desired:{...prefs},operationId:crypto.randomUUID()});
+  }
+  async function applyChange(change:PrivacyChange){
+    if(!current()||writing.current||readPending.current)return;
     writing.current=true;setBusy(true);setMessage(null);setConfirmed(false);
     try{
-      // Compare before writing using the real current owner read. This is
-      // not an atomic CAS; the acknowledged post-write read remains required.
-      const latest=await port.ownerSharingPreferences();
+      const saved=await services.identity.requestPublicIdentity(change);
       if(!current())return;
-      if(!latest.data)throw new Error('Could not verify current sharing preferences.');
-      setSavedPrefs(latest.data);
-      if(!same(latest.data,baseline)){
-        setMessage({error:true,text:'Saved sharing preferences changed. Compare the confirmed selection with your draft and confirm again before saving.'});
-        return;
-      }
-      await services.identity.requestPublicIdentity(desired);
-      if(!current())return;
-      const saved=await port.ownerSharingPreferences();
-      if(!current())return;
-      if(!saved.data)throw new Error('Sharing preferences could not be read back.');
-      setSavedPrefs(saved.data);
-      if(!same(saved.data,desired)){
-        setMessage({error:true,text:'Readback differs from your draft. Review the confirmed selection before trying again.'});
-        return;
-      }
-      setPrefs(saved.data);readbackRequired.current=false;setNeedsReadback(false);
+      setSavedState({ownerUserId:saved.ownerUserId,version:saved.version,preferences:saved.preferences});
+      setPrefs(saved.preferences??defaults);setRetryChange(null);
+      readbackRequired.current=false;setNeedsReadback(false);
       setMessage({error:false,text:'Sharing preferences saved privately.'});
-    }catch{
+    }catch(error){
       if(current()){
+        const code=error&&typeof error==='object'&&'code' in error?error.code:null;
+        setRetryChange(code==='PROVIDER_UNAVAILABLE'||code==='INVALID_ACK'?change:null);
         readbackRequired.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'The requested privacy change was not confirmed. Your draft is retained. Reload confirmed preferences before retrying.'});
+        setMessage({error:true,text:code==='CONFLICT'?
+          'Saved sharing preferences changed. Reload confirmed preferences, compare your draft and confirm again before saving.':
+          'The requested privacy change was not confirmed. Your draft is retained. Retry the same operation if available or reload confirmed preferences.'});
       }
     }finally{
       writing.current=false;if(current())setBusy(false);
@@ -216,12 +212,13 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <h3>Last confirmed private selection</h3>
         <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
           {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
+        {savedState?.preferences===null&&<p>No saved preference record; showing private defaults.</p>}
         <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
       </div>}
       {prefs&&<form onSubmit={event => void save(event)}>
         <p className="ws-settings-selection-count"><strong>{selected} of {fields.length}</strong> profile fields selected in this form.
           Selection is not publication. {dirty?'Unsaved draft differs from confirmed preferences.':'No draft differences from the last confirmed selection.'}</p>
-        <fieldset disabled={busy||reading}>
+        <fieldset disabled={busy||reading||!!retryChange}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
             <input type="checkbox" checked={prefs[key]} onChange={event => {
@@ -242,6 +239,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         </fieldset>
         <div className="ws-actions">
           <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback}>{busy?'Saving…':'Save sharing preferences'}</button>
+          {retryChange&&<button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void applyChange(retryChange)}>Retry same privacy change</button>}
           <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
           <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
             onClick={()=>{if(!current()||writing.current||!savedPrefs)return;setPrefs({...savedPrefs});setConfirmed(false);setMessage(null);}}>Discard draft changes</button>
@@ -292,7 +290,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const current=()=>mounted.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const pendingAction=useRef(false);
   const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
-  const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
+  const [prefs, setPrefs] = useState<NotificationPreferenceState | undefined>(undefined);
   const [pendingPrefs, setPendingPrefs] = useState<{
     reviewerEnabled: boolean; publishEnabled: boolean; syncEnabled: boolean;
   } | null>(null);
@@ -301,8 +299,8 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [prefsReload,setPrefsReload]=useState(0);
-  type PreferenceInput={reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean};
-  const [prefRetry,setPrefRetry]=useState<{key:keyof PreferenceInput;checked:boolean}|null>(null);
+  type PreferenceInput=NotificationPreferenceInput;
+  const [prefRetry,setPrefRetry]=useState<NotificationPreferenceChange|null>(null);
   const preferencesReading=useRef(true);
   const [preferencesLoading,setPreferencesLoading]=useState(true);
   const [inboxFilter, setInboxFilter] = useState<'ALL'|'UNREAD'|'HIGH'>('ALL');
@@ -319,7 +317,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     let active=true;
     preferencesReading.current=true;setPreferencesLoading(true);
     setPrefs(undefined);setPreferenceMessage(null);setPrefRetry(null);
-    void service.getPreferences().then(settings=>{
+    void service.readPreferenceState().then(settings=>{
       if(active&&current())setPrefs(settings);
     }).catch(error=>{
       if(active&&current())setPreferenceMessage(failure(error));
@@ -372,55 +370,38 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
-  // An absent row has database defaults, but presence is also part of
-  // the observed state. The legacy RPC replaces all three values.
-  const effective=(row:PrivateNotificationPreferences|null|undefined):PreferenceInput=>({
-    reviewerEnabled:row?.reviewer_enabled??true,
-    publishEnabled:row?.publish_enabled??true,
-    syncEnabled:row?.sync_enabled??false
-  });
-  const equal=(a:PreferenceInput,b:PreferenceInput)=>
-    a.reviewerEnabled===b.reviewerEnabled&&a.publishEnabled===b.publishEnabled&&a.syncEnabled===b.syncEnabled;
-  const effectivePrefs=effective(prefs);
-  const displayedPrefs=pendingPrefs??effectivePrefs;
+  const effective=(state:NotificationPreferenceState|undefined):PreferenceInput=>
+    state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
+  const displayedPrefs=pendingPrefs??effective(prefs);
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
     preferencesReading.current=true;setPreferencesLoading(true);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(busy||pendingAction.current||preferencesReading.current||prefs===undefined||!current())return;
-    const baseline=prefs;
-    const next={...effective(baseline),[key]:checked};
-    pendingAction.current=true;setBusy(true);setPendingPrefs(next);
+    if(busy||pendingAction.current||preferencesReading.current||!prefs||prefRetry||!current())return;
+    const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
+    await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
+  }
+  async function applyPreference(change:NotificationPreferenceChange){
+    if(pendingAction.current||preferencesReading.current||!current())return;
+    pendingAction.current=true;setBusy(true);setPendingPrefs(change.desired);
     setPreferenceMessage(null);setPrefRetry(null);
     try{
-      // Bounds stale writes across tabs and after lost ACK. The existing
-      // RPC has no atomic expected version; this is comparison, not CAS.
-      const latest=await service.getPreferences();
+      const saved=await service.changePreferences(change);
       if(!current())return;
-      setPrefs(latest);
-      if((baseline===null)!==(latest===null)||!equal(effective(latest),effective(baseline))){
-        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Review the current values and choose the desired setting again. No preferences were overwritten.'});
-        return;
-      }
-      // Do not send an unnecessary whole-row write.
-      if(equal(next,effective(latest)))return;
-      await service.setPreferences(next);
-      if(!current())return;
-      const saved=await service.getPreferences();
-      if(!current())return;
-      setPrefs(saved);
-      if(!saved||!equal(effective(saved),next)){
-        setPreferenceMessage({error:true,text:'Notification preference readback differs from the requested change. Review the confirmed values and choose again.'});
-        return;
-      }
+      setPrefs({ownerUserId:saved.ownerUserId,version:saved.version,preferences:saved.preferences});
       setPreferenceMessage({error:false,text:'Notification preferences saved.'});
-    }catch{
+    }catch(error){
       if(!current())return;
-      // Retain only the intended single toggle, never a stale full row.
-      // Any later retry must re-read and compare before it writes.
-      setPrefRetry({key,checked});
-      setPreferenceMessage({error:true,text:'Could not confirm the change. Showing the last confirmed preferences. Try again to compare saved values or reload to check the saved settings.'});
+      const code=error instanceof PrivateNotificationsError?error.code:null;
+      if(code==='CONFLICT'){
+        setPrefs(undefined);
+        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Reload confirmed preferences and choose the desired setting again. No preferences were overwritten.'});
+      }else{
+        if(code==='PROVIDER_UNAVAILABLE'||code==='INVALID_ACK')setPrefRetry(change);
+        else setPrefs(undefined);
+        setPreferenceMessage({error:true,text:'Could not confirm the change. Retry the same operation if available or reload confirmed preferences.'});
+      }
     }finally{
       pendingAction.current=false;
       if(current()){setPendingPrefs(null);setBusy(false);}
@@ -459,22 +440,22 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   </SettingsCard><SettingsCard title="Optional in-app notifications">
     {preferencesLoading&&<p role="status">Loading notification preferences…</p>}
     {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" onClick={reloadPreferences}>Retry notification preferences</button>}
-    {prefs === null && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
+    {prefs?.preferences === null && prefs.version!==Number.MAX_SAFE_INTEGER && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
       ['publishEnabled', 'Publishing activity'],
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={busy||preferencesLoading}
+        <input type="checkbox" checked={displayedPrefs[key]} disabled={busy||preferencesLoading||!!prefRetry||prefs?.version===Number.MAX_SAFE_INTEGER}
           onChange={event=>void savePreference(key,event.target.checked)}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
     <Status message={preferenceMessage}/>
-    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void savePreference(prefRetry.key,prefRetry.checked)}>Retry preference change</button>
+    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void applyPreference(prefRetry)}>Retry preference change</button>
       <button type="button" className="ws-secondary" disabled={busy||preferencesLoading} onClick={reloadPreferences}>Reload confirmed preferences</button></div>}
-    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes compare the last confirmed values with a fresh read before writing; simultaneous updates in another tab may still race until an atomic conditional-write contract is available.</p>
+    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes are conditional on the last confirmed version and exact saved values. A conflict requires a fresh read and a new choice.</p>
   </SettingsCard></div>;
 }
 

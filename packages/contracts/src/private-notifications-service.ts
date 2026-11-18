@@ -29,6 +29,18 @@ export interface PrivateNotificationPreferences {
   publish_enabled:boolean;
   sync_enabled:boolean;
 }
+export interface NotificationPreferenceInput {
+  reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean;
+}
+export interface NotificationPreferenceState {
+  ownerUserId:string;version:number;preferences:NotificationPreferenceInput|null;
+}
+export type NotificationPreferenceChange={
+  expected:NotificationPreferenceState;desired:NotificationPreferenceInput;operationId:string;
+};
+export type NotificationPreferenceReceipt=NotificationPreferenceState&{
+  status:'APPLIED'|'REPLAYED'|'NO_CHANGE';
+};
 export interface PrivateNotificationReceipt {
   id:string;read_at:string;dismissed_at:string|null;
 }
@@ -37,7 +49,7 @@ export interface PrivateNotificationPage {
   nextCursor:string|null;
 }
 export type NotificationErrorCode='VALIDATION'|'AUTH_EXPIRED'|'FORBIDDEN'|
-  'PROVIDER_UNAVAILABLE'|'INVALID_ACK'|'LIMIT_EXCEEDED';
+  'PROVIDER_UNAVAILABLE'|'INVALID_ACK'|'LIMIT_EXCEEDED'|'CONFLICT';
 export class PrivateNotificationsError extends Error {
   readonly code:NotificationErrorCode;
   constructor(code:NotificationErrorCode){
@@ -92,6 +104,23 @@ function validPrefs(value:unknown):value is PrivateNotificationPreferences {
   typeof value.reviewer_enabled==='boolean'&&
   typeof value.publish_enabled==='boolean'&&
   typeof value.sync_enabled==='boolean';
+}
+const M=Number.MAX_SAFE_INTEGER;
+function validTuple(value:unknown):value is NotificationPreferenceInput {
+  return object(value)&&exact(value,['reviewerEnabled','publishEnabled','syncEnabled'])&&
+    typeof value.reviewerEnabled==='boolean'&&typeof value.publishEnabled==='boolean'&&
+    typeof value.syncEnabled==='boolean';
+}
+function equalTuple(a:NotificationPreferenceInput|null,b:NotificationPreferenceInput|null):boolean {
+  return a===null||b===null?a===b:a.reviewerEnabled===b.reviewerEnabled&&
+    a.publishEnabled===b.publishEnabled&&a.syncEnabled===b.syncEnabled;
+}
+function validState(value:unknown,owner:string,receipt=false):value is NotificationPreferenceState {
+  return object(value)&&exact(value,receipt?['ownerUserId','version','preferences','status']:
+    ['ownerUserId','version','preferences'])&&id(value.ownerUserId)&&value.ownerUserId.toLowerCase()===owner&&
+    typeof value.version==='number'&&Number.isSafeInteger(value.version)&&value.version>=0&&
+    (value.preferences===null||validTuple(value.preferences))&&
+    (value.version!==M||value.preferences===null||!Object.values(value.preferences).some(Boolean));
 }
 function validReceipt(value:unknown):value is PrivateNotificationReceipt {
   return object(value)&&exact(value,['id','read_at','dismissed_at'])&&
@@ -148,8 +177,9 @@ export class SupabasePrivateNotificationsService {
   private readonly owner:string;
   private readonly token:()=>Promise<string|null>;
   private readonly http:typeof fetch;
+  private readonly isCurrentOwner?:()=>boolean;
   constructor(endpoint:string,publishableKey:string,ownerUserId:string,
-    accessToken:()=>Promise<string|null>,http:typeof fetch=fetch){
+    accessToken:()=>Promise<string|null>,http:typeof fetch=fetch,isCurrentOwner?:()=>boolean){
     let u:URL;
     try{u=new URL(endpoint);}catch{throw new PrivateNotificationsError('VALIDATION');}
     if((u.protocol!=='https:'&&!(u.protocol==='http:'&&
@@ -162,11 +192,12 @@ export class SupabasePrivateNotificationsService {
     if(!isSafeSupabaseClientKey(publishableKey))
       throw new PrivateNotificationsError('VALIDATION');
     this.origin=u.origin;this.key=publishableKey;
-    this.owner=ownerUserId.toLowerCase();this.token=accessToken;this.http=http;
+    this.owner=ownerUserId.toLowerCase();this.token=accessToken;this.http=http;this.isCurrentOwner=isCurrentOwner;
   }
   private async request(path:string,method:'GET'|'POST',
-    body?:Record<string,unknown>):Promise<unknown>{
-    const jwt=await this.token();
+    body?:Record<string,unknown>,cas=false):Promise<unknown>{
+    const guard=()=>{if(cas&&!this.isCurrentOwner?.())throw new PrivateNotificationsError('AUTH_EXPIRED');};
+    guard();const jwt=await this.token();guard();
     if(typeof jwt!=='string'||!jwt.trim())throw new PrivateNotificationsError('AUTH_EXPIRED');
     let response:Response;
     try{
@@ -178,14 +209,24 @@ export class SupabasePrivateNotificationsService {
         signal:AbortSignal.timeout(10000)
       });
     }catch{throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');}
+    if(cas&&!this.isCurrentOwner?.()){
+      void response.body?.cancel().catch(()=>{});guard();
+    }
     if(!response.ok){
+      if(cas&&response.status===409){
+        let detail:unknown;
+        try{detail=await boundedJson(response);}catch{void response.body?.cancel().catch(()=>{});}
+        guard();
+        if(object(detail)&&detail.code==='40001')throw new PrivateNotificationsError('CONFLICT');
+        throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
+      }
       await response.body?.cancel().catch(()=>{});
       if(response.status===401)throw new PrivateNotificationsError('AUTH_EXPIRED');
       if(response.status===403)throw new PrivateNotificationsError('FORBIDDEN');
       if(response.status===429)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
       throw new PrivateNotificationsError('PROVIDER_UNAVAILABLE');
     }
-    return boundedJson(response);
+    const data=await boundedJson(response);guard();return data;
   }
   /**
    * Stable timestamp+UUID keyset ordering. Neither an empty page nor a
@@ -233,24 +274,32 @@ export class SupabasePrivateNotificationsService {
       throw new PrivateNotificationsError('INVALID_ACK');
     return (raw[0] as PrivateNotificationPreferences|undefined)??null;
   }
-  /** Security and moderation notices cannot be muted via these preferences. */
-  async setPreferences(input:{reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean}):
-    Promise<PrivateNotificationPreferences>{
-    if(!object(input)||!exact(input,['reviewerEnabled','publishEnabled','syncEnabled'])||
-      typeof input.reviewerEnabled!=='boolean'||typeof input.publishEnabled!=='boolean'||
-      typeof input.syncEnabled!=='boolean')
-      throw new PrivateNotificationsError('VALIDATION');
-    const raw=await this.request('rpc/owner_set_notification_preferences','POST',{
-      p_reviewer_enabled:input.reviewerEnabled,
-      p_publish_enabled:input.publishEnabled,
-      p_sync_enabled:input.syncEnabled
-    });
-    if(!validPrefs(raw)||raw.owner_user_id.toLowerCase()!==this.owner||
-      raw.reviewer_enabled!==input.reviewerEnabled||
-      raw.publish_enabled!==input.publishEnabled||
-      raw.sync_enabled!==input.syncEnabled)
-      throw new PrivateNotificationsError('INVALID_ACK');
+  async readPreferenceState():Promise<NotificationPreferenceState>{
+    const raw=await this.request('rpc/read_owner_notification_preferences_state','POST',{},true);
+    if(!validState(raw,this.owner))throw new PrivateNotificationsError('INVALID_ACK');
     return raw;
+  }
+  /** Security and moderation notices cannot be muted via these preferences. */
+  async changePreferences(change:NotificationPreferenceChange):Promise<NotificationPreferenceReceipt>{
+    if(!object(change)||!exact(change,['expected','desired','operationId'])||
+      !validState(change.expected,this.owner)||!validTuple(change.desired)||!id(change.operationId))
+      throw new PrivateNotificationsError('VALIDATION');
+    const expected={...change.expected,preferences:change.expected.preferences===null?null:{...change.expected.preferences}};
+    const desired={...change.desired};
+    const operationId=change.operationId;
+    if((expected.version===M&&(expected.preferences===null||!equalTuple(expected.preferences,desired)))||
+       (expected.version===M-1&&Object.values(desired).some(Boolean)&&!equalTuple(expected.preferences,desired)))
+      throw new PrivateNotificationsError('VALIDATION');
+    const raw=await this.request('rpc/change_owner_notification_preferences','POST',{
+      p_expected_version:expected.version,p_expected:expected.preferences,p_desired:desired,p_operation_id:operationId
+    },true);
+    if(!validState(raw,this.owner,true)||!equalTuple(raw.preferences,desired))
+      throw new PrivateNotificationsError('INVALID_ACK');
+    const receipt=raw as NotificationPreferenceReceipt;
+    const same=equalTuple(expected.preferences,desired);
+    if(receipt.status==='NO_CHANGE'&&same&&receipt.version===expected.version)return receipt;
+    if((receipt.status==='APPLIED'||receipt.status==='REPLAYED')&&!same&&expected.version<M&&receipt.version===expected.version+1)return receipt;
+    throw new PrivateNotificationsError('INVALID_ACK');
   }
   async acknowledge(notificationId:string,dismiss=false):Promise<PrivateNotificationReceipt>{
     if(!id(notificationId)||typeof dismiss!=='boolean')
