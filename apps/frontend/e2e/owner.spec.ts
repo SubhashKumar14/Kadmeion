@@ -3829,3 +3829,91 @@ test('B16 WF-019/027 R6 cold browser profile preserves individual editor transac
     await rm(profile,{recursive:true,force:true});
   }
 });
+
+test('B16 C08 profile field selection CAS conflicts across tabs and withdraws the actual local projection',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only; no hosted publication.');
+  test.setTimeout(120_000);
+  const owner=await localUser('R6 selected-field owner');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY||process.env.VITE_SUPABASE_ANON_KEY;
+  if(!key)throw new Error('Local publishable key required.');
+  const handle=runLocalFixtureSql(
+    "update public.profiles set handle='r6_'||substr(replace(:'actor_id','-',''),1,12),headline='R6 public headline',bio='R6 private biography' where user_id=:'actor_id'::uuid;"+
+    "select handle from public.profiles where user_id=:'actor_id'::uuid;",owner.id);
+  expect(handle).toMatch(/^r6_[0-9a-f]{12}$/);
+  const signed=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',redirect:'error',
+    signal:AbortSignal.timeout(15000),headers:{apikey:key,'Content-Type':'application/json'},
+    body:JSON.stringify({email:owner.email,password:owner.password})});
+  expect(signed.ok).toBe(true);
+  const session=await signed.json();
+  if(typeof session.access_token!=='string')throw new Error('Local owner token unavailable.');
+  async function rpc(name:string,args:Record<string,unknown>){
+    const response=await fetch(origin+'/rest/v1/rpc/'+name,{method:'POST',redirect:'error',
+      signal:AbortSignal.timeout(15000),headers:{apikey:key!,Authorization:'Bearer '+session.access_token,
+        'Content-Type':'application/json'},body:JSON.stringify(args)});
+    expect(response.ok, name+' should succeed on local stack').toBe(true);
+    return await response.json();
+  }
+  // Deliberate initial publication via real owner JWT and legacy projection
+  // contract. No privileged insertion of the publication; not C11 acceptance.
+  const initial=await rpc('read_owner_profile_sharing_state',{});
+  expect(initial.ownerUserId).toBe(owner.id);
+  const selected={shareDisplayName:true,shareHeadline:true,shareBio:false,publicationRequested:true};
+  const applied=await rpc('change_owner_profile_sharing',{p_expected_version:initial.version,p_expected:initial.preferences,
+    p_desired:selected,p_operation_id:randomUUID()});
+  expect(applied.preferences).toEqual(selected);
+  const published=await rpc('owner_publish_profile_projection',{p_confirmation:'PUBLISH PROFILE'});
+  expect(published.status).toBe('PROJECTION_READY');
+  const projection=()=>runLocalFixtureSql(
+    "select coalesce(public.service_read_published_profile_projection((select handle from public.profiles where user_id=:'actor_id'::uuid))::text,'ABSENT');",owner.id);
+  expect(JSON.parse(projection())).toMatchObject({headline:'R6 public headline',handle});
+  expect(projection()).not.toContain('R6 private biography');
+  const other=await browser.newPage();
+  try{
+    await signIn(page,owner);await signIn(other,owner);
+    for(const tab of [page,other]){
+      await tab.goto('/app/profile');
+      await tab.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+      const choices=tab.getByRole('group',{name:'Choose fields for a future publication'});
+      await expect(choices.getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+      await expect(choices.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+      await expect(choices.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    }
+    const first=page.getByRole('group',{name:'Choose fields for a future publication'});
+    const second=other.getByRole('group',{name:'Choose fields for a future publication'});
+    // Both pages read the same exact version. First owner explicitly withdraws
+    // headline; stale second page tries a different selection.
+    await first.getByRole('checkbox',{name:'Headline',exact:true}).uncheck();
+    await first.getByRole('checkbox',{name:/I confirm these exact private sharing choices.*withdrawal/}).check();
+    await first.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(page.getByText('Private sharing choices saved and read back. No profile was published.',{exact:true})).toBeVisible({timeout:20000});
+    expect(projection()).toBe('ABSENT');
+    const afterFirst=await rpc('read_owner_profile_sharing_state',{});
+    expect(afterFirst.version).toBe(applied.version+1);
+    expect(afterFirst.preferences).toEqual({...selected,shareHeadline:false,publicationRequested:false});
+    let stalePosts=0;
+    await other.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/change_owner_profile_sharing',async route=>{
+      if(route.request().method()==='POST')stalePosts++;
+      await route.continue();
+    });
+    await second.getByRole('checkbox',{name:'About you',exact:true}).check();
+    await second.getByRole('checkbox',{name:/I confirm these exact private sharing choices.*withdrawal/}).check();
+    await second.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(other.getByText(/Sharing change could not be confirmed/)).toBeVisible({timeout:30000});
+    expect(stalePosts).toBe(1);
+    expect(await rpc('read_owner_profile_sharing_state',{})).toEqual(afterFirst);
+    await other.getByRole('button',{name:'Retry sharing preferences',exact:true}).click();
+    await expect(other.getByText(/The saved sharing choices differ from your attempted change/)).toBeVisible();
+    await expect(other.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    expect(stalePosts).toBe(1);
+    expect(projection()).toBe('ABSENT');
+    await page.reload();
+    await page.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+    const reloaded=page.getByRole('group',{name:'Choose fields for a future publication'});
+    await expect(reloaded.getByRole('checkbox',{name:'Headline',exact:true})).not.toBeChecked();
+    await expect(reloaded.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+    await page.getByRole('button',{name:'Profile',exact:true}).click();
+    await expect(page.getByRole('textbox',{name:'About you',exact:true})).toHaveValue('R6 private biography');
+    expect(await rpc('read_owner_profile_sharing_state',{})).toEqual(afterFirst);
+    expect(projection()).toBe('ABSENT');
+  }finally{await other.close();}
+});
