@@ -134,3 +134,31 @@ test('C12 stalled token is bounded and never starts a transport',{timeout:8500},
   await assert.rejects(service.readState(link),{code:'UNAVAILABLE'});
   assert.ok(Date.now()-start<7500);assert.equal(calls,0);
 });
+
+test('C12 integration: empty chunk flood is bounded, cancelled, and never retried',async()=>{
+  let pulls=0,cancelled=0,requests=0;
+  const body=new ReadableStream<Uint8Array>({
+    pull(c){pulls++;c.enqueue(new Uint8Array(0))},cancel(){cancelled++}
+  });
+  await assert.rejects(fixture(async()=>{requests++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),{code:'INVALID_RESPONSE'});
+  assert.ok(pulls<=18);assert.equal(cancelled,1);assert.equal(requests,1);
+});
+test('C12 integration: final URL and redirect are bound and identity length must match',async()=>{
+  const wire=JSON.stringify(off);
+  for(const headers of [{'content-type':'application/json','content-length':'1'},{'content-type':'application/json','content-encoding':'identity','content-length':String(wire.length+1)}]){
+    await assert.rejects(fixture(async()=>new Response(wire,{headers})).readState(link),{code:'INVALID_RESPONSE'});
+  }
+  for(const property of ['redirected','url'] as const){
+    const response=json(off);
+    Object.defineProperty(response,property,{value:property==='redirected'?true:'http://127.0.0.1:54321/rest/v1/rpc/other'});
+    await assert.rejects(fixture(async()=>response).readState(link),{code:'INVALID_RESPONSE'});
+  }
+  assert.deepEqual(await fixture(async()=>new Response(wire,{headers:{'content-type':'application/json','content-encoding':'identity','content-length':String(new TextEncoder().encode(wire).length)}})).readState(link),off);
+});
+test('C12 integration: stalled body deadline does not await cancellation',{timeout:8500},async()=>{
+  let requested=0,cancelled=0;
+  const body=new ReadableStream<Uint8Array>({pull(){return new Promise<void>(()=>{})},cancel(){cancelled++;return new Promise<void>(()=>{})}});
+  const start=performance.now();
+  await assert.rejects(fixture(async()=>{requested++;return new Response(body,{headers:{'content-type':'application/json'}})}).readState(link),{code:'UNAVAILABLE'});
+  assert.ok(performance.now()-start<7500);assert.equal(requested,1);assert.equal(cancelled,1);
+});
