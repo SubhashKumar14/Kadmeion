@@ -2517,3 +2517,97 @@ test('B16 verified owner and workspace glyph pending states are real, decorative
     await auditAccessibility(page,'B16_S14_GLYPH_RESOLVED_REDUCED',process.env.KADMEION_BROWSER_CAPTURE_DIR);
   }finally{releaseAuth();releaseRecords();}
 });
+
+ 
+test('B16 auth confirmation denial, neutral resend failures and explicit retry (injected provider boundary)', async ({page}) => {
+  test.skip(process.env.KADMEION_LOCAL_BROWSER !== '1','Requires disposable local Supabase.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 confirmation boundary');
+  let tokenCalls=0, resendCalls=0;
+  let mode:'deny'|'rate'|'outage'|'transport'|'accepted'='deny';
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/token'&&url.searchParams.get('grant_type')==='password',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    tokenCalls++;
+    await route.fulfill({status:400,json:{error_code:'email_not_confirmed',msg:'S6_RAW_PROVIDER_MARKER'}});
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/resend',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    resendCalls++;
+    const body=route.request().postDataJSON();
+    expect(body.type==='signup'&&body.email===owner.email).toBe(true);
+    expect(new URL(route.request().url()).searchParams.get('redirect_to')).toBe(new URL('/auth/callback',page.url()).href);
+    if(mode==='transport')return route.abort('failed');
+    if(mode==='accepted')return route.fulfill({status:200,json:{}});
+    await route.fulfill({status:mode==='deny'?403:mode==='rate'?429:503,json:{message:'S6_RAW_PROVIDER_MARKER'}});
+  });
+  await page.goto('/signin');
+  await page.getByLabel('Email address').fill(owner.email);
+  await page.locator('#signin-password').fill(owner.password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Registration submitted'})).toBeVisible();
+  expect(tokenCalls).toBe(1);
+  const resend=page.getByRole('button',{name:'Request another confirmation link'});
+  const noWorkspace=async()=>{
+    await expect(page.getByRole('link',{name:'Open private workspace'})).toHaveCount(0);
+    await expect(page.getByText('S6_RAW_PROVIDER_MARKER',{exact:false})).toHaveCount(0);
+  };
+  for(const failure of ['deny','rate','outage','transport'] as const){
+    mode=failure;
+    await resend.click();
+    await expect(page.getByRole('heading',{name:'Action not completed'})).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Unable to submit the confirmation request.');
+    await expect(page.getByText('provider accepted another request',{exact:false})).toHaveCount(0);
+    await expect(resend).toBeEnabled();
+    await noWorkspace();
+  }
+  expect(resendCalls).toBe(4);
+  mode='accepted';
+  await resend.click();
+  await expect(page.getByRole('status')).toContainText('Email delivery is not confirmed.');
+  expect(resendCalls).toBe(5);
+  await noWorkspace();
+  await page.goto('/app');
+  await expect(page).toHaveURL(/\/signin(?:[?#].*)?$/);
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+});
+
+test('B16 C06 opt-in autosave coalesces private edits, stops on failure and never confirms withdrawal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 profile autosave');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await expect(auto).not.toBeChecked();
+  const writes:Array<{headline:string;withdrawal:boolean}>=[];
+  let deny=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const data=route.request().postDataJSON();
+    writes.push({headline:data.p_draft.headline,withdrawal:data.p_confirm_projection_withdrawal});
+    if(deny)return route.fulfill({status:503,json:{message:'S6 synthetic outage'}});
+    await route.continue();
+  });
+  await headline.fill('Off by default');
+  // Negative observation exceeds the 1200ms documented debounce.
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await auto.check();
+  await headline.fill('Intermediate');
+  await headline.fill('Final private draft');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false}]);
+  await page.reload();
+  await expect(headline).toHaveValue('Final private draft');
+  await expect(auto).not.toBeChecked();
+  deny=true;
+  await auto.check();
+  await headline.fill('Retained after outage');
+  await expect(auto).not.toBeChecked();
+  await expect(headline).toHaveValue('Retained after outage');
+  await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
+  await page.waitForTimeout(1500);
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false},{headline:'Retained after outage',withdrawal:false}]);
+});
