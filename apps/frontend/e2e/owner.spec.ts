@@ -2517,3 +2517,44 @@ test('B16 verified owner and workspace glyph pending states are real, decorative
     await auditAccessibility(page,'B16_S14_GLYPH_RESOLVED_REDUCED',process.env.KADMEION_BROWSER_CAPTURE_DIR);
   }finally{releaseAuth();releaseRecords();}
 });
+
+test('B16 C06 opt-in autosave coalesces private edits, stops on failure and never confirms withdrawal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 profile autosave');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await expect(auto).not.toBeChecked();
+  const writes:Array<{headline:string;withdrawal:boolean}>=[];
+  let deny=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const data=route.request().postDataJSON();
+    writes.push({headline:data.p_draft.headline,withdrawal:data.p_confirm_projection_withdrawal});
+    if(deny)return route.fulfill({status:503,json:{message:'S6 synthetic outage'}});
+    await route.continue();
+  });
+  await headline.fill('Off by default');
+  // Negative observation exceeds the 1200ms documented debounce.
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await auto.check();
+  await headline.fill('Intermediate');
+  await headline.fill('Final private draft');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false}]);
+  await page.reload();
+  await expect(headline).toHaveValue('Final private draft');
+  await expect(auto).not.toBeChecked();
+  deny=true;
+  await auto.check();
+  await headline.fill('Retained after outage');
+  await expect(auto).not.toBeChecked();
+  await expect(headline).toHaveValue('Retained after outage');
+  await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
+  await page.waitForTimeout(1500);
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false},{headline:'Retained after outage',withdrawal:false}]);
+});
