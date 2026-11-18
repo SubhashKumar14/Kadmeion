@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { SupabaseBrowserAuthPort, type OwnerPrivateCursorV1 } from '../../auth-web/src/supabase-auth-port.ts';
 import { auditAccessibility } from './accessibility.ts';
+import { PrivateServerAssetByteAttestor } from '../../../packages/storage-adapters/src/private-server-asset-byte-attestor.ts';
 import { importPortfolioSourceZip, readStrictStoredZip } from '../../../packages/storage-adapters/src/portable-source-archive.ts';
 
 const origin = 'http://127.0.0.1:54321';
@@ -2713,4 +2714,82 @@ test('B16 real invalid and absent recovery grants cannot open reset form or muta
   await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
   await expect(page.locator('.ws-shell')).toHaveCount(0);
   expect(writes).toBe(0);
+});
+
+test('B16 C04 real browser thumbnail bytes and independent server pin with owner denial',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated local C04 migration and trusted writer.');
+  test.setTimeout(90_000);
+  const owner=await localUser('S6 C04 owner'),foreign=await localUser('S6 C04 foreign');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY,service=process.env.KADMEION_TEST_SERVICE_ROLE_KEY;
+  if(!key||!service||process.env.VITE_SUPABASE_URL!==origin)throw new Error('C04 requires disposable loopback credentials.');
+  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const expected=createHash('sha256').update(bytes).digest('hex');
+  await signIn(page,owner);
+  await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project'}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill('C04 pin browser fixture');
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  await page.getByRole('link',{name:'C04 pin browser fixture'}).click();
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const projectId=new URL(page.url()).pathname.split('/').at(-1)!;
+  const cover=page.getByRole('region',{name:'Project thumbnail'});
+  const file=cover.getByLabel(/Image file/),alt=cover.getByLabel('Image alt text');
+  await expect(file).toBeEnabled();
+  await expect(alt).toBeEnabled();
+  await file.setInputFiles({name:'c04.png',mimeType:'image/png',buffer:bytes});
+  await alt.fill('C04 synthetic preview');
+  const attach=cover.getByRole('button',{name:'Upload and attach thumbnail'});
+  await expect(attach).toBeEnabled();
+  await attach.click();
+  const image=cover.getByRole('img',{name:'C04 synthetic preview',exact:true});
+  const checkPreview=async()=>{
+    await expect(image).toBeVisible();
+    await expect.poll(()=>image.evaluate(async(element,expectedBytes)=>{
+      const img=element as HTMLImageElement;
+      if(!img.complete||!img.naturalWidth||!img.src.startsWith('blob:'))return false;
+      const response=await fetch(img.src);
+      const actual=new Uint8Array(await response.arrayBuffer());
+      return response.ok&&response.headers.get('content-type')==='image/png'&&
+        actual.length===expectedBytes.length&&actual.every((byte,i)=>byte===expectedBytes[i]);
+    },Array.from(bytes))).toBe(true);
+  };
+  await checkPreview();
+  function makePort(){
+    const data=new Map<string,string>();
+    return new SupabaseBrowserAuthPort({supabaseUrl:origin,publishableKey:key!,appOrigin:new URL(page.url()).origin,
+      storage:{getItem:k=>data.get(k)??null,setItem:(k,v)=>{data.set(k,v);},removeItem:k=>{data.delete(k);}}});
+  }
+  const port=makePort();
+  const session=await port.signInWithPassword({email:owner.email,password:owner.password});
+  if(session.error||!session.data?.session?.access_token)throw new Error('Local owner session not verified.');
+  const assets=await port.listOwnerAssets();
+  const item=assets.data?.find(asset=>asset.projectId===projectId&&asset.altText==='C04 synthetic preview');
+  if(assets.error||!item)throw new Error('Browser-uploaded asset not registered.');
+  const read=()=>port.readOwnerPrivateAsset(projectId,item.id,port.getOwnerSessionEpoch());
+  const unpinned=await read();
+  expect(unpinned.error).toBeNull();
+  expect(unpinned.data?.serverAttestation).toBe('NOT_VERIFIED');
+  expect(unpinned.data?.integrity.computedSha256).toBe(expected);
+  expect(unpinned.data?.publicDeliveryAllowed).toBe(false);
+  // Real trusted worker hashes Storage bytes independently; service credentials
+  // remain in the Playwright runner, never the browser or test artifacts.
+  const attestor=new PrivateServerAssetByteAttestor(origin,key,service);
+  const attested=await attestor.attest(item.id,session.data.session.access_token);
+  expect(attested.status).toBe('WRITE_ONCE_ATTESTED');
+  const pinned=await read();
+  expect(pinned.error).toBeNull();
+  expect(pinned.data?.serverAttestation).toBe('SERVER_HASH_PINNED');
+  expect(pinned.data?.integrity.computedSha256).toBe(expected);
+  expect(pinned.data?.publicDeliveryAllowed).toBe(false);
+  expect(Buffer.from(await pinned.data!.bytes.arrayBuffer()).equals(bytes)).toBe(true);
+  await page.reload();
+  await checkPreview();
+  const other=makePort();
+  const signed=await other.signInWithPassword({email:foreign.email,password:foreign.password});
+  expect(!signed.error&&!!signed.data?.session).toBe(true);
+  const denied=await other.readOwnerPrivateAsset(projectId,item.id,other.getOwnerSessionEpoch());
+  expect(denied.data).toBeNull();
+  expect(!!denied.error).toBe(true);
 });
