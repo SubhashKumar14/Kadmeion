@@ -114,7 +114,7 @@ test('B5 locally bundled Edge handler checks real gateway, origin and input',
 });
 
 test('C05 real local standalone PROFILE storage, registration, avatar CAS and request-bound v2 inventory',
-  {timeout:120000},async()=>{
+  {timeout:180000},async t=>{
     const service=env.get('SERVICE_ROLE_KEY');
     assert.ok(typeof service==='string'&&service.startsWith('eyJ')&&service.length>70);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
@@ -137,7 +137,7 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
         body:{email,password,email_confirm:true,user_metadata:{display_name:'Local profile fixture'}}}),'Provision disposable user');
       const signed=success(await call('/auth/v1/token?grant_type=password',{body:{email,password}}),'Sign in disposable user');
       assert.equal(signed.user.id,created.id);assert.ok(typeof signed.access_token==='string');
-      return {id:created.id,token:signed.access_token};
+      return {id:created.id,token:signed.access_token,email,password};
     };
     const owner=await createOwner(),foreign=await createOwner();
     const rpc=(name,body={},actor=owner)=>call('/rest/v1/rpc/'+name,{body,token:actor.token});
@@ -179,7 +179,71 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
     wantDenied(await rpc('record_private_profile_asset_content_attestation',attest));
     const trusted=body=>call('/rest/v1/rpc/record_private_profile_asset_content_attestation',
       {body,token:service,key:service});
-    const attestation=success(await trusted(attest),'Trusted fixture hashes verified actual bytes');
+    // Use the actual owner-JWT gateway before the privileged replay assertion.
+    // The existing direct service RPC fixture remains only an idempotency/ACL check.
+    const folder=await mkdtemp(join(tmpdir(),'kadmeion-profile-edge-'));
+    const config=join(folder,'function.env');
+    await writeFile(config,'KADMEION_ASSET_ATTESTATION_ENABLED=true\n'+
+      'KADMEION_LOCAL_INTEGRATION=1\n'+
+      'KADMEION_ALLOWED_ATTEST_ORIGINS=http://localhost:3000\n');
+    const worker=spawn('supabase',['functions','serve','complete-private-asset','--env-file',config],
+      {stdio:['ignore','pipe','pipe'],env:{...process.env,KADMEION_LOCAL_INTEGRATION:'1'}});
+    worker.stdout?.resume();worker.stderr?.resume();
+    t.after(async()=>{
+      if(worker.exitCode===null)worker.kill('SIGTERM');
+      await rm(folder,{recursive:true,force:true});
+    });
+    let ready=false;
+    for(let i=0;i<60;i++){
+      if(worker.exitCode!==null)break;
+      try{
+        const res=await request({assetId:'invalid'});
+        const status=res.status;await res.body?.cancel();
+        if(status===400){ready=true;break;}
+      }catch{}
+      await delay(300);
+    }
+    assert.ok(ready,'Local PROFILE attestation Edge must be ready');
+    const gateway=(actor,body)=>call('/functions/v1/complete-private-asset',{token:actor.token,body});
+    const body={assetId:registry.assetId,scope:'PROFILE'};
+    wantDenied(await gateway(foreign,body));
+    wantDenied(await gateway(owner,{assetId:registry.assetId}));
+    wantDenied(await gateway(owner,{...body,expectedSha256:digest}));
+    assert.deepEqual(success(await rpc('read_owner_private_asset_pin',pin),'No foreign or legacy pin'),unpinned);
+
+    // A revoked real password session cannot create a server pin on an
+    // otherwise valid registered PROFILE object. A fresh session must observe
+    // UNPINNED before doing any new trusted write.
+    const expiredOwner=await createOwner();
+    const expiredRegistry=success(await rpc('reserve_private_profile_asset',{
+      ...reserve,p_operation_id:randomUUID(),p_alt_text:'Revoked-session test avatar'
+    },expiredOwner),'Reserve separate owner avatar');
+    success(await upload(expiredRegistry.objectPath,expiredOwner),'Upload exact revoked-session fixture PNG');
+    success(await rpc('register_private_profile_asset',{p_asset_id:expiredRegistry.assetId},expiredOwner),
+      'Register revoked-session fixture');
+    const expiredPin={p_scope:'PROFILE',p_asset_id:expiredRegistry.assetId,p_project_id:null};
+    const beforeLogout=success(await rpc('read_owner_private_asset_pin',expiredPin,expiredOwner),
+      'Actual registered fixture before logout');
+    assert.equal(beforeLogout.status,'UNPINNED');
+    success(await call('/auth/v1/logout?scope=local',{token:expiredOwner.token}),
+      'Revoke actual local GoTrue session');
+    wantDenied(await gateway(expiredOwner,{assetId:expiredRegistry.assetId,scope:'PROFILE'}));
+    const relogin=success(await call('/auth/v1/token?grant_type=password',{
+      body:{email:expiredOwner.email,password:expiredOwner.password}
+    }),'Fresh password session after rejected stale pin');
+    assert.equal(relogin.user.id,expiredOwner.id);
+    const renewed={...expiredOwner,token:relogin.access_token};
+    const sessionId=token=>JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8')).session_id;
+    assert.notEqual(sessionId(renewed.token),sessionId(expiredOwner.token));
+    assert.deepEqual(success(await rpc('read_owner_private_asset_pin',expiredPin,renewed),
+      'Stale session did not persist a trusted digest'),beforeLogout);
+    const receipt=success(await gateway(owner,body),'Actual PROFILE owner Edge computes trusted pin');
+    assert.deepEqual(receipt,{assetId:registry.assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',
+      publicPublishingAllowed:false,accountDeletionAllowed:false});
+    assert.deepEqual(success(await gateway(owner,body),'Exact owner Edge replay'),receipt);
+    const actualPin=success(await rpc('read_owner_private_asset_pin',pin),'Read actual Edge digest');
+    assert.equal(actualPin.status,'SERVER_HASH_PINNED');assert.equal(actualPin.expectedSha256,digest);
+    const attestation=success(await trusted(attest),'Trusted exact service replay after owner Edge');
     assert.deepEqual(attestation,{assetId:registry.assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',providerSigned:false,deletionAllowed:false});
     assert.deepEqual(success(await trusted(attest),'Pin exact replay'),attestation);
     wantDenied(await trusted({...attest,p_expected_sha256:'0'.repeat(64)}),'23505');
