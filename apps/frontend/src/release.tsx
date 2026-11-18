@@ -243,7 +243,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   },[port,id,mode,frozen,pinReadRetry]);
 
   async function downloadStaticPreview(){
-    if (busy || !frozen || historySelection!==null || result?.status!=='PREVIEW_ONLY' || !result.previewHtml) return;
+    if (readsBusy || !frozen || historySelection!==null || ackSelection!==null || result?.status!=='PREVIEW_ONLY' || !result.previewHtml) return;
     const reviewedHtml=result.previewHtml;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
@@ -266,7 +266,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
 
   /** Compare authenticated saved snapshots, not a live site or unsaved buffer. */
   async function compareFrozenWithSaved(){
-    if(!frozen||busy||historySelection!==null)return;
+    if(!frozen||readsBusy||historySelection!==null||ackSelection!==null)return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
     setBusy(true);setComparison(null);setError('');setNotice('');
@@ -293,7 +293,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
 
   /** Bounded, importable private source format, not static rendered HTML. */
   async function downloadFrozenEditable(){
-    if(!frozen||busy||historySelection!==null||editableConsent!==frozen.requestId)return;
+    if(!frozen||readsBusy||historySelection!==null||ackSelection!==null||editableConsent!==frozen.requestId)return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
     setBusy(true);setError('');setNotice('');setSourceArchiveSha(null);
@@ -320,7 +320,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   }
 
   async function inspect(){
-    if (!record?.revision || selectedRevision===null || busy || historySelection!==null) return;
+    if (!record?.revision || selectedRevision===null || readsBusy || historySelection!==null || ackSelection!==null) return;
     const epoch=routeEpoch.current;
     const current=()=>epoch===routeEpoch.current;
     setBusy(true);setError('');setNotice('');setResult(null);setStaticArchiveSha(null);
@@ -341,10 +341,15 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         }
         request=saved.data;
         setFrozen(request);
-        const refreshed=await port.listOwnerFrozenRequests(id);
-        if (!current()) return;
-        if (refreshed.data) {setFrozenRequests(refreshed.data);setFrozenListError('');}
-        else setFrozenListError('Private freeze succeeded, but its history could not be refreshed.');
+        try{
+          const refreshed=await port.listOwnerFrozenRequests(id);
+          if (!current()) return;
+          if (refreshed.data) {setFrozenRequests(refreshed.data);setFrozenListError('');}
+          else setFrozenListError('Private freeze succeeded, but its history could not be refreshed.');
+        }catch{
+          if(!current())return;
+          setFrozenListError('Private freeze succeeded, but its history could not be refreshed.');
+        }
       }
       if (mode==='staging') return;
       const evidence=await port.loadOwnerFrozenRelease(request.requestId);
@@ -795,7 +800,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             }}><option value="UNLISTED">Unlisted (not activated)</option>
               <option value="PUBLIC">Public (not activated)</option></select>
           </label>
-          <button type="button" className="ws-primary" disabled={busy||historySelection!==null||selectedRevision===null||(mode==='staging'&&!!frozen)}
+          <button type="button" className="ws-primary" disabled={readsBusy||historySelection!==null||selectedRevision===null||(mode==='staging'&&!!frozen)}
             onClick={()=>void inspect()}>{busy?'Checking…':mode==='staging'?'Freeze private revision':'Run private preflight'}</button>
           {frozen && <div className="ws-release-action">
             <p role="status">Private revision {frozen.revision} frozen.</p>
@@ -898,7 +903,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Release status</dt><dd>Private · Not published</dd>
               <dt>SEO metadata</dt><dd>Read from the selected revision only during preflight</dd></dl>
             <div className="ws-actions">
-              {result?.status==='PREVIEW_ONLY' && <button className="ws-primary" type="button" disabled={busy}
+              {result?.status==='PREVIEW_ONLY' && <button className="ws-primary" type="button" disabled={readsBusy}
                 onClick={()=>void downloadStaticPreview()}>Download offline static preview ZIP</button>}
               <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>
             </div>
@@ -920,7 +925,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <section className="ws-release-action" aria-labelledby="private-comparison-title">
             <h3 id="private-comparison-title">Compare private revision {frozen.revision}</h3>
             <p>Compare the immutable pin with the latest saved owner draft, not a live website. Unsaved changes are excluded.</p>
-            <button className="ws-secondary" type="button" disabled={busy} onClick={()=>void compareFrozenWithSaved()}>
+            <button className="ws-secondary" type="button" disabled={readsBusy} onClick={()=>void compareFrozenWithSaved()}>
               {busy?'Checking…':'Compare frozen revision with saved draft'}</button>
             {comparison?.requestId===frozen.requestId&&<FrozenComparisonResults comparison={comparison}/>}
           </section>}
@@ -933,7 +938,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <label><input type="checkbox" disabled={busy} checked={editableConsent===frozen.requestId}
               onChange={event=>setEditableConsent(event.target.checked?frozen.requestId:null)}/> I understand this ZIP contains private editable source.</label>
             <div className="ws-release-actions">
-              <button className="ws-primary" type="button" disabled={busy||editableConsent!==frozen.requestId}
+              <button className="ws-primary" type="button" disabled={readsBusy||editableConsent!==frozen.requestId}
                 onClick={()=>void downloadFrozenEditable()}>Download editable frozen project ZIP</button>
             </div>
             {sourceArchiveSha?.requestId===frozen.requestId&&<dl className="ws-release-facts">
@@ -942,10 +947,10 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <h4>Static preview ZIP</h4>
             <p>A separate scriptless rendered HTML preview with a SHA-256 file manifest. It excludes editable source and unsupported media; no hosted URL is created.</p>
             {mode==='releases'?<>
-              <button className="ws-secondary" type="button" disabled={busy} onClick={()=>void inspect()}>
+              <button className="ws-secondary" type="button" disabled={readsBusy} onClick={()=>void inspect()}>
                 Run private preflight for selected frozen revision</button>
               {result&&<PreflightResults result={result} portfolioId={id} revision={frozen.revision} mode="releases"/>}
-              {result?.status==='PREVIEW_ONLY'&&<button className="ws-primary" type="button" disabled={busy}
+              {result?.status==='PREVIEW_ONLY'&&<button className="ws-primary" type="button" disabled={readsBusy}
                 onClick={()=>void downloadStaticPreview()}>Download offline static preview ZIP</button>}
             </>:result?.status==='PREVIEW_ONLY'?<p>Use the eligible offline static preview download above.</p>:
                 <p>Run successful private static preflight to enable the separate preview download.</p>}
@@ -1037,9 +1042,12 @@ function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect
   useLayoutEffect(()=>{
     const expected=++epoch.current;
     flight.current=null;setPage(null);setPending(false);setError('');
-    if(available)void read(null,[],expected);
-    return ()=>{epoch.current+=1;flight.current=null;};
+    return ()=>{if(epoch.current===expected){epoch.current+=1;flight.current=null;}};
   },[port,portfolioId,available]);
+  useEffect(()=>{
+    if(available&&!selectionDisabled&&!page&&!error&&!pending&&flight.current===null)
+      void read(null,[],epoch.current);
+  },[available,selectionDisabled,page,error,pending,port,portfolioId]);
   return <section className="ws-release-action" role="group" aria-labelledby="release-ack-history-title">
     <h3 id="release-ack-history-title">Historical database acknowledgements</h3>
     <p>These owner-private records show an acknowledgement recorded by the database, not a current public URL, verified host state, rollback authority or revocation proof.</p>
