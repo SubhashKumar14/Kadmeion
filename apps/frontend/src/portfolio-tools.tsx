@@ -2060,6 +2060,9 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const assetMounted=useRef(false);
   useEffect(()=>{assetMounted.current=true;return()=>{assetMounted.current=false;};},[]);
   const [uploadOpen,setUploadOpen]=useState(false);
+  const uploadProjectLabel=useId(),uploadAltLabel=useId(),placementTargetLabel=useId(),placementAltLabel=useId();
+  const uploadFileId=useId();
+  const fileInput=useRef<HTMLInputElement>(null);
   const [file,setFile]=useState<File|null>(null);
   const [alt,setAlt]=useState('');
   const [busy,setBusy]=useState(false);
@@ -2165,8 +2168,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       setNotice('Image uploaded and privately registered. Public delivery remains blocked; a trusted byte attestation is still required.');
       setSelectedAssetId(receipt.data.id);setPlacementAlt(receipt.data.altText);setCollection('');
       setAlt('');setFile(null);setUploadOpen(false);reloadRecords();
-      const input=document.getElementById('kd-private-image-file');
-      if(input instanceof HTMLInputElement)input.value='';
+      if(fileInput.current)fileInput.current.value='';
     }catch(cause){if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)
       setError(cause instanceof Error?cause.message:'Image registration was not confirmed.');}
     finally{uploadFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setBusy(false);}
@@ -2242,15 +2244,15 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         <p>This is an irreversible write-once private Storage upload. No owner-side delete or public publish follows.</p>
         {projects?.length===0?<p>First <a href="/app/projects">create a private project</a>.</p>:
           <form className="ws-asset-upload" onSubmit={event=>void upload(event)}>
-            <label>Owner project<select required disabled={busy} value={projectId} onChange={event=>setProjectId(event.target.value)}>
+            <label><span id={uploadProjectLabel}>Owner project</span><select aria-labelledby={uploadProjectLabel} required disabled={busy||!recordsReady} value={projectId} onChange={event=>setProjectId(event.target.value)}>
               <option value="">Select a private project</option>
               {projects?.map(project=><option key={project.id} value={project.id}>{project.title}</option>)}
             </select></label>
-            <label htmlFor="kd-private-image-file">Private image file</label>
-            <input id="kd-private-image-file" type="file" required disabled={busy}
+            <label htmlFor={uploadFileId}>Private image file</label>
+            <input ref={fileInput} id={uploadFileId} type="file" required disabled={busy||!recordsReady}
               accept="image/png,image/jpeg,image/webp"
               onChange={event=>setFile(event.currentTarget.files?.[0]??null)}/>
-            <label>Image alt text<textarea rows={3} required disabled={busy} maxLength={500} value={alt}
+            <label><span id={uploadAltLabel}>Image alt text</span><textarea aria-labelledby={uploadAltLabel} rows={3} required disabled={busy||!recordsReady} maxLength={500} value={alt}
               onChange={event=>setAlt(event.target.value)}
               placeholder="Describe the image for assistive technology"/></label>
             <p className="ws-asset-limits">PNG, JPEG or WebP · 5 MB max. Your filename is never used as a public path.
@@ -2276,12 +2278,12 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         </dl>
         <p className="ws-asset-protection">Place only a verified owner-private registration into an actual compatible slot. Replacing a pristine image stashes its previous assignment; historical asset bytes are not deleted. No public URL or digest is fabricated.</p>
         {candidateTargets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
-          <label>Compatible image slot<select value={candidateTargets.some(item=>item.key===target?.key)?target?.key??'':''} disabled={!allowPlacement}
+          <label><span id={placementTargetLabel}>Compatible image slot</span><select aria-labelledby={placementTargetLabel} value={candidateTargets.some(item=>item.key===target?.key)?target?.key??'':''} disabled={!allowPlacement}
             onChange={event=>setTargetKey(event.target.value)}>
             <option value="">Choose an image-compatible slot</option>
             {candidateTargets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
           </select></label>
-          <label>Placement alt text<textarea ref={placementField} rows={3} value={placementAlt} disabled={!allowPlacement}
+          <label><span id={placementAltLabel}>Placement alt text</span><textarea aria-labelledby={placementAltLabel} ref={placementField} rows={3} value={placementAlt} disabled={!allowPlacement}
             aria-invalid={!placementAlt.trim()||placementAlt.length>300}
             onChange={event=>setPlacementAlt(event.target.value)}/></label>
           <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
