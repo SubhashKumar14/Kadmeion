@@ -2793,3 +2793,43 @@ test('B16 C04 real browser thumbnail bytes and independent server pin with owner
   expect(denied.data).toBeNull();
   expect(!!denied.error).toBe(true);
 });
+
+test('B16 C06 committed autosave with lost acknowledgement reconciles without second write',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(50_000);
+  const owner=await localUser('S6 autosave lost ack');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  let writes=0,committed=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    writes++;
+    const input=route.request().postDataJSON();
+    expect(input.p_confirm_projection_withdrawal).toBe(false);
+    const result=await route.fetch();
+    try{
+      if(writes===1&&result.ok()){committed=true;await route.abort('failed');}
+      else await route.fulfill({response:result});
+    }finally{await result.dispose();}
+  });
+  await auto.check();
+  await headline.fill('Committed but acknowledgement lost');
+  const compare=page.getByRole('button',{name:'Compare latest saved profile'});
+  await expect(compare).toBeEnabled();
+  expect(committed).toBe(true);
+  expect(writes).toBe(1);
+  await expect(auto).not.toBeChecked();
+  await expect(headline).toHaveValue('Committed but acknowledgement lost');
+  await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
+  await page.waitForTimeout(1500);
+  expect(writes).toBe(1);
+  await compare.click();
+  await expect(page.getByText('Requested private draft is confirmed saved. No additional write was made.',{exact:true})).toBeVisible();
+  expect(writes).toBe(1);
+  await page.reload();
+  await expect(headline).toHaveValue('Committed but acknowledgement lost');
+  await expect(auto).not.toBeChecked();
+});
