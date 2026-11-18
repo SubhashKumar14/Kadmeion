@@ -92,8 +92,8 @@ function workspacePageTitle(path: string): string {
   return 'Workspace';
 }
 
-function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }: {
-  owner: Owner; children: ReactNode; onSignOut: () => void; signOutPending: boolean; message: string;
+function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message, offline }: {
+  owner: Owner; children: ReactNode; onSignOut: () => void; signOutPending: boolean; message: string; offline: boolean;
 }) {
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -142,17 +142,6 @@ function WorkspaceFrame({ owner, children, onSignOut, signOutPending, message }:
       document.removeEventListener('pointerdown', clearPointerFocus);
       media.removeEventListener('change', onViewportChange);
       editorMedia.removeEventListener('change', onEditorViewportChange);
-    };
-  }, []);
-  const [offline, setOffline] = useState(() => !navigator.onLine);
-  useEffect(() => {
-    const update = () => setOffline(!navigator.onLine);
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    update();
-    return () => {
-      window.removeEventListener('online', update);
-      window.removeEventListener('offline', update);
     };
   }, []);
   const route = window.location.pathname.replace(/\/$/, '') || '/';
@@ -236,20 +225,12 @@ function preferredOnboardingChoice(steps: OwnerWorkspaceSnapshot['onboarding']):
   }) ?? 'portfolio';
 }
 
-function Onboarding({ steps, onSkip }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<SkipOutcome> }) {
+function Onboarding({ steps, onSkip, offline }: { steps: OwnerWorkspaceSnapshot['onboarding']; onSkip: (choice: PrivateStep) => Promise<SkipOutcome>; offline: boolean }) {
   const [choice, setChoice] = useState<StartChoice>(()=>preferredOnboardingChoice(steps));
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const skipFlight = useRef(false);
   const selectedStatus = steps.find(step=>step.step===choice)?.status;
-  const [offline, setOffline] = useState(() => !navigator.onLine);
-  useEffect(() => {
-    const update = () => setOffline(!navigator.onLine);
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    update();
-    return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
-  }, []);
   const cards: { key: StartChoice; title: string; description: string; state: string }[] = [
     { key: 'profile', title: 'Complete your profile', description: 'Decide which identity details you want to share. Nothing is made public automatically.', state: 'Private profile editor available' },
     { key: 'portfolio', title: 'Create a portfolio', description: 'Browse the approved template concepts before starting a private portfolio.', state: 'Private portfolio chooser available' },
@@ -370,6 +351,19 @@ function Home({ snapshot }: { snapshot: OwnerWorkspaceSnapshot }) {
 }
 
 export function WorkspaceApp() {
+  // Connection hints are not authorization. Share one browser subscription across
+  // the gate, workspace and onboarding; reconnect never initiates verification.
+  const [offline, setOffline] = useState(() => !navigator.onLine);
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
   const [gate, setGate] = useState<Gate>({ status: 'checking' });
   const [snapshot, setSnapshot] = useState<SnapshotState>({status:'loading'});
   const [message, setMessage] = useState('');
@@ -565,6 +559,9 @@ export function WorkspaceApp() {
     <p className="ws-kicker">OWNER VERIFICATION UNAVAILABLE</p>
     <h1>Owner verification unavailable.</h1>
     <p role="alert">{gate.message}</p>
+    <p className="ws-network-status" data-state={offline ? 'offline' : 'online'} aria-live="polite" aria-atomic="true">
+      {offline ? 'Browser offline · owner verification requires a connection.' : 'Browser online · retry to verify your owner session.'}
+    </p>
     <div className="ws-actions"><button type="button" className="ws-primary" onClick={retryVerification}>Retry verification</button>
       <a className="ws-secondary" href="/signin">Go to sign in</a></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
@@ -573,6 +570,9 @@ export function WorkspaceApp() {
     <p className="ws-kicker">OWNER ACCESS REQUIRED</p>
     <h1>Sign in required.</h1>
     <p role="alert">{gate.message}</p>
+    <p className="ws-network-status" data-state={offline ? 'offline' : 'online'} aria-live="polite" aria-atomic="true">
+      {offline ? 'Browser offline · owner verification requires a connection.' : 'Browser online · sign in or retry verification.'}
+    </p>
     <div className="ws-actions"><a className="ws-primary" href="/signin">Go to sign in <Icon name="arrow" size={16}/></a>
       <button type="button" className="ws-secondary" onClick={retryVerification}>Retry verification</button></div>
     <a href="/" className="ws-back-link">Return to the public website</a>
@@ -580,7 +580,7 @@ export function WorkspaceApp() {
   const ownerKey = gate.owner.id + ':' + gate.portGeneration + ':' + gate.epoch;
   if (route.endsWith('/preview/fullscreen') && portfolioId && authRef.current)
     return <FullscreenPortfolioPreview key={ownerKey} port={authRef.current} id={portfolioId}/>;
-  return <WorkspaceFrame key={ownerKey} owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message}>
+  return <WorkspaceFrame key={ownerKey} owner={gate.owner} onSignOut={() => { void signOut(); }} signOutPending={signOutPending} message={message} offline={offline}>
     {projectId && authRef.current ? <PrivateProjectDetail port={authRef.current} projectId={projectId}/> :
       route === '/app/projects' && authRef.current ? <PrivateProjects port={authRef.current}/> :
       route === '/app/profile' && authRef.current ? <DeveloperProfile port={authRef.current}/> :
@@ -624,7 +624,7 @@ export function WorkspaceApp() {
         retryRecordsRef.current?.();
       }}>Retry securely</button>
     </section> : route === '/app/onboarding' ?
-      <Onboarding steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
+      <Onboarding offline={offline} steps={snapshot.value.onboarding} onSkip={skipChoice}/> :
       <Home snapshot={snapshot.value}/>}
   </WorkspaceFrame>;
 }
