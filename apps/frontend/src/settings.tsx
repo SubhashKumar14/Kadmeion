@@ -123,6 +123,15 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   </section>;
 }
 
+function permittedSharingAtVersion(state: Pick<ProfileSharingState,'version'|'preferences'>, desired: SharingPreferences):boolean {
+  if(state.version<Number.MAX_SAFE_INTEGER-1)return true;
+  const old=state.preferences;
+  const keys=['shareDisplayName','shareHeadline','shareBio','publicationRequested'] as const;
+  if(old&&keys.every(key=>old[key]===desired[key]))return true;
+  if(state.version===Number.MAX_SAFE_INTEGER&&!old)return false;
+  return !desired.publicationRequested&&keys.every(key=>!desired[key]||old?.[key]===true);
+}
+
 function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -134,6 +143,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const savedPrefs=savedState?(savedState.preferences??defaults):null;
   const terminal=savedState?.version===Number.MAX_SAFE_INTEGER;
   const terminalAbsent=terminal&&savedState?.preferences===null;
+  const restricted=(savedState?.version??0)>=Number.MAX_SAFE_INTEGER-1;
   const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
   const [confirmed,setConfirmed]=useState(false);
   const [message,setMessage]=useState<Message>(emptyMessage);
@@ -175,7 +185,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
     if(!prefs||!savedState||terminalAbsent||!confirmed||retryChange||readbackRequired.current||readPending.current||writing.current||!current())return;
-    if(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState.preferences?.[key])))return;
+    if(!permittedSharingAtVersion(savedState,prefs))return;
     const expected={...savedState,preferences:savedState.preferences===null?null:{...savedState.preferences}};
     await applyChange({expected,desired:{...prefs},operationId:crypto.randomUUID()});
   }
@@ -216,7 +226,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
           {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
         {savedState?.preferences===null&&<p>No saved preference record; showing private defaults.</p>}
-        {terminal&&<p>Privacy changes are restricted to reducing previously selected fields. Publication cannot be enabled.</p>}
+        {restricted&&<p>The preference version is at or near its limit. Changes may only reduce previously selected fields, and a changed selection must disable publication intent.</p>}
         <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
       </div>}
       {prefs&&<form onSubmit={event => void save(event)}>
@@ -225,16 +235,16 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <fieldset disabled={busy||reading||!!retryChange||terminalAbsent}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
-            <input type="checkbox" checked={prefs[key]} disabled={terminal&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
-              if(terminal&&event.target.checked&&!savedState?.preferences?.[key])return;
+            <input type="checkbox" checked={prefs[key]} disabled={restricted&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
+              if(restricted&&event.target.checked&&!savedState?.preferences?.[key])return;
               const next = {...prefs, [key]: event.target.checked};
               if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
               setPrefs(next); setConfirmed(false);
             }}/>{label}
           </label>)}
           <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
-            disabled={(terminal&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
-            onChange={event => {if(terminal&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+            disabled={(restricted&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
+            onChange={event => {if(restricted&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
@@ -243,7 +253,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
           <p>This confirms the private sharing intent and withdrawal request, not verified withdrawal. Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState?.preferences?.[key])))}>{busy?'Saving…':'Save sharing preferences'}</button>
+          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||!savedState||!permittedSharingAtVersion(savedState,prefs)}>{busy?'Saving…':'Save sharing preferences'}</button>
           {retryChange&&<button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void applyChange(retryChange)}>Retry same privacy change</button>}
           <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
           <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
@@ -290,6 +300,13 @@ function notificationDestination(item: PrivateNotification): string {
 
 function optionalPreferenceBlocked(busy:boolean,reading:boolean,stale:boolean,retrying:boolean,version:number|undefined):boolean {
   return busy||reading||stale||retrying||version===undefined||version===Number.MAX_SAFE_INTEGER;
+}
+
+function terminalNotificationChange(state:NotificationPreferenceState|undefined):NotificationPreferenceInput|null {
+  if(state?.version!==Number.MAX_SAFE_INTEGER-1)return null;
+  const old=state.preferences;
+  if(old&&!old.reviewerEnabled&&!old.publishEnabled&&!old.syncEnabled)return null;
+  return {reviewerEnabled:false,publishEnabled:false,syncEnabled:false};
 }
 
 function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Services['notifications']}) {
@@ -384,12 +401,21 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
   const displayedPrefs=pendingPrefs??effective(prefs);
   const controlsBlocked=optionalPreferenceBlocked(busy,preferencesLoading,preferencesStale,!!prefRetry,prefs?.version);
+  const lastWritableVersion=prefs?.version===Number.MAX_SAFE_INTEGER-1;
+  const individualBlocked=controlsBlocked||lastWritableVersion;
+  async function disableOptionalAtLimit(){
+    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    const desired=terminalNotificationChange(prefs);
+    if(!desired)return;
+    const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
+    await applyPreference({expected,desired,operationId:crypto.randomUUID()});
+  }
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
     preferencesReading.current=true;setPreferencesLoading(true);setPreferencesStale(true);setPrefRetry(null);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    if(individualBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
     const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
     await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
   }
@@ -453,6 +479,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" disabled={busy} onClick={reloadPreferences}>Retry notification preferences</button>}
     {prefs!==undefined&&preferencesStale&&!pendingPrefs&&<p role="status">Showing last confirmed preferences; reload or resolve the pending change before making another choice.</p>}
     {prefs?.version===Number.MAX_SAFE_INTEGER&&<p>Optional notices are disabled and cannot be re-enabled. Security and moderation notices remain required.</p>}
+    {lastWritableVersion&&<div><p>The preference version is near its limit. The final change must disable all optional notices together.</p><button type="button" className="ws-secondary" disabled={controlsBlocked||!terminalNotificationChange(prefs)} onClick={()=>void disableOptionalAtLimit()}>Disable all optional notifications</button></div>}
     {prefs?.preferences === null && prefs.version!==Number.MAX_SAFE_INTEGER && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
@@ -460,9 +487,9 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={controlsBlocked}
-          onClick={event=>{if(controlsBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
-          onChange={event=>{if(!controlsBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={individualBlocked}
+          onClick={event=>{if(individualBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
+          onChange={event=>{if(!individualBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
@@ -617,6 +644,16 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   </>;
 }
 
+// A fresh list check narrows the stale-generation window. The server's
+// restore RPC remains authoritative; this is not an atomic generation CAS.
+function currentTrashGeneration(rows:PrivateTrashEntry[],item:PrivateTrashEntry,now:number):boolean {
+  if(rows.length>100||!Number.isFinite(now))return false;
+  const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
+  const match=same[0];
+  return same.length===1&&!!match&&match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until&&
+    Date.parse(match.restore_until)>now;
+}
+
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -683,20 +720,28 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
       return;
     }
     inFlight.current=true;setBusy(true);setMessage(null);
+    let dispatched=false;
     try{
+      const latest=await service.list();
+      if(!current())return;
+      if(!currentTrashGeneration(latest,item,Date.now()))
+        throw new PrivateTrashError('INVALID_STATE','The Trash record changed or expired before restoration.');
+      dispatched=true;
       const receipt=await service.restore(item.item_type,item.item_id);
       if(!current())return;
-      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+      if(receipt.item_type!==item.item_type||receipt.item_id!==item.item_id||
+        receipt.status!=='restored'||receipt.public_visibility!=='private')
         throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
       setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
       setMessage({error:false,text:'Item restored as private.'});
     }catch(error){
       if(!current())return;
-      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+      if(dispatched&&error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+        readbackRequired.current=true;uncertainRestore.current=dispatched;setNeedsReadback(true);
+        setMessage({error:true,text:dispatched?'Restore was not confirmed. Refresh Trash and review your private library before retrying.':
+          'The current Trash record could not be verified. No restore request was sent. Refresh Trash before retrying.'});
       }
     }finally{
       inFlight.current=false;if(current())setBusy(false);
@@ -746,6 +791,80 @@ async function exportDigest(bytes:Uint8Array):Promise<string>{
   const digest=await crypto.subtle.digest('SHA-256',Uint8Array.from(bytes));
   return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
 }
+// Offline recovery is an inspection of a user-selected bounded file, not
+// import into this account, restoration of database rows, or an erasure grant.
+function RecoveryReopen({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const alive=useRef(false),running=useRef(false);
+  const recoveredBytes=useRef<Uint8Array|null>(null);
+  const [file,setFile]=useState<File|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [message,setMessage]=useState<Message>(null);
+  const [inspection,setInspection]=useState<{sha256:string;assets:number;bytes:number;fromZip:boolean;schemaVersion:number}|null>(null);
+  const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
+  useEffect(()=>{
+    alive.current=true;
+    return()=>{alive.current=false;recoveredBytes.current=null;};
+  },[]);
+  function clearInspection(){recoveredBytes.current=null;setInspection(null);setMessage(null);}
+  async function inspect(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(!file||running.current||!current())return;
+    clearInspection();
+    if(file.size<=0||file.size>16*1024*1024){setMessage({error:true,text:'Choose a nonempty recovery JSON (up to 16 MiB) or ZIP (up to 10 MiB).'});return;}
+    running.current=true;setBusy(true);
+    try{
+      const auth=await port.getUser();
+      if(!current())return;
+      if(auth.error||!auth.data?.user?.id)throw new Error('Owner identity could not be checked. Sign in again to inspect recovery data.');
+      const owner=auth.data.user.id;
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      if(!current())return;
+      if(bytes.byteLength!==file.size)throw new Error('The selected file changed while opening.');
+      const fromZip=bytes[0]===0x50&&bytes[1]===0x4b&&bytes[2]===0x03&&bytes[3]===0x04;
+      if(fromZip&&bytes.byteLength>10*1024*1024)throw new Error('The selected recovery ZIP exceeds 10 MiB.');
+      const {restoreBoundedPrivateAccountJsonFromRecoveryBundle,verifyBoundedPrivateAccountExport}=
+        await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+      if(!current())return;
+      const json=fromZip?(await restoreBoundedPrivateAccountJsonFromRecoveryBundle(bytes)).bytes:bytes;
+      const verified=await verifyBoundedPrivateAccountExport(json);
+      if(!current())return;
+      if(verified.ownerId!==owner)throw new Error('This recovery file does not match the current account.');
+      if(fromZip)recoveredBytes.current=json;
+      setInspection({sha256:verified.sha256,assets:verified.assetsChecked,bytes:verified.assetBytesChecked,fromZip,schemaVersion:verified.schemaVersion??1});
+      setMessage({error:false,text:'Recovery file passed local structure, ownership and media-digest checks.'});
+    }catch(error){
+      if(current()){recoveredBytes.current=null;setInspection(null);setMessage(failure(error));}
+    }finally{running.current=false;if(current())setBusy(false);}
+  }
+  function saveRecovered(){
+    if(!current()||running.current||!inspection?.fromZip||!recoveredBytes.current)return;
+    try{
+      downloadPrivateFile('kadmeion-reopened-private-recovery.json',recoveredBytes.current,'application/json');
+      setMessage({error:false,text:'Reconstructed private JSON download prepared.'});
+    }catch(error){if(current())setMessage(failure(error));}
+  }
+  return <SettingsCard title="Reopen a private recovery file">
+    <p>Checks a previously downloaded bounded recovery ZIP or JSON locally. No file is uploaded or imported into your account. A matching file and digest do not prove provider authenticity, current data, or complete erasure rights.</p>
+    <form onSubmit={event=>void inspect(event)}>
+      <label className="ws-export-select">Recovery ZIP or JSON
+        <input type="file" accept=".zip,.json,application/zip,application/json" disabled={busy} onChange={event=>{
+          if(!current()||running.current)return;
+          clearInspection();setFile(event.target.files?.[0]??null);
+        }}/>
+      </label>
+      <button className="ws-secondary" type="submit" disabled={!file||busy}>{busy?'Checking recovery file…':'Verify and reopen recovery file'}</button>
+    </form>
+    <Status message={message}/>
+    {inspection&&<><dl><dt>Recovery schema version</dt><dd>{inspection.schemaVersion}</dd><dt>Verified media references</dt><dd>{inspection.assets}</dd>
+      <dt>Verified media bytes</dt><dd>{inspection.bytes}</dd>
+      <dt>Reconstructed JSON SHA-256</dt><dd style={{overflowWrap:'anywhere'}}><code>{inspection.sha256}</code></dd></dl>
+      {inspection.fromZip&&<button type="button" className="ws-secondary" disabled={busy} onClick={saveRecovered}>Download reopened private recovery JSON</button>}
+      <p>Local verification only. This does not establish the provenance of the recovery file or alter storage, account access, or publication.</p>
+    </>}
+  </SettingsCard>;
+}
+
 function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch] = useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -1059,6 +1178,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         ? <a href={'/app/portfolios/'+selectedPortfolio.id+'/publish'}>Open preflight for selected portfolio</a>
         : <p>Select a saved portfolio above to open its preflight.</p>}
     </SettingsCard>
+    <RecoveryReopen port={port}/>
     <SettingsCard title="Coverage and exclusions">
       <p>Keep downloads private. They may contain personal information and editable source. Provider credentials, session tokens, restricted admin data, external platform records, backups, caches and third-party copies are not exported.</p>
       <p>Inventory quotas and provider availability may prevent preparation. Downloading an archive does not revoke public links, validate independent hosting, restore account access, or authorize deletion. External release/retention proof remains separate.</p>
