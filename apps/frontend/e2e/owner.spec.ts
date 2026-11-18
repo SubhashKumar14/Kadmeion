@@ -3420,7 +3420,8 @@ test('B16 release pending glyph reflects real owner read, failure and explicit r
   try{
     await page.goto(editorPath.replace('/edit','/staging'),{waitUntil:'domcontentloaded'});
     await expect(section.getByRole('status').filter({hasText:'Loading private release details…'})).toBeVisible();
-    expect(heldReads>0).toBe(true);
+    // The loading glyph can render before verified owner transport dispatches its read.
+    await expect.poll(()=>heldReads,{timeout:10_000}).toBeGreaterThan(0);
     const glyph=section.locator('.glyph-skeleton[aria-hidden="true"]');
     await expect(glyph).toHaveCount(1);
     await expect(glyph.locator('a,button,input,select,textarea,[tabindex="0"]')).toHaveCount(0);
