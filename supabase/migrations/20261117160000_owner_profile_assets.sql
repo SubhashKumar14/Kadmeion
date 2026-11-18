@@ -845,14 +845,27 @@ begin
     ('private_release_requests','owner_user_id'),('private_trash_items','owner_user_id'),
     ('private_platform_links','owner_user_id'),('private_goals','owner_user_id'),
     ('private_goal_progress_events','owner_user_id'),('private_goal_milestones','owner_user_id'),
-    ('private_notification_preferences','owner_user_id')
+    ('private_notification_preferences','owner_user_id'),
+    ('private_my_component_versions','owner_user_id')
   ) as allowed(table_name,owner_column)
   loop
     -- Neither the table nor identifiers come from request parameters.
+    if v_table='private_my_component_versions' then
+      select coalesce(jsonb_agg(to_jsonb(cv)),'[]'::jsonb) into v_rows from (
+        select id,owner_user_id,component_key,version,display_name,base_component_pin,
+          pristine_source,source_code,compatible_slot_kinds,source_sha256,created_at
+        from public.private_my_component_versions where owner_user_id=v_owner
+        order by component_key,version,id limit 41
+      ) cv;
+      if jsonb_array_length(v_rows)>40 then
+        raise exception using errcode='54000',message='ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED';
+      end if;
+    else
     execute format(
       'select coalesce(jsonb_agg(to_jsonb(item)), ''[]''::jsonb) from
          (select * from public.%I where %I=$1 limit 101) item',v_table,v_key)
       into v_rows using v_owner;
+    end if;
     if v_table='profiles' then
       select coalesce(jsonb_agg(item-array['avatar_asset_id','avatar_revision',
         'avatar_last_operation_id','avatar_last_base_revision']),'[]'::jsonb)
@@ -1242,14 +1255,27 @@ begin
     ('private_release_requests','owner_user_id'),('private_trash_items','owner_user_id'),
     ('private_platform_links','owner_user_id'),('private_goals','owner_user_id'),
     ('private_goal_progress_events','owner_user_id'),('private_goal_milestones','owner_user_id'),
-    ('private_notification_preferences','owner_user_id')
+    ('private_notification_preferences','owner_user_id'),
+    ('private_my_component_versions','owner_user_id')
   ) as allowed(table_name,owner_column)
   loop
     -- Neither the table nor identifiers come from request parameters.
+    if v_table='private_my_component_versions' then
+      select coalesce(jsonb_agg(to_jsonb(cv)),'[]'::jsonb) into v_rows from (
+        select id,owner_user_id,component_key,version,display_name,base_component_pin,
+          pristine_source,source_code,compatible_slot_kinds,source_sha256,created_at
+        from public.private_my_component_versions where owner_user_id=v_owner
+        order by component_key,version,id limit 41
+      ) cv;
+      if jsonb_array_length(v_rows)>40 then
+        raise exception using errcode='54000',message='ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED';
+      end if;
+    else
     execute format(
       'select coalesce(jsonb_agg(to_jsonb(item)), ''[]''::jsonb) from
          (select * from public.%I where %I=$1 limit 101) item',v_table,v_key)
       into v_rows using v_owner;
+    end if;
     if v_table='profiles' then
       select coalesce(jsonb_agg(item-array['avatar_last_operation_id','avatar_last_base_revision']),'[]'::jsonb)
         into v_rows from jsonb_array_elements(v_rows) entry(item);
