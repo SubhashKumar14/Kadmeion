@@ -44,11 +44,17 @@ function link(label, value) {
 }
 
 function paragraph(value) {
-  return typeof value === 'string' && value.length ? '<p>' + escape(value) + '</p>' : '';
+  if (typeof value !== 'string' || !value.trim()) return '';
+  // Preserve authored paragraphs and line breaks using escaped text only.
+  return value.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n+/)
+    .filter(block => block.trim())
+    .map(block => '<p>' + escape(block).replace(/\n/g, '<br>') + '</p>').join('');
 }
 
 function render(projection, slug) {
-  const title = escape(slug ? projection.title : projection.displayName || projection.handle);
+  const name = typeof projection.displayName === 'string' && projection.displayName.trim()
+    ? projection.displayName : projection.handle;
+  const title = escape(slug ? projection.title : name);
   const content = slug
     ? paragraph(projection.summary) + paragraph(projection.description) +
       link('View live project', projection.liveUrl) + ' ' + link('View repository', projection.repositoryUrl) +
@@ -57,7 +63,8 @@ function render(projection, slug) {
     : paragraph(projection.headline) + paragraph(projection.bio);
   // SEO text is taken only from already-consented public projection fields.
   // Do not synthesize an author biography, claim verification or expose raw JSON.
-  const visibleDescription = slug ? projection.summary : (projection.headline || projection.bio);
+  const visibleDescription = slug ? projection.summary :
+    (typeof projection.headline === 'string' && projection.headline.trim() ? projection.headline : projection.bio);
   const summary = typeof visibleDescription === 'string' && visibleDescription.trim()
     ? escape(visibleDescription.trim().slice(0, 300)) : '';
   const description = summary ? '<meta name="description" content="' + summary + '">' : '';
