@@ -2440,7 +2440,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       return {
         identity: new identity.SupabasePrivateIdentityService(this.origin, this.publishableKey, token, this.fetcher, userId, isCurrentOwner),
         notifications: new notifications.SupabasePrivateNotificationsService(this.origin, this.publishableKey, userId, token, this.fetcher, isCurrentOwner),
-        trash: new trash.SupabasePrivateTrashService(this.origin, this.publishableKey, token, this.fetcher),
+        trash: new trash.SupabasePrivateTrashService(this.origin, this.publishableKey, token, this.fetcher, isCurrentOwner),
         account: new account.SupabasePrivateAccountErasureService(this.origin, this.publishableKey, token, this.fetcher),
         data: new data.SupabasePrivateAccountDataExporter(this.origin, this.publishableKey, token, this.fetcher)
       };
