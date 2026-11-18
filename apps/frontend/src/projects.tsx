@@ -110,6 +110,15 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const modal=useRef<HTMLDialogElement>(null);
   const opener=useRef<HTMLButtonElement>(null);
   const topOpener=useRef<HTMLButtonElement>(null);
+  // A pending creation or unsent form is private in-memory state, not an
+  // offline receipt. Warn on document exit even when the dialog is closed.
+  const quickAddDirty=!!(draft.title||draft.slug||draft.summary||draft.repositoryUrl||draft.liveUrl);
+  useEffect(()=>{
+    if(!quickAddDirty&&!saving&&!unconfirmed)return;
+    const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
+    window.addEventListener('beforeunload',warn);
+    return()=>window.removeEventListener('beforeunload',warn);
+  },[quickAddDirty,saving,unconfirmed]);
   function invalidateOwner() {
     ownerExpired.current=true;
     creationAttempt.current++;
@@ -292,7 +301,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   function open(event: MouseEvent<HTMLButtonElement>) {
     if (!currentOwner()||state.status!=='ready'||pageInFlight.current||!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
-    setError('');
+    setError(uncertainCreate.current?'A previous creation is unresolved. Check the saved project before submitting another request.':'');
     modal.current.showModal();
   }
   async function save(event:FormEvent<HTMLFormElement>) {
@@ -407,8 +416,20 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         const page:ProjectPage=response.data;
         const existing=page.items.find(item=>item.slug===submitted.slug.trim());
         if(existing){
-          if(matchesCreatedProject(existing,submitted)){completeCreate(existing.id,'The requested private project matches a saved record. No additional write was made.');return;}
-          setExistingProject(existing.id);setError('This private slug is already in use but the saved record differs. Review that record or choose another slug.');return;
+          // A paged lookup is not a durable receipt. Confirm the exact
+          // current owner record before accepting the match or divergence.
+          const record=await port.readOwnerProject(existing.id,ownerEpoch.current);
+          if(!valid())return;
+          const currentIdentity=await port.getUser();
+          if(!valid())return;
+          if(currentIdentity.error||currentIdentity.data?.user?.id!==ownerId){invalidateOwner();return;}
+          if(record.error||!record.data||record.data.id!==existing.id||record.data.slug!==submitted.slug.trim()){
+            setError('A matching private slug was located but its current record could not be verified. Retry the check; do not submit another insert.');return;
+          }
+          if(matchesCreatedProject(record.data,submitted)){
+            completeCreate(record.data.id,'The requested private project matches a saved record. No additional write was made.');return;
+          }
+          setExistingProject(record.data.id);setError('This private slug is already in use but the saved record differs. Review that record or choose another slug.');return;
         }
         scanSeen.current.add(key);scanCursor.current=page.nextCursor;
         if(!page.nextCursor){
@@ -470,6 +491,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       <p>Search, link and description filters cover all loaded private records. Load further pages to search the rest of your library. Publication status and technology tags are not available in this index.</p>
       {(hasFilters||sort!=='recent')&&<button type="button" className="ws-secondary" onClick={clearFilters}>Clear filters</button>}
     </div>}
+    {unconfirmed&&<p className="ws-inline-alert">A project creation is unresolved. Open Add project to resume the saved-record check; your form is retained in this workspace, not saved offline.</p>}
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
     {confirmedProject&&<a className="ws-secondary" href={'/app/projects/'+confirmedProject}>Continue editing saved project</a>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
@@ -536,7 +558,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <h2 id="ws-project-modal-heading">Add a project</h2></div>
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
             disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>×</button></div>
-        <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
+        <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saves to your private project library. No project is confirmed until readback.</p>
         <label>Project title<input disabled={saving||!!unconfirmed} required autoComplete="off" maxLength={120} value={draft.title}
           onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,title:event.target.value,
             slug:customSlug?old.slug:suggestSlug(event.target.value)}));}}/></label>
@@ -563,7 +585,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           {existingProject&&<><a href={'/app/projects/'+existingProject}>Review existing private project</a><button type="button" className="ws-secondary" disabled={saving} onClick={()=>{clearUncertain();setDraft(old=>({...old,slug:''}));setCustomSlug(true);setError('Choose a different unique private slug before saving.');}}>Edit a different slug</button></>}</div>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
-          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>Cancel</button>
+          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>{unconfirmed?'Close and keep recovery pending':'Cancel'}</button>
           <button type="submit" className="ws-primary" disabled={saving||!!unconfirmed}>{saving?'Saving…':'Save project'}</button>
         </div>
       </form>
@@ -917,7 +939,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
           disabled={dirty || caseDirty || imagePending || blocked || stale} onMoved={()=>window.location.assign('/app/trash')}/>
         {caseDirty && <p>Save or discard unsaved case-study sections before moving this project to Trash.</p>}
         {latest && <div className="ws-project-conflict">
-          <h3>Saved revision {latest.revision} is newer</h3>
+          <h3>Saved revision {latest.revision} {latest.revision>detail.saved.revision?'is newer':'differs from the loaded baseline'}</h3>
           {latest.revision<knownRevision && <p>A later revision is already known. Check the latest revision again before loading this draft.</p>}
           <dl>
             <dt>Title</dt><dd>{latest.title}</dd>
