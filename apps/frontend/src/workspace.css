@@ -1197,6 +1197,25 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   padding:14px 0;border-bottom:1px solid var(--line);font-size:.875rem}
 .ws-release-unrun-checks li>span:last-child{color:var(--body);font-weight:650;white-space:nowrap}
 .ws-release-preflight-gates .ws-release-diagnostics h4{font-size:.97rem}
+
+/* R9: real preflight axe target-size regression (jump and remediation links).
+ * Keep all immutable diagnostics and destinations; make each keyboard/touch
+ * target individually large and wrap long codes without horizontal scrolling. */
+.ws-release-preflight-gates nav[aria-label="Preflight issue navigation"] ul{margin-block:8px 14px;padding-inline-start:22px}
+.ws-release-preflight-gates nav[aria-label="Preflight issue navigation"] li{margin-block:4px;min-width:0}
+.ws-release-preflight-gates :is(nav[aria-label="Preflight issue navigation"],.ws-release-diagnostics) a{
+  display:inline-flex;align-items:center;min-block-size:32px;min-inline-size:24px;
+  max-inline-size:100%;padding:4px 6px;vertical-align:middle;line-height:1.5;
+  overflow-wrap:anywhere;white-space:normal;text-decoration:underline;text-underline-offset:3px;
+  color:var(--blue);border-radius:4px
+}
+.ws-release-preflight-gates :is(nav[aria-label="Preflight issue navigation"],.ws-release-diagnostics) a:focus-visible{
+  outline:3px solid var(--focus);outline-offset:2px
+}
+@media(pointer:coarse){
+  .ws-release-preflight-gates :is(nav[aria-label="Preflight issue navigation"],.ws-release-diagnostics) a{min-block-size:44px}
+}
+
 .ws-release-preflight-gates .ws-private-static-preview{min-height:320px;max-height:72dvh}
 @media(max-width:500px){.ws-release-unrun-checks li{align-items:start;flex-direction:column;gap:5px}}
 
@@ -1386,3 +1405,17 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-home .ws-recent-grid>nav li a{width:100%;justify-content:space-between}
 .ws-home .ws-recent-grid li:last-child{border-bottom:0}
 @media(max-width:720px){.ws-home .ws-recent-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* WORK-01 and WORK-02 — approved LIGHT comparison, real private/empty state. */
+.ws-onboarding-privacy{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;margin-block:22px 0;padding:16px 18px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
+.ws-onboarding-privacy>div{flex:1 1 220px;min-width:0}
+.ws-onboarding-privacy strong{font-size:.9375rem;color:var(--ink)}
+.ws-onboarding-privacy p{font-size:.875rem;color:var(--body);margin:4px 0 0;overflow-wrap:anywhere}
+.ws-onboarding-privacy>a{flex:0 1 auto;max-width:100%;text-align:center;white-space:normal;overflow-wrap:anywhere}
+.ws-home .ws-recent-empty{display:flex;align-items:center;gap:14px;padding:16px;border:1px solid var(--line);border-radius:9px;background:var(--surface-soft)}
+.ws-home .ws-recent-empty>.ws-area-icon{flex:none}
+.ws-home .ws-recent-empty>p{min-width:0;margin:0;font-size:.875rem;overflow-wrap:anywhere}
+.ws-home .ws-recent-empty strong{display:block;color:var(--ink);font-size:.9375rem;margin-bottom:3px}
+.ws-home .ws-recent-grid li a{min-block-size:32px;padding-block:4px}
+@media(pointer:coarse){.ws-home .ws-recent-grid li a{min-block-size:44px}}
+@media(max-width:440px){.ws-onboarding-privacy>a{width:100%}.ws-home .ws-recent-empty{align-items:flex-start}}
