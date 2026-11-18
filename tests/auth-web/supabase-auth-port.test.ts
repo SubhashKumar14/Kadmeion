@@ -1368,3 +1368,37 @@ test('C06 owner link read rejects cross-owner result, extra evidence claims and 
     else{assert.equal(r.data,null);assert.ok(r.error);}
   }
 });
+
+test('OWNER-AUTH ordinary recovery and fallback resend accept only neutral GoTrue HTTP 200 JSON acknowledgements',async()=>{
+  for(const kind of ['recover','resend'] as const){
+    const redirect=kind==='recover'?'http://localhost:3000/reset-password':'http://localhost:3000/auth/callback';
+    const valid=()=>json({});
+    const fixtures:Array<{response:()=>Response;success:boolean}>=[
+      {response:valid,success:true},
+      ...[null,[],false,'ok',{user},{access_token:tokens.access_token}].map(payload=>({response:()=>json(payload),success:false})),
+      {response:()=>new Response('<html>not JSON</html>',{status:200}),success:false},
+      {response:()=>new Response(null,{status:204}),success:false},
+      {response:()=>json({},201),success:false},
+      {response:()=>json({message:'private provider diagnostic'},429),success:false},
+      {response:()=>json({message:'private provider diagnostic'},500),success:false}
+    ];
+    for(const fixture of fixtures){
+      let calls=0;
+      const {port,saved}=mock(async(url,init)=>{
+        calls++;
+        assert.equal(String(url),'https://project.supabase.co/auth/v1/'+kind+'?redirect_to='+encodeURIComponent(redirect));
+        assert.equal(init?.method,'POST');
+        const headers=new Headers(init?.headers);
+        assert.equal(headers.get('authorization'),null);
+        assert.deepEqual(JSON.parse(String(init?.body)),kind==='recover'?{email:user.email}:{type:'signup',email:user.email});
+        return fixture.response();
+      });
+      const result=kind==='recover'?await port.resetPasswordForEmail(user.email,{redirectTo:redirect}):
+        await port.resend({type:'signup',email:user.email,options:{emailRedirectTo:redirect}});
+      if(fixture.success){assert.equal(result.error,null);assert.deepEqual(result.data,{});}
+      else {assert.ok(result.error);assert.equal(result.data,null);assert.doesNotMatch(result.error!.message,/private provider diagnostic/);}
+      assert.equal(calls,1);
+      assert.equal(saved.data.size,0,'Recovery submission must not install a session');
+    }
+  }
+});

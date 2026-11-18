@@ -343,9 +343,9 @@ export function AuthApp(){
               result('email-requested','If the account exists, the provider accepted a recovery request. Delivery is not confirmed.');
             })}>
               <AuthInput id="forgot-email" label="Email address"><input id="forgot-email" required type="email" autoComplete="email" value={email} onChange={event=>setEmail(event.target.value)}/></AuthInput>
-              <button type="submit" className="auth-submit" disabled={pending||!auth?.emailAvailable}>Request recovery link <span aria-hidden="true">→</span></button>
+              <button type="submit" className="auth-submit" disabled={pending||!auth}>Request recovery link <span aria-hidden="true">→</span></button>
             </form>
-            {!auth?.emailAvailable&&<p className="auth-field-hint">Email recovery is not available until provider delivery is verified.</p>}
+            {auth&&!auth.emailAvailable&&<p className="auth-field-hint">Email delivery is not verified. You can still request a recovery link.</p>}
             <p className="auth-switch"><button type="button" className="auth-text-button" disabled={pending} onClick={()=>setAuthMode('signin','/signin')}>Return to sign in</button></p>
           </section>}
           {mode==='set-password' && <section aria-labelledby="auth-heading">
