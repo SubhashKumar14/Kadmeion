@@ -155,8 +155,9 @@ async function sampleDelivery<T>(http:typeof fetch,route:URL,method:'GET'|'HEAD'
   });
   try{
     const sample=(async()=>{
+      // Internal safety samples are not visitor views, including post-ACK GET.
       const received=await http(route,{method,credentials:'omit',cache:'no-store',redirect:'error',
-        signal:controller.signal});
+        headers:{Purpose:'prefetch','Sec-GPC':'1'},signal:controller.signal});
       response=received;
       if(controller.signal.aborted){
         cancelQuietly(received.body);
