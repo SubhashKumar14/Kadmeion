@@ -161,6 +161,10 @@ function uploadPaths(raw:unknown):string[] {
   }
   return raw;
 }
+function sameReviewedUploadBatch(expected:readonly string[],actual:readonly string[]):boolean {
+  return expected.length===actual.length&&expected.length<=100&&new Set(expected).size===expected.length&&
+    new Set(actual).size===actual.length&&[...expected].sort().every((path,index)=>path===[...actual].sort()[index]);
+}
 /** Bounded lifecycle transport: never wait for a producer's cancellation. */
 function checkStreamDeadline(signal:AbortSignal,deadline:number):void {
   signal.throwIfAborted();
@@ -564,19 +568,27 @@ export class SupabasePrivateAccountErasureService {
   /** Read-only, server-gated count of the next eligible removal batch.
    * A zero count is not a claim of account-wide Storage emptiness. */
   async reviewUploadBatch():Promise<number>{
+    return (await this.reviewUploadPaths()).length;
+  }
+  async reviewUploadPaths():Promise<readonly string[]>{
     const jwt=await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
     const paths=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
     if(await this.token()!==jwt)
       throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed during cleanup review.');
-    return paths.length;
+    return Object.freeze([...paths]);
   }
-  async removeUploadBatch():Promise<number>{
+  async removeUploadBatch(expectedPaths?:readonly string[]):Promise<number>{
+    // A reviewed batch is frozen before any asynchronous operation. Legacy
+    // programmatic callers retain their original bounded server-gated method.
+    const expected=expectedPaths===undefined?undefined:uploadPaths([...expectedPaths]);
     const jwt=await this.token();
     if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in again to continue.');
     const paths=uploadPaths(await this.send('rpc/owner_list_account_exit_uploads',{},jwt));
     if(await this.token()!==jwt)
       throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed before upload removal.');
+    if(expected&&!sameReviewedUploadBatch(expected,paths))
+      throw new PrivateAccountErasureError('CONFLICT','The upload batch changed. Review it again before removing any files.');
     if(paths.length===0)return 0;
     let response:Response;
     const deadline=performance.now()+15_000;
@@ -636,14 +648,24 @@ export class SupabasePrivateAccountErasureService {
     }),requestId,true);
   }
   async list():Promise<PrivateAccountErasureEntry[]>{
-    const raw=await this.send('private_account_erasure_requests?select=id,status,created_at,withdrawn_at,public_revocation_verified,reauth_verified,access_terminated,erasure_executed,retention_verified&order=created_at.desc&limit=10');
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateAccountErasureError('AUTH_EXPIRED','Sign in to review account exit.');
+    const raw=await this.send('private_account_erasure_requests?select=id,status,created_at,withdrawn_at,public_revocation_verified,reauth_verified,access_terminated,erasure_executed,retention_verified&order=created_at.desc&limit=10',undefined,jwt);
+    if(await this.token()!==jwt)
+      throw new PrivateAccountErasureError('AUTH_EXPIRED','Account session changed while reading deletion requests.');
     if(!Array.isArray(raw)||raw.length>10)
       throw new PrivateAccountErasureError('INVALID_ACK','Invalid private account exit history.');
+    const seen=new Set<string>();
+    let pending=0;
     return raw.map((x:unknown):PrivateAccountErasureEntry=>{
       if(!record(x)||!uuid(x.id)||!status(x.status)||!date(x.created_at)||
         !proofFlags(x,true)||(x.status==='WITHDRAWN'? !date(x.withdrawn_at):
           x.withdrawn_at!==null))
         throw new PrivateAccountErasureError('INVALID_ACK','Invalid private account exit entry.');
+      const key=x.id.toLowerCase();
+      if(seen.has(key)||(x.status==='REQUESTED_BLOCKED'&&++pending>1))
+        throw new PrivateAccountErasureError('INVALID_ACK','Ambiguous private account exit history.');
+      seen.add(key);
       return {id:x.id,status:x.status,created_at:x.created_at,
         withdrawn_at:x.withdrawn_at as string|null,
         public_revocation_verified:false,reauth_verified:false,access_terminated:false,
