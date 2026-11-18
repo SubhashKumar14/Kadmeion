@@ -134,6 +134,40 @@ async function fetchHistory(fetcher:typeof fetch,url:string,headers:Record<strin
   }
 }
 
+/**
+ * Shared bounded owner RPC transport for private release/reviewer receipts.
+ * Only parse bounded JSON, including error bodies; never expose provider text.
+ * A timeout is an unknown outcome, not permission to create another operation.
+ */
+export async function fetchBoundedPrivateReleaseRpc(fetcher:typeof fetch,url:string,
+    headers:Record<string,string>,payload:Record<string,unknown>):
+    Promise<{ok:boolean;status:number;body:unknown}> {
+  const controller=new AbortController();
+  let response:Response|undefined;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const unavailable=()=>new Error('Private release RPC was not acknowledged.');
+  const deadline=new Promise<never>((_,reject)=>{
+    timer=setTimeout(()=>{reject(unavailable());controller.abort();},HISTORY_TIMEOUT_MS);
+  });
+  try{
+    const work=(async()=>{
+      const received=await fetcher(url,{method:'POST',headers,credentials:'omit',
+        cache:'no-store',redirect:'error',signal:controller.signal,body:JSON.stringify(payload)});
+      response=received;
+      if(controller.signal.aborted||received.redirected||received.headers.has('location')||
+         (received.url&&received.url!==url)){cancelHistory(received.body);throw unavailable();}
+      const body=await historyJson(received,controller.signal).catch(()=>null);
+      if(controller.signal.aborted)throw unavailable();
+      return {ok:received.ok,status:received.status,body};
+    })();
+    return await Promise.race([work,deadline]);
+  }finally{
+    if(timer!==undefined)clearTimeout(timer);
+    controller.abort();
+    if(response?.body&&!response.body.locked)cancelHistory(response.body);
+  }
+}
+
 export class SupabasePrivateReleaseService {
   private readonly endpoint: string;
   private readonly key: string;
@@ -168,31 +202,19 @@ export class SupabasePrivateReleaseService {
       throw new ContractError('VALIDATION', 'Invalid pinned release request.');
     const jwt = await this.token();
     if (!jwt) throw new PrivateReleaseError('AUTH_EXPIRED', 'Sign in to freeze your private revision.');
-    let response: Response;
+    let response:Awaited<ReturnType<typeof fetchBoundedPrivateReleaseRpc>>;
     try {
-      response = await this.fetcher(this.endpoint + '/rest/v1/rpc/freeze_private_release_request',{
-        method:'POST',
-        headers:{
-          apikey:this.key,
-          Authorization:'Bearer '+jwt,
-          'Content-Type':'application/json',
-          Accept:'application/json'
-        },
-        credentials:'omit',
-        cache:'no-store',
-        redirect:'error',
-        body:JSON.stringify({
-          p_portfolio_id:portfolioId,
-          p_operation_id:operationId,
-          p_revision:revision,
-          p_visibility_intent:visibilityIntent
-        })
-      });
+      response=await fetchBoundedPrivateReleaseRpc(this.fetcher,
+        this.endpoint+'/rest/v1/rpc/freeze_private_release_request',
+        {apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json',Accept:'application/json'},
+        {p_portfolio_id:portfolioId,p_operation_id:operationId,p_revision:revision,p_visibility_intent:visibilityIntent});
     } catch {
       throw new PrivateReleaseError('PROVIDER_UNAVAILABLE', 'Freeze was not acknowledged; retry the same operation ID.');
     }
+    if(await this.token()!==jwt)
+      throw new PrivateReleaseError('AUTH_EXPIRED','Session changed while freezing the private revision.');
     if (!response.ok) {
-      const problem=await response.json().catch(()=>null) as {message?:string}|null;
+      const problem=record(response.body)?response.body:null;
       if (problem?.message==='PRIVATE_REVISION_UNAVAILABLE')
         throw new PrivateReleaseError('REVISION_UNAVAILABLE','That immutable revision does not exist.');
       if (problem?.message==='PRIVATE_FREEZE_QUOTA_REACHED')
@@ -201,13 +223,14 @@ export class SupabasePrivateReleaseService {
       if (response.status===403) throw new PrivateReleaseError('FORBIDDEN','Portfolio is not accessible.');
       throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Freeze could not be confirmed.');
     }
-    const ack=await response.json().catch(()=>null) as PrivateFrozenRequest|null;
-    if (!ack || !UUID.test(ack.requestId) || ack.portfolioId!==portfolioId ||
-        ack.revision!==revision || !SHA256.test(ack.snapshotSha256) ||
+    const ack=response.body;
+    if (!record(ack) || !uuid(ack.requestId) || ack.portfolioId!==portfolioId ||
+        ack.revision!==revision || typeof ack.snapshotSha256!=='string' || !SHA256.test(ack.snapshotSha256) ||
         ack.visibilityIntent!==visibilityIntent || ack.status!=='FROZEN' ||
         ack.publicUrl!==null || typeof ack.alreadyFrozen!=='boolean')
       throw new PrivateReleaseError('INVALID_ACK','Freeze receipt is unverified; do not publish.');
-    return ack;
+    return {requestId:ack.requestId,portfolioId,revision,snapshotSha256:ack.snapshotSha256,
+      visibilityIntent,status:'FROZEN',publicUrl:null,alreadyFrozen:ack.alreadyFrozen};
   }
   /**
    * Metadata-only read of the four existing owner-RLS granted columns.
