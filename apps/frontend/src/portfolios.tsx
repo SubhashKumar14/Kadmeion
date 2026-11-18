@@ -2346,7 +2346,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
   useEffect(()=>{
     setFrozenReceipt(null);setFrozenError('');
     if(!ownerKey||!selectedFrozen)return;
-    const choice=catalogue?.ownerKey===ownerKey?catalogue.rows.find(row=>row.requestId===selectedFrozen):undefined;
+    const choice=catalogue&&catalogue.ownerKey===ownerKey?catalogue.rows.find(row=>row.requestId===selectedFrozen):undefined;
     if(!choice){setFrozenError('Selected frozen request is unavailable. Choose a verified request again.');return;}
     const epoch=port.getOwnerSessionEpoch();
     let active=true;
@@ -2408,13 +2408,13 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
               setSelectedFrozen(event.currentTarget.value);
             }}>
             <option value="">Latest saved draft · revision {record.revision}</option>
-            {catalogue?.ownerKey===ownerKey&&catalogue.rows.map(row=>
+            {catalogue&&catalogue.ownerKey===ownerKey&&catalogue.rows.map(row=>
               <option key={row.requestId} value={row.requestId}>Frozen revision {row.revision} · {row.visibilityIntent} · {row.snapshotSha256.slice(0,10)}</option>)}
           </select>
           <button type="button" className="ws-secondary" disabled={catalogueBusy}
             onClick={()=>setCatalogueAttempt(n=>n+1)}>{catalogueBusy?'Checking frozen revisions…':catalogue?'Refresh frozen revisions':'Load frozen revisions'}</button>
           {catalogueError&&<p role="alert">{catalogueError}</p>}
-          {catalogue?.ownerKey===ownerKey&&catalogue.rows.length===0&&<p>No private frozen revisions are available.</p>}
+          {catalogue&&catalogue.ownerKey===ownerKey&&catalogue.rows.length===0&&<p>No private frozen revisions are available.</p>}
           {frozen&&<p>Verified frozen snapshot SHA-256: <code style={{overflowWrap:'anywhere'}}>{frozen.request.snapshotSha256}</code></p>}
         </div>
         <div className="ws-preview-mode-set" role="group" aria-label="Appearance mode">
