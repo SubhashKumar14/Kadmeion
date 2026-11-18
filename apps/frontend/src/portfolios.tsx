@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { IndexedDbEditorDraftStore, recoverEditorHistory, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
+import { IndexedDbEditorDraftStore, MAX_RECOVERY_BYTES, recoverEditorHistory, validateRecoveryPayload, type EditorRecoveryPayload, type EditorRecoverySummary } from '../../../packages/storage-adapters/src/indexeddb-editor-drafts.ts';
 import { JournaledEditorFolderStore, FolderCommitError, type FolderDirectory } from '../../../packages/storage-adapters/src/journaled-editor-folder.ts';
 import { exportPortableSnapshot, importPortableSnapshot } from '../../../packages/storage-adapters/src/portable-editor-snapshot.ts';
 import { unappliedSourceBufferCount } from './behavior.ts';
@@ -525,6 +525,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [recoveryBusy,setRecoveryBusy]=useState(false);
   const recoveryLock=useRef(false);
   const recoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
+  const importedRecoveryAttempt=useRef<{signature:string;copyId:string}|null>(null);
   const [sourceReset,setSourceReset]=useState(0);
   useEffect(() => {
     const key = id + ':' + attempt;
@@ -889,7 +890,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
   const recoveryRecordId=record?.id;
   useEffect(()=>{
-    setRecoveryCopies(null);setRecoveryNotice('');setRecoveryComparison(null);recoveryAttempt.current=null;
+    setRecoveryCopies(null);setRecoveryNotice('');setRecoveryComparison(null);recoveryAttempt.current=null;importedRecoveryAttempt.current=null;
     const request=++catalogueRequest.current;
     const view=latestRecovery.current;
     if(!view?.owner||!view.record||view.record.id!==id||!scopeCurrent(view))return;
@@ -1097,8 +1098,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       setHead(next);setOperation(sameDraftSnapshot(saved,next.snapshot)?'':crypto.randomUUID());setFieldDrafts(recovered.fieldDrafts);
       setFieldIssues(issues);setSeoDraft(recovered.seoDraft);setSourceDrafts(recovered.sourceDrafts);
       if(Object.keys(recovered.sourceDrafts).length)setOpenedSource(true);
+      const recoveredEdits=!sameDraftSnapshot(saved,next.snapshot)||Object.keys(recovered.fieldDrafts).length>0||
+        Object.keys(recovered.sourceDrafts).length>0||recovered.seoDraft!==null;
       setRecoveryNotice(action==='restore'?
         'Older recovery copy restored into an unsaved working draft. Both saved versions remain intact; review buffers before an explicit CAS Save.':
+        recoveredEdits?'Recovery copy opened as an unsaved working draft. Original copy and cloud revision unchanged.':
         recoveredHistory?'Recovery copy reopened with its exact local Undo/Redo history. Original copy and cloud revision unchanged.':
         'Recovery copy opened as a working draft. Original copy and cloud revision unchanged.');
     }catch{
@@ -1274,19 +1278,73 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(scopeCurrent(view)){setPortableComparison(null);setPortableNotice('Snapshot operation rejected or not confirmed. Use a valid bounded Kadmeion private project JSON or editable source ZIP; your draft remains intact.');}
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
-  function exportWorkingRecovery(){
+  function exportWorkingRecovery(includeHistory=true){
     // This exports only bytes currently visible to an already verified,
     // mounted owner. It never loads local copies or bypasses the gate.
     const view=captureRecovery();
     if(!view||(!view.dirty&&!view.head?.undo.length&&!view.head?.redo.length)||recoveryLock.current)return;
     try{
-      const url=URL.createObjectURL(new Blob([JSON.stringify(recoveryPayload(view))],{type:'application/json'}));
+      const payload=recoveryPayload(view);
+      if(!includeHistory)delete payload.history;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(payload)],{type:'application/json'}));
       const link=document.createElement('a');
       link.href=url;link.download='kadmeion-working-recovery-'+view.id+'.json';
       try{if(!scopeCurrent(view))return;document.body.append(link);link.click();}
       finally{link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
-      setRecoveryNotice('Working recovery export requested. No browser or cloud save is implied. Keep this private file safe.');
+      setRecoveryNotice(includeHistory?'Working recovery export requested. No browser or cloud save is implied. Keep this private file safe.':
+        'Draft and buffer export requested without Undo/Redo history. Your current history is unchanged. Keep this private file safe.');
     }catch{if(scopeCurrent(view))setRecoveryNotice('Working recovery export could not be prepared. Your current edits remain.');}
+  }
+  /** Import a private working-recovery JSON as a separate local copy, never
+   * directly as current working state. Exported v1 files contain no identity
+   * assertion; the selected owner must explicitly review the target. */
+  async function importWorkingRecovery(file:File){
+    const view=captureRecovery();
+    if(!view||!view.record||!view.head||recoveryLock.current)return;
+    if(file.size<1||file.size>MAX_RECOVERY_BYTES){
+      setRecoveryNotice('Choose a working recovery JSON within 8 MiB. No recovery copy was added.');return;
+    }
+    recoveryLock.current=true;setRecoveryBusy(true);setRecoveryNotice('');
+    try{
+      const fresh=await view.port.readOwnerPortfolio(view.id);
+      if(!draftCurrent(view))return;
+      if(!fresh.data?.snapshot||fresh.data.id!==view.id||fresh.data.revision!==view.record.revision||
+         !sameDraftSnapshot(fresh.data.snapshot,view.record.snapshot)){
+        setRecoveryNotice('Current cloud revision changed or is unavailable. Reload and compare before importing a recovery copy.');return;
+      }
+      const bytes=await file.arrayBuffer();
+      if(!draftCurrent(view))return;
+      if(bytes.byteLength<1||bytes.byteLength>MAX_RECOVERY_BYTES)throw new Error('Invalid recovery byte length.');
+      const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+      const payload=JSON.parse(text) as EditorRecoveryPayload;
+      validateRecoveryPayload(payload);
+      const {changedFiles,changedSlots}=portableDifference(fresh.data.snapshot,payload.snapshot);
+      const buffers=Object.keys(payload.fieldDrafts).length+Object.keys(payload.sourceDrafts).length+(payload.seoDraft?1:0);
+      if(!window.confirm('Import this private working recovery into '+view.record.title+
+        '? The file claims base revision '+payload.cloudBaseRevision+'; current cloud revision '+fresh.data.revision+
+        '. '+changedFiles.length+' different file paths, '+changedSlots.length+' different slots or stashes, '+
+        buffers+' unapplied buffers. Only import a file you recognize as belonging to this project. '+
+        'It will be stored as a separate browser copy, not opened or saved to cloud. No source or media trust is granted.')){
+        setRecoveryNotice('Working recovery import cancelled. Current draft and cloud are unchanged.');return;
+      }
+      if(!draftCurrent(view))return;
+      const signature=JSON.stringify(payload);
+      let attempt=importedRecoveryAttempt.current;
+      if(!attempt||attempt.signature!==signature){
+        attempt={signature,copyId:crypto.randomUUID()};importedRecoveryAttempt.current=attempt;
+      }
+      const store=new IndexedDbEditorDraftStore();
+      const receipt=await store.saveRecoveryCopy(view.owner!.id,view.id,attempt.copyId,payload);
+      if(!scopeCurrent(view))return;
+      if(receipt.copyId!==attempt.copyId||receipt.cloudBaseRevision!==payload.cloudBaseRevision||
+         receipt.checkpointSequence!==undefined)throw new Error('Unconfirmed recovery import receipt.');
+      setRecoveryNotice('Working recovery JSON saved as a separate browser copy. Compare or open it explicitly. Current draft and cloud unchanged.');
+      try{await refreshRecovery(view,store);}
+      catch{if(scopeCurrent(view))setRecoveryNotice('Working recovery import acknowledged; the catalogue refresh failed. Reopen the editor to inspect the copy.');}
+    }catch(cause){
+      if(scopeCurrent(view))setRecoveryNotice(cause instanceof ContractError?cause.message:
+        'Working recovery file rejected or storage not confirmed. Your current draft and original file remain intact.');
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   async function reloadSavedDraft(){
     // Never erase buffers or the current head until the read has succeeded.
@@ -1331,6 +1389,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         checkpointConflict.current=null;setCheckpointState('idle');
       }
       recoveryAttempt.current=null;setRecoveryComparison(null);
+      if(importedRecoveryAttempt.current?.copyId===copyId)importedRecoveryAttempt.current=null;
       if(frozenCheckpoint.current?.id===copyId){frozenCheckpoint.current=null;setCheckpointRetry(n=>n+1);}
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
       await refreshRecovery(view,store);
@@ -1408,14 +1467,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       <label><input type="checkbox" checked={autoRecovery} onChange={event=>{
         checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
         if(!event.target.checked)setCheckpointState('idle');
-      }}/> Automatically checkpoint unsaved edits and Undo/Redo history on this browser during this editor session</label>
+      }}/> Automatically checkpoint unsaved edits on this browser during this editor session</label>
       {autoRecovery&&<p role="status">{!canPreserveWorking?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
         checkpointState==='saved'?'Latest captured working edits acknowledged by browser storage only.':
         checkpointState==='failed'?'Browser checkpoint failed or storage is full; your current edits remain.':
         'Automatic browser checkpoints enabled; waiting for unsaved edits.'}
         {checkpointState==='failed'&&canPreserveWorking&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
       </p>}
-      <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit and 8 MiB per-copy bound, never prune another copy, and are retained until explicitly removed. Opening a same-base copy restores its acknowledged Undo/Redo history. Restoring an older copy creates one new undoable draft against the current cloud revision; the original history remains in that copy.</p>
+      <p>When enabled, automatic checkpoints also preserve Undo/Redo history after a confirmed cloud Save. Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit and 8 MiB per-copy bound, never prune another copy, and are retained until explicitly removed. Opening a same-base copy restores its acknowledged Undo/Redo history. Restoring an older copy creates one new undoable draft against the current cloud revision; the original history remains in that copy.</p>
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!canPreserveWorking}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
@@ -1425,7 +1484,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           onClick={()=>void preserveRecovery(true)}>Keep Both and load latest cloud draft</button>
         <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!canPreserveWorking}
           data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
-          onClick={exportWorkingRecovery}>Export current working recovery</button>
+          onClick={()=>exportWorkingRecovery()}>Export current working recovery</button>
+        {hasHistory&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
+          data-inspector-buffer-action="true" onMouseDown={event=>event.preventDefault()}
+          onClick={()=>exportWorkingRecovery(false)}>Export draft and buffers without history</button>}
+        <label>Import working recovery JSON
+          <input type="file" accept=".json,application/json" disabled={saving||recoveryBusy}
+            onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(file)void importWorkingRecovery(file);}}/>
+        </label>
       </div>
       {recoveryBusy&&<p>Working with browser recovery storage…</p>}
       {recoveryNotice&&<p role="status">{recoveryNotice}</p>}
@@ -1522,7 +1588,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         onClick={()=>{setFieldDrafts({});setFieldIssues({});setSeoDraft(null);}}>
         Discard all unapplied inspector edits</button>
     </div>}
-    {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
+    {sourceDirty&&<div role="status" className="ws-editor-safety"><span>STALE preview: unapplied owned-source text is not reflected in the last applied draft. Apply, preserve or discard the buffer before leaving or saving. Arbitrary source is not executed in this preview.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
     {!record && !error && <><p role="status">Loading portfolio…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
