@@ -6,10 +6,15 @@
 import {publishConsentedUnlistedRelease,checkCurrentPublicDelivery,type FrozenPublicationConsent,type PublicAuthorityRpc} from '../../../packages/storage-adapters/src/unlisted-release-verification.ts';
 import {parseOwnerPublicDelivery,type OwnerPublicDeliveryAcknowledgement} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 
+import {prepareAndStageOwnerPublicCandidate,type TrustedOwnerPublicStageContext,type OwnerPublicStageRequest} from '../../../packages/storage-adapters/src/private-reviewer-staging.ts';
+import {parseOwnerPublicStageReceipt} from '../../../packages/contracts/src/private-release-service.ts';
+
 type Env=Readonly<Record<string,string|undefined>>;
 type Dependencies={
   env?:Env;
   http?:typeof fetch;
+  // Server-injected local worker; unavailable in the default deployed entry.
+  stageContext?:(ownerJwt:string,ownerId:string,target:Readonly<OwnerPublicStageRequest>)=>Promise<TrustedOwnerPublicStageContext>;
   publish?:(intentId:string,origin:string,rpc:(name:string,body:Record<string,unknown>)=>Promise<unknown>)=>Promise<unknown>;
 };
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -276,6 +281,49 @@ export async function handleOwnerPublishRelease(request:Request,deps:Dependencie
   let data:unknown;
   try{data=await withPublishDeadline(signal=>bounded(request,MAX_REQUEST,signal));}
   catch{return error(400,'Invalid request',origin,permitted);}
+  if(record(data)&&data.action==='STAGE_PUBLIC'){
+    const keys=['action','portfolioId','requestId','operationId','expectedGeneration'];
+    const canonical=(v:unknown):v is string=>typeof v==='string'&&UUID.test(v)&&v===v.toLowerCase();
+    if(Object.keys(data).length!==keys.length||!keys.every(k=>Object.hasOwn(data,k))||
+       !canonical(data.portfolioId)||!canonical(data.requestId)||!canonical(data.operationId)||
+       typeof data.expectedGeneration!=='number'||!Number.isSafeInteger(data.expectedGeneration)||
+       data.expectedGeneration<0||data.expectedGeneration>=Number.MAX_SAFE_INTEGER-1)
+      return error(400,'Invalid private stage request',origin,permitted);
+    if(env.KADMEION_LOCAL_INTEGRATION!=='1'||
+       !['http://127.0.0.1:54321','http://localhost:54321','http://kong:8000'].includes(config.supabase)||
+       !deps.stageContext)return error(503,'Trusted staging unavailable',origin,permitted);
+    const target=Object.freeze({portfolioId:data.portfolioId,requestId:data.requestId,
+      operationId:data.operationId,expectedGeneration:data.expectedGeneration});
+    const http=deps.http??fetch,base=config.supabase;
+    const ownerHeaders={apikey:config.pub,Authorization:'Bearer '+token};
+    try{
+      const who=await getJson(base+'/auth/v1/user',ownerHeaders,http);
+      if(!record(who)||!canonical(who.id)||who.is_anonymous===true)
+        return error(401,'Owner session required',origin,permitted);
+      const ownerId=who.id;
+      const owned=async()=>{
+        const live=await getJson(base+'/auth/v1/user',ownerHeaders,http);
+        if(!record(live)||live.id!==ownerId||live.is_anonymous===true)return false;
+        const rows=await getJson(base+'/rest/v1/portfolios?'+new URLSearchParams({
+          select:'id,owner_user_id,trashed_at',id:'eq.'+target.portfolioId,limit:'2'}),ownerHeaders,http);
+        return Array.isArray(rows)&&rows.length===1&&record(rows[0])&&
+          rows[0].id===target.portfolioId&&rows[0].owner_user_id===ownerId&&rows[0].trashed_at===null;
+      };
+      if(!await owned())return error(404,'Private candidate unavailable',origin,permitted);
+      const frozen=await getJson(base+'/rest/v1/private_release_requests?'+new URLSearchParams({
+        select:'id,portfolio_id,owner_user_id,visibility_intent,status',id:'eq.'+target.requestId,limit:'2'}),ownerHeaders,http);
+      if(!Array.isArray(frozen)||frozen.length!==1||!record(frozen[0])||
+        frozen[0].id!==target.requestId||frozen[0].portfolio_id!==target.portfolioId||
+        frozen[0].owner_user_id!==ownerId||frozen[0].visibility_intent!=='PUBLIC'||frozen[0].status!=='FROZEN')
+        return error(404,'Private candidate unavailable',origin,permitted);
+      const context=await deps.stageContext(token,ownerId,target);
+      const receipt=await prepareAndStageOwnerPublicCandidate(target,{
+        ...context,isCurrentOwner:async()=>await owned()&&await context.isCurrentOwner()
+      });
+      if(!await owned())return error(409,'Private staging unconfirmed',origin,permitted);
+      return Response.json(parseOwnerPublicStageReceipt(receipt,target),{status:200,headers:headers(origin,permitted)});
+    }catch{return error(503,'Private staging unconfirmed',origin,permitted);}
+  }
   const action=parseOwnerPublicationRequest(data);
   if(!action)return error(400,'Invalid release intent',origin,permitted);
   const {intentId,checkOnly,expected}=action;

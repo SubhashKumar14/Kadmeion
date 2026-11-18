@@ -3,7 +3,7 @@ import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packa
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage } from '../../../packages/contracts/src/private-release-service.ts';
+import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage, OwnerPublicationIntentPage, OwnerPublicStageRequest, OwnerPublicStageReceipt } from '../../../packages/contracts/src/private-release-service.ts';
 import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
@@ -1339,6 +1339,42 @@ export class SupabaseBrowserAuthPort implements AuthPort {
           visibilityIntent:row.visibility_intent as FrozenVisibilityIntent,
           createdAt:row.created_at,status:'FROZEN' as const};
       });
+    });
+  }
+
+  /** Owner-bound staging and recovery. No browser-provided HTML, hash or authority. */
+  async stageOwnerPublicCandidate(request:OwnerPublicStageRequest):Promise<AuthOutcome<OwnerPublicStageReceipt>>{
+    return this.outcome(async()=>{
+      const target=Object.freeze({...request});
+      const {session,userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch&&this.isCurrentSession(session)&&session.user.id===userId;
+      const {SupabasePrivateReleaseService}=await import('../../../packages/contracts/src/private-release-service.ts');
+      if(!current())throw new Error('Owner session changed.');
+      const service=new SupabasePrivateReleaseService(this.origin,this.publishableKey,this.ownerEpochToken(userId,epoch),this.fetcher);
+      const receipt=await service.stagePublicCandidate(target);
+      if(!current())throw new Error('Owner session changed during staging.');
+      return receipt;
+    });
+  }
+  async listOwnerPublicationIntents(portfolioId:string,limit=50):Promise<AuthOutcome<OwnerPublicationIntentPage>>{
+    return this.outcome(async()=>{
+      if(!PROJECT_ID_PATTERN.test(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50)
+        throw new Error('Invalid publication recovery request.');
+      const id=portfolioId.toLowerCase();
+      const {session,userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch&&this.isCurrentSession(session)&&session.user.id===userId;
+      const requireOwned=async()=>{
+        const rows=await this.ownerRest('portfolios?'+new URLSearchParams({select:'id,owner_user_id',id:'eq.'+id,owner_user_id:'eq.'+userId,trashed_at:'is.null',limit:'2'}),session.access_token);
+        if(!current()||!Array.isArray(rows)||rows.length!==1||rows[0]?.id!==id||rows[0]?.owner_user_id!==userId)
+          throw new Error('Private portfolio unavailable.');
+      };
+      await requireOwned();
+      const {SupabasePrivateReleaseService}=await import('../../../packages/contracts/src/private-release-service.ts');
+      if(!current())throw new Error('Owner session changed.');
+      const service=new SupabasePrivateReleaseService(this.origin,this.publishableKey,this.ownerEpochToken(userId,epoch),this.fetcher);
+      const page=await service.listPublicationIntents(id,limit);
+      await requireOwned();
+      return page;
     });
   }
 
