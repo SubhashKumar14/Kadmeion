@@ -904,7 +904,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               onClick={()=>void selectAcknowledgedRequest(ackSelection)}>Retry acknowledged owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy} onClick={cancelHistoricalSelection}>Cancel acknowledged pin selection</button>
           </div>}
-          <p className="ws-field-hint">Public rollback uses the authoritative delivery controls below, not a historical database acknowledgement alone.</p>
+          {!publicActionFactory(port)&&<button type="button" className="ws-secondary" disabled>Public rollback unavailable — host proof required</button>}
+          <p className="ws-field-hint">Public rollback uses authoritative delivery controls, not a historical database acknowledgement alone.</p>
         </> : <>
           <h2>{mode==='staging'?'Prepare a frozen reviewer revision':'Inspect a saved revision'}</h2>
           <p>Freeze a selected immutable saved revision with its content digest. Unsaved editor changes are not included.</p>
@@ -1046,7 +1047,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         </>}
         {(mode==='publish'||mode==='releases')&&<AuthoritativePublicDelivery port={port} portfolioId={id}
           frozen={historySelection||ackSelection?null:frozen} preflight={result}
-          disabled={readsBusy} begin={beginReleaseAction} setBusy={setBusy} onPointer={setPointer}/>}
+          disabled={readsBusy} pointer={pointer} begin={beginReleaseAction} setBusy={setBusy} onPointer={setPointer}/>}
         {(mode==='publish'||mode==='releases')&&frozen&&!historySelection&&
           <section className="ws-release-action" aria-labelledby="private-pin-preview-title">
             <h3 id="private-pin-preview-title">Owner-private preview of frozen revision {frozen.revision}</h3>
@@ -1151,9 +1152,9 @@ const ACK_PAGE_SIZE=25,ACK_MAX_ROWS=500;
  * acknowledgement is the only positive public-delivery evidence. Never
  * synthesize URLs from handles, historical ACKs or a private block receipt.
  */
-function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled,begin,setBusy,onPointer}:{
+function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled,pointer,begin,setBusy,onPointer}:{
   port:SupabaseBrowserAuthPort;portfolioId:string;frozen:PrivateFrozenRequest|null;
-  preflight:SafePreviewResult|null;disabled:boolean;
+  preflight:SafePreviewResult|null;disabled:boolean;pointer:PrivatePointerSnapshot|null;
   begin:()=>{current:()=>boolean;finish:()=>void}|null;setBusy:(busy:boolean)=>void;
   onPointer:(pointer:PrivatePointerSnapshot)=>void;
 }){
@@ -1176,14 +1177,21 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     const unsubscribe=port.subscribeOwnerSessionEpoch(clear);
     return()=>{unsubscribe();++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;};
   },[port,portfolioId]);
+  useLayoutEffect(()=>{
+    if(!pointer)return;
+    setReceipt(previous=>previous&&(pointer.status==='BLOCKED'||
+      pointer.portfolioId!==portfolioId||pointer.generation>previous.pointerGeneration||
+      pointer.revocationGeneration>=previous.stageGeneration)?null:previous);
+  },[pointer,portfolioId]);
   function retain(value:PublicAttempt|null){pending.current=value;setAttempt(value?{...value}:null);}
   async function run(kind:'publish'|'rollback'|'retry'|'check'|'withdraw'){
     if(!factory||disabled)return;
     if(kind==='withdraw'&&pending.current)return;
+    if(kind==='check'&&pending.current&&!pending.current.intentId)return;
     if(kind!=='withdraw'&&withdrawal.current)return;
     if((kind==='publish'||kind==='rollback')&&pending.current)return;
     if(kind==='retry'&&!pending.current)return;
-    if(kind==='check'&&!pending.current?.intentId&&!receipt)return;
+    if(kind==='check'&&!pending.current?.intentId&&!receipt&&!history.length)return;
     const target=kind==='rollback'?history.find(item=>item.intentId===rollbackId):undefined;
     if(kind==='rollback'&&(!target||!receipt||target.intentId===receipt.intentId))return;
     if(kind==='publish'&&(!frozen||frozen.portfolioId!==portfolioId||frozen.visibilityIntent!=='PUBLIC'||
@@ -1199,6 +1207,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     setBusy(true);setError('');setNotice('');
     // Hide the previous positive receipt while an action/read is in flight.
     const previous=receipt;
+    const lastVerified=previous??history[0];
     setReceipt(null);
     try{
       const opened=await factory();
@@ -1234,13 +1243,19 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       }
       let work=pending.current;
       if(kind==='check'){
-        const expected=work?.intentId?{portfolioId,requestId:work.requestId,intentId:work.intentId,operationId:work.operationId}:previous;
+        const expected=work?.intentId?{portfolioId,requestId:work.requestId,intentId:work.intentId,operationId:work.operationId}:lastVerified;
         if(!expected)throw Error('No exact intent to check.');
         const checked=await service.checkPublicDelivery(expected);
         if(!current())return;
         if(!exactDeliveryEvidence(checked,expected))throw Error('Receipt mismatch.');
+        const observed=await service.read(portfolioId);
+        if(!current())return;
+        if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+           observed.generation!==checked.pointerGeneration||observed.revocationGeneration!==checked.revocationGeneration)
+          throw Error('Pointer changed after delivery check.');
+        onPointer(observed);
         setReceipt(checked);setHistory(rows=>[checked,...rows.filter(item=>item.intentId!==checked.intentId)].slice(0,20));
-        if(work)retain(null);
+        if(work?.intentId===expected.intentId)retain(null);
         setNotice('Current canonical delivery and media observations verified.');return;
       }
       if(!work){
@@ -1292,6 +1307,12 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       delivered??=await service.executePublicDelivery(expected);
       if(!current())return;
       if(!exactDeliveryEvidence(delivered,expected))throw Error('Receipt mismatch.');
+      const observed=await service.read(portfolioId);
+      if(!current())return;
+      if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
+         observed.generation!==delivered.pointerGeneration||observed.revocationGeneration!==delivered.revocationGeneration)
+        throw Error('Pointer changed after publication receipt.');
+      onPointer(observed);
       setReceipt(delivered);setHistory(rows=>[delivered!,...rows.filter(item=>item.intentId!==delivered!.intentId)].slice(0,20));
       retain(null);setRollbackId('');
       setNotice('Public delivery acknowledged by the authority and host observation contract.');
@@ -1318,7 +1339,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     <div className="ws-actions">
       <button type="button" className="ws-primary" disabled={disabled||!!attempt||withdrawing||!eligible}
         onClick={()=>void run('publish')}>{history.length?'Publish another verified candidate':'Publish public candidate'}</button>
-      <button type="button" className="ws-secondary" disabled={disabled||withdrawing||(!receipt&&!attempt?.intentId)}
+      <button type="button" className="ws-secondary" disabled={disabled||withdrawing||!!(attempt&&!attempt.intentId)||(!receipt&&!history.length&&!attempt?.intentId)}
         onClick={()=>void run('check')}>Recheck authoritative delivery</button>
       {attempt&&<button type="button" className="ws-secondary" disabled={disabled} onClick={()=>void run('retry')}>Retry same consent operation</button>}
     </div>
