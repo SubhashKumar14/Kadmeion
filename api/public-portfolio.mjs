@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {cancelRpcBody, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
+import {cancelRpcBody, withDeliveryRpc, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -104,13 +104,17 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     }
     const rpc = reporting ? 'service_submit_portfolio_abuse_report' :
       media ? 'service_read_frozen_release_png' : 'service_read_public_portfolio';
-    const upstream = await http(new URL('/rest/v1/rpc/' + rpc, origin), {
+    const upstream = await withDeliveryRpc(http,new URL('/rest/v1/rpc/' + rpc, origin), {
       method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit',
       headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
-      body: JSON.stringify({p_handle: handle, p_slug: slug, ...report, ...media}), signal: AbortSignal.timeout(5000)
+      body: JSON.stringify({p_handle: handle, p_slug: slug, ...report, ...media})
+    }, async response=>{
+      if(reporting)return {ok:response.ok,body:await readBoundedRpcJson(response,4096)};
+      if(!response.ok){cancelRpcBody(response.body);return {ok:false,body:null};}
+      return {ok:true,body:media?await readFrozenPng(response,media.p_sha):await readBoundedRpcJson(response)};
     });
     if (reporting) {
-      const receipt = await readBoundedRpcJson(upstream, 4096);
+      const receipt = upstream.body;
       if (upstream.ok && receipt?.status === 'RECEIVED_FOR_REVIEW' && Object.keys(receipt).length === 1)
         return reply(202, JSON.stringify(receipt), 'application/json; charset=utf-8');
       if (!upstream.ok && receipt?.message === 'PUBLIC_PORTFOLIO_NOT_FOUND') return reply(404, 'Not found');
@@ -119,15 +123,14 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       return reply(503, 'Temporarily unavailable');
     }
     if (!upstream.ok) {
-      cancelRpcBody(upstream.body);
       return reply(503, 'Temporarily unavailable');
     }
 
     if (media) {
-      const png = await readFrozenPng(upstream, media.p_sha);
+      const png = upstream.body;
       return png ? reply(200, png, 'image/png') : reply(404, 'Not found');
     }
-    const release = await readBoundedRpcJson(upstream);
+    const release = upstream.body;
     if (release === null) return reply(404, 'Not found');
     if (!release || typeof release !== 'object' || Array.isArray(release) ||
         typeof release.indexable !== 'boolean')
