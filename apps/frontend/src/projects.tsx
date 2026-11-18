@@ -602,7 +602,7 @@ function guardedAutoEligibility(saved:OwnerProject,draft:PrivateProjectDraft):bo
   try{
     const normalized=normalizeProjectDraft(draft);
     const links=projectDestinationReview(saved,normalized);
-    return !links.error&&links.key===null&&!equalProjectDraft(saved,normalized);
+    return normalized.slug===saved.slug&&!links.error&&links.key===null&&!equalProjectDraft(saved,normalized);
   }catch{return false;}
 }
 export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAuthPort; projectId: string}) {
@@ -656,6 +656,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setCasePending(pending);
   },[]);
   const caseSaved = useCallback((from:number,to:number) => {
+    clearWithdrawal();
     observeRevision(to);
     // The case-study RPC modifies only sections at the exact CAS base.
     // A gap might include another owner's session's overview edit.
@@ -664,6 +665,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   },[observeRevision]);
   const thumbnailSaved=useCallback((from:number,to:number)=>{
     if(to!==from+1)return;
+    clearWithdrawal();
     observeRevision(to);
     // An attached cover changes neither overview text nor case-study sections.
     // Advance only across this exact acknowledged contiguous mutation.
@@ -777,6 +779,9 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     const review=projectDestinationReview(detail.saved,submitted);
     if(review.error||(review.key!==null&&(mode==='auto'||review.key!==reviewedDestinationChange))){
       if(mode==='manual')setFeedback({error:true,text:review.error||'Review and confirm the changed external destinations before saving.'});return;
+    }
+    if(submitted.slug!==detail.saved.slug){
+      if(mode==='manual')setFeedback({error:true,text:'A private draft cannot change the project slug.'});return;
     }
     if(equalProjectDraft(detail.saved,submitted)){
       setDetail({status:'ready',saved:detail.saved,draft:detail.saved});clearWithdrawal();return;
