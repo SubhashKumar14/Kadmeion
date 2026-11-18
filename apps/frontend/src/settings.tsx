@@ -525,7 +525,7 @@ function LinkedMethods({port}: {port:SupabaseBrowserAuthPort}){
   }
   return <SettingsCard title="Linked sign-in methods">
     <p>Identity records reported by the authentication provider for your current account. These are not public verification badges or proof of password availability.</p>
-    {pending&&<p role="status">Checking linked sign-in methods…</p>}
+    <p aria-live="polite" aria-atomic="true">{pending?'Checking linked sign-in methods…':data&&data.identities.length>0?'Linked sign-in records checked.':''}</p>
     {currentResult?.error&&<p role="alert">{currentResult.error}</p>}
     {data&&<>
       {data.identities.length===0?<p>No linked identity records returned by the provider.</p>:
@@ -578,9 +578,8 @@ function EmailVerification({port}: {port:SupabaseBrowserAuthPort}){
     visible?.state==='UNCONFIRMED'?'The provider reports that email confirmation is pending.':
     'The provider did not return conclusive email confirmation evidence.';
   return <SettingsCard title="Email verification">
-    {!visible&&<p role="status">Checking email verification…</p>}
-    {visible?.state===null?<p role="alert">Email verification could not be checked. Retry when available.</p>:
-      visible&&<p role="status">{label}</p>}
+    <p aria-live="polite" aria-atomic="true">{!visible?'Checking email verification…':visible.state===null?'':label}</p>
+    {visible?.state===null&&<p role="alert">Email verification could not be checked. Retry when available.</p>}
     <p>This is private account evidence. It does not grant a public verification badge or establish a password sign-in method.</p>
     <button type="button" className="ws-secondary" disabled={!visible} onClick={()=>{
       if(!running.current&&port.reconcileOwnerSessionEpoch()===epoch){running.current=true;setAttempt(value=>value+1);}
@@ -646,7 +645,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
       if (result.error) throw new Error('Sign-out for other sessions could not be confirmed.');
       setConfirmOthers(false);
       otherSessionsTrigger.current?.focus();
-      setMessage({error: false, text: 'Other-session revocation acknowledged. Previously issued access tokens may remain valid until expiry.'});
+      setMessage({error: false, text: 'Other sessions were signed out.'});
     } catch (error) {if(isCurrent())setMessage(failure(error));}
     finally {action.current=false;if(isCurrent())setBusy(false);}
   }
