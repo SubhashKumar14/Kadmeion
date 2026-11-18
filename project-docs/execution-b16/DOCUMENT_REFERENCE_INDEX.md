@@ -1,0 +1,186 @@
+# Complete document and source reference index
+
+Repository root paths below are exact known tracked paths at the reviewed snapshot. 165 project-docs files are listed, including binary approved references, registers and superseded records. Superseded material is historical, not active authority. Read the current master and applicable specs before coding; use live source SHAs and the latest S0 handoff. All 431 repository paths and sole-writer proposals are in FILE_OWNERSHIP.csv. The audit includes every branch/blob version from its cutoff; LATEST_STATE.md updates current active PRs.
+
+## Governing and reference files
+
+- `project-docs/B07_B11_VERIFIED_HANDOFF_2026-11-15.md`
+- `project-docs/B07_HOSTED_DEPLOYMENT_EVIDENCE.md`
+- `project-docs/B1-local-auth-test.md`
+- `project-docs/BACKEND_CURRENT_STATUS.md`
+- `project-docs/D01_D90_AUDIT_METHOD.md`
+- `project-docs/DOCUMENTATION_FILE_TREE.txt`
+- `project-docs/F0_PHASE_AUDIT_2026-11-16.md`
+- `project-docs/FILE_COUNT_REPORT.md`
+- `project-docs/FRONTEND_F1_IMPLEMENTATION_NOTES_2026-11-15.md`
+- `project-docs/FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md`
+- `project-docs/FRONTEND_F3_IMPLEMENTATION_NOTES_2026-11-16.md`
+- `project-docs/FRONTEND_UIUX_BRAND_MASTER_EXECUTION_2026-11-15.md`
+- `project-docs/FULL_REPOSITORY_FILE_MANIFEST.csv`
+- `project-docs/FULL_REPOSITORY_FILE_TREE.txt`
+- `project-docs/FULL_REPOSITORY_STRUCTURE.md`
+- `project-docs/IMPLEMENTATION_STATUS.md`
+- `project-docs/MASTER_EXECUTION_PROMPT.md`
+- `project-docs/NEXT_SESSION_HANDOFF.md`
+- `project-docs/PHASE_AND_MODULE_OWNERSHIP.md`
+- `project-docs/PROPOSED_FUTURE_REPOSITORY_TREE.txt`
+- `project-docs/README.md`
+- `project-docs/REPO_ROOT_README_TO_COMMIT.md`
+- `project-docs/SCREEN_TO_SOURCE_MAP.csv`
+- `project-docs/SESSION0_COORDINATION_2026-11-17.md`
+- `project-docs/assets/reference-derived/kadmeion-original-k-raster-trace.svg`
+- `project-docs/assets/reference-derived/kadmeion-phase-b-pattern-vector.svg`
+- `project-docs/assets/reference/approved_brand_pattern_crop.png`
+- `project-docs/assets/reference/kadmeion_aether_drift_ui_concept_board.png`
+- `project-docs/assets/reference/kadmeion_glyph_loading_system.png`
+- `project-docs/design.md`
+- `project-docs/docs/00_governance/AUTHORITY_AND_SUPERSESSION.md`
+- `project-docs/docs/00_governance/CONFLICT_REGISTER.md`
+- `project-docs/docs/00_governance/DECISION_TRACEABILITY_GUIDE.md`
+- `project-docs/docs/00_governance/GLOSSARY.md`
+- `project-docs/docs/00_governance/PRODUCT_SCOPE_AND_PHASES.md`
+- `project-docs/docs/01_product/INFORMATION_ARCHITECTURE.md`
+- `project-docs/docs/01_product/NONFUNCTIONAL_REQUIREMENTS.md`
+- `project-docs/docs/01_product/PRODUCT_REQUIREMENTS_PRD.md`
+- `project-docs/docs/01_product/SOFTWARE_REQUIREMENTS_SPECIFICATION_SRS.md`
+- `project-docs/docs/01_product/USE_CASE_CATALOG.md`
+- `project-docs/docs/02_design/SCREEN_CATALOG.md`
+- `project-docs/docs/02_design/screens/auth_01_sign_in.md`
+- `project-docs/docs/02_design/screens/auth_02_sign_up.md`
+- `project-docs/docs/02_design/screens/auth_03_oauth_callback.md`
+- `project-docs/docs/02_design/screens/auth_04_password_recovery_request.md`
+- `project-docs/docs/02_design/screens/auth_05_password_reset.md`
+- `project-docs/docs/02_design/screens/auth_06_recovery_outcome.md`
+- `project-docs/docs/02_design/screens/edit_01_portfolio_editor_workbench.md`
+- `project-docs/docs/02_design/screens/edit_02_content_inspector.md`
+- `project-docs/docs/02_design/screens/edit_03_components_and_sections.md`
+- `project-docs/docs/02_design/screens/edit_04_my_components.md`
+- `project-docs/docs/02_design/screens/edit_05_theme_and_responsive_inspector.md`
+- `project-docs/docs/02_design/screens/edit_06_asset_manager.md`
+- `project-docs/docs/02_design/screens/edit_07_advanced_source.md`
+- `project-docs/docs/02_design/screens/edit_08_revision_history_and_problems.md`
+- `project-docs/docs/02_design/screens/edit_09_preview_modes.md`
+- `project-docs/docs/02_design/screens/growth_01_personal_growth_hub.md`
+- `project-docs/docs/02_design/screens/growth_02_developer_activity.md`
+- `project-docs/docs/02_design/screens/growth_03_private_devscore.md`
+- `project-docs/docs/02_design/screens/growth_04_goals.md`
+- `project-docs/docs/02_design/screens/growth_05_portfolio_analytics.md`
+- `project-docs/docs/02_design/screens/growth_06_platform_connections.md`
+- `project-docs/docs/02_design/screens/ops_01_admin_users.md`
+- `project-docs/docs/02_design/screens/ops_02_portfolio_moderation.md`
+- `project-docs/docs/02_design/screens/ops_03_appeals_and_case_history.md`
+- `project-docs/docs/02_design/screens/pub_01_landing.md`
+- `project-docs/docs/02_design/screens/pub_02_explore_portfolios.md`
+- `project-docs/docs/02_design/screens/pub_03_public_template_explorer.md`
+- `project-docs/docs/02_design/screens/public_01_developer_identity_hub.md`
+- `project-docs/docs/02_design/screens/public_02_published_case_study.md`
+- `project-docs/docs/02_design/screens/public_03_published_portfolio.md`
+- `project-docs/docs/02_design/screens/public_04_public_share_controls.md`
+- `project-docs/docs/02_design/screens/publish_01_reviewer_staging.md`
+- `project-docs/docs/02_design/screens/publish_02_reviewer_only_preview.md`
+- `project-docs/docs/02_design/screens/publish_03_publish_preflight.md`
+- `project-docs/docs/02_design/screens/publish_04_releases_and_rollback.md`
+- `project-docs/docs/02_design/screens/set_01_settings_hub.md`
+- `project-docs/docs/02_design/screens/set_02_privacy_sharing.md`
+- `project-docs/docs/02_design/screens/set_03_notifications.md`
+- `project-docs/docs/02_design/screens/set_04_account_security.md`
+- `project-docs/docs/02_design/screens/set_05_trash.md`
+- `project-docs/docs/02_design/screens/set_06_export_center.md`
+- `project-docs/docs/02_design/screens/set_07_account_exit.md`
+- `project-docs/docs/02_design/screens/sys_01_not_found_private_expired_offline.md`
+- `project-docs/docs/02_design/screens/sys_02_unsupported_authoring_device.md`
+- `project-docs/docs/02_design/screens/work_01_welcome_and_onboarding.md`
+- `project-docs/docs/02_design/screens/work_02_workspace_home.md`
+- `project-docs/docs/02_design/screens/work_03_developer_profile_editor.md`
+- `project-docs/docs/02_design/screens/work_04_project_library.md`
+- `project-docs/docs/02_design/screens/work_05_project_quick_add_drawer.md`
+- `project-docs/docs/02_design/screens/work_06_project_detailed_editor.md`
+- `project-docs/docs/02_design/screens/work_07_owned_portfolio_library.md`
+- `project-docs/docs/02_design/screens/work_08_template_choice_new_portfolio.md`
+- `project-docs/docs/03_workflows/01_AUTHENTICATION.md`
+- `project-docs/docs/03_workflows/02_ONBOARDING_AND_IDENTITY.md`
+- `project-docs/docs/03_workflows/03_PROJECTS_AND_CASE_STUDIES.md`
+- `project-docs/docs/03_workflows/04_EDITOR_AND_COMPONENTS.md`
+- `project-docs/docs/03_workflows/05_STAGING_PUBLISH_AND_EXPORT.md`
+- `project-docs/docs/03_workflows/06_INTEGRATIONS_ANALYTICS_AND_GOALS.md`
+- `project-docs/docs/03_workflows/07_SETTINGS_RECOVERY_AND_DELETION.md`
+- `project-docs/docs/03_workflows/08_ADMINISTRATION_AND_MODERATION.md`
+- `project-docs/docs/03_workflows/README.md`
+- `project-docs/docs/04_engineering/API_COMMANDS_EVENTS_AND_ERRORS.md`
+- `project-docs/docs/04_engineering/COST_OPERATIONS_AND_DEPLOYMENT.md`
+- `project-docs/docs/04_engineering/DATA_MODEL_RLS_AND_STORAGE.md`
+- `project-docs/docs/04_engineering/EDITOR_CORE_AND_FILE_CONTRACT.md`
+- `project-docs/docs/04_engineering/OFFLINE_RECOVERY_AND_DATA_PORTABILITY.md`
+- `project-docs/docs/04_engineering/PROPOSED_REPOSITORY_STRUCTURE.md`
+- `project-docs/docs/04_engineering/PROVIDER_DATA_AND_SCREENSHOT_FEASIBILITY.md`
+- `project-docs/docs/04_engineering/SECURITY_AND_PRIVACY.md`
+- `project-docs/docs/04_engineering/STATIC_RELEASE_HOSTING_AND_EXPORT.md`
+- `project-docs/docs/04_engineering/SYSTEM_ARCHITECTURE.md`
+- `project-docs/docs/05_quality/ACCESSIBILITY_RESPONSIVE_TEST_PLAN.md`
+- `project-docs/docs/05_quality/DESIGN_REVIEW_CHECKLIST.md`
+- `project-docs/docs/05_quality/PLANNED_USER_ACCEPTANCE_TESTS.md`
+- `project-docs/docs/05_quality/RELEASE_ACCEPTANCE_CRITERIA.md`
+- `project-docs/docs/05_quality/TECHNICAL_VERIFICATION_GATES.md`
+- `project-docs/docs/05_quality/TEST_REPORT_TEMPLATE.md`
+- `project-docs/docs/05_quality/TEST_STRATEGY_AND_PLAN.md`
+- `project-docs/docs/06_capstone/ABSTRACT_AND_PROBLEM_FORMULATION.md`
+- `project-docs/docs/06_capstone/CAPSTONE_REPORT_DRAFT.md`
+- `project-docs/docs/06_capstone/DELIVERY_PLAN.md`
+- `project-docs/docs/06_capstone/DEMONSTRATION_RUNBOOK.md`
+- `project-docs/docs/06_capstone/DIAGRAMS_AND_MODELS.md`
+- `project-docs/docs/06_capstone/FEASIBILITY_STUDY.md`
+- `project-docs/docs/06_capstone/PRESENTATION_OUTLINE.md`
+- `project-docs/docs/06_capstone/PROJECT_CHARTER_AND_PROPOSAL.md`
+- `project-docs/docs/06_capstone/PROJECT_RISK_REGISTER.md`
+- `project-docs/docs/06_capstone/REQUIREMENTS_ANALYSIS_AND_USER_STORIES.md`
+- `project-docs/docs/06_capstone/RESEARCH_AND_REFERENCES.md`
+- `project-docs/docs/06_capstone/SUBMISSION_AND_RESEARCH_INTEGRITY_CHECKLIST.md`
+- `project-docs/docs/06_capstone/SYSTEM_REQUIREMENTS_AND_ENVIRONMENT.md`
+- `project-docs/docs/06_capstone/VIVA_QUESTIONS_AND_RESPONSES.md`
+- `project-docs/docs/06_capstone/WEEKLY_WORK_LOG_TEMPLATE.md`
+- `project-docs/registers/APPROVED_LIGHT_52_SCREENS_2026-11-15.csv`
+- `project-docs/registers/CONFLICTS.csv`
+- `project-docs/registers/D01_D90_BACKEND_TRACEABILITY.csv`
+- `project-docs/registers/DECISIONS_UI_001_115.csv`
+- `project-docs/registers/F0_SCREEN_SOURCE_MATRIX_2026-11-16.md`
+- `project-docs/registers/F6_AUTOMATED_ACCESSIBILITY_RESULTS.md`
+- `project-docs/registers/F6_FRONTEND_ACCEPTANCE_EVIDENCE.md`
+- `project-docs/registers/F6_FRONTEND_UAT_EVIDENCE.md`
+- `project-docs/registers/FEATURE_TRACEABILITY.csv`
+- `project-docs/registers/FRONTEND_BACKEND_CONTRACT_INVENTORY_2026-11-17.md`
+- `project-docs/registers/MANIFEST_SHA256.csv`
+- `project-docs/registers/SCREENS.csv`
+- `project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_2026-11-17.csv`
+- `project-docs/registers/SESSION0_REQUIREMENTS_RECONCILIATION_SUMMARY_2026-11-17.md`
+- `project-docs/registers/SESSION0_SOURCE_AND_DOCUMENT_INVENTORY_2026-11-17.csv`
+- `project-docs/registers/SOURCE_INVENTORY.csv`
+- `project-docs/registers/TECHNICAL_PROOFS.csv`
+- `project-docs/registers/TECHNICAL_PROOFS_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/TEST_CASES.csv`
+- `project-docs/registers/TEST_CASES_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/UI_001_115_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/registers/WORKFLOWS.csv`
+- `project-docs/registers/WORKFLOWS_BACKEND_EVIDENCE_2026-11-15.csv`
+- `project-docs/sources/APPROVED_BRAND_DESIGN_SNAPSHOT_NEEDS_REFERENCE_CHECK.md`
+- `project-docs/sources/BRANDING_SNAPSHOT_APPROVED_DIRECTION.md`
+- `project-docs/sources/EDITOR_FINAL_BLUEPRINT_v1_ORIGINAL_UNMODIFIED.md`
+- `project-docs/sources/HISTORICAL_V2_333_PATH_COUNT_SUPERSEDED.md`
+- `project-docs/sources/HISTORICAL_V2_333_PATH_MANIFEST_SUPERSEDED.csv`
+- `project-docs/sources/OLD_31_SCREEN_INVENTORY_SUPERSEDED.md`
+- `project-docs/sources/PHASE2_DESIGN_SNAPSHOT_SUPERSEDED.md`
+- `project-docs/sources/README.md`
+
+## External records
+
+- Existing coordination: https://app.notion.com/p/41ab082297c78134b007f69c52bd5475
+- B16 plan: https://app.notion.com/p/41bb082297c781948335e8728d512fa9
+- Approved decisions/interview: https://app.notion.com/p/416b082297c781b2b6b1ec116ab4bb9e
+- LIGHT approval register: https://app.notion.com/p/417b082297c781c49168c54b656d9cca
+- Audit report: https://chatgpt.com/library?file_id=libfile_cb9fae7971f0819181c4772c3213dcf0&account_id=personal
+- S0 existing log: https://app.notion.com/p/41ab082297c78147a3bee76433f1f63b
+- S1 existing log: https://app.notion.com/p/41ab082297c781048ae8e1aed99469a1
+- S2 existing log: https://app.notion.com/p/41ab082297c781309dc4e1d6ea63acf4
+- S3 existing log: https://app.notion.com/p/41ab082297c78182ba7bdf09cf96da89
+- S4 existing log: https://app.notion.com/p/41ab082297c7819c9a51f338d94fe9f2
+- S5 existing log: https://app.notion.com/p/41ab082297c781faa41fe270adf4c7ec
+- S6 existing log: https://app.notion.com/p/41ab082297c781d2a861ca24be8bc5a5

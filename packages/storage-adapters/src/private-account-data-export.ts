@@ -51,7 +51,7 @@ function safeRestrictedAudit(value:unknown):boolean {
 }
 export class PrivateAccountExportError extends Error {
   readonly code:'VALIDATION'|'AUTH_EXPIRED'|'PROVIDER_UNAVAILABLE'|
-    'INTEGRITY'|'LIMIT_EXCEEDED'|'UNVERIFIED';
+    'INTEGRITY'|'LIMIT_EXCEEDED'|'RATE_LIMITED'|'UNVERIFIED';
   constructor(code:PrivateAccountExportError['code'],message:string){
     super(message);this.name='PrivateAccountExportError';this.code=code;
   }
@@ -123,7 +123,20 @@ function base64(bytes:Uint8Array):string {
     binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
   return btoa(binary);
 }
-async function boundedBytes(response:Response,max:number):Promise<Uint8Array> {
+// An injected transport can return a stream which ignores fetch abort. Bound
+// the body read as well as the request; never await tee cancellation.
+async function readExportChunk(reader:ReadableStreamDefaultReader<Uint8Array>,
+  signal:AbortSignal):Promise<ReadableStreamReadResult<Uint8Array>>{
+  signal.throwIfAborted();
+  let onAbort:()=>void=()=>{};
+  const aborted=new Promise<never>((_,reject)=>{
+    onAbort=()=>reject(signal.reason);
+    signal.addEventListener('abort',onAbort,{once:true});
+  });
+  try{return await Promise.race([reader.read(),aborted]);}
+  finally{signal.removeEventListener('abort',onAbort);}
+}
+async function boundedBytes(response:Response,max:number,signal:AbortSignal):Promise<Uint8Array> {
   const length=response.headers.get('content-length');
   requireCondition(response.body!==null,'PROVIDER_UNAVAILABLE','Missing provider response body.');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];
@@ -134,14 +147,14 @@ async function boundedBytes(response:Response,max:number):Promise<Uint8Array> {
     requireCondition(length===null||Number(length)<=max,'LIMIT_EXCEEDED',
       'Provider response exceeds export limits.');
     while(true){
-      const {done,value}=await reader.read();
+      const {done,value}=await readExportChunk(reader,signal);
       if(done)break;
       total+=value.byteLength;
       requireCondition(total<=max,'LIMIT_EXCEEDED','Provider response exceeds export limits.');
       parts.push(value);
     }
   }catch(error){
-    await reader.cancel().catch(()=>{});
+    void reader.cancel().catch(()=>{});
     if(error instanceof PrivateAccountExportError)throw error;
     throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export response was interrupted.');
   }finally{reader.releaseLock();}
@@ -176,22 +189,36 @@ export class SupabasePrivateAccountDataExporter {
   private async request(path:string,max:number,body?:Record<string,unknown>):Promise<{bytes:Uint8Array;headers:Headers}> {
     const jwt=await this.accessToken();
     requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const signal=AbortSignal.timeout(15_000);
     let response:Response;
     try {
       response=await this.http(this.origin+path,{
         method:body===undefined?'GET':'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,
           Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
         body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15_000)
+        credentials:'omit',cache:'no-store',redirect:'error',signal
       });
     }catch{throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export source unavailable.');}
     if(!response.ok){
-      await response.body?.cancel().catch(()=>{});
-      throw new PrivateAccountExportError(
-        response.status===401||response.status===403?'AUTH_EXPIRED':'PROVIDER_UNAVAILABLE',
-        'Private export read was denied or unavailable.');
+      let code:PrivateAccountExportError['code']='PROVIDER_UNAVAILABLE';
+      let message='Private export read was denied or unavailable.';
+      if(response.status===401||response.status===403)code='AUTH_EXPIRED';
+      else if(response.status===429){code='RATE_LIMITED';message='Too many export requests. Try again later.';}
+      else if(response.status===413){code='LIMIT_EXCEEDED';message='The export exceeds the bounded response limit.';}
+      else if(path.startsWith('/rest/v1/rpc/')){
+        // Never surface arbitrary PostgREST details, and bound error bodies.
+        try{
+          const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192,signal)));
+          if(object(raw)&&raw.code==='54000'&&
+            ['ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED','ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED'].includes(String(raw.message))){
+            code='LIMIT_EXCEEDED';message='The account exceeds the supported export limits.';
+          }
+        }catch{ /* Unrecognized or invalid error remains unavailable. */ }
+      }
+      void response.body?.cancel().catch(()=>{});
+      throw new PrivateAccountExportError(code,message);
     }
-    return {bytes:await boundedBytes(response,max),headers:response.headers};
+    return {bytes:await boundedBytes(response,max,signal),headers:response.headers};
   }
   private async json(path:string,max:number,body?:Record<string,unknown>):Promise<unknown> {
     const {bytes}=await this.request(path,max,body);
@@ -206,6 +233,8 @@ export class SupabasePrivateAccountDataExporter {
   private async reconcile(snapshotId:string):Promise<number> {
     const raw=await this.json('/rest/v1/rpc/reconcile_private_account_exit_storage',
       65536,{p_snapshot_id:snapshotId});
+    if(object(raw)&&raw.snapshotId===snapshotId&&raw.status==='LIMIT_EXCEEDED'&&raw.limitExceeded===true)
+      throw new PrivateAccountExportError('LIMIT_EXCEEDED','The private storage inventory exceeds the bounded reconciliation limit.');
     requireCondition(object(raw)&&raw.snapshotId===snapshotId&&
       raw.status==='METADATA_MATCH_ONLY'&&raw.limitExceeded===false&&
       raw.inventoryDrift===false&&raw.missingObjects===0&&raw.orphanObjects===0&&

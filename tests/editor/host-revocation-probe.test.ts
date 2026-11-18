@@ -390,3 +390,63 @@ test('withdrawal rejects unsafe live HEAD responses before touching the release 
   }
   assert.equal(withdrawals,0,'Unsafe HEAD metadata cannot trigger destructive withdrawal');
 });
+
+test('C11 canonical public API alias and exact media scope are observed; wrong aliases reject before HTTP',async()=>{
+  const alias='/api/public-portfolio?handle=release_owner&slug=release-fixture';
+  const asset=alias+'&manifest='+'a'.repeat(64)+'&asset='+'b'.repeat(64);
+  const calls:string[]=[];
+  const http:typeof fetch=async(url,init)=>{
+    const target=new URL(String(url));calls.push(init?.method+' '+target.pathname+target.search);
+    return response(404,{},init?.method==='HEAD'?'':'Not found');
+  };
+  const result=await probeHostRevocation({...input,candidateDirectPaths:[alias,asset]},http);
+  assert.equal(result.observedHttpRequests,6);
+  assert.deepEqual(calls,[...['GET','HEAD'].map(m=>m+' '+input.canonicalPath),
+    ...['GET','HEAD'].map(m=>m+' '+alias),...['GET','HEAD'].map(m=>m+' '+asset)]);
+  for(const invalid of [alias.replace('release_owner','foreign_owner'),alias+'&slug=another',
+    alias+'&manifest='+'a'.repeat(64)+'&asset='+'b'.repeat(64)+'&asset='+'c'.repeat(64)]){
+    let reached=false;
+    await assert.rejects(probeHostRevocation({...input,candidateDirectPaths:[invalid]},async()=>{
+      reached=true;return response();
+    }),{code:'INVALID_INPUT'});
+    assert.equal(reached,false);
+  }
+});
+test('C11 deny receipt rejects positive Age and a HEAD stream with empty prefix then bytes',async()=>{
+  await assert.rejects(probeHostRevocation(input,async()=>response(404,{Age:'1'})),{code:'UNSAFE_HEADERS'});
+  let calls=0;
+  const valid=()=>response(404);
+  const http:typeof fetch=async(_url,init)=>{
+    calls++;
+    if(init?.method!=='HEAD')return valid();
+    return new Response(new ReadableStream<Uint8Array>({start(c){
+      c.enqueue(new Uint8Array(0));c.enqueue(Uint8Array.of(1));c.close();
+    }}),{status:404,headers:{
+      'Content-Type':'text/plain','Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'
+    }});
+  };
+  await assert.rejects(probeHostRevocation(input,http),{code:'UNSAFE_BODY'});
+  assert.equal(calls,2,'A false HEAD receipt must stop observation before further paths');
+});
+test('C11 stalled HEAD cannot produce a successful revocation or hold observation indefinitely',{timeout:9000},async()=>{
+  let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
+  let canceled=false;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const http:typeof fetch=async(_url,init)=>{
+      if(init?.method!=='HEAD')return response();
+      const body=new ReadableStream<Uint8Array>({
+        start(c){controller=c;c.enqueue(new Uint8Array(0));},
+        cancel(){canceled=true;}
+      });
+      return new Response(body,{status:404,headers:{
+        'Content-Type':'text/plain','Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'
+      }});
+    };
+    const watchdog=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('Revocation observation exceeded deadline')),7000);
+    });
+    await assert.rejects(Promise.race([probeHostRevocation(input,http),watchdog]),{code:'UNSAFE_BODY'});
+    assert.equal(canceled,true);
+  }finally{if(timer!==undefined)clearTimeout(timer);try{controller?.close();}catch{}}
+});

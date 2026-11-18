@@ -317,3 +317,71 @@ test('HTML5 slash-separated executable attributes are refused despite matching d
     assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   }
 });
+
+test('B16 SSR rejects non-origin-form, normalized or shadow identity paths before privileged RPC',async()=>{
+  for(const [handler,base,data] of [
+    [handlePublicPortfolio,path,payload(html)],
+    [handlePublishedIdentity,identityPath,{handle:'sample_user',displayName:'Visible'}]
+  ] as const){
+    for(const url of [
+      'https://attacker.invalid'+base,'//attacker.invalid'+base,
+      '/x/..'+base,'/x/%2e%2e'+base,base+'#fragment',
+      '/\\attacker.invalid'+base,base+'\n',base+'%00',
+      base+'&handle=other_user'
+    ]){
+      const {res,calls}=await invoke(handler,{url,data});
+      assert.equal(res.statusCode,404);
+      assert.equal(calls.length,0,'Malformed request must not reach a privileged resolver');
+      assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+    }
+  }
+});
+test('B16 consented identity SSR emits digest of exact escaped bytes, bodyless HEAD and no inferred canonical claims',async()=>{
+  const data={handle:'sample_user',displayName:'<Owner & "Visible">',headline:'Public <headline>',bio:'Selected biography'};
+  const hostileHeaders={host:'evil.invalid','x-forwarded-host':'evil.invalid','x-forwarded-proto':'https',
+    'x-kadmeion-verified':'1'};
+  const get=await invoke(handlePublishedIdentity,{url:'/u/sample_user',data,requestHeaders:hostileHeaders});
+  const head=await invoke(handlePublishedIdentity,{url:identityPath,data,method:'HEAD',requestHeaders:hostileHeaders});
+  assert.equal(get.res.statusCode,200);assert.equal(head.res.statusCode,200);
+  const body=String(get.res.body),sha=digest(body);
+  assert.equal(get.res.headers.get('x-kadmeion-served-sha256'),sha);
+  assert.equal(head.res.headers.get('x-kadmeion-served-sha256'),sha);
+  assert.equal(head.res.body,'');
+  assert.equal(get.res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  assert.equal(head.res.headers.get('cache-control'),'private, no-store');
+  assert.match(body,/property="og:title" content="&lt;Owner &amp; &quot;Visible&quot;&gt;"/);
+  assert.match(body,/property="og:description" content="Public &lt;headline&gt;"/);
+  assert.doesNotMatch(body,/evil\.invalid|og:url|og:image|rel="canonical"|<Owner/);
+  assert.equal(get.calls.length,1);assert.equal(head.calls.length,1);
+  assert.deepEqual(JSON.parse(String(get.calls[0].options.body)),{p_handle:'sample_user'});
+  assert.equal(head.calls[0].options.body,get.calls[0].options.body);
+  for(const extra of [{avatarUrl:'https://example.com/p.png'},{ownerId:'hidden'},{verified:true},{private_links:[]}]) {
+    const denied=await invoke(handlePublishedIdentity,{url:identityPath,data:{...data,...extra}});
+    assert.equal(denied.res.statusCode,503);
+    assert.equal(denied.res.headers.has('x-kadmeion-served-sha256'),false);
+  }
+});
+test('B16 bounded upstream body denial cannot hang on unread clone sibling or stalled stream',{timeout:12000},async()=>{
+  const bad=new Response('invalid',{headers:{'content-type':'text/html'}});
+  const sibling=bad.clone();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const watchdog=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('cancel blocked')),1000);});
+    const out=await Promise.race([invoke(handlePublishedIdentity,{url:identityPath,httpResponse:bad}),watchdog]);
+    assert.equal(out.res.statusCode,503);
+  }finally{if(timer!==undefined)clearTimeout(timer);void sibling.body?.cancel().catch(()=>{});}
+  let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
+  let cancelled=false,deadline:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const upstream=new Response(new ReadableStream<Uint8Array>({
+      start(c){controller=c;c.enqueue(new TextEncoder().encode('{"handle":'));},
+      cancel(){cancelled=true;}
+    }),{headers:{'content-type':'application/json'}});
+    const watchdog=new Promise<never>((_,reject)=>{deadline=setTimeout(()=>reject(Error('body deadline exceeded')),7000);});
+    const out=await Promise.race([invoke(handlePublishedIdentity,{url:identityPath,httpResponse:upstream}),watchdog]);
+    assert.equal(out.res.statusCode,503);
+    assert.equal(out.res.body,'Temporarily unavailable');
+    assert.equal(out.res.headers.has('x-kadmeion-served-sha256'),false);
+    assert.equal(cancelled,true);
+  }finally{if(deadline!==undefined)clearTimeout(deadline);try{controller?.close();}catch{}}
+});

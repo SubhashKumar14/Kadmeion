@@ -154,7 +154,9 @@ async function readModerationJson(response:Response):Promise<unknown> {
       parts.push(part.value);
     }
   }catch{
-    await reader.cancel().catch(()=>{});
+    // Cancellation of a cloned/teed body can wait for an unread sibling.
+    // Fail closed immediately; best-effort cleanup must not block recovery.
+    void reader.cancel().catch(()=>{});
     throw new PrivateModerationError('INVALID_ACK','Moderation response stream was interrupted.');
   }finally{reader.releaseLock();}
   const encoding=response.headers.get('content-encoding');
@@ -307,11 +309,13 @@ export class SupabasePrivateModerationService {
     });
     if(!Array.isArray(raw)||raw.length>max)
       throw new PrivateModerationError('INVALID_ACK','Invalid abuse queue response.');
-    const seen=new Set<string>();
+    // PostgreSQL UUID order matches canonical lowercase hex lexicographic order.
+    // Reject duplicate, regressing and cursor-inclusive pages before exposing evidence.
+    let previous=after?.toLowerCase()??null;
     return raw.map((entry:unknown):OperatorPortfolioAbuseReport=>{
       if(!isRecord(entry)||Object.keys(entry).sort().join(',')!==
         'created_at,evidence,id,reason_code,target_path'||
-        !isUUID(entry.id)||seen.has(entry.id)||
+        !isUUID(entry.id)||(previous!==null&&entry.id.toLowerCase()<=previous)||
         !isPublicPortfolioPath(entry.target_path)||
         !isEnum(entry.reason_code,REASONS)||
         typeof entry.evidence!=='string'||
@@ -319,7 +323,7 @@ export class SupabasePrivateModerationService {
         encoder.encode(entry.evidence).byteLength>2000||
         /[\u0000-\u001f\u007f]/.test(entry.evidence)||!isDate(entry.created_at))
         throw new PrivateModerationError('INVALID_ACK','Untrusted abuse queue data.');
-      seen.add(entry.id);
+      previous=entry.id.toLowerCase();
       return {id:entry.id,target_path:entry.target_path,reason_code:entry.reason_code,
         evidence:entry.evidence,created_at:entry.created_at};
     });
