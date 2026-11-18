@@ -3237,7 +3237,20 @@ test('B16 WF-020/021/023/025 R5 native pinned placement, EMPTY undo, device favo
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(starter).toBeVisible();
   await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(empty).toBeVisible();
   // Exercise genuine browser drag events, not a fabricated transaction or serialized edit payload.
-  await heading.dragTo(empty);
+  // Keep both live controls in view; Chromium requires a second mouse move
+  // over the destination to dispatch dragover reliably. Never synthesize Drop
+  // or call the editor transaction from the test.
+  await board.getByLabel('Search placement library').fill('title-stacked@1');
+  await expect(heading).toHaveAttribute('draggable','true');
+  await expect(heading).toBeEnabled();
+  await expect(empty).toBeVisible();
+  await heading.hover();
+  await page.mouse.down();
+  try{
+    await empty.hover();
+    await empty.hover();
+    await expect(empty.locator('..')).toHaveAttribute('data-drop-fit','compatible');
+  }finally{await page.mouse.up();}
   await expect(starter).toBeVisible();
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(empty).toBeVisible();
   // The keyboard-equivalent selection must use the same declared assignment transaction.
