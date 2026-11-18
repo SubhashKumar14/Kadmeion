@@ -216,6 +216,12 @@ export async function probeHostRevocation(
   });
 }
 
+function assertFrozenPng(bytes:Uint8Array):void {
+  const signature=[137,80,78,71,13,10,26,10];
+  if(bytes.byteLength<signature.length||!signature.every((value,index)=>bytes[index]===value))
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+}
+
 async function verifyLiveBytes(
   response:Response, mime:RegExp, maxBytes:number, expectedDigest:string,
   inspect?:(bytes:Uint8Array)=>void
@@ -291,7 +297,7 @@ async function observeReleaseWithdrawal(
   }
   for(const [path,sha256] of liveAssets){
     const image=await fetchPath(new URL(path,origin),'GET',http);
-    await verifyLiveBytes(image,/^image\/png$/i,5*1024*1024,sha256);
+    await verifyLiveBytes(image,/^image\/png$/i,5*1024*1024,sha256,assertFrozenPng);
     await verifyLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),/^image\/png$/i);
   }
   await withdraw();
@@ -536,7 +542,7 @@ export async function verifyReviewerHostWithdrawal(
       cancelProbeBody(media.body);
       throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
     }
-    await verifyLiveBytes(media,/^image\/png(?:;|$)/i,4_000_000,asset.sha256);
+    await verifyLiveBytes(media,/^image\/png(?:;|$)/i,4_000_000,asset.sha256,assertFrozenPng);
     checks++;
     await reviewerLiveHead(await fetchPath(new URL(asset.path,origin),'HEAD',http),true);
     checks++;
