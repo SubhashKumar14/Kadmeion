@@ -370,11 +370,14 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       });
     } catch { throw new Error('Could not connect to the authentication service.'); }
     const strictSignupResend = method === 'POST' && path.startsWith('/resend?redirect_to=') && body?.type === 'signup';
+    const strictRecovery = method === 'POST' && path.startsWith('/recover?redirect_to=');
     const payload: unknown = await response.json().catch(() => undefined);
-    if (response.ok && strictSignupResend &&
+    if (response.ok && (strictSignupResend || strictRecovery) &&
         (response.status !== 200 || !payload || typeof payload !== 'object' ||
          Array.isArray(payload) || Object.keys(payload).length !== 0))
-      throw new Error('The authentication server returned an invalid confirmation acknowledgement.');
+      throw new Error(strictRecovery
+        ? 'The authentication server returned an invalid recovery acknowledgement.'
+        : 'The authentication server returned an invalid confirmation acknowledgement.');
     if (!response.ok) {
       const data = (payload && typeof payload === 'object' ? payload : {}) as Json;
       const code = typeof data.error_code === 'string' ? data.error_code : '';
