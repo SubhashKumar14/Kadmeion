@@ -504,6 +504,11 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     imagePendingRef.current=pending;setImagePending(pending);
   },[]);
   const overviewPending = useRef(false);
+  const ownerEpoch=useRef(port.getOwnerSessionEpoch());
+  const detailGeneration=useRef(0);
+  const ownerExpired=useRef(false);
+  const currentOwner=()=>!ownerExpired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
+  const currentDetail=(generation:number)=>generation===detailGeneration.current&&currentOwner();
   const casePendingRef = useRef(false);
   const observeRevision = useCallback((revision:number) => {
     setKnownRevision(previous=>Math.max(previous,revision));
@@ -531,19 +536,34 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const canStartImage=useCallback(()=>!overviewPending.current&&!casePendingRef.current&&!imagePendingRef.current,[]);
 
   useEffect(() => {
-    let active = true;
-    void port.readOwnerProject(projectId).then(result => {
-      if (!active) return;
+    const generation=++detailGeneration.current;
+    ownerEpoch.current=port.getOwnerSessionEpoch();ownerExpired.current=false;
+    overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
+    setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
+    setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);
+    setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
+    setOpenedSections(false);setPanel('details');setDetail({status:'loading'});
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next===ownerEpoch.current||ownerExpired.current)return;
+      ownerExpired.current=true;++detailGeneration.current;
+      overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
+      setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
+      setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);
+      setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
+      setOpenedSections(false);setPanel('details');setDetail({status:'unavailable'});
+    });
+    if(currentDetail(generation))void port.readOwnerProject(projectId).then(result => {
+      if (!currentDetail(generation)) return;
       if (result.data && !result.error) {
         observeRevision(result.data.revision);
         setDetail({status:'ready',saved:result.data,draft:result.data});
       } else setDetail({status:'unavailable'});
-    }).catch(() => {if (active) setDetail({status:'unavailable'});});
-    return () => { active = false; };
+    }).catch(() => {if(currentDetail(generation))setDetail({status:'unavailable'});});
+    return () => {++detailGeneration.current;unsubscribe();};
   }, [port, projectId, reload, observeRevision]);
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
-    if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    if (!currentOwner()||overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     if(field==='repositoryUrl'||field==='liveUrl')setReviewedDestinationChange(null);
     setConfirmOverviewRebase(false);
     setDetail(current => current.status === 'ready'
@@ -552,7 +572,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   }
 
   async function compareLatest(baseRevision: number) {
-    if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    if (!currentOwner()||overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    const generation=detailGeneration.current;
     overviewPending.current=true;
     setReviewedDestinationChange(null);
     setConfirmOverviewRebase(false);
@@ -561,6 +582,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setLatest(null);
     try {
       const {data,error} = await port.readOwnerProject(projectId);
+      if(!currentDetail(generation))return;
       if (!data || error || data.revision < Math.max(baseRevision,knownRevision)) {
         setFeedback({error:true,text:'Could not verify the latest revision. Your edits are still here.'});
         return;
@@ -572,15 +594,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         setFeedback({error:false,text:'You have the latest saved revision.'});
       } else setOverviewConflict(true);
     } catch {
-      setFeedback({error:true,text:'Latest revision check failed. Your private draft is preserved.'});
+      if(currentDetail(generation))setFeedback({error:true,text:'Latest revision check failed. Your private draft is preserved.'});
     } finally {
-      overviewPending.current=false;
-      setChecking(false);
+      if(currentDetail(generation)){overviewPending.current=false;setChecking(false);}
     }
   }
 
   function resolveOverviewComparison(keep:boolean){
-    if(detail.status!=='ready'||!latest||latest.revision<knownRevision||
+    if(!currentOwner()||detail.status!=='ready'||!latest||latest.revision<knownRevision||
       overviewPending.current||casePendingRef.current||imagePendingRef.current||
       (keep&&!confirmOverviewRebase))return;
     // Rebase ONLY the overview baseline. Keep the case-study buffer and its
@@ -593,7 +614,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
+    if (!currentOwner()||detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
         overviewConflict || knownRevision>detail.saved.revision || latest) return;
     let submitted:PrivateProjectDraft;
     try{submitted=normalizeProjectDraft(detail.draft);}
@@ -605,12 +626,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     overviewPending.current=true;
     setSaving(true);
     setFeedback(null);
-    const from=detail.saved.revision;
+    const from=detail.saved.revision,generation=detailGeneration.current;
     try {
       const result = await port.saveOwnerProject(projectId, from, submitted);
+      if(!currentDetail(generation))return;
       if (!result.data || result.error || result.data.revision!==from+1) {
         const message=result.error?.message ?? 'Save could not be confirmed.';
-        if (projectConflict(message)) {setOverviewConflict(true);setReviewedDestinationChange(null);}
+        // Any unconfirmed receipt requires a fresh compare before another write.
+        setOverviewConflict(true);setReviewedDestinationChange(null);
         setFeedback({error:true,text:message});
         return;
       }
@@ -621,10 +644,12 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       setReviewedDestinationChange(null);
       setFeedback({error:false,text:'Private draft saved.'});
     } catch {
-      setFeedback({error:true,text:'Project save could not be verified. Your edits remain available.'});
+      if(currentDetail(generation)){
+        setOverviewConflict(true);setReviewedDestinationChange(null);
+        setFeedback({error:true,text:'Project save could not be verified. Check the latest revision before retrying. Your edits remain available.'});
+      }
     } finally {
-      overviewPending.current=false;
-      setSaving(false);
+      if(currentDetail(generation)){overviewPending.current=false;setSaving(false);}
     }
   }
 
