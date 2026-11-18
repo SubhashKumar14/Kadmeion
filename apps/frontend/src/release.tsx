@@ -112,7 +112,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [pointer,setPointer]=useState<PrivatePointerSnapshot|null>(null);
   const [visibility,setVisibility]=useState<FrozenVisibilityIntent>('UNLISTED');
   const [frozen,setFrozen]=useState<PrivateFrozenRequest|null>(null);
-  const [pinnedPreview,setPinnedPreview]=useState<PortfolioSnapshot|null>(null);
+  const [pinnedPreviewReceipt,setPinnedPreviewReceipt]=useState<{requestId:string;snapshot:PortfolioSnapshot}|null>(null);
+  const pinnedPreview=frozen&&pinnedPreviewReceipt?.requestId===frozen.requestId?pinnedPreviewReceipt.snapshot:null;
   const [pinnedPreviewPending,setPinnedPreviewPending]=useState(false);
   const [pinnedPreviewError,setPinnedPreviewError]=useState('');
   const [pinReadRetry,setPinReadRetry]=useState(0);
@@ -156,7 +157,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     setPinReadRetry(0);
     setReadPhase(null);setRecord(null);setRevisions(null);setFrozenRequests(null);setFrozenListError('');
     setSelectedRevision(null);setRevisionError('');setPointer(null);
-    setVisibility('UNLISTED');setFrozen(null);setPinnedPreview(null);
+    setVisibility('UNLISTED');setFrozen(null);setPinnedPreviewReceipt(null);
     setPinnedPreviewPending(false);setPinnedPreviewError('');setResult(null);
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     setGrant(null);setGrants(null);setGrantListError('');
@@ -217,17 +218,17 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   /** Distinguish an owner-only saved-head visual from the exact frozen pin.
    * Never show a fallback HEAD while labeling it as the selected revision. */
   useEffect(()=>{
-    if (mode!=='staging'||!frozen) {
-      setPinnedPreview(null);setPinnedPreviewError('');setPinnedPreviewPending(false);
+    if (mode==='share'||!frozen) {
+      setPinnedPreviewReceipt(null);setPinnedPreviewError('');setPinnedPreviewPending(false);
       return;
     }
     let active=true;
-    setPinnedPreview(null);setPinnedPreviewError('');setPinnedPreviewPending(true);
+    setPinnedPreviewReceipt(null);setPinnedPreviewError('');setPinnedPreviewPending(true);
     void port.loadOwnerFrozenRelease(frozen.requestId).then(reply=>{
       if (!active) return;
       if (frozen.portfolioId!==id||!matchesFrozenPin(reply.data,frozen)) {
         setPinnedPreviewError('The exact frozen revision could not be verified. The current draft is not substituted.');
-      } else setPinnedPreview(reply.data.snapshot);
+      } else setPinnedPreviewReceipt({requestId:frozen.requestId,snapshot:reply.data.snapshot});
     }).catch(()=>{
       if (active) setPinnedPreviewError('The pinned preview is temporarily unavailable. No public data was released.');
     }).finally(()=>{if(active)setPinnedPreviewPending(false);});
@@ -365,7 +366,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       const pin=await port.loadOwnerFrozenRelease(frozen.requestId);
       if (!current()) return;
       if (frozen.portfolioId!==id||!matchesFrozenPin(pin.data,frozen)) {
-        setPinnedPreview(null);setPinnedPreviewError('The exact frozen revision could not be rechecked. Retry verification before registering.');
+        setPinnedPreviewReceipt(null);setPinnedPreviewError('The exact frozen revision could not be rechecked. Retry verification before registering.');
         return;
       }
       grantOperation.current ??= crypto.randomUUID();
@@ -505,13 +506,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       historySelectionEpoch.current+=1;
       setHistorySelection(request);setHistorySelectionPending(false);
       setHistorySelectionError('The frozen request conflicts with owner revision metadata. No draft was substituted.');
-      setFrozen(null);setPinnedPreview(null);setPinnedPreviewError('');
+      setFrozen(null);setPinnedPreviewReceipt(null);setPinnedPreviewError('');
       setResult(null);setGrant(null);setError('');setNotice('');
       return;
     }
     const epoch=++historySelectionEpoch.current;
     setHistorySelection(request);setHistorySelectionPending(true);setHistorySelectionError('');
-    setFrozen(null);setPinnedPreview(null);setPinnedPreviewError('');
+    setFrozen(null);setPinnedPreviewReceipt(null);setPinnedPreviewError('');
     setError('');setNotice('');setResult(null);setConfirmRevoke(false);setGrant(null);
     try {
       const response=await port.loadOwnerFrozenRelease(request.requestId);
@@ -841,6 +842,18 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             </div>
           </div>}
         </>}
+        {(mode==='publish'||mode==='releases')&&frozen&&!historySelection&&
+          <section className="ws-release-action" aria-labelledby="private-pin-preview-title">
+            <h3 id="private-pin-preview-title">Owner-private preview of frozen revision {frozen.revision}</h3>
+            <p>Read-only simulation of the exact verified frozen snapshot using the current portfolio title. It is not a published artifact or a host receipt.</p>
+            {pinnedPreviewPending&&!pinnedPreviewError&&!pinnedPreview&&<ReleasePending label="Verifying the exact private revision…" detail />}
+            {pinnedPreviewError&&<p role="alert">{pinnedPreviewError}</p>}
+            {pinnedPreviewError&&!pinnedPreviewPending&&<button type="button" className="ws-secondary" disabled={busy}
+              onClick={()=>setPinReadRetry(value=>value+1)}>Retry exact frozen revision</button>}
+            {pinnedPreview&&!pinnedPreviewPending&&!pinnedPreviewError&&<div className="ws-release-visual-canvas">
+              <PortfolioCanvas snapshot={pinnedPreview} title={record.title} simulation keyboardScroll/>
+            </div>}
+          </section>}
         {(mode==='staging'||mode==='publish'||mode==='releases')&&frozen&&!historySelection&&
           <section className="ws-release-action" aria-labelledby="private-comparison-title">
             <h3 id="private-comparison-title">Compare private revision {frozen.revision}</h3>
