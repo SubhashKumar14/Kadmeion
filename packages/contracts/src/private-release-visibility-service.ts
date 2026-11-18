@@ -356,7 +356,9 @@ export class SupabasePrivateReleasePointerService {
       const response=await this.http(target,{
         method:'POST',headers:{apikey:this.key,Authorization:'Bearer '+jwt,
           'Content-Type':'application/json',Accept:'application/json'},
-        body:JSON.stringify(checkOnly?{intentId:identity.intentId,action:'CHECK_PUBLIC'}:{intentId:identity.intentId}),
+        body:JSON.stringify({intentId:identity.intentId,
+          expectedPortfolioId:identity.portfolioId,expectedRequestId:identity.requestId,
+          expectedOperationId:identity.operationId,...(checkOnly?{action:'CHECK_PUBLIC'}:{})}),
         credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
       });
       if(controller.signal.aborted||response.redirected||(response.url!==''&&response.url!==target)){
