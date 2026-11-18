@@ -361,31 +361,52 @@ export function PortfolioChooser({port}: {port: SupabaseBrowserAuthPort}) {
   const [choice, setChoice] = useState<PortfolioPresetId>('arc');
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
-  const [pending, setPending] = useState<{id: string; operation: string} | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const selected = presets.find(preset => preset.id === choice) ?? presets[0];
+  type PendingSetup={id:string;operation:string;preset:PortfolioPresetId;epoch:number;port:SupabaseBrowserAuthPort};
+  const [pending,setPending]=useState<PendingSetup|null>(null);
+  const pendingRef=useRef<PendingSetup|null>(null);
+  const flight=useRef(false);
+  const mounted=useRef(false);
+  const currentPort=useRef(port);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState('');
+  const selected=presets.find(preset=>preset.id===choice)??presets[0];
+  useLayoutEffect(()=>{
+    mounted.current=true;currentPort.current=port;
+    return()=>{mounted.current=false;};
+  },[port]);
 
-  async function create(event: FormEvent<HTMLFormElement>) {
+  async function create(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if (!allowed || saving) return;
-    setSaving(true);
-    setError('');
-    try {
-      let current = pending;
-      if (!current) {
-        const result = await port.createOwnerPortfolio(title, slug, selected.id);
-        if (!result.data) {setError(result.error?.message ?? 'Portfolio creation could not be confirmed.'); return;}
-        current = {id: result.data, operation: crypto.randomUUID()};
-        setPending(current);
+    if(!allowed||saving||flight.current||!mounted.current)return;
+    const epoch=port.reconcileOwnerSessionEpoch();
+    const current=()=>mounted.current&&currentPort.current===port&&port.reconcileOwnerSessionEpoch()===epoch;
+    let setup=pendingRef.current;
+    if(setup&&(setup.epoch!==epoch||setup.port!==port)){
+      pendingRef.current=null;setPending(null);setError('Owner session changed. Review your private portfolio library before creating another draft.');return;
+    }
+    flight.current=true;setSaving(true);setError('');
+    try{
+      if(!setup){
+        const result=await port.createOwnerPortfolio(title,slug,selected.id);
+        if(!current())return;
+        if(!result.data){
+          setError((result.error?.message??'Portfolio creation could not be confirmed.')+' Check your private portfolio library before creating another draft.');return;
+        }
+        setup={id:result.data,operation:crypto.randomUUID(),preset:selected.id,epoch,port};
+        pendingRef.current=setup;setPending(setup);
       }
-      const initialized = await port.initializeOwnerPortfolio(current.id, current.operation, selected.id);
-      if (!initialized.data) {setError(initialized.error?.message ?? 'Draft created. Retry initialization to continue.'); return;}
-      window.location.assign(editorPath(current.id));
-    } catch {
-      setError('Portfolio setup could not be confirmed. Your chosen name and layout are retained.');
-    } finally {
-      setSaving(false);
+      const initialized=await port.initializeOwnerPortfolio(setup.id,setup.operation,setup.preset);
+      if(!current())return;
+      if(typeof initialized.data!=='number'||!Number.isSafeInteger(initialized.data)||initialized.data<1){
+        setError(initialized.error?.message??'Draft created. Retry the same initialization to continue.');return;
+      }
+      window.location.assign(editorPath(setup.id));
+    }catch{
+      if(current())setError(setup?'Draft setup could not be confirmed. Retry the same setup.':
+        'Portfolio creation could not be confirmed. Check your private portfolio library before creating another draft.');
+    }finally{
+      flight.current=false;
+      if(current())setSaving(false);
     }
   }
 
