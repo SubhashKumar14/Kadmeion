@@ -296,7 +296,7 @@ export function PortfolioLibrary({port}: {port: SupabaseBrowserAuthPort}) {
       {!request.reset && <button type="button" className="ws-secondary" disabled={loading}
         onClick={refresh}>Refresh from first page</button>}
     </div></>}
-    {!items && !error && <p role="status">Loading your portfolios…</p>}
+    {!items && !error && <><p role="status">Loading your portfolios…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {items && <div className="ws-project-detail ws-owner-columns">
       <div className="ws-studio-list">
         {items.length > 0 && <label className="ws-studio-search">Find a portfolio<input type="search" value={query} onChange={event => setQuery(event.target.value)}/></label>}
@@ -456,6 +456,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [openedAssets,setOpenedAssets]=useState(false);
   const [openedHistory,setOpenedHistory]=useState(false);
   const [canvasWidth, setCanvasWidth] = useState(0);
+  const [measuredCanvasWidth,setMeasuredCanvasWidth]=useState<number|null>(null);
   const [sourceDrafts,setSourceDrafts]=useState<Record<string,string>>({});
   const sourceDirty=!!head&&unappliedSourceBufferCount(sourceDrafts,head.snapshot.files)>0;
   const [recoveryCopies,setRecoveryCopies]=useState<EditorRecoverySummary[]|null>(null);
@@ -531,14 +532,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
-    if(layoutMutation){
+    const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
+    if(layoutMutation||themeMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         layoutAppliedHead.current===head||preview||tool!=='Components'){
-        setError('Layout changes require the current verified editor and a fresh review.');return false;
+         layoutAppliedHead.current===head||preview||(layoutMutation?tool!=='Components':tool!=='Theme')){
+        setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
-      if(intent.expectedRevision!==head.revision){
-        setError('Working revision changed. Review the layout or stash again.');return false;
+      if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
+        setError('Working revision changed. Review the layout or theme again.');return false;
       }
     }
     // Changing an assignment or restoring another working snapshot must not
@@ -546,7 +548,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((layoutMutation||historyMutation) && (pendingFields || sourceDirty))||
+    if (((layoutMutation||themeMutation||historyMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -573,10 +575,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
         setSourceReset(value=>value+1);
       }
-      if(layoutMutation)layoutAppliedHead.current=head;
+      if(layoutMutation||themeMutation)layoutAppliedHead.current=head;
       setHead(next);
       setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation?
-        'Layout transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
+        'Layout transaction applied to the working draft. Save to persist, or use Undo.':themeMutation?
+        'Theme transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
       return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not apply the change.');
@@ -1156,7 +1159,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
   },[operation,pendingFields,sourceDirty]);
-  const contentPreview = <PortfolioCanvas snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
+  // Width reporting is an additive S7 canvas prop. Keep the worker delta
+  // compatible with the previous panel until S15 composes the exact peers.
+  const canvasMeasurement={onContentWidth:setMeasuredCanvasWidth};
+  const themeControls={contentWidth:measuredCanvasWidth,disabled:!allowed||!verifiedOwner||preview||saving||recoveryBusy||pendingFields||sourceDirty};
+  const contentPreview = <PortfolioCanvas {...canvasMeasurement} snapshot={head?.snapshot} title={record?.title ?? 'Portfolio draft'}
     width={canvasWidth || undefined} selectedSlot={slot}
     onSelectSlot={preview?undefined:(key)=>{
       setSlot(key);setTool('Content');
@@ -1310,7 +1317,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     </div>}
     {sourceDirty&&<div role="status" className="ws-editor-safety"><span>Unapplied owned-source text is held only in this editor. Apply or discard the buffer before leaving or saving.</span>
       <button type="button" className="ws-secondary" onClick={()=>{setTool('Source');setPreview(false);}}>Review source edits</button></div>}
-    {!record && !error && <p role="status">Loading portfolio…</p>}
+    {!record && !error && <><p role="status">Loading portfolio…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {record && !head && <button type="button" className="ws-primary" disabled={saving}
       onClick={() => void initialize()}>Complete draft setup</button>}
     {head&&!preview&&<nav className="ws-editor-modebar" aria-label="Editor panels">
@@ -1430,7 +1437,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
                 <p role="status">Use Assets for an owner-verified image placement; no generic media source is guessed.</p>}
           </>}
         </div>}
-        {tool === 'Theme' && <ThemeInspector head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
+        {tool === 'Theme' && <ThemeInspector {...themeControls} head={head} apply={apply} width={canvasWidth} resize={setCanvasWidth}/>}
         {tool === 'Metadata' && <section className="ws-editor-tool ws-metadata-inspector" aria-labelledby="metadata-title">
           <p className="ws-kicker">RELEASE CONTENT</p><h2 id="metadata-title">Page metadata</h2>
           <p>This author-written information stays private until an independently verified release is explicitly published.</p>
@@ -1653,7 +1660,8 @@ function PrivateShareDialog({onClose}:{onClose:()=>void}) {
 }
 
 export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
-  const [record,setRecord]=useState<PortfolioRecord|null>(null);
+  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
+  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
   const [error,setError]=useState('');
   const [view,setView]=useState<'author'|'visitor'>('visitor');
   const [device,setDevice]=useState<0|390|768>(0);
@@ -1661,10 +1669,12 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
   const [shareOpen,setShareOpen]=useState(false);
   useEffect(()=>{
     let active=true;
-    setRecord(null);setError('');
+    setLoadedPreview(null);setError('');setShareOpen(false);
+    const epoch=port.reconcileOwnerSessionEpoch();
     void port.readOwnerPortfolio(id).then(reply=>{
       if(!active)return;
-      if(reply.data?.snapshot){setRecord(reply.data);return;}
+      if(port.reconcileOwnerSessionEpoch()!==epoch){setError('The saved private revision could not be verified.');return;}
+      if(reply.data?.snapshot&&reply.data.id===id){setLoadedPreview({port,id,record:reply.data});return;}
       setError(reply.error?.message??'A saved private portfolio revision is not available.');
     }).catch(()=>{
       if(active)setError('The saved private revision could not be verified.');
@@ -1689,7 +1699,7 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
       {error}
       <button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button>
     </div>}
-    {!record&&!error&&<p role="status" className="ws-preview-loading">Loading your saved, owner-scoped preview…</p>}
+    {!record&&!error&&<><p role="status" className="ws-preview-loading">Loading your saved, owner-scoped preview…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></>}
     {record&&<div className="ws-preview-workbench">
       <aside className="ws-preview-sidebar" aria-label="Preview controls">
         <p className="ws-kicker">REVIEW BEFORE PUBLISHING</p>
@@ -1753,20 +1763,26 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
 }
 
 export function FullscreenPortfolioPreview({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
-  const [record, setRecord] = useState<PortfolioRecord | null>(null);
-  const [error, setError] = useState(false);
+  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
+  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
+  const [error,setError]=useState(false);
+  const [attempt,setAttempt]=useState(0);
 
-  useEffect(() => {
-    let active = true;
-    void port.readOwnerPortfolio(id).then(result => {
-      if (!active) return;
-      if (result.data?.snapshot) setRecord(result.data);
-      else setError(true);
-    });
-    return () => {active = false;};
-  }, [port, id]);
+  useEffect(()=>{
+    let active=true;
+    setLoadedPreview(null);setError(false);
+    const epoch=port.reconcileOwnerSessionEpoch();
+    void port.readOwnerPortfolio(id).then(result=>{
+      if(!active)return;
+      if(port.reconcileOwnerSessionEpoch()!==epoch||!result.data?.snapshot||result.data.id!==id){
+        setError(true);return;
+      }
+      setLoadedPreview({port,id,record:result.data});
+    }).catch(()=>{if(active)setError(true);});
+    return ()=>{active=false;};
+  },[port,id,attempt]);
 
-  if (error) return <main className="ws-gate"><h1>Portfolio unavailable.</h1><a href={STUDIO}>Return to portfolio library</a></main>;
-  if (!record) return <main className="ws-gate" aria-busy="true"><p role="status">Loading saved portfolio preview…</p></main>;
+  if(error)return <main className="ws-gate"><h1>Portfolio unavailable.</h1><button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button><a href={STUDIO}>Return to portfolio library</a></main>;
+  if(!record)return <main className="ws-gate"><p role="status">Loading saved portfolio preview…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></main>;
   return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone/>;
 }

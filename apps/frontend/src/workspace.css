@@ -400,12 +400,14 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .pv-empty-page{padding:35px}.pv-empty-page h2{font:normal 25px Georgia,serif}
 .portfolio-only-preview.pv-document{padding:0;border-top:4px solid;min-height:100dvh}
 .portfolio-only-preview .pv-site{max-width:1250px;margin:0 auto}
+@supports not (container-type:inline-size){
 @media(max-width:950px){.pv-hero-grid{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}
   .pv-section-slots{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.pv-hero-grid{grid-template-columns:1fr}.pv-hero-art{min-height:100px}
   .pv-section-slots{grid-template-columns:1fr}.pv-layout-L3 .pv-slot-cell:nth-child(1),
   .pv-layout-L4 .pv-slot-cell:nth-child(2){grid-column:auto}
   .pv-site-head span{display:none}.pv-site-footer{flex-direction:column;gap:2px}}
+}
 
 /* EDIT-01: compact, approved-reference-inspired three-pane editor shell.
  * Dashboard and public shells remain unchanged. */
@@ -1318,3 +1320,21 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-content:focus-visible,.ws-gate:focus-visible{outline:3px solid var(--focus);outline-offset:-3px}
 @media(max-width:720px){.ws-skeleton-grid>.glyph-skeleton{min-height:150px}.ws-home-intro>.ws-primary{max-width:100%;white-space:normal}}
 @media(max-width:440px){.ws-recent-grid li{align-items:flex-start;flex-wrap:wrap}.ws-recent-grid li span{flex:none}.ws-actions>:is(button,a){max-width:100%;white-space:normal;overflow-wrap:anywhere}}
+
+/* Portfolio layout follows the rendered site, not the workspace viewport.
+ * Keep this name distinct from the R4 token-measurement container. */
+@supports (container-type:inline-size){
+  .pv-site{container:k-portfolio-layout / inline-size}
+  @container k-portfolio-layout (width <= 950px){
+    .pv-hero-grid{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}
+    .pv-section-slots{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  @container k-portfolio-layout (width <= 600px){
+    .pv-hero-grid{grid-template-columns:1fr}
+    .pv-hero-art,.ws-editor-shell .ws-editor-grid .pv-hero-art{min-height:100px}
+    .pv-site .pv-section-slots{grid-template-columns:minmax(0,1fr)}
+    .pv-layout-L3 .pv-slot-cell:nth-child(1),.pv-layout-L4 .pv-slot-cell:nth-child(2){grid-column:auto}
+    .pv-site-head span{display:none}
+    .pv-site-footer{flex-direction:column;gap:2px}
+  }
+}
