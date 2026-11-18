@@ -134,6 +134,27 @@ select is(
 select is(
   (public.service_read_public_portfolio('release_owner','release-fixture')->>'indexable')::boolean,
   true,'HTTP-acknowledged public release is eligible for indexing');
+-- C11 is mandatory on the composed forward migration, never conditionally skipped.
+reset role;
+select has_table('kadmeion_private','public_delivery_epochs','C11 authoritative epoch table exists');
+select ok((select relrowsecurity from pg_class where oid='kadmeion_private.public_delivery_epochs'::regclass),
+  'C11 epoch ledger is RLS protected');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  where has_any_column_privilege(r,'kadmeion_private.public_delivery_epochs','SELECT,INSERT,UPDATE,REFERENCES')
+    or has_table_privilege(r,'kadmeion_private.public_delivery_epochs','DELETE,TRUNCATE,TRIGGER')),
+  'C11 API roles cannot read or mutate authoritative epoch rows directly');
+select ok(not exists(select 1 from unnest(array['service_read_current_public_delivery_receipt(uuid,uuid)',
+    'service_acknowledge_public_delivery(jsonb)','service_recover_failed_public_delivery(jsonb)']) p
+  where has_function_privilege('anon','public.'||p,'EXECUTE')
+    or has_function_privilege('authenticated','public.'||p,'EXECUTE')
+    or not has_function_privilege('service_role','public.'||p,'EXECUTE')),
+  'C11 only protected service role may read, acknowledge and recover delivery receipt');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['bump_public_delivery_epoch(uuid)','lock_expected_public_delivery(jsonb)',
+    'note_public_delivery_change()','note_public_delivery_handle()']) p
+  where has_function_privilege(r,'kadmeion_private.'||p,'EXECUTE')),
+  'C11 private epoch and lock helpers are inaccessible to all API roles');
+set local role service_role;
 -- Simulate a fresh activation that has not completed the independent host canary.
 reset role;
 update kadmeion_private.unlisted_release_routes set verified_at=null
@@ -146,10 +167,55 @@ select is(
   public.service_read_public_portfolio('release_owner','release-fixture')->>'htmlSha256',
   current_setting('kd.public_fixture.sha'),
   'non-indexable canary retains the exact trusted immutable release bytes');
+-- Exercise actual service-only receipt acknowledgement instead of bypassing it.
+select set_config('request.jwt.claim.role','service_role',true);
+select set_config('kd.public_fixture.receipt',
+  public.service_read_current_public_delivery_receipt('10000000-0000-4000-8000-0000000000d1',
+    '50000000-0000-4000-8000-0000000000d1')::text,true);
+select is(current_setting('kd.public_fixture.receipt')::jsonb->>'storedHtmlSha256',
+  current_setting('kd.public_fixture.sha'),'C11 receipt binds exact stored HTML digest');
+select is(current_setting('kd.public_fixture.receipt')::jsonb->>'operationId',
+  '60000000-0000-4000-8000-0000000000d1','C11 receipt binds original operation identity');
+select is(current_setting('kd.public_fixture.receipt')::jsonb->'verifiedAt','null'::jsonb,
+  'C11 candidate receipt does not claim successful acknowledgement');
+select throws_ok($q$select public.service_acknowledge_unlisted_release(
+  '10000000-0000-4000-8000-0000000000d1','50000000-0000-4000-8000-0000000000d1',
+  current_setting('kd.public_fixture.sha'))$q$,'40001','UNLISTED_ACKNOWLEDGMENT_CONFLICT',
+  'C11 unfenced legacy acknowledgement cannot activate PUBLIC');
+-- Real SQL mutation advances the epoch without changing the immutable HTML.
 reset role;
-update kadmeion_private.unlisted_release_routes set verified_at=transaction_timestamp()
+update kadmeion_private.unlisted_release_routes set updated_at=clock_timestamp()
   where portfolio_id='10000000-0000-4000-8000-0000000000d1';
 set local role service_role;
+select throws_ok($q$select public.service_acknowledge_public_delivery(
+  current_setting('kd.public_fixture.receipt')::jsonb)$q$,'40001','PUBLIC_DELIVERY_CONFLICT',
+  'C11 stale full receipt cannot acknowledge after epoch advance');
+select throws_ok($q$select public.service_recover_failed_public_delivery(
+  current_setting('kd.public_fixture.receipt')::jsonb)$q$,'40001','PUBLIC_DELIVERY_CONFLICT',
+  'C11 stale full receipt cannot recover after epoch advance');
+select set_config('kd.public_fixture.current_receipt',
+  public.service_read_current_public_delivery_receipt('10000000-0000-4000-8000-0000000000d1',
+    '50000000-0000-4000-8000-0000000000d1')::text,true);
+select ok((current_setting('kd.public_fixture.current_receipt')::jsonb->>'deliveryEpoch')::bigint
+  >(current_setting('kd.public_fixture.receipt')::jsonb->>'deliveryEpoch')::bigint,
+  'C11 actual route mutation advances authoritative epoch');
+select throws_ok($q$select public.service_acknowledge_public_delivery(
+  current_setting('kd.public_fixture.current_receipt')::jsonb-'operationId')$q$,
+  '40001','PUBLIC_DELIVERY_CONFLICT','C11 incomplete receipt cannot acknowledge');
+select set_config('kd.public_fixture.ack_receipt',
+  public.service_acknowledge_public_delivery(current_setting('kd.public_fixture.current_receipt')::jsonb)::text,true);
+select ok((current_setting('kd.public_fixture.ack_receipt')::jsonb->>'deliveryEpoch')::bigint
+  =(current_setting('kd.public_fixture.current_receipt')::jsonb->>'deliveryEpoch')::bigint+1
+  and current_setting('kd.public_fixture.ack_receipt')::jsonb->>'verifiedAt' is not null,
+  'C11 actual acknowledgement advances epoch exactly once and records verification time');
+select is(public.service_read_current_public_delivery_receipt('10000000-0000-4000-8000-0000000000d1',
+  '50000000-0000-4000-8000-0000000000d1'),current_setting('kd.public_fixture.ack_receipt')::jsonb,
+  'C11 authoritative readback equals acknowledged receipt');
+select throws_ok($q$select public.service_acknowledge_public_delivery(
+  current_setting('kd.public_fixture.current_receipt')::jsonb)$q$,'40001','PUBLIC_DELIVERY_CONFLICT',
+  'C11 prior unacknowledged receipt cannot replay as success');
+select is((public.service_read_public_portfolio('release_owner','release-fixture')->>'indexable')::boolean,true,
+  'C11 exact acknowledgement enables indexability');
 select is(public.service_read_public_portfolio('foreign_owner','release-fixture'),
   null::jsonb,'wrong public owner handle does not return a release');
 select is(public.service_read_public_portfolio('release_owner','other-fixture'),
@@ -182,6 +248,15 @@ select is((select revocation_generation from public.private_release_visibility_p
 set local role service_role;
 select is(public.service_read_public_portfolio('release_owner','release-fixture'),
   null::jsonb,'old public HTML cannot survive changed project privacy');
+select is(public.service_read_current_public_delivery_receipt('10000000-0000-4000-8000-0000000000d1',
+  '50000000-0000-4000-8000-0000000000d1'),null::jsonb,
+  'C11 privacy withdrawal invalidates authoritative receipt');
+select throws_ok($q$select public.service_acknowledge_public_delivery(
+  current_setting('kd.public_fixture.ack_receipt')::jsonb)$q$,'40001','PUBLIC_DELIVERY_CONFLICT',
+  'C11 withdrawn receipt cannot acknowledge after privacy reduction');
+select throws_ok($q$select public.service_recover_failed_public_delivery(
+  current_setting('kd.public_fixture.ack_receipt')::jsonb)$q$,'40001','PUBLIC_DELIVERY_CONFLICT',
+  'C11 withdrawn receipt cannot recover old public route');
 
 reset role;
 update public.profiles set handle='renamed_owner'
