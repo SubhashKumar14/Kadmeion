@@ -1175,7 +1175,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
   const inFlight=useRef(false);
   const [exitScope,setExitScope]=useState<AccountExitInventoryReceiptV2|null>(null);
   const [exitStorage,setExitStorage]=useState<AccountExitStorageReconciliationV2|null>(null);
-  const [exitExport,setExitExport]=useState<{requestId:string;snapshotId:string;filename:string;sha256:string;bytes:number}|null>(null);
+  const [exitExport,setExitExport]=useState<{requestId:string;snapshotId:string;filename:string;sha256:string;bytes:number;coverage:string}|null>(null);
   const [exitQuotaBlocked,setExitQuotaBlocked]=useState(false);
   type DomainReview=Awaited<ReturnType<Services['data']['reviewExitRetainedDomains']>>;
   const [domainReview,setDomainReview]=useState<{requestId:string;receipt:DomainReview}|null>(null);
@@ -1291,8 +1291,8 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     finally{inFlight.current=false;if(current())setBusy(false);}
   }
 
-  async function prepareExitExport(action:'capture'|'reconcile'|'metadata'|'json'|'zip'){
-    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current())return;
+  async function prepareExitExport(action:'capture'|'reconcile'|'metadata'|'json'|'zip'|'provider'|'analytics'){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current()||executionUncertain)return;
     const requestId=activeRequest.id;
     if(action==='capture'&&exitQuotaBlocked&&!activeScope)return;
     if(action!=='capture'&&!activeScope)return;
@@ -1334,7 +1334,22 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
       }
       setExitExport(null);
       let filename:string,bytes:Uint8Array,mime:string,digest:string;
-      if(action==='metadata'){
+      let coverage='Request-bound private export';
+      if(action==='provider'||action==='analytics'){
+        const artifact=action==='provider'?await services.data.exportProviderFactsAnnex(scope.snapshotId,requestId):await services.data.exportAnalyticsAnnex();
+        if(!current())return;
+        const expected=action==='provider'?'kadmeion-github-facts-annex.json':'kadmeion-portfolio-analytics-annex.json';
+        if(artifact.status!=='BOUNDED_OWNER_ANNEX'||artifact.completeAccountExport!==false||artifact.deletionAllowed!==false||
+          artifact.filename!==expected||artifact.mime!=='application/json'||artifact.bytes.byteLength===0||await exportDigest(artifact.bytes)!==artifact.sha256)
+          throw new Error('The retained data annex could not be verified.');
+        if(action==='provider'){
+          const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(artifact.bytes)) as {inventorySnapshotId?:unknown;requestId?:unknown};
+          if(decoded.inventorySnapshotId!==scope.snapshotId||decoded.requestId!==requestId)
+            throw new Error('The provider annex does not belong to this deletion request.');
+        }
+        filename=artifact.filename;bytes=artifact.bytes;mime=artifact.mime;digest=artifact.sha256;
+        coverage=action==='provider'?'Request-bound retained GitHub facts':'Current owner retained analytics; separate point-in-time annex, not snapshot-bound';
+      }else if(action==='metadata'){
         const result=await services.data.exportApplicationMetadataV2(scope.snapshotId,requestId);
         filename=result.filename;bytes=result.bytes;mime=result.mime;digest=await exportDigest(bytes);
       }else{
@@ -1357,8 +1372,8 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
       await verifyActive();
       if(!current())return;
       downloadPrivateFile(filename,bytes,mime);
-      setExitExport({requestId,snapshotId:scope.snapshotId,filename,sha256:digest,bytes:bytes.byteLength});
-      setMessage({error:false,text:'Request-bound private export prepared. Export is not deletion or external-retention proof.'});
+      setExitExport({requestId,snapshotId:scope.snapshotId,filename,sha256:digest,bytes:bytes.byteLength,coverage});
+      setMessage({error:false,text:coverage+' prepared. Export is not deletion or external-retention proof.'});
     }catch(error){
       if(current()){
         if(typeof error==='object'&&error!==null&&'code' in error&&error.code==='QUOTA_EXCEEDED')setExitQuotaBlocked(true);
@@ -1664,7 +1679,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
       </section>}
       {activeRequest&&<section aria-label="Request-bound private export">
         <h3>Export for this deletion request</h3>
-        <p>Optional private inventory and recovery files bound to this exact pending request. All inventory versions share the ten-snapshot account quota. These records are not deletion approval.</p>
+        <p>Optional private inventory and recovery files bound to this exact pending request. All inventory versions share the ten-snapshot account quota. These records are not deletion approval. The analytics annex is a separate current owner read, not bound to the inventory snapshot.</p>
         {!activeScope&&<button type="button" className="ws-secondary" disabled={busy||exitQuotaBlocked} onClick={()=>void prepareExitExport('capture')}>Capture request-bound inventory</button>}
         {exitQuotaBlocked&&<p role="status">No further inventory captures are available under the current quota. Previously acknowledged inventory can still be used.</p>}
         {activeScope&&<>
@@ -1674,9 +1689,11 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
             <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('metadata')}>Download request-bound metadata</button>
             <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('json')}>Download request-bound recovery JSON</button>
             <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('zip')}>Download request-bound recovery ZIP</button>
+            <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('provider')}>Download request-bound GitHub facts JSON</button>
+            <button type="button" className="ws-secondary" disabled={busy||executionUncertain} onClick={()=>void prepareExitExport('analytics')}>Download retained analytics JSON</button>
           </div>
           {activeStorage&&<p role="status">Storage result: {activeStorage.status==='METADATA_MATCH_ONLY'?'Metadata matches; bytes not verified by this check.':activeStorage.status==='LIMIT_EXCEEDED'?'Reconciliation limit exceeded.':'Discrepancy detected.'} Registered profile/project assets: {activeStorage.profileRegistered}/{activeStorage.projectRegistered}. Pending profile uploads: {activeStorage.profilePending}.</p>}
-          {activeExport&&<div aria-label="Request-bound export receipt"><p>{activeExport.filename} · {formatExportBytes(activeExport.bytes)}</p><p>SHA-256: <code>{activeExport.sha256}</code></p></div>}
+          {activeExport&&<div aria-label="Request-bound export receipt"><p>{activeExport.coverage}</p><p>{activeExport.filename} · {formatExportBytes(activeExport.bytes)}</p><p>SHA-256: <code>{activeExport.sha256}</code></p></div>}
         </>}
       </section>}
       {activeRequest&&<section aria-label="Retained provider and analytics review">
