@@ -4114,3 +4114,198 @@ test('B16 WF-012 uncertain paged match requires exact owner readback after closi
   expect(runLocalFixtureSql("select count(*) from public.projects where owner_user_id=:'actor_id'::uuid and slug='r7-exact-uncertain-record';",owner.id)).toBe('1');
   expect(writes).toBe(1);
 });
+
+test('B16 S3 R7 mounted editable ZIP review, tamper rejection and committed cold history',async()=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Isolated local GoTrue and real persistent Chromium only.');
+  test.setTimeout(150_000);
+  const owner=await localUser('R7 archive owner');
+  const profile=await mkdtemp(join(tmpdir(),'kadmeion-r7-archive-'));
+  const start=()=>chromium.launchPersistentContext(profile,{
+    executablePath:process.env.KADMEION_CHROME_PATH||'/usr/bin/google-chrome',
+    headless:true,baseURL:'http://127.0.0.1:5173',viewport:{width:1600,height:1000}
+  });
+  let context:BrowserContext|null=null;
+  const title='R7 archive recovery',first='R7 first saved Unicode 日本語 ☃',second='R7 second saved';
+  try{
+    context=await start();
+    let page=context.pages()[0]??await context.newPage();
+    await signIn(page,owner);
+    await page.goto('/app/portfolios/new');
+    await page.getByRole('radio',{name:'Arc',exact:true}).check();
+    await page.getByLabel('Portfolio name').fill(title);
+    await page.getByRole('button',{name:'Choose template and create draft'}).click();
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    const editorPath=new URL(page.url()).pathname;
+    const field=()=>page.getByLabel('Text content');
+    const save=async()=>{
+      await page.getByRole('button',{name:'Save draft',exact:true}).click();
+      await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+    };
+    const apply=async(value:string)=>{
+      await field().fill(value);
+      await page.getByRole('button',{name:'Apply text',exact:true}).click();
+      await expect(field()).toHaveValue(value);
+    };
+    const undo=()=>page.getByRole('button',{name:'Undo',exact:true});
+    const redo=()=>page.getByRole('button',{name:'Redo',exact:true});
+    const details=()=>page.locator('details.ws-editor-safety').filter({hasText:'Private project JSON import & export'});
+    const expand=async()=>{
+      await expect(details()).toBeVisible();
+      if(await details().getAttribute('open')===null)await details().locator('summary').click();
+    };
+    const downloadZip=async()=>{
+      const [download]=await Promise.all([page.waitForEvent('download'),details().getByRole('button',{name:'Export editable source ZIP',exact:true}).click()]);
+      const path=await download.path();if(!path)throw Error('Editable ZIP missing.');
+      return readFile(path);
+    };
+    await apply(first);await save();await expand();
+    const original=await downloadZip();
+    const originalSnapshot=importPortfolioSourceZip(new Uint8Array(original));
+    expect(originalSnapshot.slots['arc-hero-title'].content.title).toBe(first);
+    await apply(second);await save();
+    // Clean committed history must survive a real process exit without a
+    // recovery-copy action or any storage injection.
+    await context.close();context=null;
+    context=await start();page=context.pages()[0]??await context.newPage();
+    await page.goto(editorPath);
+    await expect(page.getByRole('heading',{name:title,level:1})).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    await expect(undo()).toBeEnabled();
+    await undo().click();await expect(field()).toHaveValue(first);
+    await redo().click();await expect(field()).toHaveValue(second);
+    await save();await expand();
+    const input=details().getByLabel('Compare editable source ZIP');
+    const bad=Buffer.from(original);bad[50]^=1;
+    await expect(input).toBeEnabled();
+    await input.setInputFiles({name:'tampered.zip',mimeType:'application/zip',buffer:bad});
+    await expect(details().getByText(/Snapshot operation rejected or not confirmed/)).toBeVisible();
+    await expect(field()).toHaveValue(second);
+    await input.setInputFiles({name:'original.zip',mimeType:'application/zip',buffer:original});
+    const comparison=details().locator('[aria-label="Portable snapshot comparison"]');
+    await expect(comparison).toBeVisible();
+    await expect(comparison.getByLabel('Reviewed file SHA-256')).toHaveText(createHash('sha256').update(original).digest('hex'));
+    await expect(field()).toHaveValue(second);
+    await Promise.all([
+      page.waitForEvent('dialog',{timeout:10000}).then(dialog=>dialog.accept()),
+      comparison.getByRole('button',{name:'Restore compared ZIP as unsaved draft',exact:true}).click()
+    ]);
+    await expect(field()).toHaveValue(first);
+    await undo().click();await expect(field()).toHaveValue(second);
+    await redo().click();await expect(field()).toHaveValue(first);
+    await save();
+    const reopened=await downloadZip();
+    expect(importPortfolioSourceZip(new Uint8Array(reopened))).toEqual(originalSnapshot);
+  }finally{
+    await context?.close().catch(()=>undefined);
+    await rm(profile,{recursive:true,force:true});
+  }
+});
+
+test('B16 S3/S7 R9 multiple physical private image uploads, repeated slots, canvas decoding and source archive',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Actual disposable local Supabase and mounted editor only.');
+  test.setTimeout(150_000);
+  if(process.env.VITE_SUPABASE_URL!==origin)throw Error('Refusing nonlocal image test.');
+  const owner=await localUser('R9 image owner'),foreign=await localUser('R9 foreign image owner');
+  const title='R9 media project',portfolio='R9 media portfolio',altA='R9 private image A',altB='R9 private image B',altRepeat='R9 repeated image A';
+  const a=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==','base64');
+  await page.setViewportSize({width:1800,height:1100});
+  await signIn(page,owner);await page.goto('/app/projects');
+  await page.getByRole('button',{name:'Add first project'}).click();
+  const drawer=page.getByRole('dialog',{name:'Add a project'});
+  await drawer.getByLabel('Project title').fill(title);
+  await drawer.getByRole('button',{name:'Save project'}).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByRole('link',{name:title,exact:true})).toBeVisible();
+  await page.getByRole('link',{name:title,exact:true}).click();
+  const projectId=new URL(page.url()).pathname.split('/')[3]!;
+  expect(projectId).toMatch(/^[a-f0-9-]{36}$/i);
+  await page.goto('/app/portfolios/new');
+  await page.getByRole('radio',{name:'Collage',exact:true}).check();
+  await page.getByLabel('Portfolio name').fill(portfolio);
+  await page.getByRole('button',{name:'Choose template and create draft'}).click();
+  await expect(page.getByRole('heading',{name:portfolio,level:1})).toBeVisible();
+  const editorPath=new URL(page.url()).pathname;
+  const manager=page.getByRole('group',{name:'Private asset manager'});
+  await page.getByRole('button',{name:'Assets',exact:true}).click();
+  // The real project collection must be present before opening the uploader.
+  const collection=manager.getByRole('navigation',{name:'Asset collections'});
+  await expect(collection.getByRole('button',{name:new RegExp(title)})).toBeVisible();
+  const upload=async(bytes:Buffer,alt:string)=>{
+    const form=manager.locator('form.ws-asset-upload');
+    await expect(form).toBeVisible();
+    const project=form.getByRole('combobox');
+    await expect(project).toBeEnabled();
+    await expect(project.locator('option').filter({hasText:title})).toHaveAttribute('value',projectId);
+    await project.selectOption(projectId);
+    const file=form.getByLabel('Private image file',{exact:true});
+    await expect(file).toBeEnabled();await file.setInputFiles({name:'fixture.png',mimeType:'image/png',buffer:bytes});
+    await form.getByLabel('Image alt text').fill(alt);
+    const submit=form.getByRole('button',{name:'Upload private image',exact:true});
+    await expect(submit).toBeEnabled();await submit.click();
+    await expect(manager.getByRole('heading',{name:'Selected image',exact:true})).toBeVisible();
+  };
+  const place=async(target:string,alt:string)=>{
+    const select=manager.locator('label').filter({hasText:'Compatible image slot'}).locator('select');
+    // The exact target must exist and be selectable; no fallback to an unrelated slot.
+    await expect(select).toBeEnabled();
+    await expect(select.locator('option[value="'+target+'"]')).toHaveCount(1);
+    await select.selectOption(target);
+    await manager.getByLabel('Placement alt text').fill(alt);
+    await manager.getByRole('button',{name:/^(Assign image to selected slot|Replace image and stash previous)$/}).click();
+    await expect(manager.getByText(/Private image reference applied\. Save draft/)).toBeVisible();
+  };
+  await manager.getByRole('button',{name:'Open private uploader',exact:true}).click();
+  await upload(a,altA);await place('collage-hero-imagea',altA);
+  await manager.getByRole('button',{name:'Register another image',exact:true}).click();
+  await upload(b,altB);await place('collage-hero-imageb',altB);
+  await manager.getByRole('button',{name:new RegExp(altA)}).click();
+  await place('project-showcase-image',altRepeat);
+  await manager.getByRole('button',{name:'Back to editor canvas',exact:true}).click();
+  const canvas=page.getByRole('region',{name:'Private authoring canvas'});
+  const check=async()=>{
+    const previews=canvas.getByRole('group',{name:'Private canvas image previews'});
+    const show=previews.getByRole('button',{name:'Show private canvas images'});
+    if(await show.isVisible())await show.click();
+    await expect(previews.getByRole('status')).toContainText('3 of 3 owner-private image slots verified');
+    const urls:string[]=[];
+    for(const [alt,bytes] of [[altA,a],[altB,b],[altRepeat,a]] as const){
+      const img=canvas.getByRole('img',{name:alt,exact:true});
+      await expect(img).toBeVisible();
+      await expect.poll(()=>img.evaluate(async(node,expected)=>{
+        const image=node as HTMLImageElement;
+        if(!image.complete||image.naturalWidth!==1||image.naturalHeight!==1||!image.src.startsWith('blob:'))return false;
+        const result=await fetch(image.src),actual=new Uint8Array(await result.arrayBuffer());
+        return result.ok&&actual.length===expected.length&&actual.every((v,i)=>v===expected[i]);
+      },Array.from(bytes))).toBe(true);
+      urls.push((await img.getAttribute('src'))!);
+    }
+    expect(urls[0]).toBe(urls[2]);expect(urls[0]).not.toBe(urls[1]);
+    return urls;
+  };
+  await check();
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect(page.getByText('Private portfolio draft saved.',{exact:true})).toBeVisible();
+  await page.reload();await expect(page.getByRole('heading',{name:portfolio,level:1})).toBeVisible();
+  const urls=await check();
+  await canvas.getByRole('button',{name:'Hide private canvas images'}).click();
+  await expect(canvas.getByRole('img',{name:altA,exact:true})).toHaveCount(0);
+  for(const url of new Set(urls))expect(await page.evaluate(async value=>{try{await fetch(value);return false;}catch{return true;}},url)).toBe(true);
+  await check();
+  await page.goto('/app/export');
+  await page.getByLabel('Portfolio to export').selectOption(editorPath.split('/')[3]!);
+  const [download]=await Promise.all([page.waitForEvent('download',{timeout:30000}),page.getByRole('button',{name:'Download portfolio source ZIP'}).click()]);
+  const file=await download.path();if(!file)throw Error('Source ZIP absent.');
+  const snapshot=importPortfolioSourceZip(new Uint8Array(await readFile(file)));
+  const x=snapshot.slots['collage-hero-imagea'],y=snapshot.slots['collage-hero-imageb'],z=snapshot.slots['project-showcase-image'];
+  expect(x).toMatchObject({state:'S0',componentId:'image@1',content:{alt_text:altA}});
+  expect(y).toMatchObject({state:'S0',componentId:'image@1',content:{alt_text:altB}});
+  expect(z).toMatchObject({state:'S0',componentId:'image@1',content:{alt_text:altRepeat}});
+  expect(x.content.asset_id).toMatch(/^[a-f0-9-]{36}$/i);expect(y.content.asset_id).toMatch(/^[a-f0-9-]{36}$/i);
+  expect(x.content.asset_id).toBe(z.content.asset_id);expect(x.content.asset_id).not.toBe(y.content.asset_id);
+  for(const slot of [x,y,z])expect(slot.content.source_sha256).toBeUndefined();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);await signIn(page,foreign);
+  await page.goto(editorPath);await expect(page.getByRole('alert')).toBeVisible();
+  await expect(canvas).toHaveCount(0);await expect(page.getByRole('img',{name:altA,exact:true})).toHaveCount(0);
+});
