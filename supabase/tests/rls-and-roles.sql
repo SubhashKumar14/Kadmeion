@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public, extensions;
-select plan(56);
+select plan(79);
 select has_table('public', 'profiles', 'owner profiles exist');
 select has_table('public', 'profile_sharing_preferences', 'private sharing intent exists');
 select has_table('kadmeion_private', 'operator_roles', 'operator grants live outside public API');
@@ -153,5 +153,120 @@ select ok((select count(*)=2 from pg_class
                 'kadmeion_private.account_sharing_restriction_events'::regclass)
     and relkind='r'),
   'C14 restriction and journal are ordinary physical tables, not shadow views');
+-- C12 R9: service-gated private provider facts and deletion relationships.
+-- Must execute WITH registered forward 20261117160800_private_provider_facts.sql.
+select has_table('kadmeion_private','github_provider_state','C12 private provider facts table exists');
+select has_table('kadmeion_private','github_owner_quota','C12 owner cooldown table exists');
+select has_table('kadmeion_private','github_global_quota','C12 bounded global cooldown exists');
+select ok((select count(*)=3 and bool_and(c.relrowsecurity) from pg_class c
+  where c.oid in ('kadmeion_private.github_provider_state'::regclass,
+    'kadmeion_private.github_owner_quota'::regclass,
+    'kadmeion_private.github_global_quota'::regclass)),
+  'C12 each provider fact and quota table has RLS enabled');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['kadmeion_private.github_provider_state',
+    'kadmeion_private.github_owner_quota','kadmeion_private.github_global_quota']) t
+  where has_any_column_privilege(r,t,'SELECT,INSERT,UPDATE,REFERENCES')
+    or has_table_privilege(r,t,'DELETE,TRUNCATE,TRIGGER')),
+  'C12 no direct API role may enumerate or mutate provider facts or quota rows');
+select ok(not exists(select 1 from unnest(array['anon','service_role']) r
+  cross join unnest(array['read_owner_github_provider_state(uuid)',
+    'change_owner_github_provider_consent(uuid,text,bigint,uuid,smallint)',
+    'confirm_owner_github_provider_candidate(uuid,bigint,uuid,smallint)']) p
+  where has_function_privilege(r,'public.'||p,'EXECUTE'))
+  and (select bool_and(has_function_privilege('authenticated','public.'||p,'EXECUTE'))
+    from unnest(array['read_owner_github_provider_state(uuid)',
+    'change_owner_github_provider_consent(uuid,text,bigint,uuid,smallint)',
+    'confirm_owner_github_provider_candidate(uuid,bigint,uuid,smallint)']) p),
+  'C12 only authenticated owner gets consent/read/confirm RPC permission');
+select ok(not exists(select 1 from unnest(array['anon','authenticated']) r
+  cross join unnest(array[
+    'service_claim_github_provider_sync(uuid,uuid,uuid,text,bigint,uuid,smallint)',
+    'service_finish_github_provider_sync(uuid,uuid,uuid,bigint,uuid,text,text,bigint,text,bigint,bigint,timestamptz)',
+    'service_purge_expired_github_provider_state(integer)',
+    'service_release_expired_github_lease(uuid,timestamptz)']) p
+  where has_function_privilege(r,'public.'||p,'EXECUTE'))
+  and (select bool_and(has_function_privilege('service_role','public.'||p,'EXECUTE'))
+    from unnest(array[
+      'service_claim_github_provider_sync(uuid,uuid,uuid,text,bigint,uuid,smallint)',
+      'service_finish_github_provider_sync(uuid,uuid,uuid,bigint,uuid,text,text,bigint,text,bigint,bigint,timestamptz)',
+      'service_purge_expired_github_provider_state(integer)',
+      'service_release_expired_github_lease(uuid,timestamptz)']) p),
+  'C12 only service role gets claim/finish/purge and lease control');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['github_lock_owner(uuid,uuid,boolean)',
+    'github_lock_link(uuid,uuid)','github_change(uuid,text,bigint,uuid,smallint)',
+    'github_invalidate_link()','github_exit_invalidate()',
+    'github_note_late_rate_limit(uuid,timestamptz)']) p
+  where has_function_privilege(r,'kadmeion_private.'||p,'EXECUTE')),
+  'C12 private owner locking and lifecycle helpers cannot be invoked as API RPC');
+select ok((select count(*)=2 and bool_and(t.tgenabled='O')
+  from pg_trigger t where not t.tgisinternal and t.tgname in
+  ('kd_github_link_invalidate','kd_github_exit_invalidate')),
+  'C12 link renames and account-exit requests trigger live deletion fences');
+select ok((select count(*)=2 from pg_constraint k
+  where k.contype='f' and k.confrelid in ('public.private_platform_links'::regclass,'auth.users'::regclass)
+    and k.conrelid in ('kadmeion_private.github_provider_state'::regclass,
+      'kadmeion_private.github_owner_quota'::regclass)
+    and k.confdeltype='c'),
+  'C12 provider rows and owner cooldowns physically cascade on link/owner deletion');
+select ok((select count(*)=0 from pg_policies p where p.schemaname='kadmeion_private'
+  and p.tablename in ('github_provider_state','github_owner_quota','github_global_quota')),
+  'C12 service-only tables expose no broad permissive direct RLS policy');
+select ok((select count(*)=1 from kadmeion_private.github_global_quota where singleton),
+  'C12 exactly one bounded global quota singleton exists');
+-- C13 R10: require real consent/aggregate schema and protected collector.
+-- Companion to registered 160900, not a standalone pre-migration test.
+select has_table('kadmeion_private','analytics_opt_in','C13 private opt-in exists');
+select has_table('kadmeion_private','aggregate_daily','C13 physical daily aggregate exists');
+select has_table('kadmeion_private','analytics_rate_window','C13 bounded operational quota exists');
+select ok((select count(*)=3 and bool_and(relrowsecurity) from pg_class
+  where oid in ('kadmeion_private.analytics_opt_in'::regclass,
+    'kadmeion_private.aggregate_daily'::regclass,'kadmeion_private.analytics_rate_window'::regclass)),
+  'C13 all private tables have RLS enabled');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['kadmeion_private.analytics_opt_in','kadmeion_private.aggregate_daily',
+    'kadmeion_private.analytics_rate_window']) t
+  where has_any_column_privilege(r,t,'SELECT,INSERT,UPDATE,REFERENCES')
+  or has_table_privilege(r,t,'DELETE,TRUNCATE,TRIGGER')),
+  'C13 direct aggregate, consent and quota table reads/writes denied to every API role');
+select ok(not exists(select 1 from unnest(array['anon','service_role']) r
+  cross join unnest(array['read_owner_analytics_state(uuid)',
+    'change_owner_analytics(uuid,text,bigint,uuid,smallint)',
+    'read_owner_analytics(uuid[],integer)','owner_export_portfolio_analytics_annex()']) p
+  where has_function_privilege(r,'public.'||p,'EXECUTE'))
+  and (select bool_and(has_function_privilege('authenticated','public.'||p,'EXECUTE'))
+    from unnest(array['read_owner_analytics_state(uuid)',
+    'change_owner_analytics(uuid,text,bigint,uuid,smallint)',
+    'read_owner_analytics(uuid[],integer)','owner_export_portfolio_analytics_annex()']) p),
+  'C13 authenticated-only owner analytics RPCs');
+select ok(not exists(select 1 from unnest(array['anon','authenticated']) r
+  cross join unnest(array['collect_portfolio_analytics_view(uuid,uuid,bigint,bigint,bigint,text,bigint,text)',
+    'service_read_public_portfolio_with_analytics(text,text)',
+    'service_purge_expired_portfolio_analytics(integer)']) p
+  where has_function_privilege(r,'public.'||p,'EXECUTE'))
+  and (select bool_and(has_function_privilege('service_role','public.'||p,'EXECUTE'))
+    from unnest(array['collect_portfolio_analytics_view(uuid,uuid,bigint,bigint,bigint,text,bigint,text)',
+    'service_read_public_portfolio_with_analytics(text,text)',
+    'service_purge_expired_portfolio_analytics(integer)']) p),
+  'C13 only trusted service may read ingress receipt, collect or purge');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['analytics_live_owner()','analytics_authority(uuid,uuid)',
+    'analytics_reset(uuid)','analytics_lifecycle()']) p
+  where has_function_privilege(r,'kadmeion_private.'||p,'EXECUTE')),
+  'C13 private authority/lifecycle helpers are never direct API functions');
+select ok((select count(*)=7 and bool_and(tgenabled='O') from pg_trigger
+  where not tgisinternal and tgname in ('zz_analytics_portfolio','zz_analytics_handle','zz_analytics_pointer',
+    'zz_analytics_hold','zz_analytics_restriction','zz_analytics_route','zz_analytics_intent')),
+  'C13 seven privacy, rename, Trash and restriction invalidation triggers are enabled');
+select ok((select count(*)=3 from pg_constraint where contype='f' and confdeltype='c'
+  and confrelid='public.portfolios'::regclass and conrelid in
+  ('kadmeion_private.analytics_opt_in'::regclass,'kadmeion_private.aggregate_daily'::regclass,
+   'kadmeion_private.analytics_rate_window'::regclass)),
+  'C13 consent, aggregates and per-portfolio operational quota cascade on deletion');
+select is((select array_agg(attname::text order by attname) from pg_attribute
+  where attrelid='kadmeion_private.aggregate_daily'::regclass and attnum>0 and not attisdropped),
+  array['portfolio_id','referrer_bucket','utc_day','views']::text[],
+  'C13 aggregate stores no visitor identifier, IP, raw referrer or URL');
 select * from finish();
 rollback;
