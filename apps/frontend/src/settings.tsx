@@ -1,11 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
-import type { PrivateNotification, PrivateNotificationPage, PrivateNotificationPreferences } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { PrivateNotification, PrivateNotificationPage, NotificationPreferenceState, NotificationPreferenceChange, NotificationPreferenceInput } from '../../../packages/contracts/src/private-notifications-service.ts';
+import type { AccountErasureReceipt, AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry, AccountExitInventoryReceiptV2, AccountExitStorageReconciliationV2 } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
+import { PrivateNotificationsError } from '../../../packages/contracts/src/private-notifications-service.ts';
 import type { SharingPreferences } from '../../../packages/contracts/src/identity.ts';
+import type { ProfileSharingState, ProfileSharingChange } from '../../../packages/contracts/src/private-identity-service.ts';
 import { OwnerCaseHistory } from './operations.tsx';
 
 const settingsLinks = [
@@ -110,7 +112,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path === '/app/settings/security') content = <Security key={current!.viewKey} port={port}/>;
   else if (path === '/app/trash') content = <Trash key={current!.viewKey} port={port} service={services.trash}/>;
   else if (path === '/app/export') content = <ExportCenter key={current!.viewKey} port={port} services={services}/>;
-  else content = <AccountExit key={current!.viewKey} port={port} service={services.account}/>;
+  else content = <AccountExit key={current!.viewKey} port={port} services={services}/>;
 
   return <section className="ws-settings-page" aria-labelledby="settings-title">
     <div className="ws-heading">
@@ -126,7 +128,12 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const alive=useRef(false);
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
-  const [savedPrefs,setSavedPrefs]=useState<SharingPreferences|null>(null);
+  const [savedState,setSavedState]=useState<ProfileSharingState|null>(null);
+  const [retryChange,setRetryChange]=useState<ProfileSharingChange|null>(null);
+  const defaults:SharingPreferences={shareDisplayName:false,shareHeadline:false,shareBio:false,publicationRequested:false};
+  const savedPrefs=savedState?(savedState.preferences??defaults):null;
+  const terminal=savedState?.version===Number.MAX_SAFE_INTEGER;
+  const terminalAbsent=terminal&&savedState?.preferences===null;
   const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
   const [confirmed,setConfirmed]=useState(false);
   const [message,setMessage]=useState<Message>(emptyMessage);
@@ -145,12 +152,10 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
     a.shareBio===b.shareBio&&a.publicationRequested===b.publicationRequested;
   useEffect(()=>{
     let active=true;readPending.current=true;setReading(true);setConfirmed(false);
-    void port.ownerSharingPreferences().then(result=>{
+    void services.identity.readProfileSharingState().then(result=>{
       if(!active||!current())return;
-      if(!result.data)throw new Error('Privacy preferences are unavailable.');
-      setSavedPrefs(result.data);
-      // Refresh the confirmed state without discarding an unsaved draft.
-      setPrefs(previous=>previous??result.data!);
+      setSavedState(result);setRetryChange(null);
+      setPrefs(previous=>previous??result.preferences??defaults);
       readbackRequired.current=false;setNeedsReadback(false);setMessage(null);
     }).catch(()=>{
       if(active&&current()){
@@ -161,43 +166,37 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
       if(active&&current()){readPending.current=false;setReading(false);}
     });
     return()=>{active=false;};
-  },[port,epoch,reload]);
+  },[port,services.identity,epoch,reload]);
   function refresh(){
     if(!current()||writing.current||readPending.current)return;
-    readPending.current=true;setReading(true);setConfirmed(false);setReload(n=>n+1);
+    readPending.current=true;readbackRequired.current=true;setNeedsReadback(true);
+    setRetryChange(null);setReading(true);setConfirmed(false);setReload(n=>n+1);
   }
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!prefs||!savedPrefs||!confirmed||readbackRequired.current||readPending.current||writing.current||!current())return;
-    const desired={...prefs};const baseline={...savedPrefs};
+    if(!prefs||!savedState||terminalAbsent||!confirmed||retryChange||readbackRequired.current||readPending.current||writing.current||!current())return;
+    if(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState.preferences?.[key])))return;
+    const expected={...savedState,preferences:savedState.preferences===null?null:{...savedState.preferences}};
+    await applyChange({expected,desired:{...prefs},operationId:crypto.randomUUID()});
+  }
+  async function applyChange(change:ProfileSharingChange){
+    if(!current()||writing.current||readPending.current)return;
     writing.current=true;setBusy(true);setMessage(null);setConfirmed(false);
     try{
-      // Compare before writing using the real current owner read. This is
-      // not an atomic CAS; the acknowledged post-write read remains required.
-      const latest=await port.ownerSharingPreferences();
+      const saved=await services.identity.requestPublicIdentity(change);
       if(!current())return;
-      if(!latest.data)throw new Error('Could not verify current sharing preferences.');
-      setSavedPrefs(latest.data);
-      if(!same(latest.data,baseline)){
-        setMessage({error:true,text:'Saved sharing preferences changed. Compare the confirmed selection with your draft and confirm again before saving.'});
-        return;
-      }
-      await services.identity.requestPublicIdentity(desired);
-      if(!current())return;
-      const saved=await port.ownerSharingPreferences();
-      if(!current())return;
-      if(!saved.data)throw new Error('Sharing preferences could not be read back.');
-      setSavedPrefs(saved.data);
-      if(!same(saved.data,desired)){
-        setMessage({error:true,text:'Readback differs from your draft. Review the confirmed selection before trying again.'});
-        return;
-      }
-      setPrefs(saved.data);readbackRequired.current=false;setNeedsReadback(false);
+      setSavedState({ownerUserId:saved.ownerUserId,version:saved.version,preferences:saved.preferences});
+      setPrefs(saved.preferences??defaults);setRetryChange(null);
+      readbackRequired.current=false;setNeedsReadback(false);
       setMessage({error:false,text:'Sharing preferences saved privately.'});
-    }catch{
+    }catch(error){
       if(current()){
+        const code=error&&typeof error==='object'&&'code' in error?error.code:null;
+        setRetryChange(code==='PROVIDER_UNAVAILABLE'||code==='INVALID_ACK'?change:null);
         readbackRequired.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'The requested privacy change was not confirmed. Your draft is retained. Reload confirmed preferences before retrying.'});
+        setMessage({error:true,text:code==='CONFLICT'?
+          'Saved sharing preferences changed. Reload confirmed preferences, compare your draft and confirm again before saving.':
+          'The requested privacy change was not confirmed. Your draft is retained. Retry the same operation if available or reload confirmed preferences.'});
       }
     }finally{
       writing.current=false;if(current())setBusy(false);
@@ -216,23 +215,26 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <h3>Last confirmed private selection</h3>
         <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
           {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
+        {savedState?.preferences===null&&<p>No saved preference record; showing private defaults.</p>}
+        {terminal&&<p>Privacy changes are restricted to reducing previously selected fields. Publication cannot be enabled.</p>}
         <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
       </div>}
       {prefs&&<form onSubmit={event => void save(event)}>
         <p className="ws-settings-selection-count"><strong>{selected} of {fields.length}</strong> profile fields selected in this form.
           Selection is not publication. {dirty?'Unsaved draft differs from confirmed preferences.':'No draft differences from the last confirmed selection.'}</p>
-        <fieldset disabled={busy||reading}>
+        <fieldset disabled={busy||reading||!!retryChange||terminalAbsent}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
-            <input type="checkbox" checked={prefs[key]} onChange={event => {
+            <input type="checkbox" checked={prefs[key]} disabled={terminal&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
+              if(terminal&&event.target.checked&&!savedState?.preferences?.[key])return;
               const next = {...prefs, [key]: event.target.checked};
               if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
               setPrefs(next); setConfirmed(false);
             }}/>{label}
           </label>)}
           <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
-            disabled={!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio}
-            onChange={event => {setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+            disabled={(terminal&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
+            onChange={event => {if(terminal&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
@@ -241,7 +243,8 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
           <p>This confirms the private sharing intent and withdrawal request, not verified withdrawal. Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback}>{busy?'Saving…':'Save sharing preferences'}</button>
+          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState?.preferences?.[key])))}>{busy?'Saving…':'Save sharing preferences'}</button>
+          {retryChange&&<button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void applyChange(retryChange)}>Retry same privacy change</button>}
           <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
           <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
             onClick={()=>{if(!current()||writing.current||!savedPrefs)return;setPrefs({...savedPrefs});setConfirmed(false);setMessage(null);}}>Discard draft changes</button>
@@ -285,6 +288,10 @@ function notificationDestination(item: PrivateNotification): string {
   return '/app/portfolios';
 }
 
+function optionalPreferenceBlocked(busy:boolean,reading:boolean,stale:boolean,retrying:boolean,version:number|undefined):boolean {
+  return busy||reading||stale||retrying||version===undefined||version===Number.MAX_SAFE_INTEGER;
+}
+
 function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Services['notifications']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const mounted=useRef(false);
@@ -292,7 +299,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const current=()=>mounted.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const pendingAction=useRef(false);
   const [inbox, setInbox] = useState<PrivateNotificationPage | null>(null);
-  const [prefs, setPrefs] = useState<PrivateNotificationPreferences | null | undefined>(undefined);
+  const [prefs, setPrefs] = useState<NotificationPreferenceState | undefined>(undefined);
   const [pendingPrefs, setPendingPrefs] = useState<{
     reviewerEnabled: boolean; publishEnabled: boolean; syncEnabled: boolean;
   } | null>(null);
@@ -301,10 +308,11 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [prefsReload,setPrefsReload]=useState(0);
-  type PreferenceInput={reviewerEnabled:boolean;publishEnabled:boolean;syncEnabled:boolean};
-  const [prefRetry,setPrefRetry]=useState<{key:keyof PreferenceInput;checked:boolean}|null>(null);
+  type PreferenceInput=NotificationPreferenceInput;
+  const [prefRetry,setPrefRetry]=useState<NotificationPreferenceChange|null>(null);
   const preferencesReading=useRef(true);
   const [preferencesLoading,setPreferencesLoading]=useState(true);
+  const [preferencesStale,setPreferencesStale]=useState(true);
   const [inboxFilter, setInboxFilter] = useState<'ALL'|'UNREAD'|'HIGH'>('ALL');
   useEffect(() => {
     let active = true;
@@ -318,9 +326,9 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   useEffect(()=>{
     let active=true;
     preferencesReading.current=true;setPreferencesLoading(true);
-    setPrefs(undefined);setPreferenceMessage(null);setPrefRetry(null);
-    void service.getPreferences().then(settings=>{
-      if(active&&current())setPrefs(settings);
+    setPreferencesStale(true);setPreferenceMessage(null);setPrefRetry(null);
+    void service.readPreferenceState().then(settings=>{
+      if(active&&current()){setPrefs(settings);setPreferencesStale(false);}
     }).catch(error=>{
       if(active&&current())setPreferenceMessage(failure(error));
     }).finally(()=>{
@@ -372,55 +380,39 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     finally {pendingAction.current=false;if(current())setBusy(false);}
   }
 
-  // An absent row has database defaults, but presence is also part of
-  // the observed state. The legacy RPC replaces all three values.
-  const effective=(row:PrivateNotificationPreferences|null|undefined):PreferenceInput=>({
-    reviewerEnabled:row?.reviewer_enabled??true,
-    publishEnabled:row?.publish_enabled??true,
-    syncEnabled:row?.sync_enabled??false
-  });
-  const equal=(a:PreferenceInput,b:PreferenceInput)=>
-    a.reviewerEnabled===b.reviewerEnabled&&a.publishEnabled===b.publishEnabled&&a.syncEnabled===b.syncEnabled;
-  const effectivePrefs=effective(prefs);
-  const displayedPrefs=pendingPrefs??effectivePrefs;
+  const effective=(state:NotificationPreferenceState|undefined):PreferenceInput=>
+    state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
+  const displayedPrefs=pendingPrefs??effective(prefs);
+  const controlsBlocked=optionalPreferenceBlocked(busy,preferencesLoading,preferencesStale,!!prefRetry,prefs?.version);
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
-    preferencesReading.current=true;setPreferencesLoading(true);setPrefsReload(n=>n+1);
+    preferencesReading.current=true;setPreferencesLoading(true);setPreferencesStale(true);setPrefRetry(null);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(busy||pendingAction.current||preferencesReading.current||prefs===undefined||!current())return;
-    const baseline=prefs;
-    const next={...effective(baseline),[key]:checked};
-    pendingAction.current=true;setBusy(true);setPendingPrefs(next);
+    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
+    await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
+  }
+  async function applyPreference(change:NotificationPreferenceChange){
+    if(pendingAction.current||preferencesReading.current||!current())return;
+    pendingAction.current=true;setBusy(true);setPendingPrefs(change.desired);
     setPreferenceMessage(null);setPrefRetry(null);
     try{
-      // Bounds stale writes across tabs and after lost ACK. The existing
-      // RPC has no atomic expected version; this is comparison, not CAS.
-      const latest=await service.getPreferences();
+      const saved=await service.changePreferences(change);
       if(!current())return;
-      setPrefs(latest);
-      if((baseline===null)!==(latest===null)||!equal(effective(latest),effective(baseline))){
-        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Review the current values and choose the desired setting again. No preferences were overwritten.'});
-        return;
-      }
-      // Do not send an unnecessary whole-row write.
-      if(equal(next,effective(latest)))return;
-      await service.setPreferences(next);
-      if(!current())return;
-      const saved=await service.getPreferences();
-      if(!current())return;
-      setPrefs(saved);
-      if(!saved||!equal(effective(saved),next)){
-        setPreferenceMessage({error:true,text:'Notification preference readback differs from the requested change. Review the confirmed values and choose again.'});
-        return;
-      }
+      setPrefs({ownerUserId:saved.ownerUserId,version:saved.version,preferences:saved.preferences});setPreferencesStale(false);
       setPreferenceMessage({error:false,text:'Notification preferences saved.'});
-    }catch{
+    }catch(error){
       if(!current())return;
-      // Retain only the intended single toggle, never a stale full row.
-      // Any later retry must re-read and compare before it writes.
-      setPrefRetry({key,checked});
-      setPreferenceMessage({error:true,text:'Could not confirm the change. Showing the last confirmed preferences. Try again to compare saved values or reload to check the saved settings.'});
+      const code=error instanceof PrivateNotificationsError?error.code:null;
+      if(code==='CONFLICT'){
+        setPreferencesStale(true);
+        setPreferenceMessage({error:true,text:'Saved notification preferences changed. Reload confirmed preferences and choose the desired setting again. No preferences were overwritten.'});
+      }else{
+        setPreferencesStale(true);
+        if(code==='PROVIDER_UNAVAILABLE'||code==='INVALID_ACK'||code==='LIMIT_EXCEEDED')setPrefRetry(change);
+        setPreferenceMessage({error:true,text:'Could not confirm the change. Retry the same operation if available or reload confirmed preferences.'});
+      }
     }finally{
       pendingAction.current=false;
       if(current()){setPendingPrefs(null);setBusy(false);}
@@ -458,23 +450,26 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     {inbox?.nextCursor && <button className="ws-secondary" type="button" disabled={busy} onClick={() => void more()}>Load more</button>}
   </SettingsCard><SettingsCard title="Optional in-app notifications">
     {preferencesLoading&&<p role="status">Loading notification preferences…</p>}
-    {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" onClick={reloadPreferences}>Retry notification preferences</button>}
-    {prefs === null && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
+    {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" disabled={busy} onClick={reloadPreferences}>Retry notification preferences</button>}
+    {prefs!==undefined&&preferencesStale&&!pendingPrefs&&<p role="status">Showing last confirmed preferences; reload or resolve the pending change before making another choice.</p>}
+    {prefs?.version===Number.MAX_SAFE_INTEGER&&<p>Optional notices are disabled and cannot be re-enabled. Security and moderation notices remain required.</p>}
+    {prefs?.preferences === null && prefs.version!==Number.MAX_SAFE_INTEGER && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
       ['publishEnabled', 'Publishing activity'],
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={busy||preferencesLoading}
-          onChange={event=>void savePreference(key,event.target.checked)}/> {label}
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={controlsBlocked}
+          onClick={event=>{if(controlsBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
+          onChange={event=>{if(!controlsBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
     <Status message={preferenceMessage}/>
-    {prefRetry&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={busy} onClick={()=>void savePreference(prefRetry.key,prefRetry.checked)}>Retry preference change</button>
+    {prefs!==undefined&&preferencesStale&&<div className="ws-actions">{prefRetry&&<button type="button" className="ws-secondary" disabled={busy||preferencesLoading} onClick={()=>void applyPreference(prefRetry)}>Retry preference change</button>}
       <button type="button" className="ws-secondary" disabled={busy||preferencesLoading} onClick={reloadPreferences}>Reload confirmed preferences</button></div>}
-    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes compare the last confirmed values with a fresh read before writing; simultaneous updates in another tab may still race until an atomic conditional-write contract is available.</p>
+    <p>Security and moderation notices use the required in-app channel. Email delivery is not confirmed by these settings. Changes are conditional on the last confirmed version and exact saved values. A conflict requires a fresh read and a new choice.</p>
   </SettingsCard></div>;
 }
 
@@ -643,7 +638,10 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
     let active=true;reading.current=true;setLoading(true);
     void service.list().then(rows=>{
       if(active&&current()){
-        setItems(rows);readbackRequired.current=false;setNeedsReadback(false);
+        setItems(rows);setNow(Date.now());
+        const visibleKeys=new Set(rows.map(row=>row.item_type+':'+row.item_id+':'+row.trashed_at));
+        setExpiredByServer(previous=>new Set([...previous].filter(key=>visibleKeys.has(key))));
+        readbackRequired.current=false;setNeedsReadback(false);
         setMessage(uncertainRestore.current?{error:false,text:'Trash refreshed. The previous restore was not acknowledged; verify your private library before retrying.'}:null);
         uncertainRestore.current=false;
       }
@@ -677,7 +675,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
 
   async function restore(item: PrivateTrashEntry) {
     const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
-    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key))return;
+    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key)||
+      !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.trashed_at===item.trashed_at))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
       setMessage({error:true,text:'The restore deadline has passed.'});
@@ -707,7 +706,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   return <div className="ws-settings-grid"><SettingsCard title="Recoverable items">
     <Status message={message}/>
     {loading&&<p role="status">Loading Trash…</p>}
-    {needsReadback&&!loading&&<button type="button" className="ws-secondary" onClick={refreshTrash}>{items?'Refresh confirmed Trash':'Retry Trash'}</button>}
+    {!loading&&(items!==null||needsReadback)&&<button type="button" className="ws-secondary" disabled={busy} onClick={refreshTrash}>{needsReadback?(items?'Refresh confirmed Trash':'Retry Trash'):'Refresh Trash'}</button>}
+    {needsReadback&&items!==null&&<p>Showing the last confirmed records. Restore remains unavailable until refresh succeeds.</p>}
     {items?.length===0&&!loading&&!needsReadback&&<p>Trash is empty.</p>}
     {items?.length===100&&<p>Showing up to 100 loaded Trash records, not an account-wide total.</p>}
     <ul className="ws-settings-records">{items?.map(item => {
@@ -738,7 +738,8 @@ export function downloadPrivateFile(filename: string, bytes: Uint8Array, mime: s
   window.setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
-type ExportKind = 'metadata'|'recovery'|'recovery-json'|'source';
+type ExportKind = 'metadata'|'metadata-v2'|'recovery-v2'|'recovery-json-v2'|'recovery'|'recovery-json'|'source';
+const v2ExportKind=(kind:ExportKind)=>kind==='metadata-v2'||kind==='recovery-v2'||kind==='recovery-json-v2';
 type ExportReceipt = {kind:ExportKind;filename:string;bytes:number;sha256:string;scope:string;capturedAt?:string;revision?:number;assets?:number;assetFiles?:number;categories?:number;records?:number};
 const formatExportBytes=(bytes:number)=>bytes>=1024*1024?(bytes/(1024*1024)).toFixed(2)+' MiB':(bytes/1024).toFixed(1)+' KiB';
 async function exportDigest(bytes:Uint8Array):Promise<string>{
@@ -751,13 +752,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   useEffect(()=>{alive.current=true;return ()=>{alive.current=false;};},[]);
   const current=()=>alive.current&&port.reconcileOwnerSessionEpoch()===epoch;
   const [message, setMessage] = useState<Message>(emptyMessage);
-  const [busy, setBusy] = useState<ExportKind|null>(null);
+  const [busy, setBusy] = useState<ExportKind|'reconcile-v2'|null>(null);
   const operation=useRef<string|null>(null);
   const running=useRef(false);
   const [failedKind,setFailedKind]=useState<ExportKind|null>(null);
   const [quotaBlocked,setQuotaBlocked]=useState(false);
   const [receipt,setReceipt]=useState<ExportReceipt|null>(null);
   const [inventory,setInventory]=useState<Awaited<ReturnType<Services['account']['captureInventory']>>|null>(null);
+  const v2Operation=useRef<string|null>(null);
+  const [v2Inventory,setV2Inventory]=useState<Awaited<ReturnType<Services['account']['captureInventoryV2']>>|null>(null);
+  const [v2Reconciliation,setV2Reconciliation]=useState<Awaited<ReturnType<Services['account']['reconcileStorageV2']>>|null>(null);
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState('');
   type Page=NonNullable<Awaited<ReturnType<SupabaseBrowserAuthPort['listOwnerPortfoliosPage']>>['data']>;
@@ -807,7 +811,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
 
   async function download(kind: ExportKind) {
     if(running.current||busy||!current()||(kind==='source'&&!selectedPortfolio)||
-      (kind!=='source'&&quotaBlocked&&!inventory))return;
+      (kind!=='source'&&quotaBlocked&&!(v2ExportKind(kind)?v2Inventory:inventory)))return;
     // Capture has a durable owner quota. Reuse one acknowledged inventory
     // across formats and retries; only an explicit refresh requests a new one.
     // An unacknowledged capture replays its original operation UUID.
@@ -828,6 +832,46 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
         importPortfolioSourceZip(bytes);
         file={kind,filename:'kadmeion-portfolio-revision-'+data.revision+'.zip',bytes:bytes.byteLength,
           sha256:await exportDigest(bytes),scope:'Editable saved portfolio source; uploaded media excluded.',revision:data.revision};
+      } else if(v2ExportKind(kind)){
+        if(!v2Inventory)v2Operation.current??=crypto.randomUUID();
+        const captured=v2Inventory??await services.account.captureInventoryV2(v2Operation.current!,null);
+        if(!current())return;
+        v2Operation.current=null;setV2Inventory(captured);setV2Reconciliation(null);
+        if(captured.schemaVersion!==2||captured.requestId!==null)
+          throw new Error('The profile-inclusive export inventory scope was not confirmed.');
+        if(kind==='metadata-v2'){
+          const result=await services.data.exportApplicationMetadataV2(captured.snapshotId,captured.requestId);
+          if(!current())return;
+          bytes=result.bytes;mime=result.mime;
+          const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as {
+            capturedAt:string;records:Record<string,unknown[]>;restrictedAudit:Record<string,unknown[]>;verifiedReleaseHistory:unknown[]
+          };
+          const categories=[...Object.values(decoded.records),...Object.values(decoded.restrictedAudit),decoded.verifiedReleaseHistory];
+          file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:await exportDigest(bytes),
+            capturedAt:decoded.capturedAt,scope:'Profile-inclusive private application metadata (version 2); no uploaded bytes or account-exit proof.',
+            categories:categories.length,records:categories.reduce((count,rows)=>count+rows.length,0)};
+        }else{
+          const result=await services.data.exportV2(captured.snapshotId,captured.requestId);
+          if(!current())return;
+          const {verifyBoundedPrivateAccountExport,createBoundedPrivateAccountRecoveryBundle}=
+            await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+          if(!current())return;
+          const verified=await verifyBoundedPrivateAccountExport(result.bytes);
+          if(verified.schemaVersion!==2||verified.inventorySnapshotId!==captured.snapshotId||verified.requestId!==captured.requestId)
+            throw new Error('Version 2 recovery scope did not match the acknowledged inventory.');
+          if(kind==='recovery-json-v2'){
+            bytes=result.bytes;mime=result.mime;
+            file={kind,filename:result.filename,bytes:bytes.byteLength,sha256:verified.sha256,
+              capturedAt:captured.capturedAt,scope:'Locally verified profile-inclusive private recovery JSON; partial backup only.',
+              assets:verified.assetsChecked};
+          }else{
+            const bundle=await createBoundedPrivateAccountRecoveryBundle(result.bytes);
+            bytes=bundle.zip;
+            file={kind,filename:bundle.filename,bytes:bytes.byteLength,sha256:bundle.sha256,
+              capturedAt:captured.capturedAt,scope:'Locally verified profile-inclusive private recovery ZIP; partial backup only.',
+              assets:bundle.assetsReferenced,assetFiles:bundle.assetFiles};
+          }
+        }
       } else {
         if(!inventory)operation.current??=crypto.randomUUID();
         const captured = inventory??await services.account.captureInventory(operation.current!,null);
@@ -870,16 +914,18 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
       if(!current())return;
       downloadPrivateFile(file.filename,bytes,mime);
       setReceipt(file);
-      setMessage({error:false,text:kind==='recovery'?'Private recovery download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
+      setMessage({error:false,text:(kind==='recovery'||kind==='recovery-v2')?'Private recovery download prepared.':kind==='metadata-v2'?'Profile-inclusive metadata download prepared.':kind==='metadata'?'Application metadata download prepared.':kind==='source'?'Portfolio source download prepared.':'Verified recovery JSON download prepared.'});
     } catch (error) {
       if(!current())return;
       const code=typeof error==='object'&&error!==null&&'code' in error?error.code:undefined;
-      const terminal=code==='QUOTA_EXCEEDED'||code==='AUTH_EXPIRED'||code==='FORBIDDEN'||code==='LIMIT_EXCEEDED';
+      const terminal=code==='QUOTA_EXCEEDED'||code==='AUTH_EXPIRED'||code==='FORBIDDEN'||code==='LIMIT_EXCEEDED'||code==='VERSION_REQUIRED';
       setFailedKind(terminal?null:kind);
       if(code==='QUOTA_EXCEEDED'){
         setQuotaBlocked(true);
         setMessage({error:true,text:'The durable account inventory quota has been reached (at most 10 snapshots per owner). No file was downloaded. No new inventory will be requested in this session; eligible saved portfolio source exports do not consume this quota.'});
-      }else if(code==='RATE_LIMITED')
+      }else if(code==='VERSION_REQUIRED')
+        setMessage({error:true,text:'Legacy export cannot cover the current profile asset scope. Choose a profile-inclusive version 2 export; no legacy file was downloaded.'});
+      else if(code==='RATE_LIMITED')
         setMessage({error:true,text:'The server temporarily rate-limited the export. No file was downloaded. Retry later; the same acknowledged inventory or original capture operation will be reused.'});
       else if(code==='LIMIT_EXCEEDED')
         setMessage({error:true,text:'The export exceeds a supported size or record limit. No file was downloaded. Choose a narrower saved portfolio source or try metadata / verified JSON where eligible.'});
@@ -894,6 +940,17 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     }
   }
 
+  async function checkV2Storage(){
+    if(running.current||busy||!current()||!v2Inventory)return;
+    const scope=v2Inventory;
+    if(scope.schemaVersion!==2||scope.requestId!==null)return;
+    running.current=true;setBusy('reconcile-v2');setMessage(null);setV2Reconciliation(null);
+    try{
+      const result=await services.account.reconcileStorageV2(scope.snapshotId,scope.requestId);
+      if(current())setV2Reconciliation(result);
+    }catch(error){if(current())setMessage(failure(error));}
+    finally{running.current=false;if(current())setBusy(null);}
+  }
   function refreshPortfolios(){
     setSelected('');setMoreError('');setRetry(value=>value+1);
   }
@@ -936,11 +993,45 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
     <SettingsCard title="Private account data">
       <p>Choose an acknowledged application metadata JSON snapshot or bounded private recovery archive. Neither terminates access nor erases your account.</p>
       {!inventory&&!quotaBlocked&&<p>Choosing an account download explicitly requests an inventory if this session has none. If an earlier capture was not acknowledged, the same operation is retried; it may allocate a snapshot only if the original did not commit. No inventory is captured when this page loads.</p>}
-      <h3>Application metadata JSON</h3>
+      <h3>Profile-inclusive metadata JSON (version 2)</h3>
+      <p>Includes private avatar registry and selection metadata, existing owner records, component source and restricted audit. It excludes uploaded bytes. Version 2 uses a separate explicit inventory within the same account-wide limit of 10 snapshots; no legacy fallback occurs.</p>
+      <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
+        onClick={()=>void download('metadata-v2')}>{busy==='metadata-v2'?'Preparing profile-inclusive metadata…':'Download profile-inclusive metadata'}</button>
+      <h3>Profile-inclusive bounded media recovery (version 2)</h3>
+      <p>Includes eligible project and private profile asset bytes only when registry, trusted hashes and current Storage identities agree before and after transfer. Pending uploads, missing pins, changed identities and size limits refuse the whole archive.</p>
+      <div className="ws-actions">
+        <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
+          onClick={()=>void download('recovery-v2')}>{busy==='recovery-v2'?'Verifying profile-inclusive files…':'Download profile-inclusive recovery ZIP'}</button>
+        <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!v2Inventory)}
+          onClick={()=>void download('recovery-json-v2')}>{busy==='recovery-json-v2'?'Verifying profile-inclusive JSON…':'Download profile-inclusive recovery JSON'}</button>
+      </div>
+      {v2Inventory&&<>
+        <p>Version 2 inventory captured {new Date(v2Inventory.capturedAt).toLocaleString()}. Profile asset metadata: {v2Inventory.inventory.counts.profileAssetMetadata}. This is not a verified byte or deletion receipt.</p>
+        <div className="ws-actions">
+          <button type="button" className="ws-secondary" disabled={busy!==null} onClick={()=>void checkV2Storage()}>{busy==='reconcile-v2'?'Checking storage metadata…':'Check profile-inclusive storage metadata'}</button>
+          <button type="button" className="ws-secondary" disabled={busy!==null||quotaBlocked} onClick={()=>{
+            if(!current()||running.current||quotaBlocked)return;
+            v2Operation.current=null;setV2Inventory(null);setV2Reconciliation(null);setFailedKind(null);setReceipt(null);setMessage(null);
+          }}>Use new version 2 inventory</button>
+        </div>
+      </>}
+      {v2Reconciliation&&<section aria-label="Profile-inclusive storage reconciliation">
+        <h4>Storage metadata result</h4>
+        <p>{v2Reconciliation.status==='METADATA_MATCH_ONLY'?'Metadata agrees; uploaded bytes remain unverified.':v2Reconciliation.status==='LIMIT_EXCEEDED'?'Inventory exceeds the reconciliation limit.':'Metadata discrepancy; do not rely on this result for recovery.'}</p>
+        <dl><dt>Project registered</dt><dd>{v2Reconciliation.projectRegistered}</dd>
+          <dt>Profile registered</dt><dd>{v2Reconciliation.profileRegistered}</dd>
+          <dt>Pending profile uploads</dt><dd>{v2Reconciliation.profilePending}</dd>
+          <dt>Missing objects</dt><dd>{v2Reconciliation.missingObjects}</dd>
+          <dt>Orphan objects</dt><dd>{v2Reconciliation.orphanObjects}</dd></dl>
+        {v2Reconciliation.inventoryDrift&&<p>The current inventory differs from the captured scope.</p>}
+        <p>This comparison never authorizes erasure or verifies downloaded bytes.</p>
+      </section>}
+      <h3>Application metadata JSON (legacy version 1)</h3>
       <p>Owner profile, projects, portfolio revisions, asset metadata, private goals, preferences, notifications, components and restricted owner audit/release records. Up to 100 records per category and a 12 MiB response limit; larger accounts may be refused. No uploaded bytes.</p>
       <button className="ws-primary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
         onClick={()=>void download('metadata')}>{busy==='metadata'?'Preparing export…':'Download application metadata'}</button>
-      <h3>Bounded recovery archive</h3>
+      <h3>Bounded recovery archive (legacy version 1)</h3>
+      <p>Legacy recovery is refused when profile asset coverage is required. Use version 2 recovery to include eligible profile bytes; metadata and reconciliation alone do not verify bytes.</p>
       <p>Includes eligible owner records plus independently checked asset bytes where trusted pins and current storage metadata agree. Up to 100 records per category, 8 assets, 5 MiB per asset, 8 MiB total asset bytes, 16 MiB recovery JSON and 10 MiB ZIP capacity. No partial file on verification failure.</p>
       <div className="ws-actions">
         <button className="ws-secondary" type="button" disabled={busy!==null||(quotaBlocked&&!inventory)}
@@ -949,7 +1040,7 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
           onClick={()=>void download('recovery-json')}>{busy==='recovery-json'?'Checking recovery JSON…':'Download verified recovery JSON'}</button>
       </div>
       <p>Verified recovery JSON is an alternative for archives that exceed ZIP capacity, not a bypass for asset or integrity limits.</p>
-      <p>The server allows at most 10 recorded account inventory snapshots per owner. Formats and retries reuse this session’s acknowledged inventory until you explicitly refresh it. Remaining quota is not reported by the service. An export after opening a new session may allocate one snapshot; no background capture or prior-scope lookup is performed.</p>
+      <p>The server allows at most 10 recorded account inventory snapshots per owner across both schema versions. Formats and retries reuse this session’s acknowledged inventory of the selected version until you explicitly refresh it. Remaining quota is not reported by the service. An export after opening a new session may allocate one snapshot; no background capture or prior-scope lookup is performed.</p>
       {quotaBlocked&&!inventory&&<p role="status">New account inventory captures are blocked for this session because the server reported its durable quota.</p>}
       {inventory&&<><h3>Acknowledged inventory</h3>
         <p>Captured {new Date(inventory.capturedAt).toLocaleString()}. Inventory is metadata only; an application metadata export reads current records separately. Recovery rechecks storage and prior inventory consistency.</p>
@@ -976,7 +1067,22 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   </div></>;
 }
 
-function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
+// A successful transport receipt is not sufficient to show success if the
+// subsequent authoritative history disagrees or a different request is active.
+const confirmedExit: (receipt:AccountErasureReceipt,history:PrivateAccountErasureEntry[],requestId:string|null)=>boolean = (receipt,history,requestId)=> {
+  const matching=history.find(row=>row.id===receipt.requestId);
+  if(requestId===null)
+    return receipt.status==='REQUESTED_BLOCKED'&&matching?.status==='REQUESTED_BLOCKED'&&
+      history.filter(row=>row.status==='REQUESTED_BLOCKED').length===1;
+  return receipt.requestId===requestId&&receipt.status==='WITHDRAWN'&&matching?.status==='WITHDRAWN';
+};
+
+function sameExitScope(scope:{schemaVersion:number;requestId:string|null;snapshotId:string}|null,requestId:string):boolean {
+  return scope!==null&&scope.schemaVersion===2&&scope.requestId===requestId;
+}
+
+function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: Services}) {
+  const service=services.account;
   // The shell mounts this consumer only after live owner verification.
   // Capture the mount's epoch: never adopt a newer one from an old handler.
   const [epoch] = useState(() => port.getOwnerSessionEpoch());
@@ -988,6 +1094,12 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const [confirmation, setConfirmation] = useState('');
   const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
+  const inFlight=useRef(false);
+  const [exitScope,setExitScope]=useState<AccountExitInventoryReceiptV2|null>(null);
+  const [exitStorage,setExitStorage]=useState<AccountExitStorageReconciliationV2|null>(null);
+  const [exitExport,setExitExport]=useState<{requestId:string;snapshotId:string;filename:string;sha256:string;bytes:number}|null>(null);
+  const [exitQuotaBlocked,setExitQuotaBlocked]=useState(false);
+  const exitCapture=useRef<{requestId:string;operationId:string}|null>(null);
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
@@ -995,6 +1107,9 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
   const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
+  const activeScope=activeRequest&&sameExitScope(exitScope,activeRequest.id)?exitScope:null;
+  const activeStorage=activeScope&&exitStorage?.snapshotId===activeScope.snapshotId&&exitStorage.requestId===activeScope.requestId?exitStorage:null;
+  const activeExport=activeScope&&exitExport?.snapshotId===activeScope.snapshotId&&exitExport.requestId===activeScope.requestId?exitExport:null;
   const reauth = recoveredProof && activeRequest?.id === recoveredProof.requestId ? recoveredProof.verification : null;
 
   const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
@@ -1049,6 +1164,90 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     return () => { active = false; };
   }, [port,service,epoch,recoveryAttempt]);
 
+  useEffect(()=>{
+    if(!requests)return;
+    if(exitScope&&!sameExitScope(exitScope,activeRequest?.id??'')){
+      setExitScope(null);setExitStorage(null);setExitExport(null);
+    }
+    if(exitCapture.current&&exitCapture.current.requestId!==activeRequest?.id)exitCapture.current=null;
+  },[requests,activeRequest?.id,exitScope]);
+
+  async function prepareExitExport(action:'capture'|'reconcile'|'metadata'|'json'|'zip'){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current())return;
+    const requestId=activeRequest.id;
+    if(action==='capture'&&exitQuotaBlocked&&!activeScope)return;
+    if(action!=='capture'&&!activeScope)return;
+    inFlight.current=true;setBusy(true);setMessage(null);
+    try{
+      // Do not infer active status from cached UI after a lost account-exit ACK.
+      const verifyActive=async()=>{
+        const history=await service.list();
+        if(!current())throw new Error('The owner session changed.');
+        setRequests(history);
+        if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+           history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId)
+          throw new Error('The deletion request changed. Review the current request before exporting.');
+      };
+      await verifyActive();
+      if(action==='capture'){
+        if(activeScope)return;
+        if(exitCapture.current?.requestId!==requestId)
+          exitCapture.current={requestId,operationId:crypto.randomUUID()};
+        const captured=await service.captureInventoryV2(exitCapture.current.operationId,requestId);
+        if(!current())return;
+        if(!sameExitScope(captured,requestId))throw new Error('The request-bound inventory was not confirmed.');
+        await verifyActive();
+        exitCapture.current=null;
+        setExitScope(captured);setExitStorage(null);setExitExport(null);
+        setMessage({error:false,text:'Request-bound inventory captured. No data has been erased.'});
+        return;
+      }
+      const scope=activeScope!;
+      if(!sameExitScope(scope,requestId))throw new Error('The inventory does not belong to this request.');
+      if(action==='reconcile'){
+        setExitStorage(null);
+        const result=await service.reconcileStorageV2(scope.snapshotId,requestId);
+        if(!current())return;
+        if(result.snapshotId!==scope.snapshotId||result.requestId!==requestId)
+          throw new Error('Storage reconciliation scope could not be verified.');
+        await verifyActive();
+        setExitStorage(result);return;
+      }
+      setExitExport(null);
+      let filename:string,bytes:Uint8Array,mime:string,digest:string;
+      if(action==='metadata'){
+        const result=await services.data.exportApplicationMetadataV2(scope.snapshotId,requestId);
+        filename=result.filename;bytes=result.bytes;mime=result.mime;digest=await exportDigest(bytes);
+      }else{
+        const result=await services.data.exportV2(scope.snapshotId,requestId);
+        if(!current())return;
+        const {verifyBoundedPrivateAccountExport,createBoundedPrivateAccountRecoveryBundle,restoreBoundedPrivateAccountJsonFromRecoveryBundle}=
+          await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+        const checked=await verifyBoundedPrivateAccountExport(result.bytes);
+        if(checked.schemaVersion!==2||checked.requestId!==requestId||checked.inventorySnapshotId!==scope.snapshotId)
+          throw new Error('Recovery bytes do not belong to the current deletion request.');
+        if(action==='zip'){
+          const bundle=await createBoundedPrivateAccountRecoveryBundle(result.bytes);
+          const restored=await restoreBoundedPrivateAccountJsonFromRecoveryBundle(bundle.zip);
+          if(restored.sha256!==checked.sha256)throw new Error('Recovery ZIP did not reconstruct the verified source.');
+          filename=bundle.filename;bytes=bundle.zip;mime='application/zip';digest=bundle.sha256;
+        }else{
+          filename=result.filename;bytes=result.bytes;mime=result.mime;digest=checked.sha256;
+        }
+      }
+      await verifyActive();
+      if(!current())return;
+      downloadPrivateFile(filename,bytes,mime);
+      setExitExport({requestId,snapshotId:scope.snapshotId,filename,sha256:digest,bytes:bytes.byteLength});
+      setMessage({error:false,text:'Request-bound private export prepared. Export is not deletion or external-retention proof.'});
+    }catch(error){
+      if(current()){
+        if(typeof error==='object'&&error!==null&&'code' in error&&error.code==='QUOTA_EXCEEDED')setExitQuotaBlocked(true);
+        setMessage(failure(error));
+      }
+    }finally{inFlight.current=false;if(current())setBusy(false);}
+  }
+
   function discardProof() {
     port.discardOwnerAccountExitReauth(epoch);
     setRecoveredProof(null);
@@ -1086,8 +1285,8 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   }, [reauth,port,epoch]);
 
   async function check() {
-    if (busy || recovery !== 'ready' || !current()) return;
-    setBusy(true);
+    if (inFlight.current || busy || recovery !== 'ready' || !current()) return;
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     discardProof();
     challenge.current=null;
@@ -1100,50 +1299,64 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       if (!current()) return;
       setInventory(result);
       setRequests(history);
+      // Only abandon an ambiguous command when the fresh history confirms
+      // the target state. A missing record alone never permits a new UUID.
+      if(operation.current&&(operation.current.key==='request'?
+        history.some(row=>row.status==='REQUESTED_BLOCKED'):
+        history.some(row=>row.id===operation.current?.key&&row.status==='WITHDRAWN')))
+        operation.current=null;
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function changeRequest(requestId: string | null) {
-    if (busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
+    if (inFlight.current || busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
     if (requestId ? activeRequest?.id!==requestId : !!activeRequest || confirmation!=='DELETE MY ACCOUNT') return;
     discardProof();
     challenge.current=null;
     challengeOperation.current=null;
     const key = requestId ?? 'request';
     if (operation.current?.key!==key) operation.current={key,id:crypto.randomUUID()};
-    setBusy(true);
+    const command=operation.current;
+    inFlight.current=true;setBusy(true);
     setMessage(null);
+    // Do not allow reauthentication or another destructive intent while the
+    // outcome of an account request remains unknown.
+    setRequests(null);setConfirmation('');
     try {
-      if (requestId) await service.withdraw(requestId,operation.current.id);
-      else await service.request(operation.current.id,'DELETE MY ACCOUNT');
+      const receipt=requestId?await service.withdraw(requestId,command.id):
+        await service.request(command.id,'DELETE MY ACCOUNT');
       if (!current()) return;
-      // Hide old actions until a fresh read confirms the current request state.
-      setRequests(null);
-      setConfirmation('');
-      operation.current=null;
       const history=await service.list();
       if (!current()) return;
       setRequests(history);
+      if(!confirmedExit(receipt,history,requestId)){
+        if(history.some(row=>row.id===receipt.requestId&&row.status==='WITHDRAWN'))operation.current=null;
+        setMessage({error:true,text:'The account request changed or could not be confirmed by current history. Review the prerequisites before retrying.'});
+        return;
+      }
+      operation.current=null;
       setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
     } catch (error) {
-      if (current()) setMessage(failure(error));
+      if (current()) setMessage({error:true,text:'The account request was not confirmed. Review deletion prerequisites to refresh the current state before retrying.'});
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function verifyIdentity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || recovery !== 'ready' || !activeRequest || !current()) return;
+    if (inFlight.current || busy || recovery !== 'ready' || !activeRequest || !current()) return;
     const form=event.currentTarget;
     const password=new FormData(form).get('current-password');
     if (typeof password!=='string' || !password) return;
     form.reset();
-    setBusy(true);
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     discardProof();
     try {
@@ -1172,20 +1385,21 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function withdrawAppContent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
+    if (inFlight.current || busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
     if (Date.parse(reauth.expiresAt)<=Date.now()) {
       discardProof();
       setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
       return;
     }
     withdrawalOperation.current ??= crypto.randomUUID();
-    setBusy(true);
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     try {
       const receipt=await service.withdrawPublicContent(activeRequest.id,reauth.challengeId,
@@ -1197,6 +1411,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
@@ -1225,6 +1440,23 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
           <dt>Trash records</dt><dd>{inventory.counts.trashRecords}</dd></dl>
         {inventory.countsCapped && <p>Some categories show up to {inventory.maxCountPerCategory} records.</p>}
         <p>Public route withdrawal, storage cleanup, provider data and backups require separate verification.</p>
+      </section>}
+      {activeRequest&&<section aria-label="Request-bound private export">
+        <h3>Export for this deletion request</h3>
+        <p>Optional private inventory and recovery files bound to this exact pending request. All inventory versions share the ten-snapshot account quota. These records are not deletion approval.</p>
+        {!activeScope&&<button type="button" className="ws-secondary" disabled={busy||exitQuotaBlocked} onClick={()=>void prepareExitExport('capture')}>Capture request-bound inventory</button>}
+        {exitQuotaBlocked&&<p role="status">No further inventory captures are available under the current quota. Previously acknowledged inventory can still be used.</p>}
+        {activeScope&&<>
+          <p>Captured <time dateTime={activeScope.capturedAt}>{new Date(activeScope.capturedAt).toLocaleString()}</time>. Profile asset metadata: {activeScope.inventory.counts.profileAssetMetadata}.</p>
+          <div className="ws-actions">
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('reconcile')}>Check request-bound storage metadata</button>
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('metadata')}>Download request-bound metadata</button>
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('json')}>Download request-bound recovery JSON</button>
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('zip')}>Download request-bound recovery ZIP</button>
+          </div>
+          {activeStorage&&<p role="status">Storage result: {activeStorage.status==='METADATA_MATCH_ONLY'?'Metadata matches; bytes not verified by this check.':activeStorage.status==='LIMIT_EXCEEDED'?'Reconciliation limit exceeded.':'Discrepancy detected.'} Registered profile/project assets: {activeStorage.profileRegistered}/{activeStorage.projectRegistered}. Pending profile uploads: {activeStorage.profilePending}.</p>}
+          {activeExport&&<div aria-label="Request-bound export receipt"><p>{activeExport.filename} · {formatExportBytes(activeExport.bytes)}</p><p>SHA-256: <code>{activeExport.sha256}</code></p></div>}
+        </>}
       </section>}
       <a href="/app/export">Open export center</a>
     </SettingsCard>
