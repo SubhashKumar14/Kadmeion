@@ -24,7 +24,7 @@ export function parseDeliveryTarget(raw) {
  * backslashes are escaped. The HTML envelope retains its own 750 KB cap.
  */
 export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
-  let reader, timer, finished=false;
+  let reader, timer, finished=false, expired=false;
   try {
     if(!Number.isSafeInteger(limit)||limit<1||limit>5_350_000)throw Error('Invalid RPC limit');
     const type=response?.headers?.get('content-type');
@@ -36,12 +36,15 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
     if(!response.body?.getReader)throw Error('Missing RPC body');
     reader=response.body.getReader();
     const chunks=[];
-    let size=0;
+    let size=0, count=0;
     const drain=async()=>{
       for(;;) {
         const {done,value}=await reader.read();
+        if(expired)throw Error('RPC body timeout');
         if(done)break;
         if(!(value instanceof Uint8Array))throw Error('Invalid RPC chunk');
+        if(++count>65_536)throw Error('RPC chunk limit');
+        if(value.byteLength===0)continue;
         size+=value.byteLength;
         if(size>limit)throw Error('RPC size limit');
         chunks.push(value);
@@ -50,7 +53,7 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
     // A transport may ignore fetch's AbortSignal or return a stalled body.
     // Race the entire drain once; do not attach a deadline listener per chunk.
     const deadline=new Promise((_,reject)=>{
-      timer=setTimeout(()=>reject(Error('RPC body timeout')),5000);
+      timer=setTimeout(()=>{expired=true;reject(Error('RPC body timeout'));},5000);
     });
     await Promise.race([drain(),deadline]);
     finished=true;
@@ -66,7 +69,7 @@ export async function readBoundedRpcJson(response, limit=2 * 1024 * 1024) {
   } finally {
     clearTimeout(timer);
     if(!finished)cancelRpcBody(reader??response?.body);
-    reader?.releaseLock();
+    try{reader?.releaseLock();}catch{}
   }
 }
 
