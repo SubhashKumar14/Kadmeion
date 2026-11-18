@@ -130,12 +130,12 @@ create trigger kd_github_exit_invalidate after insert or update of status on pub
 
 -- Read-only schema/live-session capability gate. No state row, consent,
 -- quota or provider request is created. Edge readiness is verified separately.
-create function public.read_owner_github_provider_capability() returns jsonb language plpgsql security definer set search_path='' set lock_timeout='250ms' as $
+create function public.read_owner_github_provider_capability() returns jsonb language plpgsql security definer set search_path='' set lock_timeout='250ms' as $$
 declare o uuid:=auth.uid();sess uuid:=kadmeion_private.require_live_exit_auth_session();
 begin
  perform kadmeion_private.github_lock_owner(o,sess,false);
  return jsonb_build_object('schemaVersion',1,'ownerId',o);
-end;$;
+end;$$;
 revoke all on function public.read_owner_github_provider_capability() from public,anon,authenticated,service_role;
 grant execute on function public.read_owner_github_provider_capability() to authenticated;
 
