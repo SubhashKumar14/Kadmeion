@@ -44,6 +44,17 @@ function validProjectPage(page:ProjectPage, ownerId:string, previous:ProjectCurs
 const freshDraft=():NewPrivateProject=>({
   title:'',slug:'',summary:'',repositoryUrl:null,liveUrl:null
 });
+function normalizeQuickAddDraft(input:NewPrivateProject):NewPrivateProject{
+  const normalized=normalizeProjectDraft({...input,description:''});
+  for(const [href,label] of [[normalized.repositoryUrl,'Repository URL'],[normalized.liveUrl,'Live website URL']] as const){
+    if(href===null)continue;
+    const url=new URL(href);
+    if(!url.hostname.includes('.')||url.hash||href.length>2048)
+      throw new Error(label+': enter a public HTTPS URL without a fragment.');
+  }
+  return {slug:normalized.slug,title:normalized.title,summary:normalized.summary,
+    repositoryUrl:normalized.repositoryUrl,liveUrl:normalized.liveUrl};
+}
 function matchesCreatedProject(record:OwnerProject,submitted:NewPrivateProject):boolean {
   try {
     const normalizedUrl=(value:string|null)=>value?new URL(value).href:null;
@@ -287,10 +298,14 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current||uncertainCreate.current)return;
+    // Local validation does not dispatch an insert, so it must never enter
+    // uncertain-create recovery or lock the user out of correcting fields.
+    let submitted:NewPrivateProject;
+    try{submitted=normalizeQuickAddDraft(draft);}
+    catch(error){setError(error instanceof Error?error.message:'Enter valid private project details.');return;}
     creationInFlight.current=true;
     const attempt=++creationAttempt.current;
-    const sessionEpoch=port.getOwnerSessionEpoch();
-    const submitted={...draft};
+    const sessionEpoch=ownerEpoch.current;
     const stillCurrent=()=>attempt===creationAttempt.current&&currentOwner();
     setSaving(true);setError('');setNotice('');setConfirmedProject(null);
     let dispatched=false, acknowledgedId:string|null=null;
@@ -305,7 +320,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       dispatched=true;
-      const saved=await port.createPrivateProject(submitted);
+      const saved=await port.createPrivateProject(submitted,sessionEpoch);
       if(!stillCurrent())return;
       if(saved.data&&!saved.error)acknowledgedId=saved.data.id;
       if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
@@ -322,7 +337,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       }
       // An acknowledged insert is not a second write authorization. Verify
       // the stored record itself before offering Continue editing.
-      const readback=await port.readOwnerProject(saved.data.id);
+      const readback=await port.readOwnerProject(saved.data.id,sessionEpoch);
       if(!stillCurrent())return;
       const verifiedOwner=await port.getUser();
       if(!stillCurrent())return;
@@ -366,7 +381,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
       const acknowledgedId=acknowledgedCreateId.current;
       if(acknowledgedId){
-        const result=await port.readOwnerProject(acknowledgedId);if(!valid())return;
+        const result=await port.readOwnerProject(acknowledgedId,ownerEpoch.current);if(!valid())return;
         const owner=await port.getUser();if(!valid())return;
         if(owner.error||owner.data?.user?.id!==ownerId){invalidateOwner();return;}
         if(result.error||!result.data||result.data.id!==acknowledgedId){
@@ -565,6 +580,13 @@ type DetailState =
 // case-study baseline without replacing the user's independent section buffer.
 type RevisionRange = Readonly<{from: number; to: number}>;
 
+function equalProjectDraft(left:PrivateProjectDraft,right:PrivateProjectDraft):boolean{
+  try{return JSON.stringify(normalizeProjectDraft(left))===JSON.stringify(normalizeProjectDraft(right));}
+  catch{return false;}
+}
+function matchesProjectReadback(record:OwnerProject,id:string,revision:number,desired:PrivateProjectDraft):boolean{
+  return record.id===id.toLowerCase()&&record.revision===revision&&equalProjectDraft(record,desired);
+}
 type DestinationChange = {label:string;before:string|null;after:string|null};
 type DestinationReview = {changes:DestinationChange[];key:string|null;error:string};
 function projectDestinationReview(saved:PrivateProjectDraft&{revision:number},draft:PrivateProjectDraft):DestinationReview{
@@ -654,7 +676,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
       setOpenedSections(false);setPanel('details');setDetail({status:'unavailable'});
     });
-    if(currentDetail(generation))void port.readOwnerProject(projectId).then(result => {
+    if(currentDetail(generation))void port.readOwnerProject(projectId,ownerEpoch.current).then(result => {
       if (!currentDetail(generation)) return;
       if (result.data && !result.error) {
         observeRevision(result.data.revision);
@@ -683,7 +705,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setFeedback(null);
     setLatest(null);
     try {
-      const {data,error} = await port.readOwnerProject(projectId);
+      const {data,error} = await port.readOwnerProject(projectId,ownerEpoch.current);
       if(!currentDetail(generation))return;
       if (!data || error || data.revision < Math.max(baseRevision,knownRevision)) {
         setFeedback({error:true,text:'Could not verify the latest revision. Your edits are still here.'});
@@ -692,19 +714,16 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       observeRevision(data.revision);
       // Readback proves current saved fields, not which request/actor wrote them.
       // Do not advance the sibling case-study baseline without its own receipt.
-      if(uncertainOverview&&detail.status==='ready'&&data.revision===uncertainOverview.from+1){
-        try{
-          const same=(left:PrivateProjectDraft,right:PrivateProjectDraft)=>
-            JSON.stringify(normalizeProjectDraft(left))===JSON.stringify(normalizeProjectDraft(right));
-          if(same(data,uncertainOverview.desired)&&same(detail.draft,uncertainOverview.desired)){
-            setDetail({status:'ready',saved:data,draft:data});setUncertainOverview(null);
-            setOverviewConflict(false);setLatest(null);
-            setFeedback({error:false,text:'Requested overview matches the current saved revision. No additional write was made.'});return;
-          }
-        }catch{/* Invalid current draft still requires explicit comparison. */}
+      if(uncertainOverview&&detail.status==='ready'&&
+        matchesProjectReadback(data,projectId,uncertainOverview.from+1,uncertainOverview.desired)&&
+        equalProjectDraft(detail.draft,uncertainOverview.desired)){
+        setDetail({status:'ready',saved:data,draft:data});setUncertainOverview(null);
+        setOverviewConflict(false);setLatest(null);
+        setFeedback({error:false,text:'Requested overview matches the current saved revision. No additional write was made.'});return;
       }
-      setLatest(data.revision !== baseRevision ? data : null);
-      if (data.revision === baseRevision) {
+      const unchanged=detail.status==='ready'&&data.id===projectId.toLowerCase()&&data.revision===baseRevision&&equalProjectDraft(data,detail.saved);
+      setLatest(unchanged?null:data);
+      if (unchanged) {
         setUncertainOverview(null);setOverviewConflict(false);
         setFeedback({error:false,text:'You have the latest saved revision.'});
       } else setOverviewConflict(true);
@@ -743,7 +762,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setFeedback(null);
     const from=detail.saved.revision,generation=detailGeneration.current;
     try {
-      const result = await port.saveOwnerProject(projectId, from, submitted);
+      const result = await port.saveOwnerProject(projectId, from, submitted, ownerEpoch.current);
       if(!currentDetail(generation))return;
       if (!result.data || result.error || result.data.revision!==from+1) {
         const message=result.error?.message ?? 'Save could not be confirmed.';
@@ -752,10 +771,18 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         setFeedback({error:true,text:message});
         return;
       }
-      const to=result.data.revision;
+      // The legacy save adapter returns submitted fields with a revision receipt.
+      // Verify the actual persisted owner record before granting sibling revision credit.
+      const readback=await port.readOwnerProject(projectId,ownerEpoch.current);
+      if(!currentDetail(generation))return;
+      if(readback.error||!readback.data||!matchesProjectReadback(readback.data,projectId,from+1,submitted)){
+        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
+        setFeedback({error:true,text:'Save was acknowledged but the stored overview could not be verified. Check the latest revision before retrying.'});return;
+      }
+      const to=readback.data.revision;
       observeRevision(to);
       setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
-      setDetail({status:'ready',saved:result.data,draft:result.data});
+      setDetail({status:'ready',saved:readback.data,draft:readback.data});
       setReviewedDestinationChange(null);setUncertainOverview(null);
       setFeedback({error:false,text:'Private draft saved.'});
     } catch {
@@ -776,6 +803,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     (detail.saved.liveUrl ?? '') !== (detail.draft.liveUrl ?? '')
   );
   const blocked=saving || checking || casePending || imagePending;
+  // Private drafts are in memory until acknowledged. Warn on document exit;
+  // do not store private content or claim an offline/cloud save.
+  useEffect(()=>{
+    if(!dirty&&!caseDirty&&!saving&&!checking&&!casePending&&!imagePending)return;
+    const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
+    window.addEventListener('beforeunload',warn);
+    return()=>window.removeEventListener('beforeunload',warn);
+  },[dirty,caseDirty,saving,checking,casePending,imagePending]);
   const destinationReview=detail.status==='ready'?projectDestinationReview(detail.saved,detail.draft):null;
   const destinationUnconfirmed=!!destinationReview&&(!!destinationReview.error||
     (destinationReview.key!==null&&destinationReview.key!==reviewedDestinationChange));
@@ -815,6 +850,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         <fieldset disabled={blocked}>
           <legend>Project details</legend>
           <p>Changes remain unsaved until you choose Save changes. Saving changed project content can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
+          {dirty&&<p role="status">Unsaved private overview edits. These are retained in this editor, not saved offline.</p>}
           <label>Project title
             <input maxLength={120} required value={detail.draft.title} onChange={e => edit('title', e.target.value)}/>
           </label>
@@ -1348,6 +1384,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const [uncertain,setUncertain]=useState<{base:number;sections:CaseStudySection[]}|null>(null);
   const [comparison,setComparison]=useState<CaseRevision|null>(null);
   const [confirmRebase,setConfirmRebase]=useState(false);
+  const [previewSource,setPreviewSource]=useState<'draft'|'saved'>('draft');
   const currentOwner=()=>!expired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
   const current=(id:number)=>generation.current===id&&currentOwner();
   const minimumRevision=useRef(knownRevision);
@@ -1366,7 +1403,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
       if(next===ownerEpoch.current||expired.current)return;
       expired.current=true;++generation.current;pending.current=true;
-      setDraft(null);setSavedSections(null);setUncertain(null);setComparison(null);setConfirmRebase(false);setNotice('');
+      setDraft(null);setSavedSections(null);setUncertain(null);setComparison(null);setConfirmRebase(false);setPreviewSource('draft');setNotice('');
       setBusy(false);setLoading(false);setNeedsReload(true);
       setError('Your owner session changed. Reopen this project.');
     });
@@ -1464,9 +1501,16 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
         setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
         return;
       }
-      setDraft(result.data);
-      setSavedSections(result.data.sections);setUncertain(null);setComparison(null);setConfirmRebase(false);
-      onSaved(baseRevision,result.data.revision);
+      const readback=await port.readOwnerCaseStudy(projectId);
+      if(!current(id))return;
+      if(readback.error||!readback.data||readback.data.revision!==baseRevision+1||
+        !sameCaseSections(readback.data.sections,submitted)){
+        setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
+        setError('Case study save was acknowledged but the stored sections could not be verified. Check the latest saved sections before retrying.');return;
+      }
+      setDraft(readback.data);
+      setSavedSections(readback.data.sections);setUncertain(null);setComparison(null);setConfirmRebase(false);
+      onSaved(baseRevision,readback.data.revision);
       setNotice('Private case study saved.');
     } catch {
       if(current(id)){setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
@@ -1516,6 +1560,8 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     setNotice(keep?'Compared saved sections. Your draft still needs a separate explicit save.':'Loaded the compared saved sections. No write was made.');
   }
 
+  const previewSections=(previewSource==='draft'?draft?.sections:savedSections)??[];
+  const includedPreview=previewSections.filter(section=>section.visible);
   return <form className="ws-project-fields ws-case-form" onSubmit={event => void save(event)}>
     <h2>Case study sections</h2>
     <p>Add and order sections for your draft. Visibility applies to a future release. Saving changed sections can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
@@ -1548,6 +1594,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
       disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
     {draft && stale && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
     {draft && <>
+      {dirty&&<p role="status">Unsaved private section edits. The overview has its own separate draft.</p>}
       {!draft.sections.length && <p>Your case study has no sections yet.</p>}
       {draft.sections.map((section, index) => <fieldset key={section.id} disabled={locked}>
         <legend>{section.title || 'Section ' + (index + 1)}</legend>
@@ -1580,6 +1627,21 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
         }}>Add section</button>
         <button type="submit" className="ws-primary" disabled={locked || stale || !dirty}>{busy ? 'Saving…' : 'Save sections'}</button>
       </div>
+      <section className="ws-project-aside" aria-label="Private case-study preview">
+        <h3>Case-study preview</h3>
+        <p>Owner-only preview of the selected sections, not a public route. Results are self-reported. Hidden sections stay in your draft.</p>
+        <div className="ws-actions" role="group" aria-label="Case-study preview source">
+          <button type="button" className="ws-secondary" aria-pressed={previewSource==='draft'} onClick={()=>setPreviewSource('draft')}>Current section draft</button>
+          <button type="button" className="ws-secondary" aria-pressed={previewSource==='saved'} disabled={!savedSections} onClick={()=>setPreviewSource('saved')}>Last verified saved sections</button>
+        </div>
+        <p>{includedPreview.length} included of {previewSections.length} {previewSource==='saved'?'saved':'draft'} sections.{previewSource==='saved'&&stale?' This saved baseline may be stale.':''}</p>
+        {!includedPreview.length?<p>No included sections yet.</p>:<div className="ws-profile-card">
+          {includedPreview.map((section,index)=><details key={section.id} open={index===0?true:undefined}>
+            <summary>{section.title||'Untitled '+section.kind+' section'}</summary>
+            <p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{section.body||'No section content yet.'}</p>
+          </details>)}
+        </div>}
+      </section>
     </>}
   </form>;
 }

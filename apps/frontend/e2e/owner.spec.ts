@@ -3829,3 +3829,306 @@ test('B16 WF-019/027 R6 cold browser profile preserves individual editor transac
     await rm(profile,{recursive:true,force:true});
   }
 });
+
+test('B16 C08 profile field selection CAS conflicts across tabs and withdraws the actual local projection',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only; no hosted publication.');
+  test.setTimeout(120_000);
+  const owner=await localUser('R6 selected-field owner');
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY||process.env.VITE_SUPABASE_ANON_KEY;
+  if(!key)throw new Error('Local publishable key required.');
+  const handle=runLocalFixtureSql(
+    "update public.profiles set handle='r6_'||substr(replace(:'actor_id','-',''),1,12),headline='R6 public headline',bio='R6 private biography' where user_id=:'actor_id'::uuid;"+
+    "select handle from public.profiles where user_id=:'actor_id'::uuid;",owner.id);
+  expect(handle).toMatch(/^r6_[0-9a-f]{12}$/);
+  const signed=await fetch(origin+'/auth/v1/token?grant_type=password',{method:'POST',redirect:'error',
+    signal:AbortSignal.timeout(15000),headers:{apikey:key,'Content-Type':'application/json'},
+    body:JSON.stringify({email:owner.email,password:owner.password})});
+  expect(signed.ok).toBe(true);
+  const session=await signed.json();
+  if(typeof session.access_token!=='string')throw new Error('Local owner token unavailable.');
+  async function rpc(name:string,args:Record<string,unknown>){
+    const response=await fetch(origin+'/rest/v1/rpc/'+name,{method:'POST',redirect:'error',
+      signal:AbortSignal.timeout(15000),headers:{apikey:key!,Authorization:'Bearer '+session.access_token,
+        'Content-Type':'application/json'},body:JSON.stringify(args)});
+    expect(response.ok, name+' should succeed on local stack').toBe(true);
+    return await response.json();
+  }
+  // Deliberate initial publication via real owner JWT and legacy projection
+  // contract. No privileged insertion of the publication; not C11 acceptance.
+  const initial=await rpc('read_owner_profile_sharing_state',{});
+  expect(initial.ownerUserId).toBe(owner.id);
+  const selected={shareDisplayName:true,shareHeadline:true,shareBio:false,publicationRequested:true};
+  const applied=await rpc('change_owner_profile_sharing',{p_expected_version:initial.version,p_expected:initial.preferences,
+    p_desired:selected,p_operation_id:randomUUID()});
+  expect(applied.preferences).toEqual(selected);
+  const published=await rpc('owner_publish_profile_projection',{p_confirmation:'PUBLISH PROFILE'});
+  expect(published.status).toBe('PROJECTION_READY');
+  const projection=()=>runLocalFixtureSql(
+    "select coalesce(public.service_read_published_profile_projection((select handle from public.profiles where user_id=:'actor_id'::uuid))::text,'ABSENT');",owner.id);
+  expect(JSON.parse(projection())).toMatchObject({headline:'R6 public headline',handle});
+  expect(projection()).not.toContain('R6 private biography');
+  const other=await browser.newPage({baseURL:'http://127.0.0.1:5173'});
+  try{
+    await signIn(page,owner);await signIn(other,owner);
+    for(const tab of [page,other]){
+      await tab.goto('/app/profile');
+      await tab.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+      const choices=tab.getByRole('group',{name:'Choose fields for a future publication'});
+      await expect(choices.getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+      await expect(choices.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+      await expect(choices.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    }
+    const first=page.getByRole('group',{name:'Choose fields for a future publication'});
+    const second=other.getByRole('group',{name:'Choose fields for a future publication'});
+    // Both pages read the same exact version. First owner explicitly withdraws
+    // headline; stale second page tries a different selection.
+    await first.getByRole('checkbox',{name:'Headline',exact:true}).uncheck();
+    await first.getByRole('checkbox',{name:/I confirm these exact private sharing choices.*withdrawal/}).check();
+    await first.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(page.getByText('Private sharing choices saved and read back. No profile was published.',{exact:true})).toBeVisible({timeout:20000});
+    expect(projection()).toBe('ABSENT');
+    const afterFirst=await rpc('read_owner_profile_sharing_state',{});
+    expect(afterFirst.version).toBe(applied.version+1);
+    expect(afterFirst.preferences).toEqual({...selected,shareHeadline:false,publicationRequested:false});
+    let stalePosts=0;
+    await other.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/change_owner_profile_sharing',async route=>{
+      if(route.request().method()==='POST')stalePosts++;
+      await route.continue();
+    });
+    await second.getByRole('checkbox',{name:'About you',exact:true}).check();
+    await second.getByRole('checkbox',{name:/I confirm these exact private sharing choices.*withdrawal/}).check();
+    await second.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(other.getByText(/Sharing change could not be confirmed/)).toBeVisible({timeout:30000});
+    expect(stalePosts).toBe(1);
+    expect(await rpc('read_owner_profile_sharing_state',{})).toEqual(afterFirst);
+    await other.getByRole('button',{name:'Retry sharing preferences',exact:true}).click();
+    await expect(other.getByText(/The saved sharing choices differ from your attempted change/)).toBeVisible();
+    await expect(other.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    expect(stalePosts).toBe(1);
+    expect(projection()).toBe('ABSENT');
+    await page.reload();
+    await page.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+    const reloaded=page.getByRole('group',{name:'Choose fields for a future publication'});
+    await expect(reloaded.getByRole('checkbox',{name:'Headline',exact:true})).not.toBeChecked();
+    await expect(reloaded.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+    await page.getByRole('button',{name:'Profile',exact:true}).click();
+    await expect(page.getByRole('textbox',{name:'About you',exact:true})).toHaveValue('R6 private biography');
+    expect(await rpc('read_owner_profile_sharing_state',{})).toEqual(afterFirst);
+    expect(projection()).toBe('ABSENT');
+  }finally{await other.close();}
+});
+
+test('B16 C08 profile choice lost acknowledgement and explicit concurrent review preserve the stored CAS',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable local Supabase only.');
+  test.setTimeout(120_000);
+  const owner=await localUser('R7 sharing recovery');
+  const saved=()=>JSON.parse(runLocalFixtureSql(
+    "select coalesce((select jsonb_build_object('display',share_display_name,'headline',share_headline,'bio',share_bio,'requested',publication_requested) from public.profile_sharing_preferences where user_id=:'actor_id'::uuid),'null'::jsonb)::text;",owner.id));
+  const second=await browser.newPage();
+  try{
+    await signIn(page,owner);await signIn(second,owner);
+    for(const tab of [page,second]){
+      await tab.goto('/app/profile');
+      await tab.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+      const fields=tab.getByRole('group',{name:'Choose fields for a future publication'});
+      await expect(fields.getByRole('checkbox',{name:'Headline',exact:true})).not.toBeChecked();
+      await expect(fields.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+    }
+    const first=page.getByRole('group',{name:'Choose fields for a future publication'});
+    const stale=second.getByRole('group',{name:'Choose fields for a future publication'});
+    let writes=0,committed=false;
+    await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/change_owner_profile_sharing',async route=>{
+      if(route.request().method()!=='POST')return route.continue();
+      writes++;
+      if(writes!==1)return route.continue();
+      const real=await route.fetch();
+      try{
+        expect(real.ok()).toBe(true);
+        committed=true;
+        await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'Disposable lost CAS acknowledgement'})});
+      }finally{await real.dispose();}
+    });
+    await first.getByRole('checkbox',{name:'Headline',exact:true}).check();
+    await first.getByRole('checkbox',{name:/I confirm these exact private sharing choices/}).check();
+    await first.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(page.getByText(/Sharing change could not be confirmed/)).toBeVisible({timeout:30000});
+    expect(committed).toBe(true);
+    expect(saved()).toMatchObject({headline:true,bio:false,requested:false});
+    await page.getByRole('button',{name:'Retry sharing preferences',exact:true}).click();
+    await expect(page.getByText('Current saved sharing choices match your request. No additional write was made.',{exact:true})).toBeVisible();
+    await expect(first.getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+    await expect(first.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    expect(writes).toBe(1);
+    let staleWrites=0;
+    await second.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/change_owner_profile_sharing',async route=>{
+      if(route.request().method()==='POST')staleWrites++;
+      await route.continue();
+    });
+    await stale.getByRole('checkbox',{name:'About you',exact:true}).check();
+    await stale.getByRole('checkbox',{name:/I confirm these exact private sharing choices/}).check();
+    await stale.getByRole('button',{name:'Save private sharing choices'}).click();
+    await expect(second.getByText(/Sharing change could not be confirmed/)).toBeVisible({timeout:30000});
+    expect(staleWrites).toBe(1);
+    await second.getByRole('button',{name:'Retry sharing preferences',exact:true}).click();
+    const review=second.getByRole('group',{name:'Review conflicting sharing choices'});
+    await expect(review).toBeVisible();
+    await expect(stale.getByRole('checkbox',{name:'About you',exact:true})).toBeDisabled();
+    await expect(stale.getByRole('checkbox',{name:/I confirm these exact private sharing choices/})).toBeDisabled();
+    await review.getByRole('button',{name:'Use saved sharing choices',exact:true}).click();
+    await expect(review).toHaveCount(0);
+    await expect(stale.getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+    await expect(stale.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
+    await expect(stale.getByRole('button',{name:'Save private sharing choices'})).toBeDisabled();
+    expect(staleWrites).toBe(1);
+    expect(saved()).toMatchObject({headline:true,bio:false,requested:false});
+    await page.reload();
+    await page.getByRole('button',{name:'Saved sharing preferences',exact:true}).click();
+    await expect(page.getByRole('group',{name:'Choose fields for a future publication'}).getByRole('checkbox',{name:'Headline',exact:true})).toBeChecked();
+    expect(writes).toBe(1);
+  }finally{await second.close();}
+});
+
+test('B16 WF-048 R6 actual reviewed nonempty account exit removes only disposable owner data and downloads authoritative receipt',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Destructive test restricted to disposable loopback Supabase.');
+  test.setTimeout(125_000);
+  const key=process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if(process.env.VITE_SUPABASE_URL!==origin||!key)throw new Error('Refusing nonlocal account exit test.');
+  const owner=await localUser('R6 disposable erasure owner'),foreign=await localUser('R6 erasure foreign owner');
+  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const bucket='kadmeion-private-assets';
+  const login=async(user:{email:string;password:string})=>fetch(origin+'/auth/v1/token?grant_type=password',{
+    method:'POST',redirect:'error',signal:AbortSignal.timeout(15_000),
+    headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email:user.email,password:user.password})
+  });
+  const upload=async(user:{id:string;email:string;password:string})=>{
+    const auth=await login(user);if(!auth.ok)throw new Error('Disposable owner auth failed.');
+    const authBody=await auth.json();if(typeof authBody.access_token!=='string')throw new Error('No owner bearer.');
+    const headers={apikey:key,Authorization:'Bearer '+authBody.access_token};
+    const path=user.id+'/exit/'+randomUUID()+'.png';
+    const write=await fetch(origin+'/storage/v1/object/'+bucket+'/'+path,{
+      headers:{...headers,'Content-Type':'image/png'},method:'POST',body:bytes,redirect:'error',signal:AbortSignal.timeout(15_000)
+    });
+    expect(write.ok).toBe(true);await write.body?.cancel();
+    const read=()=>fetch(origin+'/storage/v1/object/authenticated/'+bucket+'/'+path,{headers,redirect:'error',signal:AbortSignal.timeout(15_000)});
+    const before=await read();expect(before.ok).toBe(true);
+    expect(Buffer.from(await before.arrayBuffer()).equals(bytes)).toBe(true);
+    return {read};
+  };
+  // Real owner JWTs, actual private Storage bytes; no admin Storage write.
+  const target=await upload(owner),untouched=await upload(foreign);
+  await signIn(page,owner);
+  await page.goto('/app/settings/account/delete');
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory'})).toBeVisible();
+  await page.getByRole('textbox',{name:'Type DELETE MY ACCOUNT to record the request'}).fill('DELETE MY ACCOUNT');
+  await page.getByRole('button',{name:'Record deletion request'}).click();
+  await expect(page.getByText('Deletion request recorded. No data has been erased.',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Permanently erase account and prepare receipt'})).toHaveCount(0);
+  await page.getByLabel('Current password for identity verification').fill(owner.password);
+  await page.getByRole('button',{name:'Verify identity for account exit'}).click();
+  await expect(page.getByText(/Fresh sign-in verified\. Proof expires at/)).toBeVisible();
+  const section=page.getByRole('region',{name:'Irreversible account erasure'});
+  const review=section.getByRole('button',{name:'Review server-gated cleanup readiness'});
+  await review.click();
+  await expect(section.getByText(/Eligible uploads in the next bounded batch: 1\./)).toBeVisible();
+  await expect(section.getByRole('button',{name:'Permanently erase account and prepare receipt'})).toHaveCount(0);
+  const remove=section.getByRole('button',{name:'Remove reviewed private uploads'});
+  await expect(remove).toBeDisabled();
+  await section.getByLabel('Type REMOVE PRIVATE UPLOADS to confirm this batch').fill('REMOVE PRIVATE UPLOADS');
+  await remove.click();
+  await expect(page.getByText(/Removal of 1 reviewed private uploads was acknowledged/)).toBeVisible();
+  expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",owner.id)).toBe('0');
+  const erasedObject=await target.read();expect(erasedObject.ok).toBe(false);await erasedObject.body?.cancel();
+  const foreignObject=await untouched.read();expect(foreignObject.ok).toBe(true);expect(Buffer.from(await foreignObject.arrayBuffer()).equals(bytes)).toBe(true);
+  await review.click();
+  await expect(section.getByText(/Eligible uploads in the next bounded batch: 0\./)).toBeVisible();
+  const execute=section.getByRole('button',{name:'Permanently erase account and prepare receipt'});
+  await expect(execute).toBeDisabled();
+  await section.getByLabel('Type DELETE MY ACCOUNT for final erasure').fill('DELETE MY ACCOUNT');
+  const [download]=await Promise.all([page.waitForEvent('download'),execute.click()]);
+  expect(download.suggestedFilename()).toBe('kadmeion-account-erasure-receipt.json');
+  const file=await download.path();if(!file)throw new Error('Erasure receipt download unavailable.');
+  const receipt=JSON.parse(await readFile(file,'utf8'));
+  expect(receipt).toMatchObject({status:'ACTIVE_ACCOUNT_ERASED',accessTerminated:false,backupErasureVerified:false,externalCopiesErased:false});
+  expect(receipt.receiptId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(runLocalFixtureSql("select (select count(*) from auth.users where id=:'actor_id'::uuid)||':'||(select count(*) from public.profiles where user_id=:'actor_id'::uuid);",owner.id)).toBe('0:0');
+  const denied=await login(owner);expect(denied.ok).toBe(false);await denied.body?.cancel();
+  const foreignLogin=await login(foreign);expect(foreignLogin.ok).toBe(true);await foreignLogin.body?.cancel();
+  expect(runLocalFixtureSql("select count(*) from storage.objects where bucket_id='kadmeion-private-assets' and split_part(name,'/',1)=:'actor_id';",foreign.id)).toBe('1');
+});
+
+test('B16 C05 WF-047 R7 actual avatar V2 ZIP and JSON reopen verify exact bytes, tamper and owner isolation',async({page,browser})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Disposable loopback GoTrue, database and Storage only.');
+  test.setTimeout(145_000);
+  if(process.env.VITE_SUPABASE_URL!==origin)throw new Error('Refusing nonlocal export test.');
+  const owner=await localUser('R7 profile media archive'),foreign=await localUser('R7 foreign archive');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQSbn0HwAEJAJK6G06bAAAAABJRU5ErkJggg==','base64');
+  const digest=createHash('sha256').update(png).digest('hex');
+  await signIn(page,owner);await page.goto('/app/profile');
+  const avatar=page.getByRole('region',{name:'Private profile avatar'});
+  await avatar.getByLabel(/Avatar image/).setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:png});
+  await avatar.getByLabel('Avatar alt text').fill('R7 archived avatar');
+  await avatar.getByRole('button',{name:'Save private avatar'}).click();
+  await expect(avatar.getByText('Private avatar selection saved. Not published.',{exact:true})).toBeVisible();
+  const image=avatar.getByRole('img',{name:'R7 archived avatar',exact:true});
+  await expect.poll(()=>image.evaluate(async node=>{
+    const img=node as HTMLImageElement;
+    if(!img.naturalWidth||!img.src.startsWith('blob:'))return '';
+    const res=await fetch(img.src);
+    if(!res.ok)return '';
+    return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await res.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('');
+  })).toBe(digest);
+  await page.goto('/app/export');
+  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download profile-inclusive recovery ZIP',exact:true}).click()]);
+  expect(download.suggestedFilename()).toBe('kadmeion-private-account-partial-v2.zip');
+  const downloaded=await download.path();if(!downloaded)throw new Error('No archive download.');
+  const zip=await readFile(downloaded);
+  const archive=readStrictStoredZip(new Uint8Array(zip),{maxEntries:12,maxBytes:10*1024*1024,maxEntryBytes:5*1024*1024});
+  const media=archive.get('assets/'+digest+'.png');expect(media!==undefined&&Buffer.from(media).equals(png)).toBe(true);
+  const manifest=JSON.parse(new TextDecoder().decode(archive.get('kadmeion-partial-bundle.json')!));
+  expect(manifest).toMatchObject({formatVersion:2,schemaVersion:2,ownerId:owner.id,requestId:null,completeAccountExport:false,deletionAllowed:false});
+  expect(manifest.assetReferences).toHaveLength(1);
+  expect(manifest.assetReferences[0]).toMatchObject({scope:'PROFILE',sha256:digest,archivePath:'assets/'+digest+'.png'});
+  const reopen=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Reopen a private recovery file',exact:true})});
+  const select=async(bytes:Buffer,name:string,mimeType:string)=>{
+    await reopen.getByLabel('Recovery ZIP or JSON').setInputFiles({name,mimeType,buffer:bytes});
+    await reopen.getByRole('button',{name:'Verify and reopen recovery file'}).click();
+  };
+  let writes=0;
+  const listener=(req:import('@playwright/test').Request)=>{
+    const u=new URL(req.url());
+    if(u.origin===origin&&['POST','PATCH','PUT','DELETE'].includes(req.method())&&
+      (u.pathname.startsWith('/rest/v1/')||u.pathname.startsWith('/storage/v1/')))writes++;
+  };
+  page.on('request',listener);
+  await select(zip,'recovery.zip','application/zip');
+  await expect(reopen.getByText('Recovery file passed local structure, ownership and media-digest checks.',{exact:true})).toBeVisible();
+  await expect(reopen.locator('code')).toHaveText(manifest.sourceExportSha256);
+  const [jsonDownload]=await Promise.all([page.waitForEvent('download'),reopen.getByRole('button',{name:'Download reopened private recovery JSON'}).click()]);
+  const file=await jsonDownload.path();if(!file)throw new Error('No reopened JSON.');
+  const json=await readFile(file);
+  expect(createHash('sha256').update(json).digest('hex')).toBe(manifest.sourceExportSha256);
+  const restored=JSON.parse(json.toString('utf8'));
+  expect(restored.schemaVersion).toBe(2);
+  expect(restored.assets).toHaveLength(1);
+  expect(Buffer.from(restored.assets[0].base64,'base64').equals(png)).toBe(true);
+  await select(json,'recovery.json','application/json');
+  await expect(reopen.getByText('Recovery file passed local structure, ownership and media-digest checks.',{exact:true})).toBeVisible();
+  await expect(reopen.getByRole('button',{name:'Download reopened private recovery JSON'})).toHaveCount(0);
+  const damaged=structuredClone(restored);damaged.assets[0].base64=Buffer.from('tampered').toString('base64');
+  await select(Buffer.from(JSON.stringify(damaged)),'tampered.json','application/json');
+  await expect(reopen.getByRole('alert')).toBeVisible();
+  await expect(reopen.getByRole('button',{name:'Download reopened private recovery JSON'})).toHaveCount(0);
+  expect(writes).toBe(0);page.off('request',listener);
+  const other=await browser.newPage({baseURL:'http://127.0.0.1:5173'});
+  try{
+    await signIn(other,foreign);await other.goto('/app/export');
+    const panel=other.locator('section.ws-setting-card').filter({has:other.getByRole('heading',{name:'Reopen a private recovery file',exact:true})});
+    await panel.getByLabel('Recovery ZIP or JSON').setInputFiles({name:'foreign.zip',mimeType:'application/zip',buffer:zip});
+    await panel.getByRole('button',{name:'Verify and reopen recovery file'}).click();
+    await expect(panel.getByRole('alert')).toHaveText('This recovery file does not match the current account.');
+    await expect(panel.getByRole('button',{name:'Download reopened private recovery JSON'})).toHaveCount(0);
+  }finally{await other.close();}
+  await page.goto('/app/profile');
+  await expect(page.getByRole('img',{name:'R7 archived avatar',exact:true})).toBeVisible();
+});
