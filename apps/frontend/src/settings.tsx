@@ -786,7 +786,7 @@ function RecoveryReopen({port}: {port:SupabaseBrowserAuthPort}){
       if(!current())return;
       if(verified.ownerId!==owner)throw new Error('This recovery file does not match the current account.');
       if(fromZip)recoveredBytes.current=json;
-      setInspection({sha256:verified.sha256,assets:verified.assetsChecked,bytes:verified.assetBytesChecked,fromZip,schemaVersion:verified.schemaVersion});
+      setInspection({sha256:verified.sha256,assets:verified.assetsChecked,bytes:verified.assetBytesChecked,fromZip,schemaVersion:verified.schemaVersion??1});
       setMessage({error:false,text:'Recovery file passed local structure, ownership and media-digest checks.'});
     }catch(error){
       if(current()){recoveredBytes.current=null;setInspection(null);setMessage(failure(error));}
