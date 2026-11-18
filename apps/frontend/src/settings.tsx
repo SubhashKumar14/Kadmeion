@@ -123,6 +123,15 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   </section>;
 }
 
+function permittedSharingAtVersion(state: Pick<ProfileSharingState,'version'|'preferences'>, desired: SharingPreferences):boolean {
+  if(state.version<Number.MAX_SAFE_INTEGER-1)return true;
+  const old=state.preferences;
+  const keys=['shareDisplayName','shareHeadline','shareBio','publicationRequested'] as const;
+  if(old&&keys.every(key=>old[key]===desired[key]))return true;
+  if(state.version===Number.MAX_SAFE_INTEGER&&!old)return false;
+  return !desired.publicationRequested&&keys.every(key=>!desired[key]||old?.[key]===true);
+}
+
 function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Services}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -134,6 +143,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   const savedPrefs=savedState?(savedState.preferences??defaults):null;
   const terminal=savedState?.version===Number.MAX_SAFE_INTEGER;
   const terminalAbsent=terminal&&savedState?.preferences===null;
+  const restricted=(savedState?.version??0)>=Number.MAX_SAFE_INTEGER-1;
   const [prefs,setPrefs]=useState<SharingPreferences|null>(null);
   const [confirmed,setConfirmed]=useState(false);
   const [message,setMessage]=useState<Message>(emptyMessage);
@@ -175,7 +185,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
   async function save(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
     if(!prefs||!savedState||terminalAbsent||!confirmed||retryChange||readbackRequired.current||readPending.current||writing.current||!current())return;
-    if(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState.preferences?.[key])))return;
+    if(!permittedSharingAtVersion(savedState,prefs))return;
     const expected={...savedState,preferences:savedState.preferences===null?null:{...savedState.preferences}};
     await applyChange({expected,desired:{...prefs},operationId:crypto.randomUUID()});
   }
@@ -216,7 +226,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <p>{fields.filter(([key])=>savedPrefs[key]).map(([,label])=>label).join(', ')||'No fields selected'}.
           {savedPrefs.publicationRequested?' Later publication requested.':' Later publication not requested.'}</p>
         {savedState?.preferences===null&&<p>No saved preference record; showing private defaults.</p>}
-        {terminal&&<p>Privacy changes are restricted to reducing previously selected fields. Publication cannot be enabled.</p>}
+        {restricted&&<p>The preference version is at or near its limit. Changes may only reduce previously selected fields, and a changed selection must disable publication intent.</p>}
         <p>{needsReadback?'Readback required; the saved state may have changed.':'This is a private saved intent, not proof of public visibility.'}</p>
       </div>}
       {prefs&&<form onSubmit={event => void save(event)}>
@@ -225,16 +235,16 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
         <fieldset disabled={busy||reading||!!retryChange||terminalAbsent}>
           <legend>Shareable profile fields</legend>
           {fields.map(([key, label]) => <label className="ws-settings-check" key={key}>
-            <input type="checkbox" checked={prefs[key]} disabled={terminal&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
-              if(terminal&&event.target.checked&&!savedState?.preferences?.[key])return;
+            <input type="checkbox" checked={prefs[key]} disabled={restricted&&!savedState?.preferences?.[key]&&!prefs[key]} onChange={event => {
+              if(restricted&&event.target.checked&&!savedState?.preferences?.[key])return;
               const next = {...prefs, [key]: event.target.checked};
               if (!next.shareDisplayName && !next.shareHeadline && !next.shareBio) next.publicationRequested = false;
               setPrefs(next); setConfirmed(false);
             }}/>{label}
           </label>)}
           <label className="ws-settings-check"><input type="checkbox" checked={prefs.publicationRequested}
-            disabled={(terminal&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
-            onChange={event => {if(terminal&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
+            disabled={(restricted&&!prefs.publicationRequested)||(!prefs.shareDisplayName && !prefs.shareHeadline && !prefs.shareBio)}
+            onChange={event => {if(restricted&&event.target.checked)return;setPrefs({...prefs, publicationRequested: event.target.checked}); setConfirmed(false);}}/>
             Allow a later publication request
           </label>
           <label className="ws-settings-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>
@@ -243,7 +253,7 @@ function Privacy({port, services}: {port: SupabaseBrowserAuthPort; services: Ser
           <p>This confirms the private sharing intent and withdrawal request, not verified withdrawal. Public withdrawal and live delivery require separate verification.</p>
         </fieldset>
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||(terminal&&(prefs.publicationRequested||fields.some(([key])=>prefs[key]&&!savedState?.preferences?.[key])))}>{busy?'Saving…':'Save sharing preferences'}</button>
+          <button type="submit" className="ws-primary" disabled={!confirmed||!savedPrefs||busy||reading||needsReadback||terminalAbsent||!!retryChange||!savedState||!permittedSharingAtVersion(savedState,prefs)}>{busy?'Saving…':'Save sharing preferences'}</button>
           {retryChange&&<button type="button" className="ws-secondary" disabled={busy||reading} onClick={()=>void applyChange(retryChange)}>Retry same privacy change</button>}
           <button type="button" className="ws-secondary" disabled={busy||reading} onClick={refresh}>Reload confirmed preferences</button>
           <button type="button" className="ws-secondary" disabled={!savedPrefs||busy||reading||needsReadback||!dirty}
@@ -290,6 +300,13 @@ function notificationDestination(item: PrivateNotification): string {
 
 function optionalPreferenceBlocked(busy:boolean,reading:boolean,stale:boolean,retrying:boolean,version:number|undefined):boolean {
   return busy||reading||stale||retrying||version===undefined||version===Number.MAX_SAFE_INTEGER;
+}
+
+function terminalNotificationChange(state:NotificationPreferenceState|undefined):NotificationPreferenceInput|null {
+  if(state?.version!==Number.MAX_SAFE_INTEGER-1)return null;
+  const old=state.preferences;
+  if(old&&!old.reviewerEnabled&&!old.publishEnabled&&!old.syncEnabled)return null;
+  return {reviewerEnabled:false,publishEnabled:false,syncEnabled:false};
 }
 
 function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Services['notifications']}) {
@@ -384,12 +401,21 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     state?.preferences??{reviewerEnabled:state?.version!==Number.MAX_SAFE_INTEGER,publishEnabled:state?.version!==Number.MAX_SAFE_INTEGER,syncEnabled:false};
   const displayedPrefs=pendingPrefs??effective(prefs);
   const controlsBlocked=optionalPreferenceBlocked(busy,preferencesLoading,preferencesStale,!!prefRetry,prefs?.version);
+  const lastWritableVersion=prefs?.version===Number.MAX_SAFE_INTEGER-1;
+  const individualBlocked=controlsBlocked||lastWritableVersion;
+  async function disableOptionalAtLimit(){
+    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    const desired=terminalNotificationChange(prefs);
+    if(!desired)return;
+    const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
+    await applyPreference({expected,desired,operationId:crypto.randomUUID()});
+  }
   function reloadPreferences(){
     if(!current()||pendingAction.current||preferencesReading.current)return;
     preferencesReading.current=true;setPreferencesLoading(true);setPreferencesStale(true);setPrefRetry(null);setPrefsReload(n=>n+1);
   }
   async function savePreference(key:keyof PreferenceInput,checked:boolean){
-    if(controlsBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
+    if(individualBlocked||pendingAction.current||preferencesReading.current||!prefs||!current())return;
     const expected={...prefs,preferences:prefs.preferences===null?null:{...prefs.preferences}};
     await applyPreference({expected,desired:{...effective(prefs),[key]:checked},operationId:crypto.randomUUID()});
   }
@@ -453,6 +479,7 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
     {prefs===undefined&&!preferencesLoading&&preferenceMessage?.error&&<button type="button" className="ws-secondary" disabled={busy} onClick={reloadPreferences}>Retry notification preferences</button>}
     {prefs!==undefined&&preferencesStale&&!pendingPrefs&&<p role="status">Showing last confirmed preferences; reload or resolve the pending change before making another choice.</p>}
     {prefs?.version===Number.MAX_SAFE_INTEGER&&<p>Optional notices are disabled and cannot be re-enabled. Security and moderation notices remain required.</p>}
+    {lastWritableVersion&&<div><p>The preference version is near its limit. The final change must disable all optional notices together.</p><button type="button" className="ws-secondary" disabled={controlsBlocked||!terminalNotificationChange(prefs)} onClick={()=>void disableOptionalAtLimit()}>Disable all optional notifications</button></div>}
     {prefs?.preferences === null && prefs.version!==Number.MAX_SAFE_INTEGER && !pendingPrefs && <p role="status">No saved preference record was returned. Reviewer and publishing notices are enabled by default; draft-sync notices are off until enabled. Security and moderation notices cannot be muted here.</p>}
     {prefs !== undefined && ([
       ['reviewerEnabled', 'Reviewer activity'],
@@ -460,9 +487,9 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
       ['syncEnabled', 'Draft sync activity']
     ] as const).map(([key, label]) => (
       <label className="ws-settings-check" key={key}>
-        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={controlsBlocked}
-          onClick={event=>{if(controlsBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
-          onChange={event=>{if(!controlsBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
+        <input type="checkbox" checked={displayedPrefs[key]} aria-disabled={individualBlocked}
+          onClick={event=>{if(individualBlocked||pendingAction.current||preferencesReading.current||!current())event.preventDefault();}}
+          onChange={event=>{if(!individualBlocked&&!pendingAction.current&&!preferencesReading.current)void savePreference(key,event.target.checked);}}/> {label}
       </label>
     ))}
     {pendingPrefs && <p role="status">Saving notification preferences…</p>}
