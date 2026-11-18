@@ -46,6 +46,7 @@ export type EditorIntent =
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
+  | { kind:'MOVE_SECTION_BEFORE'; sectionId:string; beforeSectionId:string|null; expectedRevision:number }
   | ChangeSectionLayoutIntent
   | RestoreLayoutStashIntent
   | { kind:'CLEAR_SLOT'; slotKey:string }
@@ -458,6 +459,22 @@ function themeScope(x:unknown):ScopedThemeScope|null{
     typeof x.id==='string'&&SLOT_KEY.test(x.id)&&!RESERVED_KEYS.has(x.id))return {kind:x.kind,id:x.id};
   return null;
 }
+/** Place one existing section before another, or at the end. No IDs,
+ * assignments, source files, stashes, or scope keys are rewritten. */
+function reorderSectionBefore(sections:readonly LayoutSection[],sectionId:string,beforeSectionId:string|null):LayoutSection[]{
+  assertSlotKey(sectionId);
+  if(beforeSectionId!==null)assertSlotKey(beforeSectionId);
+  if(sectionId===beforeSectionId)return invalidLayout('Choose a different destination.');
+  const from=sections.findIndex(section=>section.id===sectionId);
+  if(from<0)return invalidLayout('Selected section does not exist.');
+  const next=sections.filter(section=>section.id!==sectionId);
+  const to=beforeSectionId===null?next.length:next.findIndex(section=>section.id===beforeSectionId);
+  if(to<0)return invalidLayout('Destination section does not exist.');
+  next.splice(to,0,sections[from]!);
+  if(next.every((section,index)=>section.id===sections[index]?.id))
+    return invalidLayout('Section is already in this position.');
+  return next;
+}
 function themeScopeKey(scope:ScopedThemeScope):string{return scope.kind==='global'?'global':scope.kind+':'+scope.id;}
 function themeGraph(snapshot:PortfolioSnapshot):{preset:string|null;sections:LayoutSection[]}{
   validateSnapshot(snapshot);
@@ -679,6 +696,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     EDIT_SCOPED_THEME:['kind','expectedRevision','mode','scope','layer','edit'],
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
+    MOVE_SECTION_BEFORE:['kind','sectionId','beforeSectionId','expectedRevision'],
     CHANGE_SECTION_LAYOUT:['kind','sectionId','expectedLayout','targetLayout','mappings','expectedRevision','confirmStash','confirmOwnedRelocation'],
     RESTORE_LAYOUT_STASH:['kind','fromSlotKey','stashIndex','toSlotKey','expectedRevision','confirmOwnedRelocation'],
     CLEAR_SLOT:['kind','slotKey'],
@@ -797,6 +815,11 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
       next.slots[key]={state:'EMPTY',content:{}};
     }
     next.files[path]=JSON.stringify({...page,sections:[...page.sections,{id,layout:intent.layout,slotKeys:layout.slots}]});
+  } else if(intent.kind==='MOVE_SECTION_BEFORE'){
+    assertBaseRevision(intent.expectedRevision,head.revision);
+    const {page,sections}=layoutManifest(head.snapshot);
+    const moved=reorderSectionBefore(sections,intent.sectionId,intent.beforeSectionId);
+    next.files[PAGE_PATH]=JSON.stringify({...page,sections:moved.map(section=>section.raw)});
   } else if (intent.kind==='MOVE_SECTION') {
     const path='pages/home.page.json';
     const original=next.files[path];
