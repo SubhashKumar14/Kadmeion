@@ -217,7 +217,11 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   async function persistProfile(mode:'manual'|'auto'){
     cancelScheduledSave();
     if(!saved||!draft||operationPending.current||needsReload||!validEpoch())return;
-    if(mode==='auto'&&(!autoEnabled.current||withdrawal||pendingSkill.current))return;
+    if(pendingSkill.current){
+      if(mode==='manual'){setError('Add or clear the unfinished skill before saving the profile.');setPanel('Skills & links');}
+      return;
+    }
+    if(mode==='auto'&&(!autoEnabled.current||withdrawal))return;
     const validation=profileDraftError(draft);
     if(validation){if(mode==='manual'){setError(validation);setPanel('Profile');}return;}
     const desired=canonicalProfileDraft(draft),expected={...saved,skills:[...saved.skills]};
@@ -290,6 +294,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   function resolveProfileComparison(keepDraft:boolean){
     if(operationPending.current||!latestProfile||!validEpoch()||(keepDraft&&!confirmRebase))return;
     stopAutosave();setSaved(latestProfile);setDraft(current=>keepDraft&&current?{...current,handle:latestProfile.handle}:latestProfile);
+    if(!keepDraft){pendingSkill.current=false;setSkill('');setSkillError('');}
     setLatestProfile(null);setConfirmRebase(false);setUncertainSave(null);setNeedsReload(false);setReloadFailed(false);
     setError('');setWithdrawal(false);
     setNotice(keepDraft?'Latest saved fields loaded as the comparison baseline. Your edits still need an explicit save.':
@@ -327,7 +332,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           <h1 id="profile-title">Your developer profile.</h1>
           <p>Edit your draft and preview the fields visitors could see.</p>
         </div>
-        <button type="submit" className="ws-primary" disabled={locked || needsReload || !draft || !dirty}>{busy ? activeSaveMode==='auto'?'Autosaving…':'Saving…' : 'Save profile draft'}</button>
+        <button type="submit" className="ws-primary" disabled={locked || needsReload || !draft || !dirty || !!skill.trim()}>{busy ? activeSaveMode==='auto'?'Autosaving…':'Saving…' : 'Save profile draft'}</button>
       </div>
       <div className="ws-profile-tabs" role="group" aria-label="Profile sections">
         {['Profile', 'Skills & links', 'Visibility', 'Public preview'].map(item =>
@@ -343,14 +348,16 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
             else stopAutosave();
           }}/> Autosave private profile fields</label>
         <p>Off by default each time this editor opens. Only name, headline, bio and skills are saved after a short pause; links save separately. Autosave never confirms publication withdrawal. Unsaved edits stay in this editor, not offline storage.</p>
-        {autosave&&dirty&&!busy&&<p>{profileDraftError(draft)||'Unsaved private edits will be saved after you stop editing.'}</p>}
+        {skill.trim()?<p>Add or clear the unfinished skill before saving. {autosave?'Autosave is paused.':''}</p>:
+          autosave&&dirty&&!busy&&<p>{needsReload?'Check the latest saved draft before saving again.':withdrawal?'Save manually to confirm withdrawal.':profileDraftError(draft)||'Unsaved private edits will be saved after you stop editing.'}</p>}
       </div>}
-      {dirty && <div className="ws-unsaved-line" role="status">
+      {(dirty||!!skill.trim()) && <div className="ws-unsaved-line" role="status">
         <span>Unsaved private changes</span>
         <button type="button" className="ws-text-action" disabled={locked} onClick={() => {
           if (operationPending.current||!validEpoch()) return;
           cancelScheduledSave();setLatestProfile(null);setConfirmRebase(false);
           if (saved) setDraft({...saved, skills:[...saved.skills]});
+          pendingSkill.current=false;setSkill('');setSkillError('');
           setWithdrawal(false); if (!needsReload) setError(''); setNotice('');
         }}>Discard changes</button>
       </div>}
@@ -409,7 +416,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
                 if(operationPending.current||!validEpoch())return;
                 cancelScheduledSave();
                 pendingSkill.current=!!event.target.value.trim();
-                setSkill(event.target.value);setSkillError('');
+                setSkill(event.target.value);setSkillError('');setNotice('');
               }}
               onKeyDown={event => {if (event.key === 'Enter') {event.preventDefault(); addSkill();}}}/></label>
             {skillError && <p id="profile-skill-error" role="alert" className="ws-inline-alert">{skillError}</p>}
