@@ -531,14 +531,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     if (!allowed || !head || saving || saveFlight.current || recoveryLock.current) return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
-    if(layoutMutation){
+    const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
+    if(layoutMutation||themeMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         layoutAppliedHead.current===head||preview||tool!=='Components'){
-        setError('Layout changes require the current verified editor and a fresh review.');return false;
+         layoutAppliedHead.current===head||preview||(layoutMutation?tool!=='Components':tool!=='Theme')){
+        setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
-      if(intent.expectedRevision!==head.revision){
-        setError('Working revision changed. Review the layout or stash again.');return false;
+      if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
+        setError('Working revision changed. Review the layout or theme again.');return false;
       }
     }
     // Changing an assignment or restoring another working snapshot must not
@@ -546,7 +547,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((layoutMutation||historyMutation) && (pendingFields || sourceDirty))||
+    if (((layoutMutation||themeMutation||historyMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -573,10 +574,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
         setSourceReset(value=>value+1);
       }
-      if(layoutMutation)layoutAppliedHead.current=head;
+      if(layoutMutation||themeMutation)layoutAppliedHead.current=head;
       setHead(next);
       setOperation(crypto.randomUUID()); setError(''); setNotice(layoutMutation?
-        'Layout transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
+        'Layout transaction applied to the working draft. Save to persist, or use Undo.':themeMutation?
+        'Theme transaction applied to the working draft. Save to persist, or use Undo.':'Unsaved changes');
       return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The editor could not apply the change.');
