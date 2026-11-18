@@ -2,7 +2,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path to public, extensions;
-select plan(44);
+select plan(56);
 select has_table('public', 'profiles', 'owner profiles exist');
 select has_table('public', 'profile_sharing_preferences', 'private sharing intent exists');
 select has_table('kadmeion_private', 'operator_roles', 'operator grants live outside public API');
@@ -84,5 +84,74 @@ select ok(not exists(select 1 from unnest(array['anon','service_role']) r
   where has_function_privilege(r,p,'EXECUTE')),'CAS endpoints unavailable to anonymous or service role');
 select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
   where has_function_privilege(r,'kadmeion_private.change_owner_preference(text,bigint,jsonb,jsonb,uuid)','EXECUTE')),'private CAS helper cannot be invoked by API roles');
+-- C14 R7: physical database ACL and outward guard acceptance.
+-- Must be composed only WITH 20261117160600_case_bound_account_sharing_restriction.sql.
+select has_table('kadmeion_private','account_sharing_restrictions','C14 owner restriction ledger exists');
+select has_table('kadmeion_private','account_sharing_restriction_events','C14 immutable restriction journal exists');
+select ok((select bool_and(c.relrowsecurity) from pg_class c
+  where c.oid in ('kadmeion_private.account_sharing_restrictions'::regclass,
+                 'kadmeion_private.account_sharing_restriction_events'::regclass)),
+  'C14 both restriction tables enforce RLS');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['kadmeion_private.account_sharing_restrictions',
+    'kadmeion_private.account_sharing_restriction_events']) t
+  where has_any_column_privilege(r,t,'SELECT,INSERT,UPDATE,REFERENCES')
+    or has_table_privilege(r,t,'DELETE,TRUNCATE,TRIGGER')),
+  'C14 no browser or service-role direct table or column privilege');
+select ok(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r
+  cross join unnest(array['account_public_sharing_allowed(uuid)',
+    'require_account_public_sharing_write(uuid)','guard_account_outward_row()',
+    'account_restriction_live_actor()','account_sharing_is_withdrawn(uuid)']) f
+  where has_function_privilege(r,'kadmeion_private.'||f,'EXECUTE')),
+  'C14 private lock, admission, trigger and session helpers are not direct API RPCs');
+select ok(has_function_privilege('authenticated',
+    'public.owner_read_account_sharing_restriction()','EXECUTE')
+  and not has_function_privilege('anon',
+    'public.owner_read_account_sharing_restriction()','EXECUTE')
+  and not has_function_privilege('service_role',
+    'public.owner_read_account_sharing_restriction()','EXECUTE'),
+  'C14 authenticated-only owner restriction read');
+select ok(has_function_privilege('authenticated',
+    'public.operator_read_account_sharing_restriction(uuid)','EXECUTE')
+  and not has_function_privilege('anon',
+    'public.operator_read_account_sharing_restriction(uuid)','EXECUTE')
+  and not has_function_privilege('service_role',
+    'public.operator_read_account_sharing_restriction(uuid)','EXECUTE'),
+  'C14 authenticated-only case-bound operator read');
+select ok(has_function_privilege('authenticated',
+    'public.operator_change_account_sharing_restriction(uuid,text,bigint,uuid,text,text)','EXECUTE')
+  and not has_function_privilege('anon',
+    'public.operator_change_account_sharing_restriction(uuid,text,bigint,uuid,text,text)','EXECUTE')
+  and not has_function_privilege('service_role',
+    'public.operator_change_account_sharing_restriction(uuid,text,bigint,uuid,text,text)','EXECUTE'),
+  'C14 authenticated operator mutation RPC; SQL function enforces administrator role');
+select is((select count(*)::integer from pg_trigger where not tgisinternal and tgname in
+  ('kd_account_sharing_profile_pref','kd_account_sharing_project_exposure',
+   'kd_account_sharing_reviewer','kd_account_sharing_route',
+   'kd_account_sharing_intent','kd_account_sharing_pending',
+   'kd_account_sharing_profile_projection','kd_account_sharing_case_projection')),
+  8,'C14 all eight outward-write gates are physically installed');
+select ok((select count(*)=8 from pg_trigger
+  where not tgisinternal and tgenabled='O' and tgname in
+  ('kd_account_sharing_profile_pref','kd_account_sharing_project_exposure',
+   'kd_account_sharing_reviewer','kd_account_sharing_route',
+   'kd_account_sharing_intent','kd_account_sharing_pending',
+   'kd_account_sharing_profile_projection','kd_account_sharing_case_projection')),
+  'C14 all eight outward guards are enabled, not disabled for a shortcut');
+select ok((select count(*)=8 from pg_trigger t
+  join pg_proc f on f.oid=t.tgfoid
+  join pg_namespace n on n.oid=f.pronamespace
+  where not t.tgisinternal and t.tgname in
+  ('kd_account_sharing_profile_pref','kd_account_sharing_project_exposure',
+   'kd_account_sharing_reviewer','kd_account_sharing_route',
+   'kd_account_sharing_intent','kd_account_sharing_pending',
+   'kd_account_sharing_profile_projection','kd_account_sharing_case_projection')
+    and n.nspname='kadmeion_private' and f.proname='guard_account_outward_row'),
+  'C14 all outward-write triggers call the private fail-closed guard');
+select ok((select count(*)=2 from pg_class
+  where oid in ('kadmeion_private.account_sharing_restrictions'::regclass,
+                'kadmeion_private.account_sharing_restriction_events'::regclass)
+    and relkind='r'),
+  'C14 restriction and journal are ordinary physical tables, not shadow views');
 select * from finish();
 rollback;
