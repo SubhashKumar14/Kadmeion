@@ -478,7 +478,126 @@ function Notifications({port,service}: {port:SupabaseBrowserAuthPort;service: Se
   </SettingsCard></div>;
 }
 
+type LinkedMethodsSnapshot = Readonly<{
+  ownerUserId:string;source:'GOTRUE_LIVE_USER';
+  identities:readonly Readonly<{identityId:string;provider:string;createdAt:string|null;lastSignInAt:string|null}>[];
+  passwordMethodConfirmed:false;publicVerificationAllowed:false;
+}>;
+// The producer was promoted independently on main. An older worker adapter
+// must fail closed, never simulate an empty identity directory.
+type LinkedMethodsPort = {
+  reconcileOwnerSessionEpoch():number;
+  readOwnerLinkedMethods?:()=>Promise<{data:LinkedMethodsSnapshot|null;error?:{message:string}|null}>;
+};
+async function readLinkedMethodsForSettings(port:LinkedMethodsPort,epoch:number):Promise<LinkedMethodsSnapshot>{
+  if(port.reconcileOwnerSessionEpoch()!==epoch)throw new Error('Owner session changed.');
+  if(typeof port.readOwnerLinkedMethods!=='function')throw new Error('Linked authentication methods are unavailable in this version.');
+  const result=await port.readOwnerLinkedMethods();
+  if(port.reconcileOwnerSessionEpoch()!==epoch)throw new Error('Owner session changed.');
+  const data=result.data;
+  if(result.error||!data||data.source!=='GOTRUE_LIVE_USER'||data.passwordMethodConfirmed!==false||
+    data.publicVerificationAllowed!==false||!Array.isArray(data.identities)||data.identities.length>16)
+    throw new Error('Linked authentication methods could not be confirmed. Retry when available.');
+  return data;
+}
+
+function LinkedMethods({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const [attempt,setAttempt]=useState(0);
+  const [result,setResult]=useState<{attempt:number;data:LinkedMethodsSnapshot|null;error:string}|null>(null);
+  const currentResult=result?.attempt===attempt?result:null;
+  const data=currentResult?.data??null;
+  const pending=currentResult===null;
+  const inFlight=useRef(true);
+  useEffect(()=>{
+    let active=true;inFlight.current=true;
+    const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
+    void readLinkedMethodsForSettings(port,epoch).then(value=>{
+      if(current())setResult({attempt,data:value,error:''});
+    }).catch(()=>{
+      if(current())setResult({attempt,data:null,error:'Linked authentication methods could not be confirmed. Retry when available.'});
+    }).finally(()=>{if(current())inFlight.current=false;});
+    return()=>{active=false;};
+  },[port,epoch,attempt]);
+  function refresh(){
+    if(inFlight.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    inFlight.current=true;setAttempt(value=>value+1);
+  }
+  return <SettingsCard title="Linked sign-in methods">
+    <p>Identity records reported by the authentication provider for your current account. These are not public verification badges or proof of password availability.</p>
+    <p aria-live="polite" aria-atomic="true">{pending?'Checking linked sign-in methods…':data&&data.identities.length>0?'Linked sign-in records checked.':''}</p>
+    {currentResult?.error&&<p role="alert">{currentResult.error}</p>}
+    {data&&<>
+      {data.identities.length===0?<p>No linked identity records returned by the provider.</p>:
+        <ul className="ws-settings-records" aria-label="Provider-reported linked identities">
+          {data.identities.map(identity=><li key={identity.identityId}>
+            <strong>{identity.provider==='email'?'Email identity':identity.provider==='google'?'Google identity':identity.provider+' identity'}</strong>
+            {identity.createdAt&&<p>Linked <time dateTime={identity.createdAt}>{new Date(identity.createdAt).toLocaleString()}</time></p>}
+            {identity.lastSignInAt&&<p>Last provider-reported sign-in <time dateTime={identity.lastSignInAt}>{new Date(identity.lastSignInAt).toLocaleString()}</time></p>}
+          </li>)}
+        </ul>}
+      <p>Linking and unlinking sign-in methods are unavailable here. This list does not establish email verification or a device session directory.</p>
+    </>}
+    <button type="button" className="ws-secondary" disabled={pending} onClick={refresh}>{currentResult?.error?'Retry linked sign-in methods':'Refresh linked sign-in methods'}</button>
+  </SettingsCard>;
+}
+
+type EmailVerificationState='CONFIRMED'|'UNCONFIRMED'|'UNKNOWN';
+type EmailVerificationPort={
+  reconcileOwnerSessionEpoch():number;
+  getUser():Promise<{data:{user:{id:string;email?:string;email_confirmed_at?:string|null}|null}|null;error?:{message:string}|null}>;
+};
+async function readOwnerEmailVerification(port:EmailVerificationPort,epoch:number):Promise<EmailVerificationState>{
+  if(port.reconcileOwnerSessionEpoch()!==epoch)throw new Error('Owner session changed.');
+  const result=await port.getUser();
+  if(port.reconcileOwnerSessionEpoch()!==epoch||result.error||!result.data?.user)
+    throw new Error('Email verification status could not be confirmed.');
+  const user=result.data.user;
+  if(typeof user.email!=='string'||!user.email.trim())return 'UNKNOWN';
+  if(user.email_confirmed_at===null)return 'UNCONFIRMED';
+  return typeof user.email_confirmed_at==='string'&&Number.isFinite(Date.parse(user.email_confirmed_at))?'CONFIRMED':'UNKNOWN';
+}
+
+function EmailVerification({port}: {port:SupabaseBrowserAuthPort}){
+  const [epoch]=useState(()=>port.getOwnerSessionEpoch());
+  const [attempt,setAttempt]=useState(0);
+  const [result,setResult]=useState<{attempt:number;state:EmailVerificationState|null}|null>(null);
+  const visible=result?.attempt===attempt?result:null;
+  const running=useRef(true);
+  useEffect(()=>{
+    let active=true;running.current=true;
+    const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
+    void readOwnerEmailVerification(port,epoch).then(state=>{
+      if(current())setResult({attempt,state});
+    }).catch(()=>{
+      if(current())setResult({attempt,state:null});
+    }).finally(()=>{if(current())running.current=false;});
+    return()=>{active=false;};
+  },[port,epoch,attempt]);
+  const label=visible?.state==='CONFIRMED'?'Email confirmation reported by the authentication provider.':
+    visible?.state==='UNCONFIRMED'?'The provider reports that email confirmation is pending.':
+    'The provider did not return conclusive email confirmation evidence.';
+  return <SettingsCard title="Email verification">
+    <p aria-live="polite" aria-atomic="true">{!visible?'Checking email verification…':visible.state===null?'':label}</p>
+    {visible?.state===null&&<p role="alert">Email verification could not be checked. Retry when available.</p>}
+    <p>This is private account evidence. It does not grant a public verification badge or establish a password sign-in method.</p>
+    <button type="button" className="ws-secondary" disabled={!visible} onClick={()=>{
+      if(!running.current&&port.reconcileOwnerSessionEpoch()===epoch){running.current=true;setAttempt(value=>value+1);}
+    }}>{visible?.state===null?'Retry email verification':'Refresh email verification'}</button>
+  </SettingsCard>;
+}
+
+function acquireSecurityAction(lock:{current:boolean},isCurrent:()=>boolean):boolean{
+  if(lock.current||!isCurrent())return false;
+  lock.current=true;
+  return true;
+}
 function Security({port}: {port: SupabaseBrowserAuthPort}) {
+  const [scope]=useState(()=>({port,epoch:port.getOwnerSessionEpoch()}));
+  const mounted=useRef(false);
+  const action=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  const isCurrent=()=>mounted.current&&scope.port===port&&port.reconcileOwnerSessionEpoch()===scope.epoch;
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -490,7 +609,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   useEffect(() => {
     if (!confirmOthers || busy) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape'&&!action.current&&isCurrent()) {
         event.preventDefault();
         setConfirmOthers(false);
         otherSessionsTrigger.current?.focus();
@@ -501,35 +620,41 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
   }, [confirmOthers, busy]);
   async function change(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy) return;
+    if (busy||action.current||!isCurrent()) return;
     if (next !== confirm) {setMessage({error: true, text: 'Passwords do not match.'}); return;}
-    setBusy(true); setMessage(null);
+    if(!acquireSecurityAction(action,isCurrent))return;
+    const payload={currentPassword:current,newPassword:next};
+    setCurrent('');setNext('');setConfirm('');setShowPasswords(false);
+    setBusy(true);setMessage(null);
     try {
-      const outcome = await port.changePasswordWithCurrentPassword({ currentPassword: current, newPassword: next });
+      const outcome = await port.changePasswordWithCurrentPassword(payload);
+      // A successful password change may deliberately rotate the owner epoch.
+      // The verified new shell must not inherit this older component's state.
+      if(!isCurrent())return;
       if (outcome.error) throw new Error(outcome.error.message);
-      setCurrent(''); setNext(''); setConfirm(''); setShowPasswords(false);
       setMessage({error: false, text: 'Password updated.'});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    } catch (error) {if(isCurrent())setMessage(failure(error));}
+    finally {action.current=false;if(isCurrent())setBusy(false);}
   }
   async function revoke() {
-    if (busy || !confirmOthers) return;
-    setBusy(true); setMessage(null);
+    if (busy||!confirmOthers||!acquireSecurityAction(action,isCurrent))return;
+    setBusy(true);setMessage(null);
     try {
       const result = await port.signOut({scope: 'others'});
+      if(!isCurrent())return;
       if (result.error) throw new Error('Sign-out for other sessions could not be confirmed.');
       setConfirmOthers(false);
       otherSessionsTrigger.current?.focus();
       setMessage({error: false, text: 'Other sessions were signed out.'});
-    } catch (error) {setMessage(failure(error));}
-    finally {setBusy(false);}
+    } catch (error) {if(isCurrent())setMessage(failure(error));}
+    finally {action.current=false;if(isCurrent())setBusy(false);}
   }
 
   return <><Status message={message}/><div className="ws-settings-grid">
     <SettingsCard title="Change password"><form className="ws-settings-form" onSubmit={event => void change(event)}>
-      <label>Current password<input type={showPasswords?'text':'password'} required maxLength={128} autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)}/></label>
-      <label>New password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)}/></label>
-      <label>Confirm new password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
+      <label>Current password<input type={showPasswords?'text':'password'} required maxLength={128} autoComplete="current-password" disabled={busy} value={current} onChange={event => setCurrent(event.target.value)}/></label>
+      <label>New password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" disabled={busy} value={next} onChange={event => setNext(event.target.value)}/></label>
+      <label>Confirm new password<input type={showPasswords?'text':'password'} required minLength={8} maxLength={128} autoComplete="new-password" disabled={busy} value={confirm} onChange={event => setConfirm(event.target.value)}/></label>
       <button type="button" className="ws-secondary" aria-pressed={showPasswords} disabled={busy}
         onClick={() => setShowPasswords(value => !value)}>{showPasswords?'Hide password entries':'Show password entries'}</button>
       <button className="ws-primary" type="submit" disabled={busy}>Update password</button>
@@ -538,7 +663,7 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
       This does not erase their browser storage or claim every already-issued access token has expired.</p>
       <button ref={otherSessionsTrigger} type="button" className="ws-secondary"
         disabled={busy} aria-expanded={confirmOthers} aria-controls="other-session-confirmation"
-        onClick={() => setConfirmOthers(value => !value)}>Sign out other sessions</button>
+        onClick={() => {if(isCurrent()&&!action.current)setConfirmOthers(value => !value);}}>Sign out other sessions</button>
       {confirmOthers && <div id="other-session-confirmation" role="group"
         aria-label="Confirm other-session sign-out" className="ws-release-confirm">
         <p>Sign out other sessions? This asks the authentication provider to revoke other sessions;
@@ -548,6 +673,8 @@ function Security({port}: {port: SupabaseBrowserAuthPort}) {
         <button type="button" className="ws-secondary" disabled={busy}
           onClick={() => {setConfirmOthers(false); otherSessionsTrigger.current?.focus();}}>Cancel</button>
       </div>}</SettingsCard>
+    <LinkedMethods port={port}/>
+    <EmailVerification port={port}/>
     </div>
     <section className="ws-security-guidance" aria-labelledby="security-guidance-title">
       <h2 id="security-guidance-title">Security confirmations</h2>
