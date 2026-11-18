@@ -167,6 +167,17 @@ export class PrivateIdentityError extends Error {
   }
 }
 
+// Only a complete 200 RPC result may acknowledge a saved preference tuple.
+// A proxy/cache partial or alternative success status is not durable proof.
+function assertSharingResponseEnvelope(response:Response,url:string):void {
+  if(response.redirected||(response.url&&response.url!==url))
+    throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
+  if(response.status===401||response.status===403)
+    throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+  if(response.ok&&(response.status!==200||response.headers.has('content-range')))
+    throw new PrivateIdentityError('INVALID_ACK','Incomplete sharing response.');
+}
+
 export class SupabasePrivateIdentityService {
   private readonly baseUrl: string;
   private readonly publishableKey: string;
@@ -282,10 +293,7 @@ export class SupabasePrivateIdentityService {
       try{
         this.requireSharingOwner();
         if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
-        if(response.redirected||(response.url&&response.url!==url))
-          throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
-        if(response.status===401||response.status===403)
-          throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
+        assertSharingResponseEnvelope(response,url);
       }catch(error){
         void response.body?.cancel().catch(()=>{});
         throw error;
@@ -311,6 +319,7 @@ export class SupabasePrivateIdentityService {
     try{
       const raw=await Promise.race([deadline,work()]);
       this.requireSharingOwner();
+      if(expired())throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request was not confirmed.');
       return raw;
     }catch(error){
       this.requireSharingOwner();
