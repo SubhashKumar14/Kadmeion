@@ -1155,6 +1155,8 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
   const [exitStorage,setExitStorage]=useState<AccountExitStorageReconciliationV2|null>(null);
   const [exitExport,setExitExport]=useState<{requestId:string;snapshotId:string;filename:string;sha256:string;bytes:number}|null>(null);
   const [exitQuotaBlocked,setExitQuotaBlocked]=useState(false);
+  type DomainReview=Awaited<ReturnType<Services['data']['reviewExitRetainedDomains']>>;
+  const [domainReview,setDomainReview]=useState<{requestId:string;receipt:DomainReview}|null>(null);
   const exitCapture=useRef<{requestId:string;operationId:string}|null>(null);
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
@@ -1234,6 +1236,7 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     return () => { active = false; };
   }, [port,service,epoch,recoveryAttempt]);
 
+  useEffect(()=>{setDomainReview(null);},[activeRequest?.id,recoveryAttempt]);
   useEffect(()=>{
     if(!requests)return;
     if(exitScope&&!sameExitScope(exitScope,activeRequest?.id??'')){
@@ -1241,6 +1244,30 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
     }
     if(exitCapture.current&&exitCapture.current.requestId!==activeRequest?.id)exitCapture.current=null;
   },[requests,activeRequest?.id,exitScope]);
+
+  async function checkRetainedDomains(){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current()||executionUncertain)return;
+    const requestId=activeRequest.id;
+    inFlight.current=true;setBusy(true);setMessage(null);setDomainReview(null);
+    try{
+      const verifyRequest=async()=>{
+        const history=await service.list();
+        if(!current())throw new Error('The owner session changed.');
+        setRequests(history);
+        const pending=history.filter(row=>row.status==='REQUESTED_BLOCKED');
+        if(pending.length!==1||pending[0]?.id!==requestId)
+          throw new Error('The current deletion request changed. Review the request again.');
+      };
+      await verifyRequest();
+      const receipt=await services.data.reviewExitRetainedDomains();
+      if(!current())return;
+      await verifyRequest();
+      if(!current())return;
+      if(receipt.postErasureVerified!==false)throw new Error('Invalid retained-data review receipt.');
+      setDomainReview({requestId,receipt});
+    }catch(error){if(current())setMessage(failure(error));}
+    finally{inFlight.current=false;if(current())setBusy(false);}
+  }
 
   async function prepareExitExport(action:'capture'|'reconcile'|'metadata'|'json'|'zip'){
     if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current())return;
@@ -1629,6 +1656,26 @@ function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: 
           {activeStorage&&<p role="status">Storage result: {activeStorage.status==='METADATA_MATCH_ONLY'?'Metadata matches; bytes not verified by this check.':activeStorage.status==='LIMIT_EXCEEDED'?'Reconciliation limit exceeded.':'Discrepancy detected.'} Registered profile/project assets: {activeStorage.profileRegistered}/{activeStorage.projectRegistered}. Pending profile uploads: {activeStorage.profilePending}.</p>}
           {activeExport&&<div aria-label="Request-bound export receipt"><p>{activeExport.filename} · {formatExportBytes(activeExport.bytes)}</p><p>SHA-256: <code>{activeExport.sha256}</code></p></div>}
         </>}
+      </section>}
+      {activeRequest&&<section aria-label="Retained provider and analytics review">
+        <h3>Retained data before erasure</h3>
+        <p>Review retained processing and aggregates for this pending request. This is a read-only point-in-time check, not proof of erasure or a substitute for the final server checks.</p>
+        <button type="button" className="ws-secondary" disabled={busy||executionUncertain||recovery!=='ready'} onClick={()=>void checkRetainedDomains()}>Review retained provider and analytics data</button>
+        {domainReview?.requestId===activeRequest.id&&<div aria-label="Retained data review receipt">
+          <p>Read at <time dateTime={domainReview.receipt.checkedAt}>{new Date(domainReview.receipt.checkedAt).toLocaleString()}</time>.</p>
+          {domainReview.receipt.provider.status==='READ'?<dl>
+            <dt>GitHub links read</dt><dd>{domainReview.receipt.provider.links}</dd>
+            <dt>Enabled provider consent</dt><dd>{domainReview.receipt.provider.enabled}</dd>
+            <dt>Links with retained facts</dt><dd>{domainReview.receipt.provider.facts}</dd>
+            <dt>Links with pending candidates</dt><dd>{domainReview.receipt.provider.candidates}</dd>
+          </dl>:<p>Provider data could not be verified.</p>}
+          {domainReview.receipt.analytics.status==='READ'?<dl>
+            <dt>Portfolio consent records read</dt><dd>{domainReview.receipt.analytics.portfolios}</dd>
+            <dt>Enabled analytics consent</dt><dd>{domainReview.receipt.analytics.enabled}</dd>
+            <dt>Retained daily aggregate buckets</dt><dd>{domainReview.receipt.analytics.aggregates}</dd>
+          </dl>:<p>Analytics data could not be verified.</p>}
+          <p>These counts may change after this read. No physical deletion, external copy or backup erasure has been established by this review.</p>
+        </div>}
       </section>}
       <a href="/app/export">Open export center</a>
     </SettingsCard>
