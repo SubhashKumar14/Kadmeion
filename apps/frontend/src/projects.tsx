@@ -197,12 +197,12 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       if(!current())return;
       if(startIdentity.error||startIdentity.data?.user?.id!==ownerId){invalidateOwner();return;}
       for(let index=0;cursor&&index<(batch?10:1);index++){
-        const requested=cursor;
+        const requested:ProjectCursor=cursor;
         if(seenCursors.has(key(requested))){
           setPageError('The project cursor repeated. Refresh before loading more.');return;
         }
         seenCursors.add(key(requested));
-        const reply=await pageReader.call(port,PAGE_SIZE,requested);
+        const reply:AuthOutcome<ProjectPage>=await pageReader.call(port,PAGE_SIZE,requested);
         if(!current())return;
         const identity=await port.getUser();
         if(!current())return;
@@ -210,7 +210,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         if(reply.error||!reply.data){
           setPageError(reply.error?.message??'More projects could not be loaded. Earlier pages remain available.');return;
         }
-        const page=reply.data;
+        const page:ProjectPage=reply.data;
         if(!validProjectPage(page,ownerId,requested)||(page.nextCursor&&seenCursors.has(key(page.nextCursor)))){
           setPageError('The next page failed validation. Previously loaded projects were kept.');return;
         }
