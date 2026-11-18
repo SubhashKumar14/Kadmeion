@@ -130,7 +130,7 @@ export function parseOwnerPublicDelivery(raw:unknown,expected:OwnerPublicDeliver
      typeof raw.verifiedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(raw.verifiedAt)||!Number.isFinite(Date.parse(raw.verifiedAt))||
      typeof raw.canonicalPath!=='string'||typeof raw.publicUrl!=='string')throw publicAckError();
   const [root,handle,slug,...rest]=raw.canonicalPath.split('/');
-  if(root!==''||rest.length!==0||!HANDLE_PATTERN.test(handle??'')||RESERVED_HANDLES.has(handle)||
+  if(root!==''||rest.length!==0||!HANDLE_PATTERN.test(handle??'')||RESERVED_HANDLES.has(handle??'')||
      !/^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug??''))throw publicAckError();
   try{
     const u=new URL(raw.publicUrl);

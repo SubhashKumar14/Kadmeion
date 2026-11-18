@@ -17,7 +17,8 @@ const env={
   SUPABASE_ANON_KEY:'eyJ'+'p'.repeat(100),
   SUPABASE_SERVICE_ROLE_KEY:'eyJ'+'s'.repeat(100)
 };
-const consent={id,portfolio_id:'30000000-0000-4000-8000-000000000003',
+const frozenId='40000000-0000-4000-8000-000000000004';
+const consent={id,request_id:frozenId,portfolio_id:'30000000-0000-4000-8000-000000000003',
   status:'AWAITING_HOST',expires_at:'2099-01-01T00:00:00Z'};
 function request(body:unknown={intentId:id},method='POST',origin='https://kadmeion.vercel.app',
                  jwt=bearer) {
@@ -46,6 +47,10 @@ function fixture(options:{
         'Content-Length':'1'}}:undefined);
     if(url.includes('/private_unlisted_publication_intents?')){
       return Response.json(options.intent===undefined?[consent]:options.intent);
+    }
+    if(url.includes('/private_release_requests?')){
+      return Response.json([{id:frozenId,portfolio_id:consent.portfolio_id,owner_user_id:owner,
+        status:'FROZEN',visibility_intent:'UNLISTED'}]);
     }
     if(url.includes('/rpc/service_prepare_unlisted_release')){
       return Response.json({status:'ACKNOWLEDGED'});
@@ -170,12 +175,17 @@ test('verified release receipt follows Auth/RLS and privileged RPC in that order
   assert.equal(value.accountDeletionAllowed,false);
   assert.equal(value.publicUrl,undefined);
   assert.equal(response.headers.get('cache-control'),'private, no-store, max-age=0');
-  assert.equal(f.calls.length,3);
+  assert.equal(f.calls.length,4);
   assert.ok(f.calls[0].url.endsWith('/auth/v1/user'));
   assert.ok(f.calls[1].url.includes('/private_unlisted_publication_intents?'));
-  assert.ok(f.calls[2].url.endsWith('/rpc/service_prepare_unlisted_release'));
-  assert.equal(f.calls[0].headers.apikey,env.SUPABASE_ANON_KEY);
-  assert.equal(f.calls[2].headers.apikey,env.SUPABASE_SERVICE_ROLE_KEY);
+  assert.ok(f.calls[2].url.includes('/private_release_requests?'));
+  assert.ok(f.calls[2].url.includes(frozenId));
+  assert.ok(f.calls[3].url.endsWith('/rpc/service_prepare_unlisted_release'));
+  for(const call of f.calls.slice(0,3)){
+    assert.equal(call.headers.apikey,env.SUPABASE_ANON_KEY);
+    assert.equal(call.headers.Authorization,'Bearer '+bearer);
+  }
+  assert.equal(f.calls[3].headers.apikey,env.SUPABASE_SERVICE_ROLE_KEY);
   assert.equal(f.getPublished(),1);
 });
 test('unverified worker acknowledgment and transport failure never become success',async()=>{
