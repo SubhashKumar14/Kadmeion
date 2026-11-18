@@ -847,19 +847,12 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
               <dt>Private</dt><dd>Only authenticated owner access. Never copy the author-preview URL as a public link.</dd>
               <dt>Unlisted</dt><dd>A real published address may be shared by its holder, but it is not a private access-control mechanism.</dd>
               <dt>Public</dt><dd>Requires explicit consent, verified host delivery and correct indexability before sharing.</dd>
-              <dt>Current pointer</dt><dd>{pointer ? pointer.status==='BLOCKED'?'No active private candidate':'Private candidate prepared; not live'
+              <dt>Current pointer</dt><dd>{pointer ? pointer.status==='BLOCKED'?'No active private candidate':'Private candidate prepared; not proof of public delivery'
                 : error?'Status could not be verified':'Checking private pointer…'}</dd>
             </dl>
           </div>
-          <div className="ws-release-action">
-            <h3>Share a verified address</h3>
-            <p>There is no host-attested public URL on this owner route. Copy and native sharing are unavailable until publication, consent and revocation checks pass.</p>
-            <div className="ws-release-actions">
-              <button type="button" className="ws-secondary" disabled>Copy verified public URL</button>
-              <button type="button" className="ws-secondary" disabled>Share verified public URL</button>
-            </div>
-            <p className="ws-field-hint">The absence of a public URL is not a failure of your private saved portfolio.</p>
-          </div>
+          <AuthoritativePublicDelivery shareOnly port={port} portfolioId={id} frozen={null} preflight={null}
+            disabled={readsBusy} pointer={pointer} begin={beginReleaseAction} setBusy={setBusy} onPointer={setPointer}/>
         </> : mode==='releases'?<>
           <h2>Private release pointer</h2>
           {pointer ? <>
@@ -1136,13 +1129,13 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
       </div>
       {mode!=='staging' && mode!=='publish' && <aside className="ws-project-aside">
         <h2>Delivery &amp; sharing</h2>
-        <p>No public or reviewer address is verified. An owner preview is not a shareable release.</p>
+        <p>Verify the current public address in the delivery controls. An owner preview is not a shareable release.</p>
         <dl className="ws-release-facts"><dt>Owner preview</dt><dd>Private to your signed-in account</dd>
           <dt>Reviewer delivery</dt><dd>Host proof required</dd>
-          <dt>Public release</dt><dd>Not verified</dd></dl>
+          <dt>Public release</dt><dd>See current delivery verification</dd></dl>
         <div className="ws-release-actions">
           <a className="ws-secondary" href={base+'/preview/fullscreen'} target="_blank" rel="noopener">Open private author preview</a>
-          <button type="button" className="ws-secondary" disabled title="No verified public release exists">Copy public link unavailable</button>
+          <a className="ws-secondary" href={base+'/share'}>Open sharing controls</a>
         </div>
         <p className="ws-field-hint">Nothing on this page activates external sharing. Private, unlisted and public are delivery policies, not just labels.</p>
       </aside>}
@@ -1170,7 +1163,8 @@ const ACK_PAGE_SIZE=25,ACK_MAX_ROWS=500;
  * acknowledgement is the only positive public-delivery evidence. Never
  * synthesize URLs from handles, historical ACKs or a private block receipt.
  */
-function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled,pointer,begin,setBusy,onPointer}:{
+function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled,pointer,begin,setBusy,onPointer,shareOnly=false}:{
+  shareOnly?:boolean;
   port:SupabaseBrowserAuthPort;portfolioId:string;frozen:PrivateFrozenRequest|null;
   preflight:SafePreviewResult|null;disabled:boolean;pointer:PrivatePointerSnapshot|null;
   begin:()=>{current:()=>boolean;finish:()=>void}|null;setBusy:(busy:boolean)=>void;
@@ -1197,13 +1191,14 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
   const [error,setError]=useState('');
   const epoch=useRef(0);
   const receiptOwner=useRef<string|null>(null);
+  const shareEvidence=useRef<{scope:OwnerDeliveryScope;receipt:PublicDeliveryEvidence;checkedAt:number}|null>(null);
   useLayoutEffect(()=>{
-    const clear=()=>{++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;
+    const clear=()=>{++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;shareEvidence.current=null;
       setAttempt(null);setWithdrawing(false);setReceipt(null);setLiveComparison(null);setHistory([]);setRollbackId('');setNotice('');setError('');
       setRecovered(null);setRecoveryId('');setAcknowledged([]);stageFlight.current=null;setStageAttempt(null);setStaged(null);};
     clear();
     const unsubscribe=port.subscribeOwnerSessionEpoch(clear);
-    return()=>{unsubscribe();++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;stageFlight.current=null;};
+    return()=>{unsubscribe();++epoch.current;pending.current=null;withdrawal.current=null;receiptOwner.current=null;stageFlight.current=null;shareEvidence.current=null;};
   },[port,portfolioId]);
   useLayoutEffect(()=>{
     if(!pointer)return;
@@ -1216,6 +1211,48 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       pointer.portfolioId!==portfolioId||pointer.generation>previous.pointerGeneration||
       pointer.revocationGeneration>=previous.stageGeneration)?null:previous);
   },[pointer,portfolioId]);
+  // The native share picker requires a new user gesture. A deliberately short,
+  // in-memory verification window avoids treating a historical URL as current.
+  useEffect(()=>{
+    if(!shareOnly||!receipt)return;
+    const evidence=shareEvidence.current;
+    if(!evidence||evidence.receipt!==receipt){setReceipt(null);return;}
+    const expire=()=>{if(shareEvidence.current===evidence){
+      shareEvidence.current=null;setReceipt(null);
+      setNotice('Sharing verification expired. Verify the current delivery again.');
+    }};
+    const timer=window.setTimeout(expire,Math.max(0,60_000-(Date.now()-evidence.checkedAt)));
+    return()=>window.clearTimeout(timer);
+  },[shareOnly,receipt]);
+  async function shareVerified(kind:'copy'|'native'){
+    const evidence=shareEvidence.current;
+    if(!shareOnly||disabled||!receipt||!evidence||evidence.receipt!==receipt||
+      !evidence.scope.isCurrentOwner()||Date.now()<evidence.checkedAt||
+      Date.now()-evidence.checkedAt>=60_000||
+      !pointer||pointer.portfolioId!==portfolioId||pointer.status!=='PREPARED_PRIVATE'||
+      pointer.generation!==receipt.pointerGeneration||pointer.revocationGeneration!==receipt.revocationGeneration){
+      shareEvidence.current=null;setReceipt(null);setError('Verify current delivery before sharing.');return;
+    }
+    const action=begin();if(!action)return;
+    const started=epoch.current;
+    const current=()=>action.current()&&epoch.current===started&&evidence.scope.isCurrentOwner();
+    setBusy(true);setError('');setNotice('');
+    try{
+      // Both APIs are invoked synchronously in the actual click gesture,
+      // never by an effect or after a network await.
+      if(kind==='copy'){
+        if(typeof navigator.clipboard?.writeText!=='function')throw Error('Clipboard unavailable.');
+        await navigator.clipboard.writeText(receipt.publicUrl);
+      }else{
+        if(typeof navigator.share!=='function')throw Error('Native sharing unavailable.');
+        await navigator.share({url:receipt.publicUrl});
+      }
+      if(current())setNotice(kind==='copy'?'Verified public URL copied.':'Native sharing completed.');
+    }catch(error){
+      if(current())setError(kind==='native'&&error instanceof Error&&error.name==='AbortError'
+        ?'Sharing cancelled.': 'Sharing could not be completed. Retry or select the verified URL manually.');
+    }finally{action.finish();}
+  }
   function retain(value:PublicAttempt|null){pending.current=value;setAttempt(value?{...value}:null);}
   /** Read-only point-in-time comparison of a host-verified release's actual frozen pin and saved draft. */
   async function compareLiveWithDraft(){
@@ -1335,7 +1372,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     let scope:OwnerDeliveryScope|null=null;
     const current=()=>action.current()&&started===epoch.current&&(!scope||scope.isCurrentOwner());
     setBusy(true);setError('');setNotice('');
-    if(kind!=='load'){setReceipt(null);setLiveComparison(null);}
+    if(kind!=='load'||shareOnly){setReceipt(null);setLiveComparison(null);shareEvidence.current=null;}
     try{
       const opened=await factory();
       if(!current())return;
@@ -1349,6 +1386,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       if(list.error||!list.data)throw Error('Publication intent history unavailable.');
       setRecovered(list.data);
       if(kind==='load'){
+        if(shareOnly){setRecoveryId('');setNotice('Owner consent metadata reloaded. Select a used intent for current delivery verification.');return;}
         const page=await port.listOwnerReleaseAcknowledgements(portfolioId,50,null);
         if(!current())return;
         setAcknowledged(page.error?[]:page.data?.items??[]);
@@ -1375,6 +1413,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       if(observed.portfolioId!==portfolioId||observed.status!=='PREPARED_PRIVATE'||
          observed.generation!==verified.pointerGeneration||observed.revocationGeneration!==verified.revocationGeneration)
         throw Error('Pointer changed during recovery.');
+      if(shareOnly)shareEvidence.current={scope,receipt:verified,checkedAt:Date.now()};
       onPointer(observed);setReceipt(verified);
       setHistory(rows=>[verified,...rows.filter(item=>item.intentId!==verified.intentId)].slice(0,20));
       setNotice('Exact current public receipt recovered from the saved consent identity.');
@@ -1525,6 +1564,42 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       if(current())setError(kind==='withdraw'?'Withdrawal or current database readback not confirmed. Retry the same block; external denial is unverified.':
         'Delivery is not confirmed. A trusted staged candidate, current C11/C14 service and host proof are required. Retained operations must be checked or retried without new consent.');
     }finally{action.finish();}
+  }
+  if(shareOnly){
+    const canVerify=!!factory&&!!reader;
+    const verified=!!receipt&&shareEvidence.current?.receipt===receipt;
+    return <section className="ws-release-action" aria-label="Share a verified address">
+      <h3>Share a verified address</h3>
+      <p>Load recorded PUBLIC consent and verify its current canonical delivery before sharing. Private author links and historical database acknowledgements are never substituted.</p>
+      {!verified&&<p>There is no host-attested public URL on this owner route. Copy and native sharing are unavailable until publication, consent and revocation checks pass.</p>}
+      {!canVerify&&<p>The paired owner delivery service is unavailable.</p>}
+      {error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
+      <div className="ws-release-actions">
+        <button type="button" className="ws-secondary" disabled={!canVerify||disabled}
+          onClick={()=>void recover('load')}>Load saved publication intents</button>
+      </div>
+      {recovered&&<><label>Saved published intent
+        <select value={recoveryId} disabled={disabled} onChange={event=>{
+          if(disabled)return;
+          shareEvidence.current=null;setReceipt(null);setRecoveryId(event.target.value);setError('');setNotice('');
+        }}><option value="">Select a recorded intent</option>{recovered.items.filter(item=>item.status==='USED').map(item=>
+          <option key={item.intentId} value={item.intentId}>{item.createdAt} · {item.intentId.slice(0,8)}</option>)}</select>
+      </label>
+      {recovered.truncated&&<p>Latest 50 intents shown; older records may exist.</p>}
+      {!recovered.items.some(item=>item.status==='USED')&&<p>No used publication consents were returned.</p>}
+      <button type="button" className="ws-secondary" disabled={!canVerify||disabled||!recovered.items.some(item=>item.intentId===recoveryId&&item.status==='USED')}
+        onClick={()=>void recover('check')}>Verify current delivery of saved intent</button></>}
+      {verified&&receipt&&<dl className="ws-release-facts"><dt>Last verified public address</dt><dd>
+        <input aria-label="Last verified public address" value={receipt.publicUrl} readOnly onFocus={event=>event.currentTarget.select()}/>
+      </dd><dt>Verified at</dt><dd><time dateTime={receipt.verifiedAt}>{receipt.verifiedAt}</time></dd>
+        <dt>Delivery epoch</dt><dd>{receipt.deliveryEpoch}</dd></dl>}
+      <div className="ws-release-actions">
+        <button type="button" className="ws-secondary" disabled={disabled||!verified} onClick={()=>void shareVerified('copy')}>Copy verified public URL</button>
+        <button type="button" className="ws-secondary" disabled={disabled||!verified||typeof navigator.share!=='function'}
+          onClick={()=>void shareVerified('native')}>Share verified public URL</button>
+      </div>
+      <p className="ws-field-hint">The verification window is 60 seconds and is cleared on owner or pointer change. Delivery can change after verification; copied links do not guarantee continued access. Native share depends on browser support.</p>
+    </section>;
   }
   if(!factory)return <div className="ws-release-action"><h3>Authoritative public delivery</h3>
     <p>The paired C11 owner service is unavailable. No public action, rollback or public receipt is enabled.</p></div>;
