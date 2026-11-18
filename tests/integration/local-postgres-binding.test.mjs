@@ -825,8 +825,15 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.equal(restriction.status,'ACTIVE');
     assert.equal(restriction.hostRevocationVerified,false);
     assert.equal((await moderation.changeAccountSharingRestriction(restrictIntent)).alreadyRecorded,true);
+    const takedownScopes=[scopeA,scopeB,{...scopeB,canonicalPath:renamed}];
+    // Same immutable media manifest on a newly authorized generation has the
+    // same URL scope. The probe rejects duplicate release keys by design.
+    const sameScope=takedownScopes.find(item=>item.canonicalPath===freshScope.canonicalPath&&
+      item.manifestSha256===freshScope.manifestSha256);
+    if(sameScope)assert.deepEqual(sameScope.assetHashes,freshScope.assetHashes);
+    else takedownScopes.push(freshScope);
     const localTakedown=await probePublicTakedownPlan({origin:deliveryOrigin,allowLocal:true,
-      scopes:[scopeA,scopeB,freshScope,{...scopeB,canonicalPath:renamed}]});
+      scopes:takedownScopes});
     assert.equal(localTakedown.status,'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS');
     for(const method of ['GET','HEAD']){
       assert.equal((await fetch(canonical,{method})).status,404);
