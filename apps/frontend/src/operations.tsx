@@ -533,6 +533,8 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
   const selected=selection?.port===port?selection.id:'';
   const [statement,setStatement]=useState('');
   const [operation,setOperation]=useState(()=>crypto.randomUUID());
+  const [retryState,setRetryState]=useState<{scope:typeof scope;caseId:string;operation:string;statement:string}|null>(null);
+  const retry=retryState?.scope===scope?retryState:null;
   const [pendingScope,setPendingScope]=useState<typeof scope|null>(null);
   const busy=pendingScope===scope;
   const gate=useScopedActionGate(scope);
@@ -546,6 +548,7 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
     setLoaded(null);
     setFailedScope(null);
     setStatement('');
+    setRetryState(null);
     void (async()=>{
       const {data:service}=await port.privateModeration();
       if (!service) throw new Error('Owner moderation service unavailable.');
@@ -557,16 +560,19 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
 
   async function appeal(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !records || current?.status!=='OPEN' || statement.trim().length<20) return;
+    if (busy || !records || !current || current.status!=='OPEN' || statement.trim().length<20) return;
+    if(retry && (retry.caseId!==current.id || retry.operation!==operation || retry.statement!==statement.trim()))return;
+    const exact=retry??{scope,caseId:current.id,operation,statement:statement.trim()};
     const token=gate.begin();
     if(token===null)return;
     setPendingScope(scope);
     setMessage(null);
     try {
-      const receipt=await records.service.appeal(current.id,operation,statement);
+      const receipt=await records.service.appeal(exact.caseId,exact.operation,exact.statement);
       if(!gate.current(token))return;
-      if(receipt.caseId!==current.id||receipt.status!=='APPEAL_RECORDED'||receipt.publicRevocationVerified!==false)
+      if(receipt.caseId!==exact.caseId||receipt.status!=='APPEAL_RECORDED'||receipt.publicRevocationVerified!==false)
         throw new Error('Unverified appeal receipt.');
+      setRetryState(null);
       setStatement('');
       setOperation(crypto.randomUUID());
       setLoaded(null);
@@ -575,12 +581,22 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
     } catch(error) {
       if(!gate.current(token))return;
       if(accessMustBeRechecked(error)){
+        setRetryState(null);
         setStatement('');
         setOperation(crypto.randomUUID());
         setLoaded(null);
         setMessage({port,error:true,text:'Appeal access could not be verified. Checking your current account access before continuing.'});
         setAttempt(value=>value+1);
+      }else if(error instanceof Error && 'code' in error && error.code==='CONFLICT'){
+        setRetryState(null);setStatement('');setOperation(crypto.randomUUID());setLoaded(null);
+        setMessage({port,error:true,text:'The appeal outcome is unconfirmed or the case changed. Checking the current case before another action.'});
+        setAttempt(value=>value+1);
+      }else if(!retry && error instanceof Error && 'code' in error && error.code==='VALIDATION'){
+        setMessage({port,error:true,text:'The appeal statement was rejected. Review it before submitting again.'});
       }else{
+        // Ambiguous delivery may already have committed. Freeze the initiating
+        // tuple for explicit same-operation retry, never a changed statement.
+        setRetryState(exact);
         setMessage({port,error:true,text:'The appeal could not be confirmed. Retry the unchanged statement for the same operation.'});
       }
     } finally {
@@ -597,7 +613,8 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
         <button className="ws-secondary" type="button" onClick={()=>setAttempt(value=>value+1)}>Retry cases</button></>}
       {records?.cases.length===0 && <p>There are no cases for this account.</p>}
       {!!records?.cases.length && <label className="ws-ops-field">Case to review
-        <select value={selected} disabled={busy} onChange={event=>{
+        <select value={selected} disabled={busy||!!retry} onChange={event=>{
+          if(busy||retry)return;
           setSelection({port,id:event.target.value});setStatement('');setMessage(null);setOperation(crypto.randomUUID());
         }}>
           <option value="">Choose a case</option>
@@ -622,8 +639,8 @@ export function OwnerCaseHistory({port}:{port:SupabaseBrowserAuthPort}) {
       <p>Your statement is available for restricted case review.</p>
       <form className="ws-ops-form" onSubmit={event=>void appeal(event)}>
         <label className="ws-ops-field">Appeal statement
-          <textarea required rows={5} minLength={20} maxLength={2000} value={statement} disabled={busy}
-            onChange={event=>{setStatement(event.target.value);setOperation(crypto.randomUUID());}}/>
+          <textarea required rows={5} minLength={20} maxLength={2000} value={statement} disabled={busy||!!retry}
+            onChange={event=>{if(busy||retry)return;setStatement(event.target.value);setOperation(crypto.randomUUID());}}/>
         </label>
         <button className="ws-primary" type="submit" disabled={busy || statement.trim().length<20}>Submit private appeal</button>
       </form>
