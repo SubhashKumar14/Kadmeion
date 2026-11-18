@@ -212,3 +212,30 @@ test('B10 OAuth callback rejects ambiguous or changed identity after code exchan
   port.getUser=async()=>({data:{user:{id:'other-owner'}},error:null});
   await assert.rejects(service.finishOAuth('valid-code-12345'),{code:'AUTH_EXPIRED'});
 });
+
+test('B16 auth denial never verifies a contradictory provider session or infers confirmation from text',async()=>{
+  for(const typed of [false,true]){
+    const port=mockPort();let verifies=0;
+    port.getUser=async()=>{verifies++;return {data:{user:{id:'one'}},error:null};};
+    port.signInWithPassword=async()=>({data:{user:{id:'one'},session:{access_token:'token',user:{id:'one'}}},
+      error:{message:'Email not confirmed: private diagnostic',...(typed?{providerCode:'email_not_confirmed' as const}:{})}});
+    const service=new AuthService(port,{siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false});
+    await assert.rejects(service.login('dev@example.com','password'),(e:unknown)=>e instanceof AuthFlowError&&
+      e.code===(typed?'EMAIL_CONFIRMATION_REQUIRED':'AUTH_FAILED')&&!e.message.includes('private diagnostic'));
+    assert.equal(verifies,0);
+  }
+});
+test('B16 resend capability, provider denial, missing response and explicit retry are fail closed',async()=>{
+  const port=mockPort();let calls=0;
+  const service=new AuthService(port,{siteOrigin:'https://app.example',emailDeliveryVerified:false,googleOAuthConfigured:false});
+  await assert.rejects(service.resendSignupConfirmation('dev@example.com'),{code:'PROVIDER_UNAVAILABLE'});
+  port.resend=async()=>{calls++;return {data:null,error:{message:'private diagnostic',status:429}};};
+  await assert.rejects(service.resendSignupConfirmation('dev@example.com'),{code:'PROVIDER_UNAVAILABLE',message:'Unable to submit the confirmation request.'});
+  assert.equal(calls,1);
+  port.resend=async()=>{calls++;return undefined as unknown as Awaited<ReturnType<NonNullable<AuthPort['resend']>>>;};
+  await assert.rejects(service.resendSignupConfirmation('dev@example.com'),{code:'PROVIDER_UNAVAILABLE'});
+  assert.equal(calls,2);
+  port.resend=async()=>{calls++;return {data:{},error:null};};
+  assert.equal(await service.resendSignupConfirmation('dev@example.com'),undefined);
+  assert.equal(calls,3);
+});
