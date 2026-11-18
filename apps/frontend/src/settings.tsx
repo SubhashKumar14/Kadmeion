@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, NotificationPreferenceState, NotificationPreferenceChange, NotificationPreferenceInput } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountErasureReceipt, AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { AccountErasureReceipt, AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry, AccountExitInventoryReceiptV2, AccountExitStorageReconciliationV2 } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateNotificationsError } from '../../../packages/contracts/src/private-notifications-service.ts';
@@ -112,7 +112,7 @@ export function OwnerSettings({port, path}: {port: SupabaseBrowserAuthPort; path
   else if (path === '/app/settings/security') content = <Security key={current!.viewKey} port={port}/>;
   else if (path === '/app/trash') content = <Trash key={current!.viewKey} port={port} service={services.trash}/>;
   else if (path === '/app/export') content = <ExportCenter key={current!.viewKey} port={port} services={services}/>;
-  else content = <AccountExit key={current!.viewKey} port={port} service={services.account}/>;
+  else content = <AccountExit key={current!.viewKey} port={port} services={services}/>;
 
   return <section className="ws-settings-page" aria-labelledby="settings-title">
     <div className="ws-heading">
@@ -1071,7 +1071,12 @@ const confirmedExit: (receipt:AccountErasureReceipt,history:PrivateAccountErasur
   return receipt.requestId===requestId&&receipt.status==='WITHDRAWN'&&matching?.status==='WITHDRAWN';
 };
 
-function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
+function sameExitScope(scope:{schemaVersion:number;requestId:string|null;snapshotId:string}|null,requestId:string):boolean {
+  return scope!==null&&scope.schemaVersion===2&&scope.requestId===requestId;
+}
+
+function AccountExit({port,services}: {port: SupabaseBrowserAuthPort; services: Services}) {
+  const service=services.account;
   // The shell mounts this consumer only after live owner verification.
   // Capture the mount's epoch: never adopt a newer one from an old handler.
   const [epoch] = useState(() => port.getOwnerSessionEpoch());
@@ -1084,6 +1089,11 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
   const inFlight=useRef(false);
+  const [exitScope,setExitScope]=useState<AccountExitInventoryReceiptV2|null>(null);
+  const [exitStorage,setExitStorage]=useState<AccountExitStorageReconciliationV2|null>(null);
+  const [exitExport,setExitExport]=useState<{requestId:string;snapshotId:string;filename:string;sha256:string;bytes:number}|null>(null);
+  const [exitQuotaBlocked,setExitQuotaBlocked]=useState(false);
+  const exitCapture=useRef<{requestId:string;operationId:string}|null>(null);
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
@@ -1091,6 +1101,9 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const [withdrawConfirmation, setWithdrawConfirmation] = useState('');
   const withdrawalOperation = useRef<string|null>(null);
   const activeRequest = requests?.find(item=>item.status==='REQUESTED_BLOCKED');
+  const activeScope=activeRequest&&sameExitScope(exitScope,activeRequest.id)?exitScope:null;
+  const activeStorage=activeScope&&exitStorage?.snapshotId===activeScope.snapshotId&&exitStorage.requestId===activeScope.requestId?exitStorage:null;
+  const activeExport=activeScope&&exitExport?.snapshotId===activeScope.snapshotId&&exitExport.requestId===activeScope.requestId?exitExport:null;
   const reauth = recoveredProof && activeRequest?.id === recoveredProof.requestId ? recoveredProof.verification : null;
 
   const current = () => mounted.current && port.reconcileOwnerSessionEpoch() === epoch;
@@ -1144,6 +1157,90 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     // epoch remount are not explicit cancellation.
     return () => { active = false; };
   }, [port,service,epoch,recoveryAttempt]);
+
+  useEffect(()=>{
+    if(!requests)return;
+    if(exitScope&&!sameExitScope(exitScope,activeRequest?.id??'')){
+      setExitScope(null);setExitStorage(null);setExitExport(null);
+    }
+    if(exitCapture.current&&exitCapture.current.requestId!==activeRequest?.id)exitCapture.current=null;
+  },[requests,activeRequest?.id,exitScope]);
+
+  async function prepareExitExport(action:'capture'|'reconcile'|'metadata'|'json'|'zip'){
+    if(inFlight.current||busy||recovery!=='ready'||!activeRequest||!current())return;
+    const requestId=activeRequest.id;
+    if(action==='capture'&&exitQuotaBlocked&&!activeScope)return;
+    if(action!=='capture'&&!activeScope)return;
+    inFlight.current=true;setBusy(true);setMessage(null);
+    try{
+      // Do not infer active status from cached UI after a lost account-exit ACK.
+      const verifyActive=async()=>{
+        const history=await service.list();
+        if(!current())throw new Error('The owner session changed.');
+        setRequests(history);
+        if(history.filter(row=>row.status==='REQUESTED_BLOCKED').length!==1||
+           history.find(row=>row.status==='REQUESTED_BLOCKED')?.id!==requestId)
+          throw new Error('The deletion request changed. Review the current request before exporting.');
+      };
+      await verifyActive();
+      if(action==='capture'){
+        if(activeScope)return;
+        if(exitCapture.current?.requestId!==requestId)
+          exitCapture.current={requestId,operationId:crypto.randomUUID()};
+        const captured=await service.captureInventoryV2(exitCapture.current.operationId,requestId);
+        if(!current())return;
+        if(!sameExitScope(captured,requestId))throw new Error('The request-bound inventory was not confirmed.');
+        await verifyActive();
+        exitCapture.current=null;
+        setExitScope(captured);setExitStorage(null);setExitExport(null);
+        setMessage({error:false,text:'Request-bound inventory captured. No data has been erased.'});
+        return;
+      }
+      const scope=activeScope!;
+      if(!sameExitScope(scope,requestId))throw new Error('The inventory does not belong to this request.');
+      if(action==='reconcile'){
+        setExitStorage(null);
+        const result=await service.reconcileStorageV2(scope.snapshotId,requestId);
+        if(!current())return;
+        if(result.snapshotId!==scope.snapshotId||result.requestId!==requestId)
+          throw new Error('Storage reconciliation scope could not be verified.');
+        await verifyActive();
+        setExitStorage(result);return;
+      }
+      setExitExport(null);
+      let filename:string,bytes:Uint8Array,mime:string,digest:string;
+      if(action==='metadata'){
+        const result=await services.data.exportApplicationMetadataV2(scope.snapshotId,requestId);
+        filename=result.filename;bytes=result.bytes;mime=result.mime;digest=await exportDigest(bytes);
+      }else{
+        const result=await services.data.exportV2(scope.snapshotId,requestId);
+        if(!current())return;
+        const {verifyBoundedPrivateAccountExport,createBoundedPrivateAccountRecoveryBundle,restoreBoundedPrivateAccountJsonFromRecoveryBundle}=
+          await import('../../../packages/storage-adapters/src/private-account-data-export.ts');
+        const checked=await verifyBoundedPrivateAccountExport(result.bytes);
+        if(checked.schemaVersion!==2||checked.requestId!==requestId||checked.inventorySnapshotId!==scope.snapshotId)
+          throw new Error('Recovery bytes do not belong to the current deletion request.');
+        if(action==='zip'){
+          const bundle=await createBoundedPrivateAccountRecoveryBundle(result.bytes);
+          const restored=await restoreBoundedPrivateAccountJsonFromRecoveryBundle(bundle.zip);
+          if(restored.sha256!==checked.sha256)throw new Error('Recovery ZIP did not reconstruct the verified source.');
+          filename=bundle.filename;bytes=bundle.zip;mime='application/zip';digest=bundle.sha256;
+        }else{
+          filename=result.filename;bytes=result.bytes;mime=result.mime;digest=checked.sha256;
+        }
+      }
+      await verifyActive();
+      if(!current())return;
+      downloadPrivateFile(filename,bytes,mime);
+      setExitExport({requestId,snapshotId:scope.snapshotId,filename,sha256:digest,bytes:bytes.byteLength});
+      setMessage({error:false,text:'Request-bound private export prepared. Export is not deletion or external-retention proof.'});
+    }catch(error){
+      if(current()){
+        if(typeof error==='object'&&error!==null&&'code' in error&&error.code==='QUOTA_EXCEEDED')setExitQuotaBlocked(true);
+        setMessage(failure(error));
+      }
+    }finally{inFlight.current=false;if(current())setBusy(false);}
+  }
 
   function discardProof() {
     port.discardOwnerAccountExitReauth(epoch);
@@ -1337,6 +1434,23 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
           <dt>Trash records</dt><dd>{inventory.counts.trashRecords}</dd></dl>
         {inventory.countsCapped && <p>Some categories show up to {inventory.maxCountPerCategory} records.</p>}
         <p>Public route withdrawal, storage cleanup, provider data and backups require separate verification.</p>
+      </section>}
+      {activeRequest&&<section aria-label="Request-bound private export">
+        <h3>Export for this deletion request</h3>
+        <p>Optional private inventory and recovery files bound to this exact pending request. All inventory versions share the ten-snapshot account quota. These records are not deletion approval.</p>
+        {!activeScope&&<button type="button" className="ws-secondary" disabled={busy||exitQuotaBlocked} onClick={()=>void prepareExitExport('capture')}>Capture request-bound inventory</button>}
+        {exitQuotaBlocked&&<p role="status">No further inventory captures are available under the current quota. Previously acknowledged inventory can still be used.</p>}
+        {activeScope&&<>
+          <p>Captured <time dateTime={activeScope.capturedAt}>{new Date(activeScope.capturedAt).toLocaleString()}</time>. Profile asset metadata: {activeScope.inventory.counts.profileAssetMetadata}.</p>
+          <div className="ws-actions">
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('reconcile')}>Check request-bound storage metadata</button>
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('metadata')}>Download request-bound metadata</button>
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('json')}>Download request-bound recovery JSON</button>
+            <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void prepareExitExport('zip')}>Download request-bound recovery ZIP</button>
+          </div>
+          {activeStorage&&<p role="status">Storage result: {activeStorage.status==='METADATA_MATCH_ONLY'?'Metadata matches; bytes not verified by this check.':activeStorage.status==='LIMIT_EXCEEDED'?'Reconciliation limit exceeded.':'Discrepancy detected.'} Registered profile/project assets: {activeStorage.profileRegistered}/{activeStorage.projectRegistered}. Pending profile uploads: {activeStorage.profilePending}.</p>}
+          {activeExport&&<div aria-label="Request-bound export receipt"><p>{activeExport.filename} · {formatExportBytes(activeExport.bytes)}</p><p>SHA-256: <code>{activeExport.sha256}</code></p></div>}
+        </>}
       </section>}
       <a href="/app/export">Open export center</a>
     </SettingsCard>
