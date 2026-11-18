@@ -121,7 +121,11 @@ EXECUTE kd_private_bind(:'request',:'generation',:'manifest',:'html');`;
     }
   };
 }
-test('B4: real local direct PostgreSQL binds verified owner artifact with scoped role',
+// Two isolated owners/portfolios: the first preserves all A/B/rollback/rename
+// denials and explicitly exercises the lifetime stage cap; the second proves
+// C14 against an independently live B, without bypassing that production cap.
+for(const scenario of ['rename-quota','moderation']) test(
+  'B4: real local direct PostgreSQL binds verified owner artifact with scoped role — '+scenario,
   {timeout:180000},async t=>{
   const role='kd_ci_bind_'+randomBytes(6).toString('hex');
   const password=randomBytes(26).toString('hex');
@@ -732,6 +736,11 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.equal(ownerReportCase.summary,reviewReason);
     assert.equal(await outsiderModeration.readOwnerCase(reportDecision.caseId),null);
     assert.ok(!JSON.stringify(ownerReportCase).includes(evidenceText),'Raw visitor report remains operator-only');
+    const canonicalPath='/'+handle+'/'+slug;
+    const scopeA={canonicalPath,manifestSha256:null,assetHashes:[]};
+    const scopeB={canonicalPath,manifestSha256:secondPublicReceipt.mediaManifest,
+      assetHashes:secondPublicReceipt.assetHashes};
+    if(scenario==='rename-quota'){
     await assert.rejects(outsiderPointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
       replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC'),{code:'FORBIDDEN'});
     const publicRollbackOperation=randomUUID();
@@ -740,10 +749,6 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     const rollbackReceipt=await publishPublic(publicRollback,publicFrozen.requestId,publicRollbackOperation);
     assert.ok(rollbackReceipt.deliveryEpoch>secondPublicReceipt.deliveryEpoch);
     assert.equal(rollbackReceipt.storedHtmlSha256,firstPublicReceipt.storedHtmlSha256);
-    const canonicalPath='/'+handle+'/'+slug;
-    const scopeA={canonicalPath,manifestSha256:null,assetHashes:[]};
-    const scopeB={canonicalPath,manifestSha256:secondPublicReceipt.mediaManifest,
-      assetHashes:secondPublicReceipt.assetHashes};
     const retired=await probePublicReplacementDenial({
       origin:deliveryOrigin,current:scopeA,history:[scopeB],allowLocal:true
     });
@@ -787,22 +792,32 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       p_portfolio_id:portfolioId,p_intent_id:publicRollback.intentId
     }),'Read retired rollback authority'),null);
 
-    // All original A/B/rollback/rename denials above remain required. Publish
-    // a new explicitly consented B generation before exercising C14 on a live
-    // canonical page and both public and private reviewer PNG byte endpoints.
+    // Full staged history must remain bounded. A sixth stage cannot silently
+    // overwrite a historical generation or create a partially committed media
+    // candidate. The actual product's fresh-stage lifecycle remains an open
+    // requirement when no safe reclaim operation can make space.
     const afterRename=await pointer.read(portfolioId);
     const freshPointer=await pointer.prepare(portfolioId,replacementFrozen.requestId,
       secondPublicArtifact.manifestSha256,afterRename.generation,randomUUID());
-    const freshStaged=await storeAttestedFrozenMediaCandidate(mediaPort,{
+    const stageCount=()=>dbQuery("select count(*) from kadmeion_private.private_reviewer_stage_artifacts where portfolio_id=:'portfolio'::uuid;",
+      {vars:{portfolio:portfolioId}});
+    assert.equal(stageCount(),'5','Real production stage quota is exhausted, not a simulated limit');
+    await assert.rejects(storeAttestedFrozenMediaCandidate(mediaPort,{
       requestId:replacementFrozen.requestId,expectedGeneration:freshPointer.generation,input:frozenMedia
-    },reader);
-    assert.equal(freshStaged.status,'STORED_PRIVATE');
-    const freshOperation=randomUUID();
-    const freshConsent=await pointer.requestPublicPublication(replacementFrozen.requestId,
-      freshPointer.generation,freshOperation,'PUBLISH PUBLIC');
-    const freshReceipt=await publishPublic(freshConsent,replacementFrozen.requestId,freshOperation);
-    assert.equal(freshReceipt.mediaManifest,freshStaged.manifestSha256);
-    const freshScope={canonicalPath,manifestSha256:freshReceipt.mediaManifest,assetHashes:freshReceipt.assetHashes};
+    },reader),{code:'SQL_UNCONFIRMED'});
+    assert.equal(stageCount(),'5','Denied stage cannot evict retained history');
+    assert.equal(dbQuery("select count(*) from kadmeion_private.frozen_media_candidates where portfolio_id=:'portfolio'::uuid and generation=:'generation'::bigint;",
+      {vars:{portfolio:portfolioId,generation:freshPointer.generation}}),'0','Failed staging is atomic');
+    assert.equal((await pointer.read(portfolioId)).generation,freshPointer.generation);
+    for(const method of ['GET','HEAD']){
+      assert.equal((await fetch(canonical,{method})).status,404);
+      assert.equal((await fetch(directImage,{method})).status,404);
+    }
+    }else{
+    // The independent C14 fixture is already a genuinely published B, with
+    // real report review and current bytes. No test-only cleanup or quota waiver.
+    const freshReceipt=secondPublicReceipt;
+    const freshScope=scopeB;
     const freshMediaQuery='&manifest='+freshReceipt.mediaManifest+'&asset='+imageHash;
     const freshDirect=deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+slug+freshMediaQuery;
     const liveReviewer=ok(await api('/rest/v1/rpc/issue_private_reviewer_grant',{
@@ -825,7 +840,7 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.equal(restriction.status,'ACTIVE');
     assert.equal(restriction.hostRevocationVerified,false);
     assert.equal((await moderation.changeAccountSharingRestriction(restrictIntent)).alreadyRecorded,true);
-    const takedownScopes=[scopeA,scopeB,{...scopeB,canonicalPath:renamed}];
+    const takedownScopes=[scopeA,scopeB];
     // Same immutable media manifest on a newly authorized generation has the
     // same URL scope. The probe rejects duplicate release keys by design.
     const sameScope=takedownScopes.find(item=>item.canonicalPath===freshScope.canonicalPath&&
@@ -862,6 +877,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       assert.equal((await fetch(canonical,{method})).status,404);
       assert.equal((await fetch(freshDirect,{method})).status,404);
       assert.equal((await serveReviewer(liveReviewerImage,{},method)).statusCode,404);
+    }
+
     }
 
     // New generation is never silently revived after Trash.
