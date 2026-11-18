@@ -66,8 +66,19 @@ export function createPublicPresetDemo(presetId:Preset['presetId']):PortfolioSna
 }
 
 type DemoCanvas=typeof import('./portfolio-tools.tsx').PortfolioCanvas;
+type DemoTheme='light'|'dark';
+// Use the existing editor's flat preview palette contract. Only the ephemeral
+// demo snapshot is changed; this never applies a template or persists a theme.
+const demoPalettes:Readonly<Record<DemoTheme,{surface:string;text:string;accent:string}>>={
+  light:{surface:'#f9fafb',text:'#152738',accent:'#b9734d'},
+  dark:{surface:'#162433',text:'#f7f5ef',accent:'#eab087'}
+};
+function withDemoPalette(snapshot:PortfolioSnapshot,mode:DemoTheme):PortfolioSnapshot {
+  return {...snapshot,files:{...snapshot.files,'theme/tokens.json':JSON.stringify({mode,...demoPalettes[mode]})}};
+}
 function ActualPresetPreview({preset}:{preset:Preset}){
-  const snapshot=useMemo(()=>createPublicPresetDemo(preset.presetId),[preset.presetId]);
+  const [mode,setMode]=useState<DemoTheme>('light');
+  const snapshot=useMemo(()=>withDemoPalette(createPublicPresetDemo(preset.presetId),mode),[preset.presetId,mode]);
   const [Canvas,setCanvas]=useState<DemoCanvas|null>(null);
   const [failed,setFailed]=useState(false);
   const [width,setWidth]=useState<number|undefined>(undefined);
@@ -95,6 +106,12 @@ function ActualPresetPreview({preset}:{preset:Preset}){
       <button type="button" className="outline-small" aria-pressed={width===768} onClick={()=>setWidth(768)}>Up to 768 px (tablet)</button>{' '}
       <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>Up to 390 px (phone width)</button>
       {Canvas&&!failed&&<p>{measuredWidth===null?'Canvas content width is not measured.':'Measured canvas content width: '+Math.round(measuredWidth)+' px.'}</p>}
+    </fieldset>
+    <fieldset disabled={failed||!Canvas}>
+      <legend>Portfolio preview theme</legend>
+      <p>Compare the two editor palettes in this demo only. This does not change your site theme or save a portfolio.</p>
+      <button type="button" className="outline-small" aria-pressed={mode==='light'} onClick={()=>setMode('light')}>Light</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={mode==='dark'} onClick={()=>setMode('dark')}>Dark</button>
     </fieldset>
     {failed?<p role="alert">The preset renderer could not load. Close the preview and reload this page to try again.</p>:
       Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll onContentWidth={setMeasuredWidth}/></div>:
