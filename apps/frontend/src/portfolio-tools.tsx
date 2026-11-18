@@ -271,7 +271,7 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
 
 /** This context must come from the verified editor gate, never visitor simulation.
  * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
-export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
+export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string;requireFrozenPin?:boolean}>;
 type CanvasImageRef={slotKey:string;assetId:string;expectedDigest?:string};
 type RasterDimensions=Readonly<{width:number;height:number}>;
 type CanvasImageView={status:'pending'|'failed'|'deferred'}|{status:'ready';url:string;pinned:boolean;dimensions:RasterDimensions;digest:string;frozenDigestMatched:boolean;onError:()=>void};
@@ -354,7 +354,8 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
   sections:CanvasSection[],selectedSlot:string|undefined,ownerCanvas:boolean){
   const refs=useMemo(()=>ownerCanvas&&context?canvasImageReferences(snapshot,sections):[],[ownerCanvas,!!context,snapshot,sections]);
   const port=context?.port;
-  const key=ownerCanvas&&port&&context?.ownerKey&&refs.length?JSON.stringify([context.ownerKey,refs]):null;
+  const requireFrozenPin=context?.requireFrozenPin===true;
+  const key=ownerCanvas&&port&&context?.ownerKey&&refs.length?JSON.stringify([context.ownerKey,requireFrozenPin,refs]):null;
   const [enabled,setEnabled]=useState(true);
   const [attempt,setAttempt]=useState(0);
   const [view,setView]=useState<{key:string|null;images:CanvasImageViews}>({key:null,images:new Map()});
@@ -378,7 +379,11 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
     });
     // Keep the explicit retry useful even when a very large document exceeds
     // the local preview budget: prioritize the current selection, not API order.
-    const ordered=[...refs].sort((a,b)=>Number(b.slotKey===selectedSlot)-Number(a.slotKey===selectedSlot));
+    const ordered=refs.filter(ref=>{
+      if(requireFrozenPin&&ref.expectedDigest===undefined){images.set(ref.slotKey,{status:'failed'});return false;}
+      return true;
+    }).sort((a,b)=>Number(b.slotKey===selectedSlot)-Number(a.slotKey===selectedSlot));
+    publish();
     const groups=new Map<string,CanvasImageRef[]>();
     for(const ref of ordered){const group=groups.get(ref.assetId)??[];group.push(ref);groups.set(ref.assetId,group);}
     const setGroup=(group:CanvasImageRef[],status:'failed'|'deferred')=>{
@@ -389,6 +394,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
       const bound=epoch;
       let used=0,decodedPixels=0;
       try{
+        if(groups.size===0)return;
         const list=await port.listOwnerAssets();
         if(!live())return;
         if(list.error||!list.data){setGroup(refs,'failed');return;}
@@ -408,7 +414,12 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
             const verified=await matchesPreviewBytes(response.data.bytes,asset.mime,digest);
             if(!live())return;
             if(!verified){setGroup(group,'failed');continue;}
-            const matches=group.filter(ref=>ref.expectedDigest===undefined||ref.expectedDigest===digest);
+            const pinned=response.data.serverAttestation==='SERVER_HASH_PINNED';
+            // An observed matching digest is not a server pin. Frozen refs
+            // must never display current unpinned bytes or an unpinned fallback.
+            const matches=group.filter(ref=>ref.expectedDigest===undefined
+              ? !requireFrozenPin
+              : pinned&&ref.expectedDigest===digest);
             for(const ref of group)if(!matches.includes(ref))images.set(ref.slotKey,{status:'failed'});
             if(!matches.length){publish();continue;}
             url=URL.createObjectURL(response.data.bytes);urls.add(url);
@@ -435,7 +446,7 @@ function useCanvasMedia(context:PrivateCanvasMediaContext|undefined,snapshot:Por
             used+=asset.size;decodedPixels+=pixels;
             for(const ref of matches)images.set(ref.slotKey,{status:'ready',url:imageUrl,dimensions,digest,
               frozenDigestMatched:ref.expectedDigest===digest,
-              pinned:response.data.serverAttestation==='SERVER_HASH_PINNED',onError:fail});
+              pinned,onError:fail});
             publish();
           }catch{
             if(url&&urls.delete(url))URL.revokeObjectURL(url);
