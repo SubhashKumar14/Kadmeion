@@ -9,6 +9,7 @@ import {
   applyEditorTransaction, canPlacePrivateImage, matchingReplacementContent, createEditorHead, restoreHistoricalSnapshot, planSectionLayoutChange, type EditorHead, type EditorIntent, type PortfolioSnapshot
 } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { canonicalLibraryComponentSource, portfolioLayout, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import { ContractError } from '../../../packages/contracts/src/project.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import type { OwnerPortfolio, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { Icon } from './landing.tsx';
@@ -511,6 +512,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const checkpointWriter=useRef<{id:string;sequence:number;signature:string}|null>(null);
   const frozenCheckpoint=useRef<{id:string;signature:string}|null>(null);
   const checkpointFlight=useRef(false);
+  // A rejected sequence must never silently recreate or replace a different tab's copy.
+  const checkpointConflict=useRef<string|null>(null);
   const checkpointEnabled=useRef(false);
   const saveFlight=useRef(false);
   const [recoveryComparison,setRecoveryComparison]=useState<{copyId:string;cloudRevision:number;
@@ -912,10 +915,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     setCheckpointState('pending');
     let cancelled=false;
     const timer=window.setTimeout(()=>{
-      if(cancelled||!checkpointEnabled.current||!draftCurrent(view)||checkpointFlight.current)return;
+      if(cancelled||!checkpointEnabled.current||!draftCurrent(view)||checkpointFlight.current||recoveryLock.current)return;
       let writer=checkpointWriter.current;
       if(!writer){writer={id:crypto.randomUUID(),sequence:0,signature:''};checkpointWriter.current=writer;}
       const activeWriter=writer;
+      if(checkpointConflict.current===activeWriter.id){setCheckpointState('failed');return;}
       checkpointFlight.current=true;
       void (async()=>{
         try{
@@ -925,11 +929,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             throw new Error('Invalid checkpoint acknowledgement.');
           activeWriter.sequence=receipt.checkpointSequence!;
           activeWriter.signature=signature;
+          checkpointConflict.current=null;
           if(!scopeCurrent(view))return;
           // A newer buffer may have arrived during IndexedDB I/O.
           if(draftCurrent(view))setCheckpointState('saved');else setCheckpointState('pending');
           await refreshRecovery(view,store);
-        }catch{
+        }catch(cause){
+          if(cause instanceof ContractError&&cause.code==='REVISION_CONFLICT')checkpointConflict.current=activeWriter.id;
           if(scopeCurrent(view)){setCheckpointState('failed');setRecoveryExpanded(true);}
         }finally{
           checkpointFlight.current=false;
@@ -940,6 +946,17 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     },650);
     return ()=>{cancelled=true;window.clearTimeout(timer);};
   },[autoRecovery,verifiedOwner?.id,verifiedOwner?.epoch,port,id,record,head,operation,fieldDrafts,sourceDrafts,seoDraft,pendingFields,sourceDirty,saving,recoveryBusy,checkpointRetry]);
+  function retryCheckpoint(){
+    const view=captureRecovery();
+    if(!view||!view.dirty||!checkpointEnabled.current||checkpointFlight.current||recoveryLock.current)return;
+    const writer=checkpointWriter.current;
+    // Only an explicit owner retry may abandon a rejected sequence. Ordinary I/O
+    // failures retain the ID and sequence for an idempotent acknowledgement retry.
+    if(writer&&checkpointConflict.current===writer.id){
+      checkpointWriter.current=null;checkpointConflict.current=null;
+    }
+    setCheckpointRetry(n=>n+1);
+  }
   function installCloudDraft(fresh:PortfolioRecord){
     if(!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
     const next=createEditorHead(fresh.snapshot);
@@ -1277,12 +1294,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       const store=new IndexedDbEditorDraftStore();
       const selected=recoveryCopies?.find(copy=>copy.copyId===copyId);
       if(!selected)return;
-      if(checkpointWriter.current?.id===copyId){
-        if(checkpointFlight.current)return;
-        setAutoRecovery(false);checkpointEnabled.current=false;checkpointWriter.current=null;setCheckpointState('idle');
-      }
+      const removingWriter=checkpointWriter.current?.id===copyId;
+      if(removingWriter&&checkpointFlight.current)return;
       await store.removeRecoveryCopy(view.owner!.id,view.id,copyId,selected.checkpointSequence);
       if(!scopeCurrent(view))return;
+      // Do not disable or forget the writer until deletion is acknowledged.
+      if(removingWriter&&checkpointWriter.current?.id===copyId){
+        setAutoRecovery(false);checkpointEnabled.current=false;checkpointWriter.current=null;
+        checkpointConflict.current=null;setCheckpointState('idle');
+      }
       recoveryAttempt.current=null;setRecoveryComparison(null);
       if(frozenCheckpoint.current?.id===copyId){frozenCheckpoint.current=null;setCheckpointRetry(n=>n+1);}
       setRecoveryNotice('Browser recovery copy removed. Cloud draft unchanged.');
@@ -1360,11 +1380,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         checkpointEnabled.current=event.target.checked;setAutoRecovery(event.target.checked);
         if(!event.target.checked)setCheckpointState('idle');
       }}/> Automatically checkpoint unsaved edits on this browser during this editor session</label>
-      {autoRecovery&&<p role="status">{checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
+      {autoRecovery&&<p role="status">{!(operation||pendingFields||sourceDirty)?'No unsaved edits. Existing browser copies are retained.':checkpointState==='pending'?'Browser checkpoint pending. Do not assume it has been saved.':
         checkpointState==='saved'?'Latest captured working edits acknowledged by browser storage only.':
         checkpointState==='failed'?'Browser checkpoint failed or storage is full; your current edits remain.':
         'Automatic browser checkpoints enabled; waiting for unsaved edits.'}
-        {checkpointState==='failed'&&<button type="button" className="ws-secondary" onClick={()=>setCheckpointRetry(n=>n+1)}>Retry checkpoint</button>}
+        {checkpointState==='failed'&&!!(operation||pendingFields||sourceDirty)&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy} onClick={retryCheckpoint}>Retry checkpoint</button>}
       </p>}
       <p>Each editor session uses a separate checkpoint ID. Checkpoints count toward the same eight-copy limit, never prune another copy, and are retained until explicitly removed.</p>
       <div className="ws-actions">
