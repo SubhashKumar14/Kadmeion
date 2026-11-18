@@ -644,6 +644,16 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
   </>;
 }
 
+// A fresh list check narrows the stale-generation window. The server's
+// restore RPC remains authoritative; this is not an atomic generation CAS.
+function currentTrashGeneration(rows:PrivateTrashEntry[],item:PrivateTrashEntry,now:number):boolean {
+  if(rows.length>100||!Number.isFinite(now))return false;
+  const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
+  const match=same[0];
+  return same.length===1&&!!match&&match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until&&
+    Date.parse(match.restore_until)>now;
+}
+
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
   const [epoch]=useState(()=>port.getOwnerSessionEpoch());
   const alive=useRef(false);
@@ -710,20 +720,28 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
       return;
     }
     inFlight.current=true;setBusy(true);setMessage(null);
+    let dispatched=false;
     try{
+      const latest=await service.list();
+      if(!current())return;
+      if(!currentTrashGeneration(latest,item,Date.now()))
+        throw new PrivateTrashError('INVALID_STATE','The Trash record changed or expired before restoration.');
+      dispatched=true;
       const receipt=await service.restore(item.item_type,item.item_id);
       if(!current())return;
-      if(receipt.status!=='restored'||receipt.public_visibility!=='private')
+      if(receipt.item_type!==item.item_type||receipt.item_id!==item.item_id||
+        receipt.status!=='restored'||receipt.public_visibility!=='private')
         throw new PrivateTrashError('INVALID_STATE','Private restore was not confirmed.');
       setItems(rows=>rows?.filter(row=>row.item_id!==item.item_id||row.item_type!==item.item_type||row.trashed_at!==item.trashed_at)??[]);
       setMessage({error:false,text:'Item restored as private.'});
     }catch(error){
       if(!current())return;
-      if(error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
+      if(dispatched&&error instanceof PrivateTrashError&&error.code==='TRASH_EXPIRED'){
         setExpiredByServer(previous=>new Set(previous).add(key));setMessage(failure(error));
       }else{
-        readbackRequired.current=true;uncertainRestore.current=true;setNeedsReadback(true);
-        setMessage({error:true,text:'Restore was not confirmed. Refresh Trash and review your private library before retrying.'});
+        readbackRequired.current=true;uncertainRestore.current=dispatched;setNeedsReadback(true);
+        setMessage({error:true,text:dispatched?'Restore was not confirmed. Refresh Trash and review your private library before retrying.':
+          'The current Trash record could not be verified. No restore request was sent. Refresh Trash before retrying.'});
       }
     }finally{
       inFlight.current=false;if(current())setBusy(false);
