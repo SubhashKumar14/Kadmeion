@@ -91,7 +91,7 @@ export class SupabasePrivateProviderFactsService {
   private current(){let ok=false;try{ok=this.guard()===true}catch{}if(this.retired||!ok){this.retired=true;fail('AUTH_EXPIRED')}}
   private async request(path:string,body:Record<string,unknown>):Promise<unknown>{
     this.current();const serialized=JSON.stringify(body);if(new TextEncoder().encode(serialized).length>1024)fail('LIMIT');
-    const url=this.origin+path,timeout=path==='/functions/v1/sync-provider-facts'?15000:5000;
+    const url=this.origin+path,timeout=path==='/functions/v1/sync-provider-facts'&&body.action!=='CAPABILITY'?15000:5000;
     const deadline=performance.now()+timeout,controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
     let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
     const cancelBody=(r:Response)=>{try{void r.body?.cancel().catch(()=>{})}catch{}};
@@ -130,6 +130,18 @@ export class SupabasePrivateProviderFactsService {
       }finally{cancelReader()}
     };
     try{const result=await Promise.race([work(),timed]);check();return result}finally{clearTimeout(timer);controller.abort();cancelReader()}
+  }
+  /** Authenticated local readiness only: does not enable consent or fetch facts.
+   * The disabled/default Edge handler returns no proof. A stale owner is retired.
+   * The owner RPC is the separate durable-schema/live-session gate. */
+  async probeLocalCapability():Promise<boolean>{
+    try{
+      const edge=await this.request('/functions/v1/sync-provider-facts',{action:'CAPABILITY',schemaVersion:1});
+      if(!exact(edge,['schemaVersion','mode','ownerId'])||edge.schemaVersion!==1||edge.mode!=='ISOLATED_LOCAL'||edge.ownerId!==this.owner)return false;
+      const schema=await this.request('/rest/v1/rpc/read_owner_github_provider_capability',{});
+      this.current();
+      return exact(schema,['schemaVersion','ownerId'])&&schema.schemaVersion===1&&schema.ownerId===this.owner;
+    }catch{return false;}
   }
   async readState(linkId:string):Promise<ProviderState>{if(!uuid(linkId))return fail('INVALID');return parseProviderState(await this.request('/rest/v1/rpc/read_owner_github_provider_state',{p_link_id:linkId}),this.owner,linkId)}
   private receipt(raw:unknown,input:ProviderOperation,action:'ENABLE'|'DISABLE'|'CONFIRM'|'LOOKUP'|'SYNC'):ProviderReceipt{
