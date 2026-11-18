@@ -179,7 +179,36 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
     wantDenied(await rpc('record_private_profile_asset_content_attestation',attest));
     const trusted=body=>call('/rest/v1/rpc/record_private_profile_asset_content_attestation',
       {body,token:service,key:service});
-    const attestation=success(await trusted(attest),'Trusted fixture hashes verified actual bytes');
+    // Actual owner-facing PROFILE completion gateway must create the pin.
+    // Never substitute a privileged fixture pin for this positive assertion.
+    const folder=await mkdtemp(join(tmpdir(),'kadmeion-profile-attest-'));
+    const config=join(folder,'function.env');
+    await writeFile(config,'KADMEION_ASSET_ATTESTATION_ENABLED=true\nKADMEION_LOCAL_INTEGRATION=1\nKADMEION_ALLOWED_ATTEST_ORIGINS=http://localhost:3000\n');
+    const worker=spawn('supabase',['functions','serve','complete-private-asset','--env-file',config],{
+      stdio:['ignore','pipe','pipe'],env:{...process.env,KADMEION_LOCAL_INTEGRATION:'1'}
+    });
+    const diagnostics=[];
+    const capture=chunk=>{for(const line of String(chunk).slice(0,10000).split(/\r?\n/))
+      if(/error|failed|denied|resolution/i.test(line)&&diagnostics.length<8)
+        diagnostics.push(line.replace(/(?:eyJ|sb_secret_)[A-Za-z0-9_.-]+/g,'[redacted]').slice(0,150));};
+    worker.stdout?.on('data',capture);worker.stderr?.on('data',capture);
+    try{
+      let ready=false;
+      for(let n=0;n<50&&worker.exitCode===null;n++){
+        try{const response=await request({assetId:'invalid'});if(response.status===400){await response.body?.cancel();ready=true;break;}await response.body?.cancel();}catch{}
+        await delay(300);
+      }
+      assert.ok(ready,'PROFILE Edge failed to start: '+diagnostics.join(' | '));
+      const complete=(actor,body)=>call('/functions/v1/complete-private-asset',{token:actor.token,body});
+      wantDenied(await complete(foreign,{assetId:registry.assetId,scope:'PROFILE'}));
+      wantDenied(await complete(owner,{assetId:registry.assetId,scope:'PROFILE',expectedSha256:digest}));
+      wantDenied(await complete(owner,{assetId:registry.assetId,scope:'PROJECT'}));
+      assert.deepEqual(success(await rpc('read_owner_private_asset_pin',pin),'Denied calls leave pin unchanged'),unpinned);
+      const expected={assetId:registry.assetId,status:'WRITE_ONCE_ATTESTED',publicPublishingAllowed:false,accountDeletionAllowed:false};
+      assert.deepEqual(success(await complete(owner,{assetId:registry.assetId,scope:'PROFILE'}),'Actual authenticated PROFILE Edge pin'),expected);
+      assert.deepEqual(success(await complete(owner,{assetId:registry.assetId,scope:'PROFILE'}),'Actual PROFILE completion replay'),expected);
+    }finally{worker.kill('SIGTERM');await rm(folder,{recursive:true,force:true});}
+    const attestation=success(await trusted(attest),'Exact service replay after real owner Edge pin');
     assert.deepEqual(attestation,{assetId:registry.assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',providerSigned:false,deletionAllowed:false});
     assert.deepEqual(success(await trusted(attest),'Pin exact replay'),attestation);
     wantDenied(await trusted({...attest,p_expected_sha256:'0'.repeat(64)}),'23505');
