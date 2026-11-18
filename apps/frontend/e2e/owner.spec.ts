@@ -4144,7 +4144,9 @@ test('B16 R9 actual guarded project autosave coalesces, fences CAS and owner, an
   await page.getByRole('link',{name:'R9 guarded project',exact:true}).click();
   const projectPath=new URL(page.url()).pathname, id=projectPath.split('/').pop()!;
   expect(id).toMatch(/^[0-9a-f-]{36}$/i);
-  const summary=page.getByLabel('Short description',{exact:true});
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const summary=page.locator('form.ws-project-fields').getByLabel('Short description');
+  await expect(summary).toHaveCount(1);
   const auto=page.getByRole('checkbox',{name:'Autosave private project overview'});
   const revision=page.getByRole('complementary',{name:'Saved project preview'}).getByText(/SAVED DRAFT · REVISION \d+/);
   const snapshot=async()=>{
@@ -4239,7 +4241,7 @@ test('B16 R9 actual guarded project autosave coalesces, fences CAS and owner, an
   const foreignPage=await browser.newPage();
   try{await signIn(foreignPage,outsider);await foreignPage.goto(projectPath);
     await expect(foreignPage.getByText('Project unavailable. Check your connection and session before trying again.',{exact:true})).toBeVisible();
-    await expect(foreignPage.getByLabel('Short description',{exact:true})).toHaveCount(0);
+    await expect(foreignPage.locator('form.ws-project-fields').getByLabel('Short description')).toHaveCount(0);
   }finally{await foreignPage.close();}
 });
 
@@ -4312,7 +4314,9 @@ test('B16 R9 guarded project autosave rejects a delayed acknowledgement after ac
   await drawer.getByLabel('Summary (optional)').fill('A initial private summary');
   await drawer.getByRole('button',{name:'Save project'}).click();
   await page.getByRole('link',{name:'R9 epoch project',exact:true}).click();
-  const summary=page.getByLabel('Short description',{exact:true});
+  await expect(page.getByRole('heading',{name:'Build the case study.'})).toBeVisible();
+  const summary=page.locator('form.ws-project-fields').getByLabel('Short description');
+  await expect(summary).toHaveCount(1);
   const auto=page.getByRole('checkbox',{name:'Autosave private project overview'});
   await expect(summary).toHaveValue('A initial private summary');
   let accept!:()=>void,received!:()=>void,finished!:()=>void;
