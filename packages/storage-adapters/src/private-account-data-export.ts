@@ -321,6 +321,13 @@ async function boundedBytes(response:Response,max:number,signal:AbortSignal,dead
     requireCondition(total===Number(length),'INTEGRITY','Provider response length changed.');
   return bytes;
 }
+function assertExportResponseScope(response:Response,requestUrl:string):void {
+  requireCondition(!response.redirected&&(!response.url||response.url===new URL(requestUrl).href),
+    'INTEGRITY','Private export response did not match the trusted endpoint.');
+}
+function exportJsonContentType(headers:Headers):boolean {
+  return /^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(headers.get('content-type')??'');
+}
 export class SupabasePrivateAccountDataExporter {
   private readonly origin:string;
   private readonly publishableKey:string;
@@ -342,44 +349,65 @@ export class SupabasePrivateAccountDataExporter {
     this.accessToken=accessToken;this.http=http;
   }
   private async request(path:string,max:number,body?:Record<string,unknown>):Promise<{bytes:Uint8Array;headers:Headers}> {
-    const jwt=await this.accessToken();
-    requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
     const deadline=performance.now()+15_000;
     const signal=AbortSignal.timeout(15_000);
-    let response:Response;
-    try {
-      response=await this.http(this.origin+path,{
+    let onAbort:()=>void=()=>{};
+    const timedOut=new Promise<never>((_,reject)=>{
+      onAbort=()=>reject(new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export request exceeded its deadline.'));
+      signal.addEventListener('abort',onAbort,{once:true});
+    });
+    const work=async()=>{
+      const jwt=await this.accessToken();
+      requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
+      checkStreamDeadline(signal,deadline);
+      const requestUrl=this.origin+path;
+      const response=await this.http(requestUrl,{
         method:body===undefined?'GET':'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+jwt,
           Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
         body:body===undefined?undefined:JSON.stringify(body),
         credentials:'omit',cache:'no-store',redirect:'error',signal
       });
-    }catch{throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export source unavailable.');}
-    if(!response.ok){
-      let code:PrivateAccountExportError['code']='PROVIDER_UNAVAILABLE';
-      let message='Private export read was denied or unavailable.';
-      if(response.status===401||response.status===403)code='AUTH_EXPIRED';
-      else if(response.status===429){code='RATE_LIMITED';message='Too many export requests. Try again later.';}
-      else if(response.status===413){code='LIMIT_EXCEEDED';message='The export exceeds the bounded response limit.';}
-      else if(path.startsWith('/rest/v1/rpc/')){
-        // Never surface arbitrary PostgREST details, and bound error bodies.
-        try{
-          const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192,signal,deadline)));
-          if(object(raw)&&raw.code==='55000'&&raw.message==='PROFILE_ASSET_EXPORT_VERSION_REQUIRED'){
-            code='VERSION_REQUIRED';message='Use the profile-inclusive version 2 export; this legacy scope cannot cover the account.';
-          }else if(object(raw)&&raw.code==='54000'&&
-            ['ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED','ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED'].includes(String(raw.message))){
-            code='LIMIT_EXCEEDED';message='The account exceeds the supported export limits.';
+      try{
+        checkStreamDeadline(signal,deadline);
+        assertExportResponseScope(response,requestUrl);
+        if(!response.ok){
+          let code:PrivateAccountExportError['code']='PROVIDER_UNAVAILABLE';
+          let message='Private export read was denied or unavailable.';
+          if(response.status===401||response.status===403)code='AUTH_EXPIRED';
+          else if(response.status===429){code='RATE_LIMITED';message='Too many export requests. Try again later.';}
+          else if(response.status===413){code='LIMIT_EXCEEDED';message='The export exceeds the bounded response limit.';}
+          else if(path.startsWith('/rest/v1/rpc/')&&exportJsonContentType(response.headers)){
+            try{
+              const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192,signal,deadline)));
+              if(object(raw)&&raw.code==='55000'&&raw.message==='PROFILE_ASSET_EXPORT_VERSION_REQUIRED'){
+                code='VERSION_REQUIRED';message='Use the profile-inclusive version 2 export; this legacy scope cannot cover the account.';
+              }else if(object(raw)&&raw.code==='54000'&&
+                ['ACCOUNT_METADATA_EXPORT_LIMIT_EXCEEDED','ACCOUNT_AUDIT_EXPORT_LIMIT_EXCEEDED'].includes(String(raw.message))){
+                code='LIMIT_EXCEEDED';message='The account exceeds the supported export limits.';
+              }
+            }catch{ /* Unrecognized or invalid error remains unavailable. */ }
           }
-        }catch{ /* Unrecognized or invalid error remains unavailable. */ }
-      }
-      void response.body?.cancel().catch(()=>{});
-      throw new PrivateAccountExportError(code,message);
-    }
-    return {bytes:await boundedBytes(response,max,signal,deadline),headers:response.headers};
+          checkStreamDeadline(signal,deadline);
+          throw new PrivateAccountExportError(code,message);
+        }
+        const bytes=await boundedBytes(response,max,signal,deadline);
+        requireCondition(await this.accessToken()===jwt,'AUTH_EXPIRED','The account session changed. Start a new export.');
+        checkStreamDeadline(signal,deadline);
+        return {bytes,headers:response.headers};
+      }finally{if(!response.bodyUsed)void response.body?.cancel().catch(()=>{});}
+    };
+    try{
+      const result=await Promise.race([timedOut,work()]);
+      checkStreamDeadline(signal,deadline);
+      return result;
+    }catch(error){
+      if(error instanceof PrivateAccountExportError)throw error;
+      throw new PrivateAccountExportError('PROVIDER_UNAVAILABLE','Private export source unavailable.');
+    }finally{signal.removeEventListener('abort',onAbort);}
   }
   private async json(path:string,max:number,body?:Record<string,unknown>):Promise<unknown> {
-    const {bytes}=await this.request(path,max,body);
+    const {bytes,headers}=await this.request(path,max,body);
+    requireCondition(exportJsonContentType(headers),'INTEGRITY','Private export JSON media type was not confirmed.');
     try{return JSON.parse(decoder.decode(bytes)) as unknown;}
     catch{throw new PrivateAccountExportError('INTEGRITY','Invalid private export response.');}
   }
