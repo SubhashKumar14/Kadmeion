@@ -2293,6 +2293,21 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     };
   }
 
+  /** Owner-bound release service; public delivery is independently attested by the server. */
+  async ownerReleaseDelivery(){
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const token=this.ownerEpochToken(userId,epoch);
+      const {SupabasePrivateReleasePointerService}=await import('../../../packages/contracts/src/private-release-visibility-service.ts');
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing release delivery.');
+      const service=new SupabasePrivateReleasePointerService(this.origin,this.publishableKey,token,this.fetcher);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing release delivery.');
+      return {service,ownerId:userId,adapterEpoch:epoch,isCurrentOwner};
+    });
+  }
+
   /** Owner reads rely on RLS. Operator RPCs independently check the role. */
   async privateModeration() {
     return this.outcome(async () => {
