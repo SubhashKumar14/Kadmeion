@@ -1,6 +1,7 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import type {SupabaseBrowserAuthPort, OwnerPortfolio, OwnerReviewerGrantSummary, SavedOwnerRevision, OwnerFrozenRequest} from '../../auth-web/src/supabase-auth-port.ts';
-import type {PrivateFrozenRequest, FrozenVisibilityIntent} from '../../../packages/contracts/src/private-release-service.ts';
+import type {PrivateFrozenRequest, FrozenVisibilityIntent, PrivateReleaseAcknowledgement, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage} from '../../../packages/contracts/src/private-release-service.ts';
+import type {AuthOutcome} from '../../../packages/contracts/src/auth-service.ts';
 import type {PrivatePointerReceipt, PrivatePointerSnapshot} from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import {prepareSafeStaticPreview, type SafeSlotPlan, type SafeSlotKind, type SafePreviewResult} from '../../../packages/editor-core/src/publish-preflight.ts';
 import {portfolioLayout} from '../../../packages/editor-core/src/managed-project-files.ts';
@@ -693,7 +694,9 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             </div>}
           </> : !error && readPhase==='pointer' && <ReleasePending label="Checking the release pointer…" />}
           <h3>Release history and rollback</h3>
-          <p>Review private freeze records and the candidate pointer. A verified live release timeline is unavailable; these records are not published releases.</p>
+          <p>Review private freeze records, historical database acknowledgements and the candidate pointer. Current public delivery and rollback require separate verification.</p>
+          <ReleaseAcknowledgementHistory port={port} portfolioId={id} frozenRequests={frozenRequests}
+            onSelect={request=>void selectFrozenRequest(request)} selectionDisabled={readsBusy} />
           {pointer?.candidateRequestId && <dl className="ws-release-facts">
             <dt>Prepared candidate request</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateRequestId}</code></dd>
             <dt>Candidate manifest fingerprint</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateManifestSha256}</code></dd>
@@ -930,6 +933,96 @@ function ReleasePending({label,detail=false}:{label:string;detail?:boolean}) {
     <span className="glyph-skeleton-line is-medium" />
     <span className="glyph-skeleton-line is-short" />
   </div></>;
+}
+
+type ReleaseHistoryPort=SupabaseBrowserAuthPort & {
+  listOwnerReleaseAcknowledgements(portfolioId:string,limit?:number,
+    after?:PrivateReleaseAcknowledgementCursor|null):Promise<AuthOutcome<PrivateReleaseAcknowledgementPage>>;
+};
+const ACK_PAGE_SIZE=25,ACK_MAX_ROWS=500;
+function mergeReleaseAcknowledgements(portfolioId:string,previous:readonly PrivateReleaseAcknowledgement[],
+    page:PrivateReleaseAcknowledgementPage):PrivateReleaseAcknowledgementPage {
+  const seen=new Set(previous.map(row=>row.intentId));
+  if(page.items.length>ACK_PAGE_SIZE||previous.length+page.items.length>ACK_MAX_ROWS||
+     (page.nextCursor!==null&&page.items.length!==ACK_PAGE_SIZE))
+    throw new Error('Release acknowledgement page is inconsistent.');
+  for(const row of page.items){
+    if(row.portfolioId!==portfolioId||seen.has(row.intentId))
+      throw new Error('Release acknowledgement page is inconsistent.');
+    seen.add(row.intentId);
+  }
+  const last=page.items.at(-1);
+  if(page.nextCursor!==null&&(!last||page.nextCursor.portfolioId!==portfolioId||
+     page.nextCursor.intentId!==last.intentId||page.nextCursor.verifiedAt!==last.verifiedAt))
+    throw new Error('Release acknowledgement cursor is inconsistent.');
+  return {items:[...previous,...page.items],nextCursor:page.nextCursor};
+}
+
+/** Historical owner-RLS acknowledgements are not proof of a current live site.
+ * The actual owner port checks the live session and portfolio before and after every page.
+ */
+function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect,selectionDisabled}:{
+  port:SupabaseBrowserAuthPort;portfolioId:string;frozenRequests:OwnerFrozenRequest[]|null;
+  onSelect:(request:OwnerFrozenRequest)=>void;selectionDisabled:boolean;
+}){
+  const candidate=port as Partial<ReleaseHistoryPort>;
+  const available=typeof candidate.listOwnerReleaseAcknowledgements==='function';
+  const [page,setPage]=useState<PrivateReleaseAcknowledgementPage|null>(null);
+  const [pending,setPending]=useState(false);
+  const [error,setError]=useState('');
+  const epoch=useRef(0);
+  const flight=useRef<object|null>(null);
+  async function read(after:PrivateReleaseAcknowledgementCursor|null,previous:readonly PrivateReleaseAcknowledgement[],expected:number){
+    if(!available||epoch.current!==expected||flight.current!==null)return;
+    const ticket={};
+    flight.current=ticket;setPending(true);setError('');
+    const current=()=>epoch.current===expected&&flight.current===ticket;
+    try{
+      const reply=await (port as ReleaseHistoryPort).listOwnerReleaseAcknowledgements(portfolioId,ACK_PAGE_SIZE,after);
+      if(!current())return;
+      if(!reply.data)throw new Error('Owner acknowledgement history unavailable.');
+      const next=mergeReleaseAcknowledgements(portfolioId,previous,reply.data);
+      if(current())setPage(next);
+    }catch{
+      if(current())setError('The private release acknowledgement history could not be verified. Retry the owner read.');
+    }finally{
+      if(current()){flight.current=null;setPending(false);}
+    }
+  }
+  useLayoutEffect(()=>{
+    const expected=++epoch.current;
+    flight.current=null;setPage(null);setPending(false);setError('');
+    if(available)void read(null,[],expected);
+    return ()=>{epoch.current+=1;flight.current=null;};
+  },[port,portfolioId,available]);
+  return <section className="ws-release-action" role="group" aria-labelledby="release-ack-history-title">
+    <h3 id="release-ack-history-title">Historical database acknowledgements</h3>
+    <p>These owner-private records show an acknowledgement recorded by the database, not a current public URL, verified host state, rollback authority or revocation proof.</p>
+    {!available?<p>Owner acknowledgement history is unavailable until the compatible authenticated service is installed.</p>:<>
+      {pending&&!page&&<ReleasePending label="Loading private release acknowledgements…" />}
+      {pending&&page&&<p role="status">Checking private release acknowledgement history…</p>}
+      {error&&<p role="alert">{error}</p>}
+      {page&&page.items.length===0&&!error&&<p>No historical database acknowledgements were returned.</p>}
+      {!!page?.items.length&&<ol className="ws-release-grant-list">{page.items.map(row=>{
+        const request=frozenRequests?.find(item=>item.requestId===row.requestId&&item.portfolioId===portfolioId);
+        return <li key={row.intentId}><div>
+          <strong>Database acknowledgement recorded</strong>
+          <p><time dateTime={row.verifiedAt}>{new Date(row.verifiedAt).toLocaleString()}</time></p>
+          <p>Intent <code style={{overflowWrap:'anywhere'}}>{row.intentId}</code></p>
+          <p>Frozen request <code style={{overflowWrap:'anywhere'}}>{row.requestId}</code></p>
+        </div>{request?<button type="button" className="ws-secondary" disabled={selectionDisabled||pending}
+          onClick={()=>onSelect(request)}>Inspect matching frozen revision {request.revision}</button>:
+          <p className="ws-field-hint">Matching frozen request is not in the loaded catalogue.</p>}</li>;
+      })}</ol>}
+      <div className="ws-release-actions">
+        <button type="button" className="ws-secondary" disabled={pending||selectionDisabled}
+          onClick={()=>void read(null,[],epoch.current)}>{error&&!page?'Retry acknowledgement history':'Refresh acknowledgement history'}</button>
+        {page?.nextCursor&&page.items.length<ACK_MAX_ROWS&&<button type="button" className="ws-secondary" disabled={pending||selectionDisabled}
+          onClick={()=>void read(page.nextCursor,page.items,epoch.current)}>Load older acknowledgements</button>}
+      </div>
+      {page?.nextCursor&&page.items.length>=ACK_MAX_ROWS&&<p className="ws-field-hint">Showing the newest 500 records in this view; more records may exist.</p>}
+    </>}
+  </section>;
 }
 
 function FrozenRequestHistory({requests,error,pending,onRetry,retryDisabled,onSelect,activeRequestId,selectionDisabled,candidateRequestId}:{
