@@ -96,33 +96,6 @@ function validMilestone(value:unknown):value is GoalMilestone {
     (value.due_on===null||date(value.due_on))&&
     (value.completed_at===null||timestamp(value.completed_at))&&timestamp(value.created_at);
 }
-async function responseJson(response:Response):Promise<unknown> {
-  const type=response.headers.get('content-type');
-  if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
-    throw new PrivateGoalsError('INVALID_ACK');
-  const length=response.headers.get('content-length');
-  if(length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_BODY))
-    throw new PrivateGoalsError('LIMIT_EXCEEDED');
-  if(!response.body)throw new PrivateGoalsError('INVALID_ACK');
-  const reader=response.body.getReader(),parts:Uint8Array[]=[];let total=0;
-  try{
-    for(;;){
-      const item=await reader.read();
-      if(item.done)break;
-      if(!(item.value instanceof Uint8Array))throw new PrivateGoalsError('INVALID_ACK');
-      total+=item.value.byteLength;
-      if(total>MAX_BODY){await reader.cancel();throw new PrivateGoalsError('LIMIT_EXCEEDED');}
-      parts.push(item.value);
-    }
-  }finally{reader.releaseLock();}
-  const encoding=response.headers.get('content-encoding');
-  if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&total!==Number(length))
-    throw new PrivateGoalsError('INVALID_ACK');
-  const buffer=new Uint8Array(total);let offset=0;
-  for(const part of parts){buffer.set(part,offset);offset+=part.byteLength;}
-  try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(buffer)) as unknown;}
-  catch{throw new PrivateGoalsError('INVALID_ACK');}
-}
 export class SupabasePrivateGoalsService {
   private readonly origin:string;
   private readonly key:string;
@@ -145,28 +118,61 @@ export class SupabasePrivateGoalsService {
   }
   private async send(path:string,method:'GET'|'POST'|'PATCH'|'DELETE',
     body?:Record<string,unknown>):Promise<unknown> {
-    const jwt=await this.token();
-    if(typeof jwt!=='string'||!jwt.trim())throw new PrivateGoalsError('AUTH_EXPIRED');
-    let response:Response;
-    try{
-      response=await this.http(this.origin+'/rest/v1/'+path,{
-        method,headers:{apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
-          ...(body===undefined?{}:{'Content-Type':'application/json'}),
-          ...(method==='GET'?{}:{Prefer:'return=representation'})},
-        body:body===undefined?undefined:JSON.stringify(body),
-        credentials:'omit',cache:'no-store',redirect:'error',
-        signal:AbortSignal.timeout(10000)
-      });
-    }catch{throw new PrivateGoalsError('PROVIDER_UNAVAILABLE');}
-    if(!response.ok){
-      await response.body?.cancel().catch(()=>{});
-      if(response.status===401)throw new PrivateGoalsError('AUTH_EXPIRED');
-      if(response.status===403)throw new PrivateGoalsError('FORBIDDEN');
-      if(response.status===409)throw new PrivateGoalsError('CONFLICT');
-      if(response.status===429)throw new PrivateGoalsError('RATE_LIMITED');
-      throw new PrivateGoalsError('PROVIDER_UNAVAILABLE');
-    }
-    return responseJson(response);
+    const url=new URL(this.origin+'/rest/v1/'+path).href;
+    const timeout=10000,deadline=performance.now()+timeout,controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>|undefined,reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+    const unavailable=()=>new PrivateGoalsError('PROVIDER_UNAVAILABLE');
+    const invalid=()=>new PrivateGoalsError('INVALID_ACK');
+    const check=()=>{if(controller.signal.aborted||performance.now()>=deadline)throw unavailable();};
+    const cancelBody=(r:Response)=>{try{void r.body?.cancel().catch(()=>{});}catch{}};
+    const cancelReader=()=>{const held=reader;reader=undefined;if(held){try{void held.cancel().catch(()=>{});}catch{}try{held.releaseLock();}catch{}}};
+    const timed=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(unavailable());},timeout);});
+    const work=async()=>{
+      let jwt:string|null;try{jwt=await this.token();}catch{throw unavailable();}
+      check();if(typeof jwt!=='string'||!jwt||jwt.length>8192||/\s/.test(jwt))throw new PrivateGoalsError('AUTH_EXPIRED');
+      let response:Response;
+      try{
+        response=await this.http(url,{
+          method,headers:{apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json',
+            ...(body===undefined?{}:{'Content-Type':'application/json'}),
+            ...(method==='GET'?{}:{Prefer:'return=representation'})},
+          body:body===undefined?undefined:JSON.stringify(body),
+          credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal
+        });
+      }catch{throw unavailable();}
+      if(!(response instanceof Response))throw invalid();
+      try{check();}catch(e){cancelBody(response);throw e;}
+      if(response.redirected||(response.url!==url&&!(response.url===''&&response.type==='default'))){cancelBody(response);throw invalid();}
+      if(!response.ok){
+        cancelBody(response);
+        if(response.status===401)throw new PrivateGoalsError('AUTH_EXPIRED');
+        if(response.status===403)throw new PrivateGoalsError('FORBIDDEN');
+        if(response.status===409)throw new PrivateGoalsError('CONFLICT');
+        if(response.status===429)throw new PrivateGoalsError('RATE_LIMITED');
+        throw unavailable();
+      }
+      const length=response.headers.get('content-length'),encoding=response.headers.get('content-encoding');
+      if(length!==null&&(!/^(?:0|[1-9]\d*)$/.test(length)||Number(length)>MAX_BODY)){
+        cancelBody(response);throw new PrivateGoalsError('LIMIT_EXCEEDED');
+      }
+      if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(response.headers.get('content-type')??'')||!response.body){cancelBody(response);throw invalid();}
+      let held:ReadableStreamDefaultReader<Uint8Array>;try{held=response.body.getReader();}catch{cancelBody(response);throw invalid();}
+      reader=held;const bytes=new Uint8Array(MAX_BODY);let size=0;
+      try{
+        for(;;){
+          check();let chunk:ReadableStreamReadResult<Uint8Array>;try{chunk=await held.read();}catch{throw unavailable();}
+          check();if(chunk.done)break;
+          if(!(chunk.value instanceof Uint8Array)||chunk.value.length===0)throw invalid();
+          if(chunk.value.length>MAX_BODY-size)throw new PrivateGoalsError('LIMIT_EXCEEDED');
+          bytes.set(chunk.value,size);size+=chunk.value.length;
+        }
+        if(length!==null&&(!encoding||encoding.trim().toLowerCase()==='identity')&&size!==Number(length))throw invalid();
+        let raw:unknown;try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)));}catch{throw invalid();}
+        check();return raw;
+      }finally{cancelReader();}
+    };
+    try{const result=await Promise.race([work(),timed]);check();return result;}
+    finally{clearTimeout(timer);controller.abort();cancelReader();}
   }
   private ownerMatches(raw:unknown):boolean{
     return this.ownerId===undefined||(object(raw)&&raw.owner_user_id===this.ownerId);
@@ -398,6 +404,61 @@ export class SupabasePrivateGoalsService {
     const values=this.many(await this.send(path,'GET'),validMilestone);
     if(values.some(value=>value.goal_id!==goalId))throw new PrivateGoalsError('INVALID_ACK');
     return values;
+  }
+  /** Exact owner-RLS read for review after an uncertain milestone write. */
+  async readMilestone(id:string):Promise<GoalMilestone|null>{
+    if(!validId(id))throw new PrivateGoalsError('VALIDATION');
+    id=id.toLowerCase();
+    const raw=await this.send('private_goal_milestones?select=*&id=eq.'+id+'&limit=2','GET');
+    if(Array.isArray(raw)&&raw.length===0)return null;
+    const row=this.one(raw,validMilestone);
+    if(row.id!==id||instantMicros(row.created_at)===null||row.completed_at!==null&&instantMicros(row.completed_at)===null)
+      throw new PrivateGoalsError('INVALID_ACK');
+    return row;
+  }
+  private milestoneReviewPath(expected:GoalMilestone):string {
+    if(!validMilestone(expected)||!this.ownerMatches(expected)||instantMicros(expected.created_at)===null||
+      expected.completed_at!==null&&instantMicros(expected.completed_at)===null)throw new PrivateGoalsError('VALIDATION');
+    // A one-value quoted IN predicate avoids interpreting a user title as query syntax.
+    // Current schema lacks a milestone revision: equality narrows stale-write races,
+    // but cannot distinguish an A-to-B-to-A change. No monotonic CAS is claimed.
+    const title='in.("'+expected.title.replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'")';
+    const query=new URLSearchParams({select:'*',id:'eq.'+expected.id,goal_id:'eq.'+expected.goal_id,
+      owner_user_id:'eq.'+expected.owner_user_id,operation_id:'eq.'+expected.operation_id,
+      created_at:'eq.'+expected.created_at,title,due_on:expected.due_on===null?'is.null':'eq.'+expected.due_on,
+      completed_at:expected.completed_at===null?'is.null':'eq.'+expected.completed_at});
+    return 'private_goal_milestones?'+query;
+  }
+  private sameMilestone(reviewed:GoalMilestone,row:GoalMilestone,fields:Partial<Pick<GoalMilestone,'title'|'due_on'|'completed_at'>>={}):boolean{
+    const completed=fields.completed_at===undefined?reviewed.completed_at:fields.completed_at;
+    const completedMatch=completed===null?row.completed_at===null:
+      row.completed_at!==null&&instantMicros(completed)!==null&&instantMicros(completed)===instantMicros(row.completed_at);
+    return row.id===reviewed.id&&row.goal_id===reviewed.goal_id&&row.owner_user_id===reviewed.owner_user_id&&
+      row.operation_id===reviewed.operation_id&&instantMicros(row.created_at)===instantMicros(reviewed.created_at)&&
+      row.title===(fields.title??reviewed.title)&&row.due_on===(fields.due_on===undefined?reviewed.due_on:fields.due_on)&&completedMatch;
+  }
+  async updateMilestoneIfUnchanged(expected:GoalMilestone,fields:Partial<Pick<GoalMilestone,'title'|'due_on'|'completed_at'>>):Promise<GoalMilestone>{
+    const reviewed={...expected},path=this.milestoneReviewPath(reviewed);
+    if(!object(fields)||!Object.keys(fields).length||Object.keys(fields).some(k=>!['title','due_on','completed_at'].includes(k))||
+      Object.values(fields).some(v=>v===undefined)||
+      fields.title!==undefined&&!validText(fields.title,1,160)||
+      fields.due_on!==undefined&&fields.due_on!==null&&!date(fields.due_on)||
+      fields.completed_at!==undefined&&fields.completed_at!==null&&instantMicros(fields.completed_at)===null)
+      throw new PrivateGoalsError('VALIDATION');
+    const patch={...fields};
+    const raw=await this.send(path,'PATCH',patch);
+    if(Array.isArray(raw)&&raw.length===0)throw new PrivateGoalsError('CONFLICT');
+    const row=this.one(raw,validMilestone);
+    if(!this.sameMilestone(reviewed,row,patch))throw new PrivateGoalsError('INVALID_ACK');
+    return row;
+  }
+  async deleteMilestoneIfUnchanged(expected:GoalMilestone):Promise<string>{
+    const reviewed={...expected},path=this.milestoneReviewPath(reviewed);
+    const raw=await this.send(path,'DELETE');
+    if(Array.isArray(raw)&&raw.length===0)throw new PrivateGoalsError('CONFLICT');
+    const row=this.one(raw,validMilestone);
+    if(!this.sameMilestone(reviewed,row))throw new PrivateGoalsError('INVALID_ACK');
+    return reviewed.id;
   }
   async updateMilestone(id:string,fields:Partial<Pick<GoalMilestone,
     'title'|'due_on'|'completed_at'>>):Promise<GoalMilestone>{
