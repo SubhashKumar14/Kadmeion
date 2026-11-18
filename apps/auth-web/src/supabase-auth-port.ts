@@ -161,6 +161,8 @@ function base64url(bytes:Uint8Array):string {
   let raw='';for(const b of bytes)raw+=String.fromCharCode(b);
   return btoa(raw).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');
 }
+class EmailConfirmationRequired extends Error {}
+
 class AuthHttpError extends Error {
   readonly status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
@@ -178,6 +180,7 @@ function userFrom(value: unknown): AuthUser | null {
 }
 
 function failure(error: unknown): AuthFailure {
+  if (error instanceof EmailConfirmationRequired) return { message: error.message, providerCode: 'email_not_confirmed' };
   return { message: error instanceof Error ? error.message : 'Authentication service unavailable.' };
 }
 
@@ -370,6 +373,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     if (!response.ok) {
       const data = (payload && typeof payload === 'object' ? payload : {}) as Json;
       const code = typeof data.error_code === 'string' ? data.error_code : '';
+      if (path === '/token?grant_type=password' && code === 'email_not_confirmed')
+        throw new EmailConfirmationRequired('Email confirmation is required.');
       if (response.status === 429) throw new AuthHttpError(429,'Too many requests. Try again later.');
       if (response.status === 401 || response.status === 403) throw new AuthHttpError(response.status, 'The authentication session or credentials were rejected.');
       if (code === 'otp_expired') throw new Error('This email link has expired. Request a new one.');
