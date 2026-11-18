@@ -2618,3 +2618,71 @@ test('B16 real invalid and absent recovery grants cannot open reset form or muta
   await expect(page.locator('.ws-shell')).toHaveCount(0);
   expect(writes).toBe(0);
 });
+
+test('B16 C10 real trusted static scoped-theme CSS uses measured 600/950 boundaries',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires S3 R4 shared engine and trusted static renderer.');
+  const {createPortfolioPresetDraft,createEditorHead,applyEditorTransaction,prepareSafeStaticPreview}=await import('../../../packages/editor-core/src/index.ts');
+  const snapshot=createPortfolioPresetDraft('stairs');
+  const manifest=JSON.parse(snapshot.files['kadmeion.json']);
+  snapshot.files['kadmeion.json']=JSON.stringify({...manifest,seo:{title:'Scoped fixture',description:'Private static scoped fixture'}});
+  const document=JSON.parse(snapshot.files['pages/home.page.json']);
+  const section=document.sections[0];
+  snapshot.files['pages/home.page.json']=JSON.stringify({...document,sections:[section]});
+  for(const [key,slot] of Object.entries(snapshot.slots)){
+    if(!key.startsWith('stepped-hero-')&&slot.state==='S0')snapshot.slots[key]={state:'EMPTY',content:{}};
+  }
+  snapshot.slots['stepped-hero-title']={state:'S0',componentId:'title-stacked@1',content:{title:'Real scoped heading',subtitle:'Private preview'}};
+  snapshot.slots['stepped-hero-cta']={state:'S0',componentId:'external-link@1',content:{label:'Example',url:'https://example.com/work'}};
+  snapshot.files['theme/tokens.json']=JSON.stringify({mode:'light',surface:'#ffffff',text:'#222222',accent:'#444444'});
+  let head=createEditorHead(snapshot);
+  const change=(scope:{kind:'global'}|{kind:'template'|'section'|'component';id:string},
+    layer:'base'|'phone'|'tablet'|'desktop',value:string)=>{
+    head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,
+      intent:{kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',scope,layer,
+        edit:{kind:'set',key:'text',value}}});
+  };
+  change({kind:'global'},'base','#111111');
+  change({kind:'template',id:'stairs'},'base','#333333');
+  change({kind:'section',id:section.id},'base','#555555');
+  change({kind:'component',id:'stepped-hero-title'},'phone','#224466');
+  change({kind:'component',id:'stepped-hero-title'},'tablet','#336633');
+  change({kind:'component',id:'stepped-hero-title'},'desktop','#663344');
+  const id='10000000-0000-4000-8000-000000000001',sha='a'.repeat(64);
+  // Synthetic frozen envelope for isolated compiler/browser geometry proof;
+  // this is not a database frozen receipt or hosted publication claim.
+  const render=()=>prepareSafeStaticPreview({
+    snapshot:head.snapshot,frozen:{portfolioId:id,revision:1,snapshotSha256:sha,status:'FROZEN',publicUrl:null,visibilityIntent:'PUBLIC'},
+    loadedPortfolioId:id,loadedRevision:1,loadedSnapshotSha256:sha,
+    plan:[
+      {slotKey:'stepped-hero-title',componentId:'title-stacked@1',kind:'heading',required:true},
+      {slotKey:'stepped-hero-cta',componentId:'external-link@1',kind:'external-link',required:false}
+    ]
+  });
+  const result=render();
+  expect(result.status).toBe('PREVIEW_ONLY');
+  expect(result.publicationReady).toBe(false);
+  if(!result.previewHtml)throw new Error('Scoped trusted static preview missing.');
+  await page.setViewportSize({width:1600,height:900});
+  await page.setContent(result.previewHtml);
+  const container=page.locator('.k-theme-container'),slot=page.locator('.k-theme-slot-0');
+  for(const [width,color] of [[600,'rgb(34, 68, 102)'],[601,'rgb(51, 102, 51)'],
+    [950,'rgb(51, 102, 51)'],[951,'rgb(102, 51, 68)']] as const){
+    await container.evaluate((node,w)=>{(node as HTMLElement).style.width=w+'px';},width);
+    await expect.poll(()=>container.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(width,0);
+    await expect(slot).toHaveCSS('color',color);
+    await expect(page.locator('.k-theme-section-0')).toHaveCSS('color','rgb(85, 85, 85)');
+    await expect(page.locator('.k-theme-root')).toHaveCSS('color','rgb(51, 51, 51)');
+  }
+  const before=structuredClone(head.snapshot);
+  head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,
+    intent:{kind:'EDIT_SCOPED_THEME',expectedRevision:head.revision,mode:'light',
+      scope:{kind:'component',id:'stepped-hero-title'},layer:'desktop',edit:{kind:'reset',key:'text'}}});
+  const reset=render();
+  expect(reset.status).toBe('PREVIEW_ONLY');
+  if(!reset.previewHtml)throw new Error('Static reset preview missing.');
+  await page.setContent(reset.previewHtml);
+  await page.locator('.k-theme-container').evaluate(node=>{(node as HTMLElement).style.width='951px';});
+  await expect(page.locator('.k-theme-slot-0')).toHaveCSS('color','rgb(85, 85, 85)');
+  head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,intent:{kind:'UNDO'}});
+  expect(head.snapshot).toEqual(before);
+});

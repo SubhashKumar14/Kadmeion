@@ -121,20 +121,28 @@ async function readSharingJson(response:Response,signal:AbortSignal):Promise<unk
   const decoder=new TextDecoder('utf-8',{fatal:true});
   const cancel=()=>{void reader.cancel().catch(()=>{});};
   signal.addEventListener('abort',cancel,{once:true});
-  let bytes=0,raw='';
+  let bytes=0,chunks=0,raw='';
   try{
     const type=response.headers.get('content-type');
     if(!type||!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(type))
       throw new Error('Invalid response type');
+    const length=response.headers.get('content-length');
+    if(length!==null&&(!/^\d+$/.test(length)||Number(length)>16*1024))
+      throw new Error('Invalid response length');
     for(;;){
       if(signal.aborted)throw new Error('Request expired');
       const next=await reader.read();
       if(signal.aborted)throw new Error('Request expired');
       if(next.done)break;
+      if(++chunks>1024||!(next.value instanceof Uint8Array))throw new Error('Invalid response chunks');
       bytes+=next.value.byteLength;
+      if(next.value.byteLength===0)continue;
       if(bytes>16*1024)throw new Error('Response too large');
       raw+=decoder.decode(next.value,{stream:true});
     }
+    const encoding=response.headers.get('content-encoding');
+    if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==bytes)
+      throw new Error('Response length mismatch');
     raw+=decoder.decode();
     return parseUniqueSharingJson(raw);
   }catch{
@@ -257,13 +265,16 @@ export class SupabasePrivateIdentityService {
       this.requireSharingOwner();
       if(!token)throw new PrivateIdentityError('AUTH_EXPIRED','Sign in first.');
       if(signal.aborted)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
-      const response=await this.fetcher(this.baseUrl+'/rest/v1/rpc/'+name,{
+      const url=this.baseUrl+'/rest/v1/rpc/'+name;
+      const response=await this.fetcher(url,{
         method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+token,'Content-Type':'application/json'},
         body:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal
       });
       try{
         this.requireSharingOwner();
         if(signal.aborted)throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Sharing request expired.');
+        if(response.redirected||(response.url&&response.url!==url))
+          throw new PrivateIdentityError('INVALID_ACK','Unexpected sharing response origin.');
         if(response.status===401||response.status===403)
           throw new PrivateIdentityError('AUTH_EXPIRED','Sharing access denied.');
       }catch(error){
@@ -323,8 +334,9 @@ export class SupabasePrivateIdentityService {
       const previous=expected.preferences;
       if(previous===null||sharingKeys.some(key=>!previous[key]&&desired[key]))
         throw new PrivateIdentityError('VALIDATION','Terminal sharing state cannot be re-enabled.');
-    }else if(expected.version===M-1&&!same&&desired.publicationRequested){
-      throw new PrivateIdentityError('VALIDATION','Terminal sharing state must remain private.');
+    }else if(expected.version===M-1&&!same&&(desired.publicationRequested||
+      sharingKeys.some(key=>expected.preferences?.[key]!==true&&desired[key]))){
+      throw new PrivateIdentityError('VALIDATION','Terminal sharing state cannot increase sharing.');
     }
     const raw=await this.sharingRpc('change_owner_profile_sharing',{
       p_expected_version:expected.version,p_expected:expected.preferences,p_desired:desired,p_operation_id:operationId

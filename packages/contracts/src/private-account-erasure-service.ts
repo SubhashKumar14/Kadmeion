@@ -154,7 +154,7 @@ async function boundedLifecycleJson(response:Response,max:number,signal:AbortSig
   const reader=response.body?.getReader();
   if(!reader)throw new Error('Missing lifecycle body');
   const decoder=new TextDecoder('utf-8',{fatal:true});
-  let bytes=0,body='',complete=false;
+  let bytes=0,chunks=0,body='',complete=false;
   try{
     for(;;){
       signal.throwIfAborted();
@@ -167,6 +167,7 @@ async function boundedLifecycleJson(response:Response,max:number,signal:AbortSig
       finally{signal.removeEventListener('abort',onAbort);}
       signal.throwIfAborted();
       if(chunk.done)break;
+      if(++chunks>65_536)throw new Error('Lifecycle chunk limit exceeded');
       if(!(chunk.value instanceof Uint8Array))throw new Error('Invalid lifecycle bytes');
       bytes+=chunk.value.byteLength;
       if(bytes>max)throw new Error('Oversized lifecycle body');

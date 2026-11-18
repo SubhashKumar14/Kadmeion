@@ -42,6 +42,7 @@ export type RestoreLayoutStashIntent={
 };
 
 export type EditorIntent =
+  | EditScopedThemeIntent
   | { kind:'WRITE_MANAGED_FILE'; path:string; source:string }
   | { kind:'ADD_SECTION'; layout:string }
   | { kind:'MOVE_SECTION'; sectionId:string; direction:'up'|'down' }
@@ -416,6 +417,253 @@ function restoreLayoutAssignment(head:EditorHead,next:PortfolioSnapshot,intent:R
  * Unknown actions previously produced a successful no-op revision, while
  * JSON property order could make an identical retry look like an ID conflict.
  */
+
+export type ScopedThemeMode='light'|'dark';
+export type ScopedThemeBreakpoint='phone'|'tablet'|'desktop';
+export type ScopedThemeLayer='base'|ScopedThemeBreakpoint;
+export type ScopedThemeScope={kind:'global'}|{kind:'template'|'section'|'component';id:string};
+export type ScopedThemeTokens={surface?:string;text?:string;accent?:string;fontSizePx?:number;lineHeight?:number;fontWeight?:400|500|600|700;spacingPx?:number;radiusPx?:number};
+export type ScopedThemeKey=keyof ScopedThemeTokens;
+export type ScopedThemeEdit={ [K in ScopedThemeKey]-?:{kind:'set';key:K;value:NonNullable<ScopedThemeTokens[K]>} }[ScopedThemeKey]|{kind:'reset';key:ScopedThemeKey};
+export type EditScopedThemeIntent={kind:'EDIT_SCOPED_THEME';expectedRevision:number;mode:ScopedThemeMode;scope:ScopedThemeScope;layer:ScopedThemeLayer;edit:ScopedThemeEdit};
+type ScopedThemeEntry={mode:ScopedThemeMode;scope:ScopedThemeScope;base?:ScopedThemeTokens;breakpoints?:Partial<Record<ScopedThemeBreakpoint,ScopedThemeTokens>>;active:boolean};
+type ScopedThemeIssue={code:string;scope?:ScopedThemeScope;mode?:ScopedThemeMode;layer?:ScopedThemeLayer;key?:string};
+export type ScopedThemeParse={status:'legacy'|'valid'|'blocked';mode:ScopedThemeMode|null;issues:ReadonlyArray<ScopedThemeIssue>;entries:ReadonlyArray<ScopedThemeEntry>};
+export type ScopedThemeTarget={mode:ScopedThemeMode;sectionId?:string;slotKey?:string;widthPx:number};
+export type ScopedThemeResolution={status:'resolved'|'blocked';breakpoint:ScopedThemeBreakpoint|null;tokens:ScopedThemeTokens;origins:Partial<Record<ScopedThemeKey,{scope:ScopedThemeScope|{kind:'palette'};layer:ScopedThemeLayer}>>;issues:ReadonlyArray<ScopedThemeIssue>};
+const THEME_FILE='theme/tokens.json';
+const scopedModes=['light','dark'] as const;
+const scopedBuckets=['phone','tablet','desktop'] as const;
+const scopedNames=['surface','text','accent','fontSizePx','lineHeight','fontWeight','spacingPx','radiusPx'] as const;
+const scopedCss:Record<ScopedThemeKey,string>={surface:'--k-theme-surface',text:'--k-theme-text',accent:'--k-theme-accent',fontSizePx:'--k-theme-font-size',lineHeight:'--k-theme-line-height',fontWeight:'--k-theme-font-weight',spacingPx:'--k-theme-spacing',radiusPx:'--k-theme-radius'};
+const themePresets=new Set(['arc','collage','editorial','stairs','studio','blank']);
+const themeError=():never=>{throw new ContractError('VALIDATION','Invalid or unsupported scoped theme.');};
+const isThemeMode=(x:unknown):x is ScopedThemeMode=>x==='light'||x==='dark';
+const isThemeBucket=(x:unknown):x is ScopedThemeBreakpoint=>x==='phone'||x==='tablet'||x==='desktop';
+const isThemeKey=(x:unknown):x is ScopedThemeKey=>typeof x==='string'&&(scopedNames as readonly string[]).includes(x);
+function themeValue(k:ScopedThemeKey,v:unknown):boolean{
+  if(k==='surface'||k==='text'||k==='accent')return typeof v==='string'&&/^#[a-fA-F0-9]{6}$/.test(v);
+  if(typeof v!=='number'||!Number.isFinite(v))return false;
+  if(k==='lineHeight')return v>=1&&v<=2;
+  if(!Number.isInteger(v))return false;
+  if(k==='fontWeight')return [400,500,600,700].includes(v);
+  if(k==='fontSizePx')return v>=12&&v<=72;
+  return v>=0&&v<=(k==='radiusPx'?32:64);
+}
+function themeRecord(x:unknown):x is Record<string,unknown>{return dataRecord(x);}
+function themeScope(x:unknown):ScopedThemeScope|null{
+  if(!themeRecord(x))return null;
+  if(x.kind==='global'&&exactFields(x,['kind']))return {kind:'global'};
+  if((x.kind==='template'||x.kind==='section'||x.kind==='component')&&exactFields(x,['kind','id'])&&
+    typeof x.id==='string'&&SLOT_KEY.test(x.id)&&!RESERVED_KEYS.has(x.id))return {kind:x.kind,id:x.id};
+  return null;
+}
+function themeScopeKey(scope:ScopedThemeScope):string{return scope.kind==='global'?'global':scope.kind+':'+scope.id;}
+function themeGraph(snapshot:PortfolioSnapshot):{preset:string|null;sections:LayoutSection[]}{
+  validateSnapshot(snapshot);
+  const manifest:unknown=JSON.parse(snapshot.files['kadmeion.json']??'null');
+  const preset=themeRecord(manifest)&&typeof manifest.preset==='string'&&themePresets.has(manifest.preset)?manifest.preset:null;
+  const page:unknown=JSON.parse(snapshot.files[PAGE_PATH]??'null');
+  const sections=themeRecord(page)&&Object.hasOwn(page,'sections')?layoutManifest(snapshot).sections:[];
+  return {preset,sections};
+}
+function themeActive(scope:ScopedThemeScope,graph:ReturnType<typeof themeGraph>):boolean{
+  if(scope.kind==='global')return true;
+  if(scope.kind==='template')return graph.preset===scope.id;
+  if(scope.kind==='section')return graph.sections.some(s=>s.id===scope.id);
+  return graph.sections.some(s=>s.keys.includes(scope.id));
+}
+function themePalette(raw:unknown):ScopedThemeTokens|null{
+  if(!themeRecord(raw))return null;
+  const {surface,text,accent}=raw;
+  if(typeof surface!=='string'||typeof text!=='string'||typeof accent!=='string'||
+    !themeValue('surface',surface)||!themeValue('text',text)||!themeValue('accent',accent))return null;
+  return {surface,text,accent};
+}
+function themePatch(raw:unknown):ScopedThemeTokens|null{
+  if(!themeRecord(raw))return null;
+  const patch:Record<string,unknown>={};
+  for(const [k,v] of Object.entries(raw)){
+    if(!isThemeKey(k)||!themeValue(k,v))return null;
+    patch[k]=v;
+  }
+  return patch as ScopedThemeTokens;
+}
+function themeBounded(raw:unknown):boolean{
+  if(new TextEncoder().encode(JSON.stringify(raw)).byteLength>65536)return false;
+  const stack=[{value:raw,depth:0}];
+  while(stack.length){
+    const {value,depth}=stack.pop()!;
+    if(depth>8)return false;
+    if(value&&typeof value==='object')
+      for(const [key,child] of Object.entries(value)){
+        if(RESERVED_KEYS.has(key))return false;
+        stack.push({value:child,depth:depth+1});
+      }
+  }
+  return true;
+}
+export function scopedThemeBreakpoint(widthPx:number):ScopedThemeBreakpoint|null{
+  return Number.isFinite(widthPx)&&widthPx>0?(widthPx<=600?'phone':widthPx<=950?'tablet':'desktop'):null;
+}
+/** Validation is separate from private storage; never normalize an imported document. */
+export function parseScopedTheme(snapshot:PortfolioSnapshot):ScopedThemeParse{
+  const issues:ScopedThemeIssue[]=[],entries:ScopedThemeEntry[]=[];
+  let mode:ScopedThemeMode|null=null;
+  const result=(status:ScopedThemeParse['status']):ScopedThemeParse=>({status,mode,issues,entries});
+  try{
+    const source=snapshot.files[THEME_FILE];
+    if(source===undefined)return result('legacy');
+    validateManagedJson(THEME_FILE,source);
+    const raw:unknown=JSON.parse(source);
+    if(!themeRecord(raw))return result('blocked');
+    mode=isThemeMode(raw.mode)?raw.mode:null;
+    if(!Object.hasOwn(raw,'scopedTokens'))return result('legacy');
+    if(!mode||!themePalette(raw)){issues.push({code:'INVALID_PALETTE'});return result('blocked');}
+    const doc=raw.scopedTokens;
+    if(!themeRecord(doc)||doc.version!==1||Object.keys(doc).some(k=>!['version','light','dark'].includes(k))||!themeBounded(doc)){
+      issues.push({code:'UNSUPPORTED_SCOPED_DOCUMENT'});return result('blocked');
+    }
+    const graph=themeGraph(snapshot);
+    let count=0,blocked=false;
+    for(const m of scopedModes){
+      if(!Object.hasOwn(doc,m))continue;
+      const list=doc[m];
+      if(!Array.isArray(list)||(count+=list.length)>128){issues.push({code:'SCOPED_ENTRY_LIMIT',mode:m});return result('blocked');}
+      const seen=new Set<string>();
+      for(const row of list){
+        const scope=themeRecord(row)?themeScope(row.scope):null;
+        if(!scope||!themeRecord(row)){issues.push({code:'INVALID_SCOPE',mode:m});blocked=true;continue;}
+        const key=themeScopeKey(scope),active=themeActive(scope,graph);
+        if(seen.has(key)){issues.push({code:'DUPLICATE_SCOPE',mode:m,scope});blocked=true;continue;}
+        seen.add(key);
+        const entry:ScopedThemeEntry={mode:m,scope,active};
+        let invalid=Object.keys(row).some(k=>!['scope','base','breakpoints'].includes(k));
+        if(Object.hasOwn(row,'base')){
+          const patch=themePatch(row.base);
+          if(patch)entry.base=patch;else invalid=true;
+        }
+        if(Object.hasOwn(row,'breakpoints')){
+          if(!themeRecord(row.breakpoints)||Object.keys(row.breakpoints).some(k=>!isThemeBucket(k)))invalid=true;
+          else{
+            entry.breakpoints={};
+            for(const bucket of scopedBuckets){
+              if(!Object.hasOwn(row.breakpoints,bucket))continue;
+              const patch=themePatch(row.breakpoints[bucket]);
+              if(patch)entry.breakpoints[bucket]=patch;else invalid=true;
+            }
+          }
+        }
+        if(!active){issues.push({code:invalid?'UNSUPPORTED_ORPHAN':'ORPHAN_SCOPE',mode:m,scope});if(!invalid)entries.push(entry);continue;}
+        if(invalid){issues.push({code:'UNSUPPORTED_ACTIVE_SCOPE',mode:m,scope});blocked=true;continue;}
+        entries.push(entry);
+      }
+    }
+    return result(blocked?'blocked':'valid');
+  }catch{issues.push({code:'INVALID_SCOPED_GRAPH'});return result('blocked');}
+}
+export function resolveScopedTheme(snapshot:PortfolioSnapshot,target:ScopedThemeTarget):ScopedThemeResolution{
+  return resolveTheme(snapshot,target,false);
+}
+/** Base-only fallback for CSS engines with no container query support.
+ * Does not use a representative responsive bucket or invent default tokens. */
+export function resolveScopedThemeBase(snapshot:PortfolioSnapshot,target:ScopedThemeTarget):ScopedThemeResolution{
+  return resolveTheme(snapshot,target,true);
+}
+function resolveTheme(snapshot:PortfolioSnapshot,target:ScopedThemeTarget,baseOnly:boolean):ScopedThemeResolution{
+  const parsed=parseScopedTheme(snapshot);
+  const breakpoint=scopedThemeBreakpoint(target.widthPx);
+  const tokens:ScopedThemeTokens={},origins:ScopedThemeResolution['origins']={};
+  const issues=[...parsed.issues];
+  const result=(status:ScopedThemeResolution['status']):ScopedThemeResolution=>({status,breakpoint,tokens,origins,issues});
+  if(parsed.status==='blocked'||!breakpoint||!isThemeMode(target.mode))return result('blocked');
+  try{
+    const graph=themeGraph(snapshot);
+    const raw:unknown=JSON.parse(snapshot.files[THEME_FILE]??'null');
+    if(!themeRecord(raw))return result('blocked');
+    const palette=themePalette(target.mode===raw.mode?raw:themeRecord(raw.authorModePalettes)?raw.authorModePalettes[target.mode]:null);
+    if(!palette)return result('blocked');
+    let section=target.sectionId===undefined?undefined:graph.sections.find(s=>s.id===target.sectionId);
+    if(target.sectionId!==undefined&&!section)return result('blocked');
+    if(target.slotKey!==undefined){
+      const parent=graph.sections.find(s=>s.keys.includes(target.slotKey!));
+      if(!parent||(section&&parent!==section))return result('blocked');
+      section=parent;
+    }
+    const merge=(patch:ScopedThemeTokens|undefined,scope:ScopedThemeScope|{kind:'palette'},layer:ScopedThemeLayer)=>{
+      if(!patch)return;
+      Object.assign(tokens,patch);
+      for(const key of scopedNames)if(Object.hasOwn(patch,key))origins[key]={scope,layer};
+    };
+    merge(palette,{kind:'palette'},'base');
+    const scopes:ScopedThemeScope[]=[{kind:'global'}];
+    if(graph.preset)scopes.push({kind:'template',id:graph.preset});
+    if(section)scopes.push({kind:'section',id:section.id});
+    if(target.slotKey!==undefined)scopes.push({kind:'component',id:target.slotKey});
+    for(const scope of scopes){
+      const row=parsed.entries.find(e=>e.active&&e.mode===target.mode&&themeScopeKey(e.scope)===themeScopeKey(scope));
+      merge(row?.base,scope,'base');if(!baseOnly)merge(row?.breakpoints?.[breakpoint],scope,breakpoint);
+    }
+    return result('resolved');
+  }catch{return result('blocked');}
+}
+export function scopedThemeCssVariables(tokens:ScopedThemeTokens):Readonly<Record<string,string>>{
+  const validated=themePatch(tokens);
+  if(!validated)return themeError();
+  const output:Record<string,string>={};
+  for(const key of scopedNames){
+    const value=validated[key];
+    if(value!==undefined)output[scopedCss[key]]=String(value)+(['fontSizePx','spacingPx','radiusPx'].includes(key)?'px':'');
+  }
+  return output;
+}
+function themeCanonical(value:unknown):string{
+  const normalize=(v:unknown):unknown=>Array.isArray(v)?v.map(normalize):themeRecord(v)?
+    Object.fromEntries(Object.keys(v).sort().map(k=>[k,normalize(v[k])])):v;
+  return JSON.stringify(normalize(value))??'';
+}
+function assertUnchangedScopedTheme(before:string|undefined,after:string){
+  const old=before===undefined?{}:JSON.parse(before);
+  const next=JSON.parse(after);
+  if(themeCanonical(old.scopedTokens)!==themeCanonical(next.scopedTokens))themeError();
+}
+function editScopedTheme(head:EditorHead,next:PortfolioSnapshot,intent:EditScopedThemeIntent):void{
+  assertBaseRevision(intent.expectedRevision,head.revision);
+  const scope=themeScope(intent.scope),edit=intent.edit;
+  if(!scope||!isThemeMode(intent.mode)||!(intent.layer==='base'||isThemeBucket(intent.layer))||
+    !themeRecord(edit)||!isThemeKey(edit.key)||
+    !(edit.kind==='set'&&exactFields(edit,['kind','key','value'])&&themeValue(edit.key,edit.value)||
+    edit.kind==='reset'&&exactFields(edit,['kind','key'])))return themeError();
+  if(parseScopedTheme(head.snapshot).status==='blocked'||!themeActive(scope,themeGraph(head.snapshot)))return themeError();
+  const source=next.files[THEME_FILE];
+  if(source===undefined)return themeError();
+  const raw=JSON.parse(source) as Record<string,unknown>;
+  if(!isThemeMode(raw.mode)||!themePalette(raw))return themeError();
+  if(resolveScopedTheme(head.snapshot,{mode:intent.mode,widthPx:768}).status!=='resolved')return themeError();
+  const doc=(raw.scopedTokens??{version:1}) as Record<string,unknown>;
+  const list=(doc[intent.mode]??[]) as Record<string,unknown>[];
+  let row=list.find(r=>{const s=themeScope(r.scope);return s&&themeScopeKey(s)===themeScopeKey(scope);});
+  if(!row){
+    if(edit.kind==='reset')return themeError();
+    row={scope};list.push(row);
+  }
+  const layers=(row.breakpoints??{}) as Record<string,unknown>;
+  const patch=(intent.layer==='base'?row.base:layers[intent.layer]) as Record<string,unknown>|undefined;
+  const updated=patch??{};
+  if(edit.kind==='reset'){
+    if(!Object.hasOwn(updated,edit.key))return themeError();
+    delete updated[edit.key];
+  }else{
+    if(Object.hasOwn(updated,edit.key)&&updated[edit.key]===edit.value)return themeError();
+    updated[edit.key]=edit.value;
+  }
+  if(intent.layer==='base')row.base=updated;
+  else{layers[intent.layer]=updated;row.breakpoints=layers;}
+  doc[intent.mode]=list;raw.scopedTokens=doc;
+  next.files[THEME_FILE]=JSON.stringify(raw,null,2);
+  if(parseScopedTheme(next).status!=='valid')return themeError();
+}
+
 function commandDigest(command:EditorCommand):{id:string;hash:string} {
   if(!command||typeof command!=='object'||Array.isArray(command)||
      Object.keys(command).some(k=>!['operationId','baseRevision','intent'].includes(k))||
@@ -428,6 +676,7 @@ function commandDigest(command:EditorCommand):{id:string;hash:string} {
     throw new ContractError('VALIDATION','Invalid editor transaction intent.');
   const fields:Record<string,readonly string[]>={
     WRITE_MANAGED_FILE:['kind','path','source'],
+    EDIT_SCOPED_THEME:['kind','expectedRevision','mode','scope','layer','edit'],
     ADD_SECTION:['kind','layout'],
     MOVE_SECTION:['kind','sectionId','direction'],
     CHANGE_SECTION_LAYOUT:['kind','sectionId','expectedLayout','targetLayout','mappings','expectedRevision','confirmStash','confirmOwnedRelocation'],
@@ -510,7 +759,10 @@ export function applyEditorTransaction(head: EditorHead, command: EditorCommand,
 
   if (intent.kind==='WRITE_MANAGED_FILE') {
     validateManagedJson(intent.path,intent.source);
+    if(intent.path===THEME_FILE)assertUnchangedScopedTheme(head.snapshot.files[THEME_FILE],intent.source);
     next.files[intent.path]=intent.source; // exact user bytes; no implicit formatting
+  } else if(intent.kind==='EDIT_SCOPED_THEME'){
+    editScopedTheme(head,next,intent);
   } else if(intent.kind==='CHANGE_SECTION_LAYOUT'){
     assertBaseRevision(intent.expectedRevision,head.revision);
     if(typeof intent.confirmStash!=='boolean'||typeof intent.confirmOwnedRelocation!=='boolean')
