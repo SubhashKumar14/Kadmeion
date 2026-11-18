@@ -1171,6 +1171,12 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         (operation||pendingFields||sourceDirty?' · Uncommitted changes':' · Saved privately') : 'Open a private portfolio draft.'}</p>
     </div>{head && <div className="ws-actions">
       <button type="button" className="ws-secondary" onClick={() => setPreview(current => !current)}>{preview ? 'Back to editor' : 'Author preview'}</button>
+      {!preview&&<>
+        <button type="button" className="ws-secondary" disabled={!head.undo.length||saving||recoveryBusy||pendingFields||sourceDirty}
+          onClick={()=>apply({kind:'UNDO'})}>Undo</button>
+        <button type="button" className="ws-secondary" disabled={!head.redo.length||saving||recoveryBusy||pendingFields||sourceDirty}
+          onClick={()=>apply({kind:'REDO'})}>Redo</button>
+      </>}
       {record && !operation && !sourceDirty && !pendingFields && <>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview'}>Preview modes</a>
         <a className="ws-secondary" href={STUDIO + '/' + id + '/preview/fullscreen'} target="_blank" rel="noopener">Fullscreen saved preview</a>
@@ -1389,12 +1395,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
             </button>
           </li>;})}</ul></details>
         </li>)}</ol>
-        <div className="ws-actions">
-          <button type="button" className="ws-secondary" disabled={!head.undo.length || saving || pendingFields || sourceDirty}
-            onClick={() => apply({kind: 'UNDO'})}>Undo</button>
-          <button type="button" className="ws-secondary" disabled={!head.redo.length || saving || pendingFields || sourceDirty}
-            onClick={() => apply({kind: 'REDO'})}>Redo</button>
-        </div></>}
+        </>}
       </aside>
       {contentPreview}
       <aside className="ws-project-fields">

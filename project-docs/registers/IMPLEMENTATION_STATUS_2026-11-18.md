@@ -60,6 +60,10 @@ Additional review found the profile editor was not passing its initiating owner 
 
 Final execution receipts are recorded in PR #32; do not infer success from this report's initial receipt.
 
+## Mounted C10 finding
+
+The next exact candidate passed 560 root, 152 focused, 19 C03, 547 SQL, 50 HTTP and 23 public browser tests; 27/28 authenticated cases passed, including both repaired recovery/glyph cases. The added C10 journey applied the layout successfully but could not reach Undo while Components was open: history buttons existed only inside the Content layers panel. Undo/Redo now live in the common editor toolbar with the same pending-edit safeguards plus recovery-busy denial. The unchanged C10 journey must pass before main promotion. Failed evidence: [run 44262643776](https://github.com/SubhashKumar14/Kadmeion/actions/runs/44262643776).
+
 ## Branch snapshot
 
 | Original branch | Exact preserved SHA |
