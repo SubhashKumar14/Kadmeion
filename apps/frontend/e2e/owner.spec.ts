@@ -2882,7 +2882,14 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
   const token=scope.getByLabel('Theme token'),layer=scope.getByLabel('Override layer');
   const value=scope.getByLabel('Override value');
   async function set(scopeId:string,bucket:string,color:string){
-    await scope.getByLabel('Scope',{exact:true}).selectOption(scopeId);
+    // Implicit label includes the option text in Playwright's exact label query.
+    // Scope by the named panel and the visible label wrapper, then assert the
+    // actual select's accessibility and selected value. No skipped UI action.
+    const scopeSelect=scope.locator('label').filter({hasText:/^Scope/}).getByRole('combobox');
+    await expect(scopeSelect).toHaveCount(1);
+    await expect(scopeSelect).toHaveAccessibleName(/Scope/);
+    await scopeSelect.selectOption(scopeId,{timeout:10_000});
+    await expect(scopeSelect).toHaveValue(scopeId);
     await layer.selectOption(bucket);
     await token.selectOption('text');
     await value.fill(color);
