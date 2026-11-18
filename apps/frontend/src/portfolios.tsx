@@ -1029,9 +1029,26 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     }
     setCheckpointRetry(n=>n+1);
   }
-  function installCloudDraft(fresh:PortfolioRecord){
+  /** Recovery destinations all use the same authenticated, exact saved-base
+   * history. A cache failure never blocks the cloud draft or authorizes a
+   * stale write. Callers fence the asynchronous read against their live view. */
+  async function readCommittedCloudHead(view:RecoveryView,fresh:PortfolioRecord){
+    if(!view.owner||fresh.id!==view.id||!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
+    const fallback=createEditorHead(fresh.snapshot);
+    try{
+      const cached=await new IndexedDbEditorDraftStore().loadCommittedHistory(
+        view.owner.id,view.id,fresh.revision,fresh.snapshot);
+      return {head:cached??fallback,notice:cached?'Saved Undo/Redo history restored from this browser.':
+        'No matching browser history for this saved cloud revision.'};
+    }catch{
+      return {head:fallback,notice:'Saved cloud draft loaded; browser Undo/Redo history could not be read.'};
+    }
+  }
+  function installCloudDraft(fresh:PortfolioRecord,committed?:{head:EditorHead;notice:string}){
     if(!fresh.snapshot)throw new Error('Saved cloud revision unavailable.');
-    const next=createEditorHead(fresh.snapshot);
+    const next=committed?.head??createEditorHead(fresh.snapshot);
+    if(!sameDraftSnapshot(next.snapshot,fresh.snapshot))throw new Error('Saved history does not match cloud draft.');
+    setSavedHistoryNotice(committed?.notice??'');
     setRecord(fresh);setHead(next);setOperation('');
     setSlot(orderedLayerGroups(fresh.snapshot).flatMap(group=>group.slots).find(item=>item.name==='title')?.key??'');
     setFieldDrafts({});setFieldIssues({});setSeoDraft(null);setSourceDrafts({});
@@ -1085,7 +1102,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(!fresh.data?.snapshot||fresh.data.id!==view.id||!draftCurrent(view)){
         setRecoveryNotice('Recovery copy saved. Latest cloud draft could not be safely loaded; current edits remain.');return;
       }
-      installCloudDraft(fresh.data);
+      const committed=await readCommittedCloudHead(view,fresh.data);
+      if(!draftCurrent(view))return;
+      installCloudDraft(fresh.data,committed);
       setRecoveryNotice('Both versions preserved: browser recovery copy and latest saved cloud draft. No cloud revision was overwritten.');
     }catch{
       if(scopeCurrent(view))setRecoveryNotice(acknowledged?
@@ -1427,26 +1446,22 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   async function reloadSavedDraft(){
     // Never erase buffers or the current head until the read has succeeded.
     const view=latestRecovery.current;
-    if(!view||saving||saveFlight.current||recoveryLock.current)return;
+    if(!view?.owner||!view.allowed||saving||saveFlight.current||recoveryLock.current||!scopeCurrent(view))return;
     if(!view.record||!view.head){setError('');setAttempt(n=>n+1);return;}
-    if(view.dirty&&(!window.confirm('Discard current unsaved edits and load the latest private cloud draft? Existing browser recovery copies are not removed.')||(view.owner&&!scopeCurrent(view))))return;
-    const epoch=port.reconcileOwnerSessionEpoch();
+    if(view.dirty&&(!window.confirm('Discard current unsaved edits and load the latest private cloud draft? Existing browser recovery copies are not removed.')||!draftCurrent(view)))return;
     recoveryLock.current=true;setRecoveryBusy(true);
     try{
-      const result=await port.readOwnerPortfolio(id);
-      const current=latestRecovery.current;
-      if(!current||current.port!==port||current.id!==id||port.reconcileOwnerSessionEpoch()!==epoch||
-        (view.owner&&!scopeCurrent(view))||current.head!==view.head||current.record!==view.record||
-        current.fieldDrafts!==view.fieldDrafts||current.sourceDrafts!==view.sourceDrafts||current.seoDraft!==view.seoDraft)return;
-      if(!result.data?.snapshot||result.data.id!==id){
+      const result=await view.port.readOwnerPortfolio(view.id);
+      if(!draftCurrent(view))return;
+      if(result.error||!result.data?.snapshot||result.data.id!==view.id){
         setError('Latest cloud draft could not be verified. Current edits remain intact.');return;
       }
-      installCloudDraft(result.data);
+      const committed=await readCommittedCloudHead(view,result.data);
+      if(!draftCurrent(view))return;
+      installCloudDraft(result.data,committed);
       setNotice('Latest saved cloud draft loaded. Existing browser recovery copies were retained.');
-    }catch{if(latestRecovery.current?.id===id&&port.reconcileOwnerSessionEpoch()===epoch)
-      setError('Cloud reload failed. Current edits remain intact.');}
-    finally{recoveryLock.current=false;
-      if(latestRecovery.current?.id===id&&port.reconcileOwnerSessionEpoch()===epoch)setRecoveryBusy(false);}
+    }catch{if(scopeCurrent(view))setError('Cloud reload failed. Current edits remain intact.');}
+    finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   async function removeRecovery(copyId:string){
     const view=captureRecovery();
@@ -1544,6 +1559,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       <p>Copies stay on this device, separate from the saved cloud draft. Browser storage can be cleared; export important work. Opening requires a verified owner and fresh cloud read.</p>
       <p>Confirmed cloud saves also keep a bounded Undo/Redo history on this browser. It is restored only when the exact saved cloud revision and snapshot match, and is not synced to other devices. Unsaved automatic checkpoints remain optional.</p>
       {savedHistoryNotice&&<p role="status">{savedHistoryNotice}</p>}
+      <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
+        onClick={()=>void reloadSavedDraft()}>Reload saved draft and history</button>
       <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||!!operation||pendingFields||sourceDirty}
         onClick={()=>void forgetSavedHistory()}>Forget saved history on this browser</button>
       <label><input type="checkbox" checked={autoRecovery} onChange={event=>{
