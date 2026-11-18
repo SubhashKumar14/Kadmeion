@@ -529,9 +529,9 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [sourceReset,setSourceReset]=useState(0);
   useEffect(() => {
     const key = id + ':' + attempt;
-    if (!allowed || loaded.current === key) return;
+    if (!allowed || !verifiedOwner || loaded.current === key) return;
     const epoch=port.reconcileOwnerSessionEpoch();
-    if(verifiedOwner&&verifiedOwner.epoch!==epoch)return;
+    if(verifiedOwner.epoch!==epoch)return;
     let active = true;
     const current=()=>active&&port.reconcileOwnerSessionEpoch()===epoch;
     void port.readOwnerPortfolio(id).then(result => {
@@ -571,18 +571,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }, [port,id,attempt,allowed,verifiedOwner?.id,verifiedOwner?.epoch,initialLink]);
 
   function apply(intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>): boolean {
-    if (!allowed || !head || saving || saveFlight.current || recoveryLock.current || lastAppliedHead.current===head) return false;
+    if (!allowed || !verifiedOwner || !head || preview || saving || saveFlight.current || recoveryLock.current || lastAppliedHead.current===head) return false;
     const live=latestRecovery.current;
-    if(!live||live.head!==head||live.id!==id||live.port!==port||
-       (verifiedOwner&&!scopeCurrent(live)))return false;
+    if(!live||live.head!==head||live.id!==id||live.port!==port||!scopeCurrent(live))return false;
     const layoutMutation=intent.kind==='CHANGE_SECTION_LAYOUT'||intent.kind==='RESTORE_LAYOUT_STASH';
     const historyMutation=intent.kind==='UNDO'||intent.kind==='REDO';
     const sectionOrderMutation=intent.kind==='MOVE_SECTION_BEFORE'||intent.kind==='MOVE_SECTION';
     const themeMutation=intent.kind==='EDIT_SCOPED_THEME'||(intent.kind==='WRITE_MANAGED_FILE'&&intent.path==='theme/tokens.json');
-    if(layoutMutation||themeMutation||sectionOrderMutation){
+    const addSectionMutation=intent.kind==='ADD_SECTION';
+    if(layoutMutation||themeMutation||sectionOrderMutation||addSectionMutation){
       const view=latestRecovery.current;
       if(!view||view.head!==head||!view.owner||!view.allowed||!draftCurrent(view)||
-         preview||(layoutMutation?tool!=='Components':themeMutation?tool!=='Theme':!canReorderSection())){
+         preview||(layoutMutation?tool!=='Components':themeMutation?tool!=='Theme':sectionOrderMutation?!canReorderSection():['Source','Assets','History'].includes(tool))){
         setError('Layout and theme changes require the current verified editor and a fresh review.');return false;
       }
       if('expectedRevision' in intent&&intent.expectedRevision!==head.revision){
@@ -594,7 +594,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const replacesSlot = intent.kind === 'CLEAR_SLOT' || intent.kind === 'ASSIGN_COMPONENT' ||
       intent.kind === 'REUSE_SAVED_COMPONENT' || intent.kind === 'RESTORE_STASH' ||
       intent.kind === 'CUSTOMIZE_COMPONENT' || intent.kind === 'PLACE_PRIVATE_IMAGE';
-    if (((layoutMutation||themeMutation||historyMutation||sectionOrderMutation) && (pendingFields || sourceDirty))||
+    if (((layoutMutation||themeMutation||historyMutation||sectionOrderMutation||addSectionMutation) && (pendingFields || sourceDirty))||
         (replacesSlot && 'slotKey' in intent && (sourceDirty || Object.entries(fieldDrafts).some(([key, draft]) => {
           if (!key.startsWith(intent.slotKey + ':')) return false;
           return draft !== (head.snapshot.slots[intent.slotKey]?.content[key.slice(intent.slotKey.length + 1)] ?? '');
@@ -612,6 +612,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           setError('A verified, current pinned source copy is required before customization.');return false;
         }
         trustedSources={[pin]:canonical};
+      }
+      if(intent.kind==='REUSE_SAVED_COMPONENT'){
+        const version=versions&&Object.hasOwn(versions,intent.componentVersionId)?versions[intent.componentVersionId]:undefined;
+        if(!version||version.id!==intent.componentVersionId||tool!=='My Components'||
+           !draftCurrent(live)||pendingFields||sourceDirty){
+          setError('Reuse requires the current verified private component catalogue and applied buffers.');return false;
+        }
+        // The fetched version is not authority for pristine library bytes.
+        // Supply only the application's immutable canonical pin, allowing the
+        // engine to distinguish byte-identical owned copies from custom code.
+        const canonical=canonicalLibraryComponentSource(version.base_component_pin);
+        if(canonical)trustedSources={[version.base_component_pin]:canonical};
       }
       const next = applyEditorTransaction(head, {intent, operationId: crypto.randomUUID(), baseRevision: head.revision}, trustedSources, versions ?? {});
       if(layoutMutation||historyMutation){
@@ -644,15 +656,18 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   function restore(snapshot: PortfolioSnapshot): boolean {
-    if (!head || !allowed || saving || saveFlight.current || recoveryLock.current) return false;
+    const view=latestRecovery.current;
+    if (!head || !allowed || !verifiedOwner || preview || tool!=='History' || saving || saveFlight.current || recoveryLock.current ||
+        lastAppliedHead.current===head||!view||view.head!==head||!draftCurrent(view)) return false;
     if (pendingFields || sourceDirty) {
       setError('Apply or discard unapplied content and source buffers before restoring a saved checkpoint.');
       return false;
     }
     try {
       const next = restoreHistoricalSnapshot(head, snapshot, crypto.randomUUID());
+      lastAppliedHead.current=head;
       setHead(next);
-      setSlot('');
+      setSlot(resolveInitialEditorSlot(next.snapshot,null).key);
       setOperation(crypto.randomUUID());
       setFieldDrafts({});setFieldIssues({});setSeoDraft(null);
       // A formerly clean source explorer must not carry an old snapshot's
@@ -668,14 +683,14 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   }
 
   async function save() {
-    if(!allowed||!record||!head||!operation||saving||saveFlight.current||recoveryLock.current||sourceDirty||pendingFields)return;
+    if(!allowed||!verifiedOwner||!record||!head||!operation||saving||saveFlight.current||recoveryLock.current||sourceDirty||pendingFields)return;
     const view=latestRecovery.current;
-    if(!view||view.record!==record||view.head!==head||(view.owner&&!scopeCurrent(view)))return;
+    if(!view||view.record!==record||view.head!==head||!scopeCurrent(view))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     const currentSave=()=>{
       const current=latestRecovery.current;
       return !!current&&current.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
-        (!view.owner||scopeCurrent(view))&&current.record===record&&current.head===head&&current.operation===operation;
+        scopeCurrent(view)&&current.record===record&&current.head===head&&current.operation===operation;
     };
     saveFlight.current=true;
     setSaving(true);setError('');setNotice('');
@@ -719,15 +734,15 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       saveFlight.current=false;
       const current=latestRecovery.current;
       if(current?.port===port&&current.id===id&&port.reconcileOwnerSessionEpoch()===epoch&&
-         (!view.owner||scopeCurrent(view)))setSaving(false);
+         scopeCurrent(view))setSaving(false);
     }
   }
 
   async function initialize() {
     const preset = presets.find(item => item.id === record?.templateId);
-    if(!allowed||!record||record.id!==id||!preset||saving||setupFlight.current||head)return;
+    if(!allowed||!verifiedOwner||!record||record.id!==id||!preset||saving||setupFlight.current||head)return;
     const view=latestRecovery.current;
-    if(!view||view.record!==record||(verifiedOwner&&!scopeCurrent(view)))return;
+    if(!view||view.record!==record||!scopeCurrent(view))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     let pending=setupAttempt.current;
     if(!pending||pending.id!==id||pending.preset!==preset.id||pending.epoch!==epoch){
@@ -737,7 +752,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
     const current=()=>{
       const live=latestRecovery.current;
       return !!live&&live.port===port&&live.id===id&&live.record===record&&
-        port.reconcileOwnerSessionEpoch()===epoch&&(!view.owner||scopeCurrent(view));
+        port.reconcileOwnerSessionEpoch()===epoch&&scopeCurrent(view);
     };
     setupFlight.current=true;setSaving(true);setError('');
     try{
@@ -1684,7 +1699,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <label>Section layout<select value={sectionLayout} onChange={event => setSectionLayout(event.target.value)}>
             {sectionLayouts.map(([pin, label]) => <option key={pin} value={pin}>{label}</option>)}
           </select></label>
-          <button type="button" className="ws-secondary" disabled={saving}
+          <button type="button" className="ws-secondary" disabled={!verifiedOwner||saving||recoveryBusy||pendingFields||sourceDirty}
             onClick={() => apply({kind: 'ADD_SECTION', layout: sectionLayout})}>Add section</button>
         </div>}
         <ol className="ws-editor-layers">{layerGroups.map((group,index)=><li key={group.id}
@@ -1802,7 +1817,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           <a className="ws-secondary" href={STUDIO+'/'+id+'/publish'}>View private release preflight</a>
         </section>}
         {tool === 'My Components' && <ComponentLibrary port={port} head={head} committed={record?.snapshot ?? null}
-          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={saving||recoveryBusy||sourceDirty||selectedSlotHasPendingDrafts}
+          slot={slot} apply={apply} saveRetry={componentSaveRetry} blocked={!verifiedOwner||saving||recoveryBusy||sourceDirty||pendingFields}
           {...{onReuseTarget:(target:string)=>{
             if(layerGroups.flatMap(group=>group.slots).filter(item=>item.key===target).length===1)setSlot(target);
           }}}/>}
