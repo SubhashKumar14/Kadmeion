@@ -80,8 +80,16 @@ export async function handleSyncProviderFacts(request:Request,deps?:LocalProvide
   const total=new AbortController(),deadline=performance.now()+15000;
   const check=()=>{if(total.signal.aborted||performance.now()>=deadline)throw Error('deadline')};
   const work=async()=>{
-    let op:ProviderSyncInput;try{op=input(await bodyJson(request,1024,deadline,total.signal))}catch{return err(400,origin)}
+    let op:ProviderSyncInput|null=null,capability=false;
+    try{const raw=await bodyJson(request,1024,deadline,total.signal);
+      capability=exact(raw,['action','schemaVersion'])&&raw.action==='CAPABILITY'&&raw.schemaVersion===1;
+      if(!capability)op=input(raw);
+    }catch{return err(400,origin)}
     check();const scope=await deps.verifyOwner(jwt,total.signal);check();if(!scope||!id(scope.ownerId)||!id(scope.sessionId))return err(403,origin);
+    // This proof means only an explicitly configured local handler is present.
+    // It never grants consent, invokes claim/finish, or fetches a provider.
+    if(capability)return reply(200,{schemaVersion:1,mode:'ISOLATED_LOCAL',ownerId:scope.ownerId},origin);
+    if(op===null)return err(400,origin);
     const c=claimReceipt(await deps.claim(scope,op,total.signal),scope,op);check();
     if(c.status==='LIMITED')return err(429,origin);
     if(c.status!=='CLAIMED')return reply(200,{status:c.status,state:c.state},origin);
