@@ -167,7 +167,7 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
         cancelRpcBody(upstream.body);
         throw Error('Public projection not confirmed');
       }
-      const projection = await readBoundedRpcJson(upstream);
+      const projection = await readBoundedRpcJson(upstream, undefined, signal);
       if (expired()) throw Error('Public projection request expired');
       return projection;
     };
