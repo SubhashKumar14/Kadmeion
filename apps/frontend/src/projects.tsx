@@ -298,8 +298,6 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current||uncertainCreate.current)return;
-    // Local validation does not dispatch an insert, so it must never enter
-    // uncertain-create recovery or lock the user out of correcting fields.
     let submitted:NewPrivateProject;
     try{submitted=normalizeQuickAddDraft(draft);}
     catch(error){setError(error instanceof Error?error.message:'Enter valid private project details.');return;}
@@ -605,7 +603,36 @@ function projectDestinationReview(saved:PrivateProjectDraft&{revision:number},dr
   return {changes,key:changes.length?JSON.stringify([saved.revision,changes]):null,error:''};
 }
 
+// S1 #67 exact guarded RPC transport contract. The separate candidate may
+// only be promoted with the registered atomic SQL producer and real race tests.
+// Never retry or substitute the legacy manual RPC after calling this method.
+type GuardedProjectDraftOutcome={data:OwnerProject|null;error:{code:string;message:string}|null};
+type GuardedProjectPort=SupabaseBrowserAuthPort&{
+  saveOwnerProjectDraft?:(projectId:string,baseRevision:number,input:PrivateProjectDraft,
+    confirmProjectionWithdrawal:boolean,expectedEpoch:number)=>Promise<GuardedProjectDraftOutcome>;
+};
+function guardedAutoEligibility(saved:OwnerProject,draft:PrivateProjectDraft):boolean{
+  try{
+    const normalized=normalizeProjectDraft(draft);
+    const links=projectDestinationReview(saved,normalized);
+    return normalized.slug===saved.slug&&!links.error&&links.key===null&&!equalProjectDraft(saved,normalized);
+  }catch{return false;}
+}
 export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAuthPort; projectId: string}) {
+  const guarded=(port as GuardedProjectPort).saveOwnerProjectDraft;
+  const canUseGuard=typeof guarded==='function';
+  const [autosave,setAutosave]=useState(false);
+  const [activeSaveMode,setActiveSaveMode]=useState<'manual'|'auto'|null>(null);
+  const [requiredWithdrawal,setRequiredWithdrawal]=useState<string|null>(null);
+  const [confirmedWithdrawal,setConfirmedWithdrawal]=useState<string|null>(null);
+  const autoEnabled=useRef(false);
+  const overviewTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  function cancelScheduledOverview(){
+    if(overviewTimer.current!==null)clearTimeout(overviewTimer.current);
+    overviewTimer.current=null;
+  }
+  function stopOverviewAutosave(){autoEnabled.current=false;cancelScheduledOverview();setAutosave(false);}
+  function clearWithdrawal(){setRequiredWithdrawal(null);setConfirmedWithdrawal(null);}
   const [detail, setDetail] = useState<DetailState>({status: 'loading'});
   const [reload, setReload] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -642,6 +669,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setCasePending(pending);
   },[]);
   const caseSaved = useCallback((from:number,to:number) => {
+    clearWithdrawal();
     observeRevision(to);
     // The case-study RPC modifies only sections at the exact CAS base.
     // A gap might include another owner's session's overview edit.
@@ -650,6 +678,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   },[observeRevision]);
   const thumbnailSaved=useCallback((from:number,to:number)=>{
     if(to!==from+1)return;
+    clearWithdrawal();
     observeRevision(to);
     // An attached cover changes neither overview text nor case-study sections.
     // Advance only across this exact acknowledged contiguous mutation.
@@ -663,6 +692,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     const generation=++detailGeneration.current;
     ownerEpoch.current=port.getOwnerSessionEpoch();ownerExpired.current=false;
     overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
+    stopOverviewAutosave();clearWithdrawal();setActiveSaveMode(null);
     setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
     setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
     setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
@@ -671,6 +701,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       if(next===ownerEpoch.current||ownerExpired.current)return;
       ownerExpired.current=true;++detailGeneration.current;
       overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
+      stopOverviewAutosave();clearWithdrawal();setActiveSaveMode(null);
       setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
       setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
       setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
@@ -683,11 +714,12 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         setDetail({status:'ready',saved:result.data,draft:result.data});
       } else setDetail({status:'unavailable'});
     }).catch(() => {if(currentDetail(generation))setDetail({status:'unavailable'});});
-    return () => {++detailGeneration.current;unsubscribe();};
+    return () => {++detailGeneration.current;autoEnabled.current=false;cancelScheduledOverview();unsubscribe();};
   }, [port, projectId, reload, observeRevision]);
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
     if (!currentOwner()||overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    cancelScheduledOverview();clearWithdrawal();
     if(field==='repositoryUrl'||field==='liveUrl')setReviewedDestinationChange(null);
     setConfirmOverviewRebase(false);
     setDetail(current => current.status === 'ready'
@@ -697,6 +729,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
 
   async function compareLatest(baseRevision: number) {
     if (!currentOwner()||overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    stopOverviewAutosave();clearWithdrawal();
     const generation=detailGeneration.current;
     overviewPending.current=true;
     setReviewedDestinationChange(null);
@@ -740,31 +773,54 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       (keep&&!confirmOverviewRebase))return;
     // Rebase ONLY the overview baseline. Keep the case-study buffer and its
     // own revision checks intact; changing a baseline is not a server write.
+    stopOverviewAutosave();clearWithdrawal();
     setDetail({status:'ready',saved:latest,draft:keep?{...detail.draft,slug:latest.slug}:latest});
     setReviewedDestinationChange(null);setConfirmOverviewRebase(false);
     setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
     setFeedback({error:false,text:keep?'Latest saved revision compared. Your overview edits still need an explicit save.':'Loaded the latest saved draft.'});
   }
 
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function persistOverview(mode:'manual'|'auto'){
+    cancelScheduledOverview();
     if (!currentOwner()||detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
         overviewConflict || knownRevision>detail.saved.revision || latest) return;
+    if(mode==='auto'&&(!autoEnabled.current||!canUseGuard||panel!=='details'||requiredWithdrawal||
+        !guardedAutoEligibility(detail.saved,detail.draft)))return;
     let submitted:PrivateProjectDraft;
     try{submitted=normalizeProjectDraft(detail.draft);}
-    catch(cause){setFeedback({error:true,text:cause instanceof Error?cause.message:'Enter valid private project details.'});return;}
+    catch(cause){if(mode==='manual')setFeedback({error:true,text:cause instanceof Error?cause.message:'Enter valid private project details.'});return;}
     const review=projectDestinationReview(detail.saved,submitted);
-    if(review.error||(review.key!==null&&review.key!==reviewedDestinationChange)){
-      setFeedback({error:true,text:review.error||'Review and confirm the changed external destinations before saving.'});return;
+    if(review.error||(review.key!==null&&(mode==='auto'||review.key!==reviewedDestinationChange))){
+      if(mode==='manual')setFeedback({error:true,text:review.error||'Review and confirm the changed external destinations before saving.'});return;
     }
+    if(submitted.slug!==detail.saved.slug){
+      if(mode==='manual')setFeedback({error:true,text:'A private draft cannot change the project slug.'});return;
+    }
+    if(equalProjectDraft(detail.saved,submitted)){
+      setDetail({status:'ready',saved:detail.saved,draft:detail.saved});clearWithdrawal();return;
+    }
+    const from=detail.saved.revision,generation=detailGeneration.current,epoch=ownerEpoch.current;
+    const withdrawalKey=JSON.stringify([from,submitted]);
+    const confirmed=mode==='manual'&&requiredWithdrawal===withdrawalKey&&confirmedWithdrawal===withdrawalKey;
+    if(requiredWithdrawal&&!confirmed)return;
     overviewPending.current=true;
-    setSaving(true);
+    setSaving(true);setActiveSaveMode(mode);
     setFeedback(null);
-    const from=detail.saved.revision,generation=detailGeneration.current;
     try {
-      const result = await port.saveOwnerProject(projectId, from, submitted, ownerEpoch.current);
+      // Auto always uses the atomic guarded API with false. Manual uses the
+      // same API when paired; an older adapter retains explicit manual save
+      // only. A guarded rejection NEVER causes a fallback or write retry.
+      if(mode==='auto'&&!canUseGuard)return;
+      const result=canUseGuard
+        ?await guarded.call(port,projectId,from,submitted,confirmed,epoch)
+        :await port.saveOwnerProject(projectId,from,submitted,epoch);
       if(!currentDetail(generation))return;
+      if(result.error&&'code' in result.error&&result.error.code==='CONFIRMATION_REQUIRED'){
+        stopOverviewAutosave();setRequiredWithdrawal(withdrawalKey);setConfirmedWithdrawal(null);
+        setFeedback({error:true,text:'A public case-study snapshot would be withdrawn. Review and explicitly confirm this exact draft to save.'});return;
+      }
       if (!result.data || result.error || result.data.revision!==from+1) {
+        stopOverviewAutosave();clearWithdrawal();
         const message=result.error?.message ?? 'Save could not be confirmed.';
         // Any unconfirmed receipt requires a fresh compare before another write.
         setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
@@ -776,24 +832,25 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       const readback=await port.readOwnerProject(projectId,ownerEpoch.current);
       if(!currentDetail(generation))return;
       if(readback.error||!readback.data||!matchesProjectReadback(readback.data,projectId,from+1,submitted)){
-        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
+        stopOverviewAutosave();clearWithdrawal();setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
         setFeedback({error:true,text:'Save was acknowledged but the stored overview could not be verified. Check the latest revision before retrying.'});return;
       }
       const to=readback.data.revision;
       observeRevision(to);
       setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
       setDetail({status:'ready',saved:readback.data,draft:readback.data});
-      setReviewedDestinationChange(null);setUncertainOverview(null);
-      setFeedback({error:false,text:'Private draft saved.'});
+      setReviewedDestinationChange(null);setUncertainOverview(null);clearWithdrawal();
+      setFeedback({error:false,text:mode==='auto'?'Private project draft autosaved.':'Private draft saved.'});
     } catch {
       if(currentDetail(generation)){
-        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
+        stopOverviewAutosave();clearWithdrawal();setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
         setFeedback({error:true,text:'Project save could not be verified. Check the latest revision before retrying. Your edits remain available.'});
       }
     } finally {
-      if(currentDetail(generation)){overviewPending.current=false;setSaving(false);}
+      if(currentDetail(generation)){overviewPending.current=false;setSaving(false);setActiveSaveMode(null);}
     }
   }
+  function save(event: FormEvent<HTMLFormElement>){event.preventDefault();void persistOverview('manual');}
 
   const dirty = detail.status === 'ready' && (
     detail.saved.title !== detail.draft.title ||
@@ -811,6 +868,18 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     window.addEventListener('beforeunload',warn);
     return()=>window.removeEventListener('beforeunload',warn);
   },[dirty,caseDirty,saving,checking,casePending,imagePending]);
+  useEffect(()=>{
+    cancelScheduledOverview();
+    if(!canUseGuard||!autosave||!autoEnabled.current||detail.status!=='ready'||panel!=='details'||
+       blocked||overviewConflict||knownRevision>detail.saved.revision||latest||requiredWithdrawal||
+       !currentOwner()||!guardedAutoEligibility(detail.saved,detail.draft))return;
+    overviewTimer.current=setTimeout(()=>{overviewTimer.current=null;void persistOverview('auto');},1200);
+    return cancelScheduledOverview;
+  },[canUseGuard,autosave,detail,panel,blocked,overviewConflict,knownRevision,latest,requiredWithdrawal,port]);
+  let currentWithdrawalKey:string|null=null;
+  if(detail.status==='ready'&&requiredWithdrawal){
+    try{currentWithdrawalKey=JSON.stringify([detail.saved.revision,normalizeProjectDraft(detail.draft)]);}catch{/* invalid draft */}
+  }
   const destinationReview=detail.status==='ready'?projectDestinationReview(detail.saved,detail.draft):null;
   const destinationUnconfirmed=!!destinationReview&&(!!destinationReview.error||
     (destinationReview.key!==null&&destinationReview.key!==reviewedDestinationChange));
@@ -830,6 +899,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       }}>Overview</button>
       <button type="button" disabled={blocked} aria-pressed={panel === 'sections'} onClick={() => {
         if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+        cancelScheduledOverview();
         if (!openedSections) markCasePending(true);
         setOpenedSections(true); setPanel('sections');
       }}>Case study</button>
@@ -849,8 +919,15 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       <form className="ws-project-fields" onSubmit={event => void save(event)}>
         <fieldset disabled={blocked}>
           <legend>Project details</legend>
-          <p>Changes remain unsaved until you choose Save changes. Saving changed project content can withdraw a previously published case-study snapshot; it does not publish a new one.</p>
-          {dirty&&<p role="status">Unsaved private overview edits. These are retained in this editor, not saved offline.</p>}
+          <p>{canUseGuard?'Private draft saves use the guarded server revision. Public withdrawal requires separate explicit confirmation.': 'Changes remain unsaved until you choose Save changes. Saving changed project content can withdraw a previously published case-study snapshot; it does not publish a new one.'}</p>
+          {canUseGuard&&<label className="ws-profile-check"><input type="checkbox" checked={autosave}
+            disabled={stale||!!latest||!!requiredWithdrawal} onChange={event=>{
+              if(!currentOwner()||overviewPending.current||casePendingRef.current||imagePendingRef.current)return;
+              if(event.target.checked){autoEnabled.current=true;setAutosave(true);}else stopOverviewAutosave();
+            }}/> Autosave private project overview</label>}
+          {canUseGuard&&<p>Off by default. Only valid private overview text is autosaved; changed external links, conflicts and publication withdrawal require a manual save. Never publishes or withdraws automatically.</p>}
+          {dirty&&<p role="status">{autosave&&canUseGuard&&guardedAutoEligibility(detail.saved,detail.draft)&&!blocked&&!stale&&!requiredWithdrawal
+            ?'Unsaved private overview edits will be saved after a short pause.':'Unsaved private overview edits. These are retained in this editor, not saved offline.'}</p>}
           <label>Project title
             <input maxLength={120} required value={detail.draft.title} onChange={e => edit('title', e.target.value)}/>
           </label>
@@ -885,15 +962,26 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
               setReviewedDestinationChange(event.target.checked?destinationReview.key:null);
             }}/> I confirm these destination changes for this private revision.</label>
         </fieldset>}
+        {requiredWithdrawal&&currentWithdrawalKey===requiredWithdrawal&&<fieldset disabled={blocked||stale||!!latest}>
+          <legend>Review withdrawal of current public case study</legend>
+          <p>Saving this exact revision will withdraw the previously published case-study snapshot. It will not publish the new draft or prove external cache removal.</p>
+          <label className="ws-profile-check"><input type="checkbox"
+            checked={confirmedWithdrawal===requiredWithdrawal} onChange={event=>{
+              if(!currentOwner()||overviewPending.current||casePendingRef.current||imagePendingRef.current)return;
+              stopOverviewAutosave();setConfirmedWithdrawal(event.target.checked?requiredWithdrawal:null);
+            }}/> I confirm withdrawal and saving this exact private overview.</label>
+        </fieldset>}
         {feedback && <p role={feedback.error ? 'alert' : 'status'} className="ws-inline-alert">{feedback.text}</p>}
         {stale && <p>Check the latest saved revision before saving overview changes. Your edits are retained.</p>}
         <div className="ws-actions">
-          <button type="submit" className="ws-primary" disabled={blocked || stale || !!latest || !dirty || destinationUnconfirmed}>{saving ? 'Saving…' : 'Save changes'}</button>
+          <button type="submit" className="ws-primary" disabled={blocked || stale || !!latest || !dirty || destinationUnconfirmed ||
+              (!!requiredWithdrawal&&(currentWithdrawalKey!==requiredWithdrawal||confirmedWithdrawal!==requiredWithdrawal))}>{saving ? activeSaveMode==='auto'?'Autosaving…':'Saving…' : 'Save changes'}</button>
           <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => void compareLatest(detail.saved.revision)}>{checking ? 'Checking…' : 'Check latest revision'}</button>
           {dirty && <button type="button" className="ws-secondary" disabled={blocked}
             onClick={() => {
               if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+              stopOverviewAutosave();clearWithdrawal();
               setDetail({status:'ready',saved:detail.saved,draft:detail.saved});
               setReviewedDestinationChange(null);setConfirmOverviewRebase(false);
               if (!stale) setLatest(null);
