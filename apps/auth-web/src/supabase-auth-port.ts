@@ -90,7 +90,7 @@ export type OwnerMediaOutcome<T> = {data:T;error:OwnerMediaFailure|null};
 export type OwnerPrivateAssetRead = Readonly<{
   asset:OwnerProjectThumbnailAsset;bytes:Blob;
   integrity:Readonly<{status:'OWNER_BYTES_VERIFIED';computedSha256:string}>;
-  serverAttestation:'NOT_VERIFIED';publicDeliveryAllowed:false;
+  serverAttestation:'NOT_VERIFIED'|'SERVER_HASH_PINNED';publicDeliveryAllowed:false;
 }>;
 export type OwnerPrivateAssetAttestationReceipt=Readonly<{
   assetId:string;status:'WRITE_ONCE_ATTESTED';publicPublishingAllowed:false;accountDeletionAllowed:false;
@@ -123,7 +123,7 @@ function mediaHttpError(status:number,payload:unknown,attestation=false,storage=
     ['ResourceAlreadyExists','KeyAlreadyExists'].includes(storageCode))
     return mediaError(attestation?'INTEGRITY':'CONFLICT',attestation?'Private asset attestation did not verify.':
       'This project changed while you were editing. Load the latest revision before saving again.',status);
-  if(code==='22023'&&row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE')
+  if(code==='22023'&&(row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE'||row?.message==='PRIVATE_ASSET_PIN_INTEGRITY'))
     return mediaError('INTEGRITY','Private thumbnail could not be verified.',status);
   if(code==='22023'||(attestation&&status===400)||['InvalidMimeType','InvalidKey','InvalidRequest'].includes(storageCode))
     return mediaError('VALIDATION','Invalid private media request.',status);
@@ -1827,20 +1827,40 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       throw mediaError('INTEGRITY','Private asset changed during verification.');
   }
 
-  /** Owner-only actual bytes + local digest, never a trusted source_sha256 or a public URL. */
+  private async readProjectAssetPin(session:StoredSession,ownerId:string,epoch:number,
+    binding:{asset:OwnerProjectThumbnailAsset;path:string},identity:{id:string;version:string}){
+    const raw=await this.mediaJson('/rest/v1/rpc/read_owner_private_asset_pin',session,epoch,{
+      p_scope:'PROJECT',p_asset_id:binding.asset.id,p_project_id:binding.asset.projectId});
+    const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+    if(!row||Object.keys(row).length!==11||row.scope!=='PROJECT'||
+      row.assetId!==binding.asset.id||row.ownerUserId!==ownerId||row.projectId!==binding.asset.projectId||
+      row.objectId!==identity.id||row.version!==identity.version||row.mimeType!==binding.asset.mime||
+      row.byteSize!==binding.asset.size||row.publicDeliveryAllowed!==false||
+      !((row.status==='UNPINNED'&&row.expectedSha256===null)||
+        (row.status==='SERVER_HASH_PINNED'&&typeof row.expectedSha256==='string'&&/^[0-9a-f]{64}$/.test(row.expectedSha256))))
+      throw mediaError('INTEGRITY','Private asset pin could not be verified.');
+    return {status:row.status as 'UNPINNED'|'SERVER_HASH_PINNED',expectedSha256:row.expectedSha256 as string|null};
+  }
+
+  /** Owner-only bounded bytes, checked against the current independent server pin. */
   async readOwnerPrivateAsset(projectId:string,assetId:string,expectedEpoch:number):Promise<OwnerMediaOutcome<OwnerPrivateAssetRead>>{
     return this.mediaOutcome(expectedEpoch,async()=>{
       if(!PROJECT_ID_PATTERN.test(assetId))throw mediaError('VALIDATION','Invalid private asset.');
       const {session,userId}=await this.ownerThumbnailSession(projectId,expectedEpoch);
       const binding=await this.readBoundProjectAsset(session,userId,expectedEpoch,projectId,assetId);
       const identity=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+      const pin=await this.readProjectAssetPin(session,userId,expectedEpoch,binding,identity);
       const bytes=await this.readOwnerImageBytes(session,expectedEpoch,binding.path,binding.asset.mime,binding.asset.size);
       const digest=await crypto.subtle.digest('SHA-256',await bytes.arrayBuffer());
       this.assertOwnerImageEpoch(session,expectedEpoch);
       await this.confirmBoundProjectAsset(session,userId,expectedEpoch,binding,identity);
-      return {asset:binding.asset,bytes,integrity:{status:'OWNER_BYTES_VERIFIED',
-        computedSha256:Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('')},
-        serverAttestation:'NOT_VERIFIED',publicDeliveryAllowed:false};
+      const afterPin=await this.readProjectAssetPin(session,userId,expectedEpoch,binding,identity);
+      const computedSha256=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+      if(pin.status!==afterPin.status||pin.expectedSha256!==afterPin.expectedSha256||
+        (pin.status==='SERVER_HASH_PINNED'&&computedSha256!==pin.expectedSha256))
+        throw mediaError('INTEGRITY','Private asset pin or bytes changed during verification.');
+      return {asset:binding.asset,bytes,integrity:{status:'OWNER_BYTES_VERIFIED',computedSha256},
+        serverAttestation:pin.status==='SERVER_HASH_PINNED'?'SERVER_HASH_PINNED':'NOT_VERIFIED',publicDeliveryAllowed:false};
     });
   }
 
