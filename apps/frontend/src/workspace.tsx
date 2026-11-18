@@ -605,7 +605,7 @@ export function WorkspaceApp() {
       route === '/app/portfolios' && authRef.current ? <PortfolioLibrary port={authRef.current}/> :
       isSettingsRoute(route) && authRef.current ? <OwnerSettings port={authRef.current} path={route}/> :
       isOperatorRoute(route) && authRef.current ? <OperatorConsole port={authRef.current} path={route}/> :
-      isGrowthRoute(route) && authRef.current ? <GrowthApp port={authRef.current} path={route}/> :
+      isGrowthRoute(route) && authRef.current ? <GrowthApp port={authRef.current} path={route} verifiedOwner={{id:gate.owner.id,epoch:gate.epoch}}/> :
       snapshot.status === 'loading' ? <section className="ws-loading" aria-busy="true">
       <p role="status">Loading your private workspace records…</p>
       <div aria-hidden="true">

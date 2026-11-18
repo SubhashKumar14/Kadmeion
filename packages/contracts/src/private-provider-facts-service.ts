@@ -29,14 +29,14 @@ function instant(v:unknown):bigint|null{
 /** Reject duplicate decoded object keys and excess nesting before JSON.parse. */
 function parse(text:string):unknown{
   let i=0;
-  const ws=()=>{while(i<text.length&&/\s/.test(text[i]))i++};
+  const ws=()=>{while(i<text.length&&/\s/.test(text.charAt(i)))i++};
   function string():string {const start=i++;while(i<text.length){const c=text[i++];if(c==='\\'){i++;continue}if(c==='"')return JSON.parse(text.slice(start,i));}return fail('INVALID_RESPONSE')}
   function value(depth:number):void {if(depth>24)fail('INVALID_RESPONSE');ws();const c=text[i];
     if(c==='"'){string();return}
     if(c==='{'||c==='['){i++;ws();const end=c==='{'?'}':']',seen=new Set<string>();if(text[i]===end){i++;return}
       for(;;){ws();if(c==='{'){if(text[i]!=='"')fail('INVALID_RESPONSE');const k=string();if(seen.has(k))fail('INVALID_RESPONSE');seen.add(k);ws();if(text[i++]!==':')fail('INVALID_RESPONSE')}value(depth+1);ws();const sep=text[i++];if(sep===end)return;if(sep!==',')fail('INVALID_RESPONSE')}
     }
-    const start=i;while(i<text.length&&!/[\s,}\]]/.test(text[i]))i++;if(start===i)fail('INVALID_RESPONSE');const lexeme=text.slice(start,i);
+    const start=i;while(i<text.length&&!/[\s,}\]]/.test(text.charAt(i)))i++;if(start===i)fail('INVALID_RESPONSE');const lexeme=text.slice(start,i);
     if(!['true','false','null'].includes(lexeme)&&(!/^(?:0|[1-9]\d*)$/.test(lexeme)||!Number.isSafeInteger(Number(lexeme))))fail('INVALID_RESPONSE');
   }
   try{value(0);ws();if(i!==text.length)fail('INVALID_RESPONSE');return JSON.parse(text)}catch{return fail('INVALID_RESPONSE')}
@@ -54,14 +54,51 @@ export function parseProviderState(raw:unknown,owner:string,link:string):Provide
   if(state.candidate!==null){if(state.status!=='AWAITING_CONFIRMATION'||state.facts!==null||state.candidateExpiresAt===null||instant(state.candidateExpiresAt)!<=instant(state.candidate.fetchedAt)!||instant(state.candidateExpiresAt)!-instant(state.candidate.fetchedAt)!>600000000n)return fail('INVALID_RESPONSE')}
   else if(state.candidateExpiresAt!==null)return fail('INVALID_RESPONSE');
   if(state.facts===null?state.freshness!=='NONE':state.freshness==='NONE')return fail('INVALID_RESPONSE');
+  // A failed refresh can retain last-good facts, never describe them as fresh.
+  // Server cooldown survives OFF/relink; a source failure belongs only to UNAVAILABLE.
+  if((state.status==='UNAVAILABLE')!==(state.lastError!==null)||
+    state.status==='UNAVAILABLE'&&state.facts!==null&&state.freshness!=='STALE')return fail('INVALID_RESPONSE');
   if(!state.consent){if(state.status!=='OFF'||state.facts!==null||state.candidate!==null)return fail('INVALID_RESPONSE')}
   else if(state.version===0||state.version===MAX||state.status==='OFF')return fail('INVALID_RESPONSE');
   if(state.status==='READY'&&(state.facts!==null||state.candidate!==null)||state.status==='SYNCED'&&(state.facts===null||state.candidate!==null)||state.status==='AWAITING_CONFIRMATION'&&state.candidate===null)return fail('INVALID_RESPONSE');
   return state;
 }
+/** Separately versioned, bounded current-state annex. It never upgrades the
+ * C05 inventory/export receipt or claims external provider authenticity. */
+export type ProviderExportAnnex={status:'PROVIDER_FACTS_ANNEX';schemaVersion:1;ownerId:string;snapshotId:string;requestId:string|null;capturedAt:string;sourceMode:'ISOLATED_LOCAL';states:ProviderState[];providerAuthenticityVerified:false;completeAccountExport:false;crossTableAtomicSnapshot:false;deletionAllowed:false};
+export function parseProviderExportAnnex(raw:unknown,owner:string,snapshotId:string,requestId:string|null):ProviderExportAnnex{
+  if(!uuid(owner)||!uuid(snapshotId)||requestId!==null&&!uuid(requestId))return fail('INVALID');
+  if(!exact(raw,['status','schemaVersion','ownerId','snapshotId','requestId','capturedAt','sourceMode','states','providerAuthenticityVerified','completeAccountExport','crossTableAtomicSnapshot','deletionAllowed'])||
+    raw.status!=='PROVIDER_FACTS_ANNEX'||raw.schemaVersion!==1||raw.ownerId!==owner||raw.snapshotId!==snapshotId||raw.requestId!==requestId||
+    typeof raw.capturedAt!=='string'||raw.sourceMode!=='ISOLATED_LOCAL'||!Array.isArray(raw.states)||raw.states.length>1||
+    raw.providerAuthenticityVerified!==false||raw.completeAccountExport!==false||raw.crossTableAtomicSnapshot!==false||raw.deletionAllowed!==false)return fail('INVALID_RESPONSE');
+  const captured=instant(raw.capturedAt);if(captured===null)return fail('INVALID_RESPONSE');
+  const states:ProviderState[]=[];
+  for(const value of raw.states){
+    if(!obj(value)||!uuid(value.linkId))return fail('INVALID_RESPONSE');
+    const state=parseProviderState(value,owner,value.linkId);
+    if((state.facts!==null&&instant(state.facts.fetchedAt)!>captured)||
+      (state.candidate!==null&&(instant(state.candidate.fetchedAt)!>captured||instant(state.candidateExpiresAt)!<=captured)))return fail('INVALID_RESPONSE');
+    states.push(state);
+  }
+  return {status:'PROVIDER_FACTS_ANNEX',schemaVersion:1,ownerId:owner,snapshotId,requestId,capturedAt:raw.capturedAt,
+    sourceMode:'ISOLATED_LOCAL',states,providerAuthenticityVerified:false,completeAccountExport:false,crossTableAtomicSnapshot:false,deletionAllowed:false};
+}
 function validateOperation(input:unknown,action?:readonly string[]):ProviderOperation{
   if(!exact(input,['linkId','expectedVersion','operationId','policyVersion',...(action?['action']:[])])||!uuid(input.linkId)||!uuid(input.operationId)||!integer(input.expectedVersion)||input.policyVersion!==1||action&&(typeof input.action!=='string'||!action.includes(input.action)))return fail('INVALID');
   return input as unknown as ProviderOperation;
+}
+/** Local Supabase CLI commonly exposes a legacy anon JWT. Accept only a
+ * structurally bounded anon key (never an owner/service JWT or opaque secret).
+ * Signature/authentication remain the local Supabase gateway's responsibility. */
+function localClientKey(key:unknown):key is string{
+  if(typeof key!=='string'||key.length>4096)return false;
+  if(/^sb_publishable_[A-Za-z0-9_-]{8,200}$/.test(key))return true;
+  if(!/^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(key))return false;
+  const payload=key.split('.')[1];if(!payload)return false;
+  try{const decoded:unknown=JSON.parse(atob(payload.replace(/-/g,'+').replace(/_/g,'/')));
+    return obj(decoded)&&decoded.role==='anon';
+  }catch{return false;}
 }
 export class SupabasePrivateProviderFactsService {
   private readonly origin:string;private readonly owner:string;private readonly key:string;private readonly token:()=>Promise<string|null>;private readonly guard:()=>boolean;private readonly http:typeof fetch;private retired=false;
@@ -69,13 +106,13 @@ export class SupabasePrivateProviderFactsService {
     if(!http||http===globalThis.fetch)throw new PrivateProviderFactsError('UNAVAILABLE');
     let url:URL;try{url=new URL(endpoint)}catch{throw new PrivateProviderFactsError('INVALID')}
     // Isolated fixture only: cannot construct a hosted/live adapter.
-    if(!['localhost','127.0.0.1','[::1]'].includes(url.hostname)||!['https:','http:'].includes(url.protocol)||url.username||url.password||url.pathname!=='/'||url.search||url.hash||!uuid(ownerId)||!/^sb_publishable_[A-Za-z0-9_-]{8,200}$/.test(key)||typeof token!=='function'||typeof isCurrentOwner!=='function')throw new PrivateProviderFactsError('INVALID');
+    if(!['localhost','127.0.0.1','[::1]'].includes(url.hostname)||!['https:','http:'].includes(url.protocol)||url.username||url.password||url.pathname!=='/'||url.search||url.hash||!uuid(ownerId)||!localClientKey(key)||typeof token!=='function'||typeof isCurrentOwner!=='function')throw new PrivateProviderFactsError('INVALID');
     this.origin=url.origin;this.owner=ownerId;this.key=key;this.token=token;this.guard=isCurrentOwner;this.http=http;
   }
   private current(){let ok=false;try{ok=this.guard()===true}catch{}if(this.retired||!ok){this.retired=true;fail('AUTH_EXPIRED')}}
   private async request(path:string,body:Record<string,unknown>):Promise<unknown>{
     this.current();const serialized=JSON.stringify(body);if(new TextEncoder().encode(serialized).length>1024)fail('LIMIT');
-    const url=this.origin+path,timeout=path==='/functions/v1/sync-provider-facts'?15000:5000;
+    const url=this.origin+path,timeout=path==='/functions/v1/sync-provider-facts'&&body.action!=='CAPABILITY'?15000:5000;
     const deadline=performance.now()+timeout,controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
     let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
     const cancelBody=(r:Response)=>{try{void r.body?.cancel().catch(()=>{})}catch{}};
@@ -90,24 +127,48 @@ export class SupabasePrivateProviderFactsService {
       try{check()}catch(e){cancelBody(r);throw e}
       // Constructed fixture Responses have no URL (type default). Real responses must match the exact request.
       if(r.redirected||(r.url!==url&&!(r.url===''&&r.type==='default'))){cancelBody(r);return fail('INVALID_RESPONSE')}
-      if(!r.ok){cancelBody(r);if(r.status===401)this.retired=true;return fail(({401:'AUTH_EXPIRED',403:'FORBIDDEN',409:'CONFLICT',413:'LIMIT',429:'RATE_LIMITED'} as Record<number,ProviderErrorCode>)[r.status]??'UNAVAILABLE')}
+      // PostgREST maps SQLSTATE 40001 to HTTP 500. Only the exact bounded
+      // owner-RPC conflict envelope is actionable; never retry a write.
+      const conflictProbe=!r.ok&&r.status===500&&path.startsWith('/rest/v1/rpc/');
+      if(!r.ok&&!conflictProbe){cancelBody(r);if(r.status===401)this.retired=true;return fail(({401:'AUTH_EXPIRED',403:'FORBIDDEN',409:'CONFLICT',413:'LIMIT',429:'RATE_LIMITED'} as Record<number,ProviderErrorCode>)[r.status]??'UNAVAILABLE')}
+      const malformed=()=>fail(conflictProbe?'UNAVAILABLE':'INVALID_RESPONSE');
       const len=r.headers.get('content-length'),encoding=r.headers.get('content-encoding');
-      if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(r.headers.get('content-type')??'')||len!==null&&(!/^(?:0|[1-9]\d*)$/.test(len)||Number(len)>LIMIT)||!r.body){cancelBody(r);return fail('INVALID_RESPONSE')}
+      if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(r.headers.get('content-type')??'')||len!==null&&(!/^(?:0|[1-9]\d*)$/.test(len)||Number(len)>LIMIT)||!r.body){cancelBody(r);return malformed()}
       const identity=encoding===null||encoding.trim().toLowerCase()==='identity';
       const bytes=new Uint8Array(LIMIT);let size=0;
-      let held:ReadableStreamDefaultReader<Uint8Array>;try{held=r.body.getReader()}catch{cancelBody(r);return fail('INVALID_RESPONSE')}
+      let held:ReadableStreamDefaultReader<Uint8Array>;try{held=r.body.getReader()}catch{cancelBody(r);return malformed()}
       reader=held;
       try{for(;;){check();let part:ReadableStreamReadResult<Uint8Array>;try{part=await held.read()}catch{return fail('UNAVAILABLE')}check();if(part.done)break;
         // Each successful iteration consumes at least one byte; fixed buffer bounds allocations and iteration count.
-        if(!(part.value instanceof Uint8Array)||part.value.length===0||part.value.length>LIMIT-size)return fail('INVALID_RESPONSE');
+        if(!(part.value instanceof Uint8Array)||part.value.length===0||part.value.length>LIMIT-size)return malformed();
         bytes.set(part.value,size);size+=part.value.length;
       }
-        if(identity&&len!==null&&size!==Number(len))return fail('INVALID_RESPONSE');
-        let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size))}catch{return fail('INVALID_RESPONSE')}
-        check();return parse(text);
+        if(identity&&len!==null&&size!==Number(len))return malformed();
+        let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size))}catch{return malformed()}
+        check();let raw:unknown;try{raw=parse(text)}catch{return malformed()}
+        if(conflictProbe)return fail(exact(raw,['code','message','details','hint'])&&raw.code==='40001'&&raw.message==='CONFLICT'?'CONFLICT':'UNAVAILABLE');
+        return raw;
       }finally{cancelReader()}
     };
     try{const result=await Promise.race([work(),timed]);check();return result}finally{clearTimeout(timer);controller.abort();cancelReader()}
+  }
+  /** Authenticated local readiness only: does not enable consent or fetch facts.
+   * The disabled/default Edge handler returns no proof. A stale owner is retired.
+   * The owner RPC is the separate durable-schema/live-session gate. */
+  async probeLocalCapability():Promise<boolean>{
+    try{
+      const edge=await this.request('/functions/v1/sync-provider-facts',{action:'CAPABILITY',schemaVersion:1});
+      if(!exact(edge,['schemaVersion','mode','ownerId'])||edge.schemaVersion!==1||edge.mode!=='ISOLATED_LOCAL'||edge.ownerId!==this.owner)return false;
+      const schema=await this.request('/rest/v1/rpc/read_owner_github_provider_capability',{});
+      this.current();
+      return exact(schema,['schemaVersion','ownerId'])&&schema.schemaVersion===1&&schema.ownerId===this.owner;
+    }catch{return false;}
+  }
+  /** Read a local application annex without a provider call or consent write. */
+  async readExportAnnex(snapshotId:string,requestId:string|null):Promise<ProviderExportAnnex>{
+    if(!uuid(snapshotId)||requestId!==null&&!uuid(requestId))return fail('INVALID');
+    const value=await this.request('/rest/v1/rpc/owner_export_github_provider_annex_v1',{p_snapshot_id:snapshotId,p_expected_request_id:requestId});
+    return parseProviderExportAnnex(value,this.owner,snapshotId,requestId);
   }
   async readState(linkId:string):Promise<ProviderState>{if(!uuid(linkId))return fail('INVALID');return parseProviderState(await this.request('/rest/v1/rpc/read_owner_github_provider_state',{p_link_id:linkId}),this.owner,linkId)}
   private receipt(raw:unknown,input:ProviderOperation,action:'ENABLE'|'DISABLE'|'CONFIRM'|'LOOKUP'|'SYNC'):ProviderReceipt{
@@ -122,4 +183,17 @@ export class SupabasePrivateProviderFactsService {
   async changeConsent(input:ProviderConsentInput):Promise<ProviderReceipt>{validateOperation(input,['ENABLE','DISABLE']);const frozen={...input};if(frozen.action==='ENABLE'&&frozen.expectedVersion>=MAX-1)return fail('INVALID');return this.receipt(await this.request('/rest/v1/rpc/change_owner_github_provider_consent',{...this.args(frozen),p_action:frozen.action}),frozen,frozen.action)}
   async confirmCandidate(input:ProviderOperation):Promise<ProviderReceipt>{validateOperation(input);const frozen={...input};if(frozen.expectedVersion>=MAX-1)return fail('INVALID');return this.receipt(await this.request('/rest/v1/rpc/confirm_owner_github_provider_candidate',this.args(frozen)),frozen,'CONFIRM')}
   async sync(input:ProviderSyncInput):Promise<ProviderReceipt>{validateOperation(input,['LOOKUP','SYNC']);const frozen={...input};if(frozen.expectedVersion>MAX-3)return fail('INVALID');return this.receipt(await this.request('/functions/v1/sync-provider-facts',frozen),frozen,frozen.action)}
+}
+
+/** UI affordances only. The database remains authoritative for consent, version,
+ * candidate expiry, quota and cooldown. No request or timer is started here. */
+export type ProviderUserAction='ENABLE'|'DISABLE'|'CONFIRM'|'LOOKUP'|'SYNC';
+export function availableProviderActions(state:ProviderState,now:number):readonly ProviderUserAction[]{
+  if(!Number.isFinite(now))return [];
+  if(!state.consent)return state.version<MAX-1?['ENABLE']:[];
+  const actions:ProviderUserAction[]=['DISABLE'];
+  if(state.status==='PENDING'||state.version>=MAX-1)return actions;
+  if(state.status==='AWAITING_CONFIRMATION'&&state.candidateExpiresAt!==null&&Date.parse(state.candidateExpiresAt)>now){actions.push('CONFIRM');return actions;}
+  if(state.version>MAX-3||state.cooldownUntil!==null&&Date.parse(state.cooldownUntil)>now)return actions;
+  actions.push(state.facts===null?'LOOKUP':'SYNC');return actions;
 }

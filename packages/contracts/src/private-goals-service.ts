@@ -200,9 +200,14 @@ export class SupabasePrivateGoalsService {
       const row=this.one(await this.send(table+'?select=*','POST',body),valid);
       return {row,replayed:false};
     }catch(error){
-      if(!(error instanceof PrivateGoalsError)||error.code!=='CONFLICT')throw error;
-      const path=table+'?select=*&operation_id=eq.'+operationId+'&limit=2';
-      const raw=await this.send(path,'GET');
+      // An uncertain POST can have committed. Read its exact operation once;
+      // never reissue a write automatically or infer success from a missing row.
+      if(!(error instanceof PrivateGoalsError)||
+        !['CONFLICT','PROVIDER_UNAVAILABLE','INVALID_ACK','LIMIT_EXCEEDED','RATE_LIMITED'].includes(error.code))throw error;
+      const params=new URLSearchParams({select:'*',operation_id:'eq.'+operationId,limit:'2'});
+      if(typeof body.goal_id==='string')params.set('goal_id','eq.'+body.goal_id);
+      const raw=await this.send(table+'?'+params.toString(),'GET');
+      if(Array.isArray(raw)&&raw.length===0)throw error;
       return {row:this.one(raw,valid),replayed:true};
     }
   }
