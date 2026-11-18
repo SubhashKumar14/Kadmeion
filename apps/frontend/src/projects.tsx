@@ -565,6 +565,13 @@ type DetailState =
 // case-study baseline without replacing the user's independent section buffer.
 type RevisionRange = Readonly<{from: number; to: number}>;
 
+function equalProjectDraft(left:PrivateProjectDraft,right:PrivateProjectDraft):boolean{
+  try{return JSON.stringify(normalizeProjectDraft(left))===JSON.stringify(normalizeProjectDraft(right));}
+  catch{return false;}
+}
+function matchesProjectReadback(record:OwnerProject,id:string,revision:number,desired:PrivateProjectDraft):boolean{
+  return record.id===id&&record.revision===revision&&equalProjectDraft(record,desired);
+}
 type DestinationChange = {label:string;before:string|null;after:string|null};
 type DestinationReview = {changes:DestinationChange[];key:string|null;error:string};
 function projectDestinationReview(saved:PrivateProjectDraft&{revision:number},draft:PrivateProjectDraft):DestinationReview{
@@ -692,19 +699,16 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       observeRevision(data.revision);
       // Readback proves current saved fields, not which request/actor wrote them.
       // Do not advance the sibling case-study baseline without its own receipt.
-      if(uncertainOverview&&detail.status==='ready'&&data.revision===uncertainOverview.from+1){
-        try{
-          const same=(left:PrivateProjectDraft,right:PrivateProjectDraft)=>
-            JSON.stringify(normalizeProjectDraft(left))===JSON.stringify(normalizeProjectDraft(right));
-          if(same(data,uncertainOverview.desired)&&same(detail.draft,uncertainOverview.desired)){
-            setDetail({status:'ready',saved:data,draft:data});setUncertainOverview(null);
-            setOverviewConflict(false);setLatest(null);
-            setFeedback({error:false,text:'Requested overview matches the current saved revision. No additional write was made.'});return;
-          }
-        }catch{/* Invalid current draft still requires explicit comparison. */}
+      if(uncertainOverview&&detail.status==='ready'&&
+        matchesProjectReadback(data,projectId,uncertainOverview.from+1,uncertainOverview.desired)&&
+        equalProjectDraft(detail.draft,uncertainOverview.desired)){
+        setDetail({status:'ready',saved:data,draft:data});setUncertainOverview(null);
+        setOverviewConflict(false);setLatest(null);
+        setFeedback({error:false,text:'Requested overview matches the current saved revision. No additional write was made.'});return;
       }
-      setLatest(data.revision !== baseRevision ? data : null);
-      if (data.revision === baseRevision) {
+      const unchanged=detail.status==='ready'&&data.id===projectId&&data.revision===baseRevision&&equalProjectDraft(data,detail.saved);
+      setLatest(unchanged?null:data);
+      if (unchanged) {
         setUncertainOverview(null);setOverviewConflict(false);
         setFeedback({error:false,text:'You have the latest saved revision.'});
       } else setOverviewConflict(true);
@@ -752,10 +756,18 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
         setFeedback({error:true,text:message});
         return;
       }
-      const to=result.data.revision;
+      // The legacy save adapter returns submitted fields with a revision receipt.
+      // Verify the actual persisted owner record before granting sibling revision credit.
+      const readback=await port.readOwnerProject(projectId);
+      if(!currentDetail(generation))return;
+      if(readback.error||!readback.data||!matchesProjectReadback(readback.data,projectId,from+1,submitted)){
+        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
+        setFeedback({error:true,text:'Save was acknowledged but the stored overview could not be verified. Check the latest revision before retrying.'});return;
+      }
+      const to=readback.data.revision;
       observeRevision(to);
       setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
-      setDetail({status:'ready',saved:result.data,draft:result.data});
+      setDetail({status:'ready',saved:readback.data,draft:readback.data});
       setReviewedDestinationChange(null);setUncertainOverview(null);
       setFeedback({error:false,text:'Private draft saved.'});
     } catch {
@@ -1474,9 +1486,16 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
         setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
         return;
       }
-      setDraft(result.data);
-      setSavedSections(result.data.sections);setUncertain(null);setComparison(null);setConfirmRebase(false);
-      onSaved(baseRevision,result.data.revision);
+      const readback=await port.readOwnerCaseStudy(projectId);
+      if(!current(id))return;
+      if(readback.error||!readback.data||readback.data.revision!==baseRevision+1||
+        !sameCaseSections(readback.data.sections,submitted)){
+        setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
+        setError('Case study save was acknowledged but the stored sections could not be verified. Check the latest saved sections before retrying.');return;
+      }
+      setDraft(readback.data);
+      setSavedSections(readback.data.sections);setUncertain(null);setComparison(null);setConfirmRebase(false);
+      onSaved(baseRevision,readback.data.revision);
       setNotice('Private case study saved.');
     } catch {
       if(current(id)){setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
