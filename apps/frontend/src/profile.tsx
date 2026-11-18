@@ -34,6 +34,19 @@ function sharingApi(identity:unknown):SharingApi|null{
   return typeof candidate.readProfileSharingState==='function'&&typeof candidate.requestPublicIdentity==='function'
     ?candidate as SharingApi:null;
 }
+// R11 S8 handoff: exact versioned identity service contract. No direct
+// browser table mutation or fallback to the original one-time handle claim.
+type RenameState={ownerUserId:string;handle:string|null;version:number};
+type RenameChange={expected:RenameState;newHandle:string;operationId:string;confirmation:'RENAME HANDLE'};
+type RenameReceipt={ownerUserId:string;previousHandle:string;handle:string;version:number;status:'RENAMED'|'REPLAYED';publicDeliveryVerified:false;publicationRequired:true};
+type RenameApi={readHandleRenameState():Promise<RenameState>;renameHandle(change:RenameChange):Promise<RenameReceipt>};
+function renameApi(identity:unknown):RenameApi|null{
+  if(!identity||typeof identity!=='object')return null;
+  const api=identity as Partial<RenameApi>;
+  return typeof api.readHandleRenameState==='function'&&typeof api.renameHandle==='function'?api as RenameApi:null;
+}
+const validRenameHandle=(value:string)=>/^[a-z][a-z0-9_]{2,29}$/.test(value)&&value!=='onboarding';
+const sameRenameState=(a:RenameState,b:RenameState)=>a.ownerUserId===b.ownerUserId&&a.handle===b.handle&&a.version===b.version;
 type PreviewField = 'displayName' | 'headline' | 'bio';
 const previewFields: {key: PreviewField; label: string}[] = [
   {key: 'displayName', label: 'Display name'}, {key: 'headline', label: 'Headline'}, {key: 'bio', label: 'About you'}
@@ -167,6 +180,13 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       if(current()){operationPending.current=false;projectionPending.current=false;setSharingWriting(false);setProjectionLoading(false);}
     }
   }
+  const [renameState,setRenameState]=useState<RenameState|null>(null);
+  const [renameDraft,setRenameDraft]=useState('');
+  const [renameConfirm,setRenameConfirm]=useState(false);
+  const [renameBusy,setRenameBusy]=useState(false);
+  const [renameError,setRenameError]=useState('');
+  const [renameNotice,setRenameNotice]=useState('');
+  const pendingRename=useRef<RenameChange|null>(null);
   const [skill, setSkill] = useState('');
   const [skillError, setSkillError] = useState('');
   const [visible, setVisible] = useState<PreviewField[]>(['displayName', 'headline']);
@@ -197,6 +217,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   function stopAutosave(){autoEnabled.current=false;cancelScheduledSave();setAutosave(false);}
   function expireProfile(){
     stopAutosave();invalidateProjection();pendingSharing.current=null;setSharingWriting(false);pendingSkill.current=false;setSaved(null);setDraft(null);setSkill('');setSkillError('');
+    pendingRename.current=null;setRenameState(null);setRenameDraft('');setRenameConfirm(false);setRenameBusy(false);setRenameError('');setRenameNotice('');
     setLatestProfile(null);setUncertainSave(null);setConfirmRebase(false);setWithdrawal(false);
     setBusy(false);setActiveSaveMode(null);setLoadingProfile(false);setCheckingLatest(false);
     setNeedsReload(true);setSessionExpired(true);setNotice('');setError('Your owner session changed. Reopen your profile.');
@@ -214,7 +235,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
   },[port]);
   // A ref closes the synchronous gap before React commits disabled controls.
   const operationPending = useRef(true);
-  const locked = busy || loadingProfile || checkingLatest || sharingWriting || sessionExpired;
+  const locked = busy || loadingProfile || checkingLatest || sharingWriting || renameBusy || sessionExpired;
 
   useEffect(() => {
     let active = true;
@@ -260,6 +281,7 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     operationPending.current = true;
     invalidateProjection();
     setLoadingProfile(true);
+    setRenameState(null);setRenameConfirm(false);setRenameNotice('');
     setError('');
     setNotice('');
     setWithdrawal(false);
@@ -391,6 +413,74 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     saved.displayName !== draft.displayName || saved.headline !== draft.headline ||
     saved.bio !== draft.bio || saved.skills.join('\u0000') !== draft.skills.join('\u0000')
   ));
+  // Rename and ordinary profile edits share the synchronous mutation lock.
+  // The exact baseline is read from the authenticated service, not the
+  // previous claim or a guessed public URL. An uncertain write is never
+  // retried automatically; a readback must precede a fresh explicit review.
+  async function runHandleRename(write:boolean){
+    if(operationPending.current||projectionPending.current||!validEpoch()||!saved||!draft||
+      dirty||needsReload||pendingSkill.current||skill.trim())return;
+    if(write&&(!renameState?.handle||!renameConfirm||!validRenameHandle(renameDraft)||
+      renameDraft===renameState.handle||renameState.version>=Number.MAX_SAFE_INTEGER))return;
+    const expected=renameState;
+    const prior=pendingRename.current;
+    const change:RenameChange|null=write&&expected?{
+      expected:{...expected},newHandle:renameDraft,
+      operationId:prior&&sameRenameState(prior.expected,expected)&&prior.newHandle===renameDraft
+        ?prior.operationId:crypto.randomUUID(),confirmation:'RENAME HANDLE'}:null;
+    stopAutosave();invalidateProjection();operationPending.current=true;
+    setRenameBusy(true);setRenameConfirm(false);setRenameError('');setRenameNotice('');
+    const epoch=profileEpoch.current,lifetime=profileLifetime.current;
+    const current=()=>lifetime===profileLifetime.current&&epoch===profileEpoch.current&&validEpoch();
+    try{
+      const services=await port.ownerSettings();if(!current())return;
+      const api=!services.error&&services.data?renameApi(services.data.identity):null;
+      if(!api){setRenameState(null);setRenameError('Versioned handle service is unavailable. No rename was sent. Retry checking the saved handle.');return;}
+      const owner=await port.getUser();if(!current())return;
+      const ownerId=owner.data?.user?.id;
+      if(owner.error||!ownerId)throw new Error('Unverified owner');
+      let receipt:RenameReceipt|null=null;
+      if(change){
+        if(change.expected.ownerUserId!==ownerId)throw new Error('Owner changed');
+        pendingRename.current=change;
+        receipt=await api.renameHandle(change);if(!current())return;
+        if(receipt.ownerUserId!==ownerId||receipt.previousHandle!==change.expected.handle||
+          receipt.handle!==change.newHandle||receipt.version!==change.expected.version+1||
+          (receipt.status!=='RENAMED'&&receipt.status!=='REPLAYED')||
+          receipt.publicDeliveryVerified!==false||receipt.publicationRequired!==true)throw new Error('Invalid rename acknowledgement');
+      }
+      const [state,profile,verifiedOwner]=await Promise.all([api.readHandleRenameState(),port.readOwnerProfile(epoch),port.getUser()]);
+      if(!current())return;
+      if(verifiedOwner.error||verifiedOwner.data?.user?.id!==ownerId||state.ownerUserId!==ownerId||
+        !Number.isSafeInteger(state.version)||state.version<0||(state.handle!==null&&!validRenameHandle(state.handle))||
+        profile.error||!profile.data||profile.data.handle!==state.handle||
+        (receipt!==null&&state.version<receipt.version))throw new Error('Unverified saved handle');
+      setSaved(profile.data);setDraft(profile.data);setRenameState(state);
+      const attempted=pendingRename.current;
+      if(attempted){
+        if(state.ownerUserId===attempted.expected.ownerUserId&&state.handle===attempted.newHandle&&
+          state.version===attempted.expected.version+1){
+          pendingRename.current=null;setRenameDraft('');
+          setRenameNotice(receipt?'Private handle renamed and read back. Publish separately; no new public URL is verified.':
+            'The current saved handle matches the requested handle. No additional write was made. Public delivery requires separate verification.');
+        }else if(sameRenameState(state,attempted.expected)){
+          setRenameDraft(attempted.newHandle);
+          setRenameNotice('The saved handle is unchanged. Review it and explicitly confirm if you want to retry the same request.');
+        }else{
+          pendingRename.current=null;setRenameDraft(attempted.newHandle);
+          setRenameNotice('The saved handle or version changed. Review the new baseline and confirm any new request separately.');
+        }
+      }else{setRenameDraft('');setRenameNotice('Current private handle verified. This is not evidence of a live public route.');}
+    }catch{
+      if(current()){
+        setRenameState(null);setRenameConfirm(false);
+        setRenameError(write?'Rename could not be confirmed. Check the current saved handle before any retry; no automatic write will occur.':
+          'Saved handle could not be verified. Retry when your connection and session are available.');
+      }
+    }finally{
+      if(current()){operationPending.current=false;setRenameBusy(false);}
+    }
+  }
   // Opt-in is scoped to the mounted verified workspace. Never schedule a
   // request on a stale owner, a failed/ambiguous save, or confirmed withdrawal.
   useEffect(()=>{
@@ -401,11 +491,11 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
     return cancelScheduledSave;
   },[autosave,saved,draft,dirty,locked,needsReload,withdrawal,latestProfile,port,skill]);
   useEffect(()=>{
-    if(!dirty&&!skill.trim()&&!busy&&!checkingLatest&&!sharingWriting)return;
+    if(!dirty&&!skill.trim()&&!busy&&!checkingLatest&&!sharingWriting&&!renameBusy)return;
     const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};
     window.addEventListener('beforeunload',warn);
     return ()=>window.removeEventListener('beforeunload',warn);
-  },[dirty,skill,busy,checkingLatest,sharingWriting]);
+  },[dirty,skill,busy,checkingLatest,sharingWriting,renameBusy]);
   const initials = draft?.displayName.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase();
   const preview=projectionMode==='preferences'?projectionSnapshot:previewSaved?saved:draft;
   const previewSelection=projectionMode==='preferences'?(projectionFields??[]):visible;
@@ -510,6 +600,33 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
           {panel === 'Visibility' && <>
             <p>Choose eligible profile fields in the private preview. Open Saved sharing preferences to verify or explicitly save private sharing choices. Publishing is a separate action and remains unavailable until delivery is verified. Skills, authored links, platform links, email and account details stay out of this projection.</p>
             <a className="ws-secondary" href="/app/settings/privacy">Open privacy settings</a>
+            <fieldset className="ws-project-fields" disabled={locked||dirty||needsReload||!!skill.trim()||projectionLoading}>
+              <legend>Rename profile handle</legend>
+              <p>Changing your handle can withdraw old public identity and portfolio addresses. It does not create a redirect or publish a new address. Review the exact saved version first.</p>
+              <button type="button" className="ws-secondary" onClick={()=>void runHandleRename(false)}>
+                {renameState?'Refresh saved handle':'Check saved handle'}
+              </button>
+              {renameState&&<>
+                <p>Saved handle: <strong>{renameState.handle??'Not claimed'}</strong> · Version {renameState.version}</p>
+                {renameState.handle&&<>
+                  <label>New handle<input value={renameDraft} maxLength={30} autoComplete="off"
+                    onKeyDown={e=>{if(e.key==='Enter')e.preventDefault();}}
+                    onChange={e=>{if(operationPending.current||!validEpoch())return;setRenameDraft(e.target.value);setRenameConfirm(false);}}/></label>
+                  <p>Use 3–30 lowercase letters, digits or underscores, starting with a letter.</p>
+                  <label className="ws-profile-check"><input type="checkbox" checked={renameConfirm}
+                    disabled={!validRenameHandle(renameDraft)||renameDraft===renameState.handle||renameState.version>=Number.MAX_SAFE_INTEGER}
+                    onChange={e=>{if(!operationPending.current&&validEpoch())setRenameConfirm(e.target.checked);}}/>
+                    I confirm changing {renameState.handle} to {renameDraft||'the new handle'} and withdrawing old public addresses.</label>
+                  <button type="button" className="ws-primary" disabled={!renameConfirm||!validRenameHandle(renameDraft)||
+                    renameDraft===renameState.handle||renameState.version>=Number.MAX_SAFE_INTEGER} onClick={()=>void runHandleRename(true)}>Rename handle</button>
+                </>}
+                {!renameState.handle&&<p>Claim your initial handle through onboarding before renaming.</p>}
+              </>}
+            </fieldset>
+            {renameBusy&&<p role="status">Checking authenticated handle state…</p>}
+            {renameNotice&&<p role="status">{renameNotice}</p>}
+            {renameError&&<p role="alert" className="ws-inline-alert">{renameError}</p>}
+            {(dirty||needsReload||!!skill.trim())&&<p>Finish or reload unsaved profile edits before changing the handle.</p>}
           </>}
           {panel === 'Public preview' && <p>Compare the selected draft or last saved fields. This is an owner-only approximation, not a live visitor route.</p>}
         </fieldset>
