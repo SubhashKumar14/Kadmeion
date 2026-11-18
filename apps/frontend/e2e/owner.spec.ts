@@ -3412,7 +3412,8 @@ test('B16 C08 profile field selection CAS conflicts across tabs and withdraws th
     const reloaded=page.getByRole('group',{name:'Choose fields for a future publication'});
     await expect(reloaded.getByRole('checkbox',{name:'Headline',exact:true})).not.toBeChecked();
     await expect(reloaded.getByRole('checkbox',{name:'About you',exact:true})).not.toBeChecked();
-    await expect(page.getByLabel('About you',{exact:true}).first()).toHaveValue('R6 private biography');
+    await page.getByRole('button',{name:'Profile',exact:true}).click();
+    await expect(page.getByRole('textbox',{name:'About you',exact:true})).toHaveValue('R6 private biography');
     expect(await rpc('read_owner_profile_sharing_state',{})).toEqual(afterFirst);
     expect(projection()).toBe('ABSENT');
   }finally{await other.close();}
