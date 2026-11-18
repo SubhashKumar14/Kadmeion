@@ -3150,3 +3150,37 @@ test('B16 C10 mounted scoped theme transaction, measured canvas and private ZIP 
     expect(resolved.status).toBe('resolved');expect(resolved.tokens.text).toBe(text);
   }
 });
+
+test('unmounted private analytics stays consent-off without collection after owner navigation and reload',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated Supabase CI.');
+  test.setTimeout(90_000);
+  const owner=await localUser('CI Analytics Consent Off');
+  await page.goto('/app/analytics');
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Enable portfolio analytics'})).toHaveCount(0);
+  await signIn(page,owner);
+  const appOrigin=new URL(page.url()).origin;
+  const observed:{classification:string;count:number}[]=[
+    {classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}
+  ];
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(!['http:','https:'].includes(url.protocol))return;
+    if(/analytics|telemetry|tracking|collect_event/i.test(url.pathname)&&
+      !(url.origin===appOrigin&&url.pathname==='/app/analytics'))observed[0].count++;
+    if(url.origin!==appOrigin&&url.origin!==origin)observed[1].count++;
+  });
+  await page.goto('/app/analytics');
+  const verifyOff=async()=>{
+    await expect(page.getByRole('heading',{name:'Tracking remains off.'})).toBeVisible();
+    await expect(page.getByText('No verified visitor analytics are available.')).toBeVisible();
+    await expect(page.getByRole('button',{name:'Enable portfolio analytics'})).toBeDisabled();
+    await expect(page.getByRole('link',{name:'Manage private portfolios'})).toBeVisible();
+  };
+  await verifyOff();
+  await page.reload();
+  await verifyOff();
+  await page.getByRole('link',{name:'Manage private portfolios'}).click();
+  await expect(page).toHaveURL(/\/app\/portfolios(?:[?#].*)?$/);
+  expect(observed).toEqual([{classification:'analytics endpoint',count:0},{classification:'external HTTP',count:0}]);
+});
