@@ -2244,6 +2244,43 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** Explicit PROFILE pin preparation for export; never sends a browser digest. */
+  async requestOwnerProfileAssetAttestation(assetId:string,expectedEpoch:number):
+    Promise<OwnerMediaOutcome<OwnerPrivateAssetAttestationReceipt>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!PROJECT_ID_PATTERN.test(assetId)||assetId!==assetId.toLowerCase())
+        throw mediaError('VALIDATION','Invalid private profile asset.');
+      const {session,userId}=await this.ownerAvatarSession(expectedEpoch);
+      const input={p_scope:'PROFILE',p_asset_id:assetId,p_project_id:null};
+      const read=async()=>{
+        const raw=await this.mediaJson('/rest/v1/rpc/read_owner_private_asset_pin',session,expectedEpoch,input);
+        const r=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+        if(!r||Object.keys(r).length!==11||r.scope!=='PROFILE'||r.projectId!==null||
+          r.assetId!==assetId||r.ownerUserId!==userId||typeof r.objectId!=='string'||!PROJECT_ID_PATTERN.test(r.objectId)||
+          typeof r.version!=='string'||r.version.length<1||r.version.length>128||
+          typeof r.mimeType!=='string'||!['image/png','image/jpeg','image/webp'].includes(r.mimeType)||
+          typeof r.byteSize!=='number'||!Number.isSafeInteger(r.byteSize)||r.byteSize<12||r.byteSize>5242880||
+          r.publicDeliveryAllowed!==false||
+          !((r.status==='UNPINNED'&&r.expectedSha256===null)||(r.status==='SERVER_HASH_PINNED'&&
+            typeof r.expectedSha256==='string'&&/^[0-9a-f]{64}$/.test(r.expectedSha256))))
+          throw mediaError('INTEGRITY','Private profile asset pin could not be verified.');
+        return r;
+      };
+      const before=await read();
+      const raw=await this.mediaJson('/functions/v1/complete-private-asset',session,expectedEpoch,{assetId,scope:'PROFILE'},true);
+      const r=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+      if(!r||Object.keys(r).length!==5||r.assetId!==assetId||r.scope!=='PROFILE'||r.status!=='WRITE_ONCE_ATTESTED'||
+        r.publicPublishingAllowed!==false||r.accountDeletionAllowed!==false)
+        throw mediaError('INTEGRITY','Private profile asset completion could not be verified.');
+      const after=await read();
+      if(after.status!=='SERVER_HASH_PINNED'||['objectId','version','mimeType','byteSize'].some(k=>after[k]!==before[k])||
+        (before.expectedSha256!==null&&before.expectedSha256!==after.expectedSha256))
+        throw mediaError('INTEGRITY','Private profile asset pin changed during completion.');
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      return {assetId,status:'WRITE_ONCE_ATTESTED',publicPublishingAllowed:false,accountDeletionAllowed:false};
+    });
+  }
+
   async readOwnerProfileAvatarImage(assetId:string,expectedEpoch:number):Promise<OwnerMediaOutcome<Blob>>{
     return this.mediaOutcome(expectedEpoch,async()=>{
       if(!PROJECT_ID_PATTERN.test(assetId))throw mediaError('VALIDATION','Private avatar is unavailable.');
