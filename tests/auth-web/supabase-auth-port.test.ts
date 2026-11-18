@@ -1248,9 +1248,10 @@ test('C01 exact CAS receipt needs authoritative readback; selected bytes cannot 
   assert.equal(bytes.data,null);assert.equal(bytes.error?.code,'CONFLICT');
   assert.equal(reads,2);assert.equal(downloads,1);
 });
-test('C04 owner private bytes are bound to scope and immutable object identity, never a trusted hash pin',async()=>{
-  for(const variant of ['valid','wrong-owner','wrong-project-path','version-race','wrong-mime','short-bytes','missing-version'] as const){
-    let metadataReads=0,downloads=0;
+test('C04 owner private bytes are bound to scope and immutable object identity, and independent trusted hash pin',async()=>{
+  for(const variant of ['valid','wrong-owner','wrong-project-path','version-race','wrong-mime','short-bytes','missing-version','pinned','digest-mismatch','pin-drift','pin-owner','pin-version','pin-extra','pin-public'] as const){
+    let metadataReads=0,downloads=0,pinReads=0;
+    const hash=Buffer.from(await crypto.subtle.digest('SHA-256',c01Png)).toString('hex');
     const {port,epoch}=await c01Port(async(url,init)=>{
       const u=String(url);
       const headers=init?.headers as Record<string,string>;
@@ -1267,6 +1268,16 @@ test('C04 owner private bytes are bound to scope and immutable object identity, 
           version:variant==='missing-version'?null:variant==='version-race'&&metadataReads===2?'v2':'v1',
           last_modified:c01Time,size:c01Png.length,content_type:'image/png'});
       }
+      if(u.endsWith('/rpc/read_owner_private_asset_pin')){
+        pinReads++;
+        assert.deepEqual(JSON.parse(String(init?.body)),{p_scope:'PROJECT',p_asset_id:c01Asset,p_project_id:c01Project});
+        const pinned=['pinned','digest-mismatch','pin-drift'].includes(variant);
+        return json({scope:'PROJECT',assetId:c01Asset,ownerUserId:variant==='pin-owner'?secondUser.id:user.id,
+          projectId:c01Project,objectId:c01Object,version:variant==='pin-version'?'v9':'v1',
+          mimeType:'image/png',byteSize:c01Png.length,status:pinned?'SERVER_HASH_PINNED':'UNPINNED',
+          expectedSha256:pinned?(variant==='digest-mismatch'||(variant==='pin-drift'&&pinReads===2)?'0'.repeat(64):hash):null,
+          publicDeliveryAllowed:variant==='pin-public',...(variant==='pin-extra'?{extra:true}:{})});
+      }
       if(u.endsWith('/object/authenticated/kadmeion-private-assets/'+c01Path)){
         downloads++;
         return new Response(variant==='short-bytes'?c01Png.slice(0,-1):c01Png,{
@@ -1275,18 +1286,18 @@ test('C04 owner private bytes are bound to scope and immutable object identity, 
       return json({},404);
     });
     const result=await port.readOwnerPrivateAsset(c01Project,c01Asset,epoch);
-    if(variant==='valid'){
-      assert.equal(result.error,null);assert.equal(result.data.serverAttestation,'NOT_VERIFIED');
+    if(variant==='valid'||variant==='pinned'){
+      assert.equal(result.error,null);assert.equal(result.data.serverAttestation,variant==='pinned'?'SERVER_HASH_PINNED':'NOT_VERIFIED');
       assert.equal(result.data.publicDeliveryAllowed,false);
       assert.equal(result.data.integrity.status,'OWNER_BYTES_VERIFIED');
       const expected=Buffer.from(await crypto.subtle.digest('SHA-256',c01Png)).toString('hex');
       assert.equal(result.data.integrity.computedSha256,expected);
       assert.deepEqual(new Uint8Array(await result.data.bytes.arrayBuffer()),c01Png);
-      assert.equal(metadataReads,2);assert.equal(downloads,1);
+      assert.equal(metadataReads,2);assert.equal(downloads,1);assert.equal(pinReads,2);
     }else{
       assert.equal(result.data,null);
       assert.equal(result.error?.code,variant==='wrong-owner'||variant==='wrong-project-path'?'DENIED':'INTEGRITY');
-      if(['wrong-owner','wrong-project-path','missing-version'].includes(variant))assert.equal(downloads,0);
+      if(['wrong-owner','wrong-project-path','missing-version','pin-owner','pin-version','pin-extra','pin-public'].includes(variant))assert.equal(downloads,0);
     }
   }
 });
