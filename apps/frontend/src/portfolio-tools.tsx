@@ -5,7 +5,7 @@ import {portfolioLayout, MAX_FILE_BYTES} from '../../../packages/editor-core/src
 import type { OwnerPrivateAssetRead, SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
 import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
-import { canAssignCompatibleComponent, matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, resolveScopedThemeBase, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
+import { canAssignCompatibleComponent, canPlacePrivateImage, matchingReplacementContent, savedComponentInputFromOwnedSlot, parseScopedTheme, resolveScopedTheme, resolveScopedThemeBase, scopedThemeBreakpoint, scopedThemeCssVariables, type ScopedThemeScope, type ScopedThemeLayer, type ScopedThemeKey, type ScopedThemeEdit, type ScopedThemeTokens, type EditorHead, type EditorIntent, type PortfolioSnapshot } from
   '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 
 type Apply = (intent: EditorIntent, versions?: Readonly<Record<string, MyComponentVersion>>) => boolean;
@@ -269,13 +269,34 @@ function scopedCanvasRules(snapshot:PortfolioSnapshot,sections:CanvasSection[],m
  * The shell owner key is a lifetime identity, not the adapter's internal epoch. */
 export type PrivateCanvasMediaContext=Readonly<{port:SupabaseBrowserAuthPort;ownerKey:string}>;
 type CanvasMediaView={key:string|null;status:'idle'|'pending'|'failed'}|{key:string;status:'ready';url:string;pinned:boolean};
+/** Only bounded raster Blob receipts can reach an ephemeral image URL.
+ * The owner adapter still performs byte/hash, Storage identity and pin verification. */
 function validOwnerPreview(asset:AssetPreviewRecord,data:OwnerPrivateAssetRead|null|undefined,expectedDigest?:string):data is OwnerPrivateAssetRead{
-  return !!data&&data.asset.id===asset.id&&data.asset.projectId===asset.projectId&&
+  return !!data&&['image/png','image/jpeg','image/webp'].includes(asset.mime)&&
+    Number.isSafeInteger(asset.size)&&asset.size>0&&asset.size<=5*1024*1024&&
+    data.bytes instanceof Blob&&data.asset.id===asset.id&&data.asset.projectId===asset.projectId&&
     data.asset.mime===asset.mime&&data.asset.size===asset.size&&data.bytes.size===asset.size&&
-    data.bytes.type.toLowerCase()===asset.mime.toLowerCase()&&
+    data.bytes.type===asset.mime&&
     data.integrity.status==='OWNER_BYTES_VERIFIED'&&/^[a-f0-9]{64}$/.test(data.integrity.computedSha256)&&
     (expectedDigest===undefined||(/^[a-f0-9]{64}$/.test(expectedDigest)&&data.integrity.computedSha256===expectedDigest))&&
     data.publicDeliveryAllowed===false&&['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation);
+}
+/** Recheck the returned immutable raster bytes before exposing a Blob URL.
+ * This is a local integrity check, not an independent server attestation. */
+async function matchesPreviewBytes(bytes:Blob,mime:string,digest:string):Promise<boolean>{
+  try{
+    if(!crypto.subtle||bytes.size<1||bytes.size>5*1024*1024||bytes.type!==mime||!/^[a-f0-9]{64}$/.test(digest))return false;
+    const buffer=await bytes.arrayBuffer();
+    if(buffer.byteLength!==bytes.size)return false;
+    const a=new Uint8Array(buffer);
+    const png=a.length>=8&&[137,80,78,71,13,10,26,10].every((value,index)=>a[index]===value);
+    const jpeg=a.length>=3&&a[0]===255&&a[1]===216&&a[2]===255;
+    const webp=a.length>=12&&[82,73,70,70].every((value,index)=>a[index]===value)&&
+      [87,69,66,80].every((value,index)=>a[index+8]===value);
+    if(!(mime==='image/png'?png:mime==='image/jpeg'?jpeg:mime==='image/webp'?webp:false))return false;
+    const actual=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),value=>value.toString(16).padStart(2,'0')).join('');
+    return actual===digest;
+  }catch{return false;}
 }
 /** The selected slot alone may request actual private bytes. No per-slot
  * fan-out, public URLs, digest promotion, or network access in visitor mode. */
@@ -318,6 +339,9 @@ function useSelectedCanvasMedia(context:PrivateCanvasMediaContext|undefined,snap
       const response=await port.readOwnerPrivateAsset(asset.projectId,asset.id,epoch);
       if(!live())return;
       if(response.error||!validOwnerPreview(asset,response.data,expectedDigest)){setView({key,status:'failed'});return;}
+      const verified=await matchesPreviewBytes(response.data.bytes,asset.mime,response.data.integrity.computedSha256);
+      if(!live())return;
+      if(!verified){setView({key,status:'failed'});return;}
       const url=URL.createObjectURL(response.data.bytes);
       activeUrl.current=url;setView({key,status:'ready',url,pinned:response.data.serverAttestation==='SERVER_HASH_PINNED'});
     }catch{if(live())setView({key,status:'failed'});}
@@ -479,25 +503,43 @@ function ScopedTokenControl({tokenKey,explicit,effective,disabled,revision,onEdi
   const [input,setInput]=useState(String(explicit??effective??''));
   const field=useRef<HTMLDivElement>(null);
   const previousRevision=useRef(revision);
+  const edited=useRef(false);
   useLayoutEffect(()=>{
-    if(previousRevision.current!==revision){
-      previousRevision.current=revision;setInput(String(explicit??effective??''));
+    // A resize can change an inherited value without a revision. Reflect it
+    // only when the author has not typed; never overwrite a local input on
+    // an unrelated measurement update. Undo/Redo changes the revision.
+    const revisionChanged=previousRevision.current!==revision;
+    if(revisionChanged||!edited.current){
+      previousRevision.current=revision;edited.current=false;setInput(String(explicit??effective??''));
     }
   },[revision,explicit,effective]);
+  function changeInput(value:string){edited.current=true;setInput(value);}
+  function discardInput(){edited.current=false;setInput(String(explicit??effective??''));}
   function submit(change:ScopedThemeEdit){
-    if(onEdit(change))field.current?.querySelector<HTMLElement>('input,select')?.focus();
+    if(disabled)return;
+    if(onEdit(change)){edited.current=false;field.current?.querySelector<HTMLElement>('input,select')?.focus();}
   }
   const edit=scopedSetEdit(tokenKey,input);
   const color=tokenKey==='surface'||tokenKey==='text'||tokenKey==='accent';
   const numeric=!color&&tokenKey!=='fontWeight';
-  return <div ref={field}>
-    {tokenKey==='fontWeight'?<label>Override value<select aria-label="Override value" value={input} onChange={event=>setInput(event.target.value)} disabled={disabled}>
+  return <div ref={field} onKeyDown={event=>{
+    if(event.key==='Enter'&&!disabled&&edit&&!(edit.kind==='set'&&edit.value===explicit)&&event.target instanceof HTMLInputElement&&event.target.type!=='color'){
+      event.preventDefault();event.stopPropagation();submit(edit);
+    }else if(event.key==='Escape'&&edited.current){
+      event.preventDefault();event.stopPropagation();discardInput();
+    }
+  }}>
+    {tokenKey==='fontWeight'?<label>Override value<select aria-label="Override value" value={input} onChange={event=>changeInput(event.target.value)} disabled={disabled}>
       <option value="">Choose a weight</option>{[400,500,600,700].map(value=><option key={value} value={value}>{value}</option>)}
-    </select></label>:<label>Override value<input aria-label="Override value" type={numeric?'number':'text'} value={input} onChange={event=>setInput(event.target.value)}
+    </select></label>:<label>Override value<input aria-label="Override value" type={numeric?'number':'text'} value={input} onChange={event=>changeInput(event.target.value)}
       min={tokenKey==='fontSizePx'?12:tokenKey==='lineHeight'?1:0} max={tokenKey==='fontSizePx'?72:tokenKey==='lineHeight'?2:tokenKey==='radiusPx'?32:64}
       step={tokenKey==='lineHeight'?'any':1} maxLength={color?7:undefined} placeholder={color?'#RRGGBB':'Enter a value'} disabled={disabled}
       aria-invalid={input!==''&&!edit}/></label>}
+    {color&&<label>Override color picker<input aria-label="Override color picker" type="color"
+      value={/^#[0-9a-f]{6}$/i.test(input)?input:typeof effective==='string'&&/^#[0-9a-f]{6}$/i.test(effective)?effective:'#000000'}
+      disabled={disabled} onChange={event=>changeInput(event.target.value)}/></label>}
     {input!==''&&!edit&&<p role="alert">Enter a value within the supported token bounds.</p>}
+    {input!==String(explicit??effective??'')&&<button type="button" className="ws-secondary" disabled={disabled} onClick={discardInput}>Discard unsaved token input</button>}
     <button type="button" className="ws-primary" disabled={disabled||!edit||(edit.kind==='set'&&edit.value===explicit)} onClick={()=>edit&&submit(edit)}>Apply override</button>
     <button type="button" className="ws-secondary" disabled={disabled||explicit===undefined} onClick={()=>submit({kind:'reset',key:tokenKey})}>Reset selected override</button>
   </div>;
@@ -531,7 +573,10 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
   const entry=parsed.entries.find(item=>item.active&&item.mode===mode&&scopedScopeId(item.scope)===scopedScopeId(selected.scope));
   const explicit=(layer==='base'?entry?.base:entry?.breakpoints?.[layer])?.[tokenKey];
   const effective=resolved.tokens[tokenKey],origin=resolved.origins[tokenKey];
-  const blocked=disabled||!matched||parsed.status==='blocked'||resolved.status!=='resolved';
+  // A Base edit must not copy a responsive override into the Base layer.
+  // The measured-width effective readout below remains independent.
+  const inputEffective=layer==='base'?inheritedBase?.status==='resolved'?inheritedBase.tokens[tokenKey]:undefined:effective;
+  const blocked=disabled||!matched||parsed.status==='blocked'||resolved.status!=='resolved'||(layer==='base'&&inheritedBase?.status!=='resolved');
   function edit(change:ScopedThemeEdit){
     setNotice('');
     if(blocked)return false;
@@ -563,7 +608,7 @@ function ScopedThemeControls({head,apply,mode,contentWidth,disabled}:{
     {selected.scope.kind==='global'&&<p>The root effective value includes the active template; a narrower override may win.</p>}
     {contrast!==null&&<p role={contrast<4.5?'alert':undefined}>Effective text / surface contrast: {contrast.toFixed(2)}:1. This checks only these colors.</p>}
     {resolved.status!=='resolved'&&parsed.status!=='blocked'&&<p>Initialize or correct the global palette before editing scoped tokens.</p>}
-    <ScopedTokenControl key={mode+'|'+scopeId+'|'+layer+'|'+tokenKey} revision={head.revision} tokenKey={tokenKey} explicit={explicit} effective={effective} disabled={blocked} onEdit={edit}/></>}
+    <ScopedTokenControl key={mode+'|'+scopeId+'|'+layer+'|'+tokenKey} revision={head.revision} tokenKey={tokenKey} explicit={explicit} effective={inputEffective} disabled={blocked} onEdit={edit}/></>}
     {notice&&<p role="status">{notice}</p>}
     <p>Only supported trusted preview content is styled. Custom source is not executed. A reset removes this key from this layer only.</p>
   </section>;
@@ -738,6 +783,28 @@ export function SourceInspector({head,apply,back,buffers,setBuffers}:{
 export type ComponentSaveRetryState={
   pending:{signature:string;id:string;epoch:number}|null;inFlight:boolean;
 };
+/** Match the engine's unique declared slot rule. Legacy layoutless snapshots
+ * retain suffix compatibility, but malformed/ambiguous manifests do not. */
+function savedReuseSlotKind(snapshot:PortfolioSnapshot,key:string):string|null{
+  if(!key||!Object.hasOwn(snapshot.slots,key))return null;
+  try{
+    const page:unknown=JSON.parse(snapshot.files['pages/home.page.json']??'null');
+    const record=objectRecord(page);
+    if(!record||!Object.hasOwn(record,'sections'))return key.slice(key.lastIndexOf('-')+1);
+    if(!Array.isArray(record.sections))return null;
+    const kinds:string[]=[];
+    for(const raw of record.sections){
+      const section=objectRecord(raw);
+      if(!section||typeof section.id!=='string'||typeof section.layout!=='string')continue;
+      for(const name of portfolioLayout(section.layout)?.slots??[]){
+        const kind=name.toLowerCase();
+        if(section.id+'-'+kind===key)kinds.push(kind);
+      }
+    }
+    return kinds.length===1?kinds[0]!:null;
+  }catch{return null;}
+}
+
 export function ComponentLibrary({port, head, committed, slot, apply, blocked,saveRetry,onReuseTarget}: {
   port: SupabaseBrowserAuthPort; head: EditorHead; committed: PortfolioSnapshot | null; slot: string; apply: Apply;blocked:boolean;
   saveRetry:{current:ComponentSaveRetryState};onReuseTarget?:(slotKey:string)=>void;
@@ -754,8 +821,9 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const [category,setCategory]=useState('');
   const [compatibleOnly,setCompatibleOnly]=useState(false);
   const [review,setReview]=useState<{
-    versionId:string;slotKey:string;snapshot:PortfolioSnapshot;epoch:number;generation:number
+    versionId:string;slotKey:string;head:EditorHead;epoch:number;generation:number
   }|null>(null);
+  const [inspectVersion,setInspectVersion]=useState<string|null>(null);
   const reviewHeading=useRef<HTMLHeadingElement>(null);
   const reviewTrigger=useRef<HTMLButtonElement|null>(null);
   const searchInput=useRef<HTMLInputElement>(null);
@@ -763,10 +831,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const reviewSubmitting=useRef(false);
   const [pickedVersion,setPickedVersion]=useState<string|null>(null);
   const savedDrag=useRef<{head:EditorHead;id:string;epoch:number;generation:number}|null>(null);
-  const slotKind = slot.slice(slot.lastIndexOf('-') + 1);
-  const state = head.snapshot.slots[slot]?.state;
-  const owned=head.snapshot.slots[slot],savedSlot=committed?.slots[slot];
-  const canSave=!!owned?.sourcePath&&!!savedSlot?.sourcePath&&['S1','S2'].includes(savedSlot.state)&&
+  const slotKind=savedReuseSlotKind(head.snapshot,slot)??'';
+  const state=slotKind?head.snapshot.slots[slot]?.state:undefined;
+  const owned=slotKind?head.snapshot.slots[slot]:undefined,savedSlot=committed&&slotKind?committed.slots[slot]:undefined;
+  const canSave=!!slotKind&&!!owned?.sourcePath&&!!savedSlot?.sourcePath&&['S1','S2'].includes(savedSlot.state)&&
     owned.sourcePath===savedSlot.sourcePath&&owned.originalSource===savedSlot.originalSource&&
     owned.componentId===savedSlot.componentId&&head.snapshot.files[owned.sourcePath]===committed?.files[savedSlot.sourcePath];
   const [refresh,setRefresh]=useState(0);
@@ -780,9 +848,10 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     const epoch=port.reconcileOwnerSessionEpoch(),generation=++componentListGeneration.current;
     const sameBinding=cataloguePort.current===port&&catalogueEpoch.current===epoch;
     listFlight.current=true;setListPending(true);setListError('');
-    if(!sameBinding){cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setMessage('');}
+    if(!sameBinding){cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setMessage('');setInspectVersion(null);setPickedVersion(null);setReview(null);savedDrag.current=null;}
     function fail(message:string){
       cataloguePort.current=null;catalogueEpoch.current=null;setVersions(null);setListError(message);
+      setInspectVersion(null);setPickedVersion(null);setReview(null);savedDrag.current=null;
       listFlight.current=false;setListPending(false);
     }
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
@@ -803,7 +872,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
   const emptyReuseTargets=canvasSections(head.snapshot).flatMap(section=>section.slots.map(name=>({
     key:section.id+'-'+name.toLowerCase(),kind:name.toLowerCase(),label:section.renderId+' · '+name+' ('+section.id+')'
   }))).filter((item,index,all)=>all.filter(other=>other.key===item.key).length===1&&
-    Object.hasOwn(head.snapshot.slots,item.key)&&head.snapshot.slots[item.key]?.state==='EMPTY');
+    savedReuseSlotKind(head.snapshot,item.key)===item.kind&&head.snapshot.slots[item.key]?.state==='EMPTY');
   function canReuseEmpty(version:MyComponentVersion,key:string){
     const target=emptyReuseTargets.find(item=>item.key===key);
     return catalogueReady&&!listFlight.current&&!blocked&&!busy&&!review&&!!target&&
@@ -831,16 +900,18 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       cataloguePort.current===port?versions?.find(item=>item.id===drag.id):undefined;
   }
   function dropSaved(event:DragEvent<HTMLElement>,key:string){
-    const version=currentSavedDrag();savedDrag.current=null;
+    const version=currentSavedDrag(),hadDrag=!!savedDrag.current;savedDrag.current=null;
+    if(!hadDrag)return;
+    event.preventDefault();event.stopPropagation();
     if(!version||!canReuseEmpty(version,key))return;
-    event.preventDefault();event.stopPropagation();reuseEmpty(version,key);
+    reuseEmpty(version,key);
   }
   function reloadCatalogue(){
     ++componentListGeneration.current;listFlight.current=true;setListPending(true);setRefresh(n=>n+1);
   }
 
   async function save() {
-    if(!catalogueReady||listFlight.current||!committed||!canSave||blocked||!name.trim()||busy)return;
+    if(!catalogueReady||listFlight.current||!committed||!canSave||blocked||review||!name.trim()||busy)return;
     const retry=saveRetry.current;
     if(retry.inFlight){setMessage('A component save is still in progress. Retry after it completes.');return;}
     const epoch=port.reconcileOwnerSessionEpoch();
@@ -879,7 +950,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     (!normalizedQuery||[version.display_name,version.component_key,version.base_component_pin,
       'v'+version.version,...version.compatible_slot_kinds].some(value=>value.toLowerCase().includes(normalizedQuery))))??[];
   const reviewedVersion=review&&versions?.find(version=>version.id===review.versionId);
-  const reviewCurrent=catalogueReady&&!!review&&!!reviewedVersion&&review.slotKey===slot&&review.snapshot===head.snapshot&&
+  const reviewCurrent=catalogueReady&&!!review&&!!reviewedVersion&&review.slotKey===slot&&review.head===head&&
     review.epoch===catalogueEpoch.current&&review.generation===componentListGeneration.current&&
     !!state&&state!=='EMPTY'&&!!owned&&reviewedVersion.compatible_slot_kinds.includes(slotKind);
   const retainedFields=reviewCurrent&&owned&&reviewedVersion?
@@ -901,7 +972,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     reviewTrigger.current=null;
   }
   function openReuse(version:MyComponentVersion,trigger:HTMLButtonElement){
-    if(!catalogueReady||listFlight.current||blocked||busy||!owned||!state||!versions?.some(item=>item.id===version.id)||
+    if(!catalogueReady||listFlight.current||blocked||busy||review||!owned||!state||!versions?.some(item=>item===version)||
       !version.compatible_slot_kinds.includes(slotKind))return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(epoch!==catalogueEpoch.current)return;
@@ -910,11 +981,12 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       closeReview(false);
       const ok=apply({kind:'REUSE_SAVED_COMPONENT',slotKey:slot,componentVersionId:version.id,
         preserveMatchingContent:true},{[version.id]:version});
-      if(ok)setMessage('Private component applied to the working draft. Save to persist; source execution remains disabled.');
+      if(ok){setMessage('Private component applied to the working draft. Save to persist; source execution remains disabled.');onReuseTarget?.(slot);}
+      else setMessage('No private component was placed. Review the current draft.');
       return;
     }
     reviewTrigger.current=trigger;reviewSubmitting.current=false;
-    setReview({versionId:version.id,slotKey:slot,snapshot:head.snapshot,epoch,
+    setReview({versionId:version.id,slotKey:slot,head,epoch,
       generation:componentListGeneration.current});
   }
   function confirmReplacement(){
@@ -931,6 +1003,12 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
     else setMessage('Replacement was not applied. Review current draft and resolve outstanding edits before retrying.');
   }
 
+  const inspected=catalogueReady&&inspectVersion?versions?.find(version=>version.id===inspectVersion):undefined;
+  // A native drag destination must exist before the mouse is pressed. Keep
+  // the same declared empty targets mounted regardless of a picked version.
+  const reuseTargets=catalogueReady?emptyReuseTargets.filter(item=>visibleVersions.some(version=>version.compatible_slot_kinds.includes(item.kind))):[];
+  const selectedVersion=catalogueReady?visibleVersions.find(version=>version.id===pickedVersion):undefined;
+  const reuseListStyle:CSSProperties={height:'16rem',maxHeight:'16rem',margin:0,overflow:'auto',overflowWrap:'anywhere',alignContent:'start'};
   return <div className="ws-editor-tool"><h2>My Components</h2>
     {(message||listPending)&&<p role="status">{message}{message&&listPending?' ':''}{listPending?(versions===null?'Loading saved components…':'Rechecking saved components; reuse is temporarily unavailable.'):""}</p>}
     {listError&&!listPending&&<><p role="alert">{listError}</p><button type="button" className="ws-secondary" onClick={reloadCatalogue}>Retry private components</button></>}
@@ -950,7 +1028,9 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       {visibleVersions.length===0&&<><p>No saved versions match these filters.</p>
         <button type="button" className="ws-secondary" onClick={()=>{setQuery('');setCategory('');setCompatibleOnly(false);searchInput.current?.focus();}}>Clear filters</button></>}
     </>}
-    <ul className="ws-editor-slots">{visibleVersions.map(version=>{
+    {visibleVersions.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,alignItems:'start'}} role="group" aria-label="Private component placement workspace">
+      <div style={{minWidth:0}}><h3>Saved versions</h3>
+    <ul className="ws-editor-slots" aria-label="Private component drag sources" style={reuseListStyle}>{visibleVersions.map(version=>{
       const compatible=!!state&&version.compatible_slot_kinds.includes(slotKind);
       const hasEmpty=emptyReuseTargets.some(item=>canReuseEmpty(version,item.key));
       return <li key={version.id}>
@@ -961,31 +1041,47 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
           Choose or drag {version.display_name} to an empty slot
         </button>}
         <span>Base: {version.base_component_pin} · Fits: {version.compatible_slot_kinds.join(', ')}</span>
+        <button type="button" className="ws-secondary" aria-expanded={!!inspected&&inspected.id===version.id}
+          disabled={!catalogueReady||busy} onClick={()=>{if(catalogueEpoch.current===port.reconcileOwnerSessionEpoch())setInspectVersion(current=>current===version.id?null:version.id);}}>
+          {inspected?.id===version.id?'Close saved source':'Inspect saved source'} · {version.display_name}
+        </button>
         <small>{compatible?'Fits selected slot':state?'Not compatible with selected slot':'Select a slot first'} · Private source, not trusted public code</small>
         <button type="button" aria-expanded={review?.versionId===version.id}
-          disabled={!catalogueReady||!compatible||blocked||busy}
+          disabled={!catalogueReady||!compatible||blocked||busy||!!review}
           onClick={event=>openReuse(version,event.currentTarget)}>
           {state==='EMPTY'?'Reuse in selected slot':'Review replacement'}
         </button>
       </li>;
     })}</ul>
-    {pickedVersion&&catalogueReady&&(()=>{
-      const version=versions?.find(item=>item.id===pickedVersion);
-      if(!version)return null;
-      const available=emptyReuseTargets.filter(item=>version.compatible_slot_kinds.includes(item.kind));
-      return <section aria-label="Compatible empty private component targets">
-        <h3>Place saved version · {version.display_name}</h3>
-        <p>Choose an empty target or drag the verified saved version here. Existing assignments require the separate replacement review.</p>
-        {!available.length?<p>No compatible empty slot exists.</p>:<ul className="ws-editor-slots">{available.map(item=>
-          <li key={item.key}
-            onDragOver={event=>{const dragged=currentSavedDrag();if(dragged&&canReuseEmpty(dragged,item.key)){event.preventDefault();event.dataTransfer.dropEffect='copy';}}}
-            onDrop={event=>dropSaved(event,item.key)}>
-            <button type="button" disabled={!canReuseEmpty(version,item.key)} onClick={()=>reuseEmpty(version,item.key)}>
-              Reuse saved version in {item.label}
-            </button>
-          </li>)}</ul>}
-      </section>;
-    })()}
+      </div>
+    <section aria-label="Compatible empty private component targets" style={{minWidth:0}}>
+      <h3>Empty slots</h3>
+      {!reuseTargets.length?<p>No compatible empty slot exists.</p>:<ul className="ws-editor-slots" style={reuseListStyle}>{reuseTargets.map(item=>{
+        const fits=!!selectedVersion&&canReuseEmpty(selectedVersion,item.key);
+        return <li key={item.key} data-drop-fit={fits?'compatible':undefined}
+          style={fits?DROP_OUTLINE:undefined}
+          onDragOver={event=>{const dragged=currentSavedDrag();if(dragged){
+            event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect=canReuseEmpty(dragged,item.key)?'copy':'none';
+          }}}
+          onDrop={event=>dropSaved(event,item.key)}>
+          <button type="button" aria-disabled={!fits} onClick={()=>{if(selectedVersion&&canReuseEmpty(selectedVersion,item.key))reuseEmpty(selectedVersion,item.key);}}>
+            Reuse saved version in {item.label}
+          </button>
+        </li>;
+      })}</ul>}
+    </section>
+    </div>}
+    {visibleVersions.length>0&&<p role="status">{selectedVersion?'Place saved version · '+selectedVersion.display_name:'Choose or drag a saved version to a declared empty slot.'}</p>}
+    {inspected&&<section aria-label="Verified private saved component source">
+      <h3>{inspected.display_name} · v{inspected.version}</h3>
+      <p>Exact private source text from the verified owner catalogue. Displayed as text only, never compiled, executed, or treated as trusted public source.</p>
+      <dl><div><dt>Base pin</dt><dd>{inspected.base_component_pin}</dd></div>
+        <div><dt>Stored source bytes</dt><dd>{new TextEncoder().encode(inspected.source_code).byteLength}</dd></div>
+        <div><dt>Source SHA-256 (catalogue receipt)</dt><dd><code>{inspected.source_sha256}</code></dd></div>
+        <div><dt>Stored pristine text comparison</dt><dd>{inspected.source_code===inspected.pristine_source?'Matches stored original; app provenance still requires separate verification':'Modified from stored original'}</dd></div></dl>
+      <pre tabIndex={0} aria-label="Saved component source text" style={{maxHeight:320,overflow:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}><code>{inspected.source_code}</code></pre>
+      <button type="button" className="ws-secondary" onClick={()=>setInspectVersion(null)}>Close source inspection</button>
+    </section>}
     {review&&<section aria-label="Replacement impact" onKeyDown={event=>{
       if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeReview();}
     }}>
@@ -1009,7 +1105,7 @@ export function ComponentLibrary({port, head, committed, slot, apply, blocked,sa
       <button type="button" className="ws-secondary" onClick={()=>closeReview()}>Cancel replacement</button>
     </section>}
     {canSave && <><label>Component name<input ref={componentNameInput} disabled={busy} value={name} maxLength={80} onChange={event => setName(event.target.value)}/></label>
-      <button type="button" className="ws-secondary" disabled={!catalogueReady||busy||blocked||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
+      <button type="button" className="ws-secondary" disabled={!catalogueReady||busy||blocked||!!review||!name.trim()} onClick={()=>void save()}>Save committed component</button></>}
     {!canSave&&(state==='S1'||state==='S2')&&<p>Save the portfolio and resolve unapplied source edits before keeping this exact owned version.</p>}
   </div>;
 }
@@ -1024,7 +1120,7 @@ export type LayoutMappingRequest={
   mappings:Array<{fromSlotKey:string;toSlotKey:string|null}>;
 };
 export type LayoutToolsIntent=
-  | Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'}>
+  | Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'|'MOVE_SECTION_BEFORE'}>
   | (LayoutMappingRequest & {kind:'CHANGE_SECTION_LAYOUT';expectedRevision:number;
       confirmStash:boolean;confirmOwnedRelocation:boolean})
   | {kind:'RESTORE_LAYOUT_STASH';fromSlotKey:string;stashIndex:number;toSlotKey:string;
@@ -1105,6 +1201,32 @@ const PLACEMENT_PINS=[
   {pin:'technology-tag@1',label:'Technology tag',category:'Text'},
   {pin:'author-metric@1',label:'Author metric',category:'Work'}
 ] as const;
+/** The catalogue preview describes the actual pinned field shape. It never
+ * invents author data, resolves private URLs, or executes component source. */
+const PINNED_PREVIEW_CONTENT:Readonly<Record<string,Record<string,string>>>=Object.freeze({
+  'title-stacked@1':{title:'Heading',subtitle:'Optional supporting text'},
+  'body-copy@1':{text:'Your paragraph text'},
+  'external-link@1':{label:'Link label'},
+  'project-card@1':{title:'Project title',summary:'Project summary'},
+  'skills-list@1':{items:'["Skill one","Skill two"]'},
+  'experience-list@1':{items:'["Experience entry one","Experience entry two"]'},
+  'technology-tag@1':{text:'Tag label'},
+  'author-metric@1':{label:'Metric label',value:'Author-supplied value'}
+});
+function PinnedComponentPreview({pin}:{pin:string}){
+  if(!PLACEMENT_PINS.some(item=>item.pin===pin)||!Object.hasOwn(PINNED_PREVIEW_CONTENT,pin))return null;
+  const content=PINNED_PREVIEW_CONTENT[pin]!;
+  const projection=slotProjection({state:'S0',componentId:pin,content});
+  return <div role="group" aria-label="Illustrative pinned component preview">
+    <p>Example field shape only · never inserted into your draft</p>
+    {pin==='skills-list@1'||pin==='experience-list@1'?<ul>{projection.parts.map((part,index)=><li key={index}>{part}</li>)}</ul>:
+      pin==='title-stacked@1'?<><h4>{projection.parts[0]}</h4><p>{projection.parts[1]}</p></>:
+      pin==='project-card@1'?<article><strong>{projection.parts[0]}</strong><p>{projection.parts[1]}</p></article>:
+      pin==='author-metric@1'?<dl><dt>{projection.parts[0]}</dt><dd>{projection.parts[1]}</dd></dl>:
+      <p>{projection.parts[0]}</p>}
+    <p>Fields shown: {Object.keys(content).join(', ')}{pin==='external-link@1'||pin==='project-card@1'?' · Validated HTTPS URL supported.':''}</p>
+  </div>;
+}
 const PIN_FAVORITES_KEY='kadmeion.catalogue-favorites.v1';
 function readPinnedFavorites(raw:string|null):string[]{
   if(!raw||raw.length>2048)return [];
@@ -1114,19 +1236,35 @@ function readPinnedFavorites(raw:string|null):string[]{
     return PLACEMENT_PINS.map(item=>item.pin).filter(pin=>parsed.includes(pin));
   }catch{return [];}
 }
+// Shared in-memory fallback for this tab only. If storage reads work but
+// writes fail (quota/policy), the next toggle must not resurrect stale disk IDs.
+let transientPinnedFavorites:string[]|null=null;
+function readDevicePinnedFavorites(storage:Pick<Storage,'getItem'>):{favorites:string[];available:boolean}{
+  if(transientPinnedFavorites!==null)return {favorites:transientPinnedFavorites,available:false};
+  try{return {favorites:readPinnedFavorites(storage.getItem(PIN_FAVORITES_KEY)),available:true};}
+  catch{return {favorites:[],available:false};}
+}
+function writeDevicePinnedFavorites(storage:Pick<Storage,'setItem'>,next:string[]):boolean{
+  try{
+    storage.setItem(PIN_FAVORITES_KEY,JSON.stringify(next));
+    transientPinnedFavorites=null;return true;
+  }catch{transientPinnedFavorites=next;return false;}
+}
 /** Shared by the ordinary catalogue and fallback placement board. Only a
  * local device preference; no owner/session IDs, private versions or sync.
  * Same-tab event contains no user data; receive by re-reading allowlisted IDs. */
 export function usePinnedCatalogueFavorites(){
   const [favorites,setFavorites]=useState<string[]>([]);
   const [storageAvailable,setStorageAvailable]=useState<boolean|null>(null);
-  const current=useRef<string[]>([]);
   const eventName='kadmeion.catalogue-favorites-changed';
+  // Accessing window.localStorage itself may throw, even before getItem.
+  const storage={
+    getItem:(key:string)=>window.localStorage.getItem(key),
+    setItem:(key:string,value:string)=>window.localStorage.setItem(key,value)
+  };
   function load(){
-    try{
-      const next=readPinnedFavorites(window.localStorage.getItem(PIN_FAVORITES_KEY));
-      current.current=next;setFavorites(next);setStorageAvailable(true);
-    }catch{setStorageAvailable(false);}
+    const next=readDevicePinnedFavorites(storage);
+    setFavorites(next.favorites);setStorageAvailable(next.available);
   }
   useEffect(()=>{
     function crossTab(event:StorageEvent){if(event.key===PIN_FAVORITES_KEY||event.key===null)load();}
@@ -1135,19 +1273,16 @@ export function usePinnedCatalogueFavorites(){
   },[]);
   function toggle(id:string):boolean|null{
     if(!PLACEMENT_PINS.some(item=>item.pin===id))return null;
-    // Re-read latest safe preference to avoid a stale same-device UI toggle.
-    let prior=current.current;
-    try{prior=readPinnedFavorites(window.localStorage.getItem(PIN_FAVORITES_KEY));}catch{}
+    const prior=readDevicePinnedFavorites(storage).favorites;
     const next=prior.includes(id)?prior.filter(value=>value!==id):[...prior,id];
-    current.current=next;setFavorites(next);
-    try{
-      window.localStorage.setItem(PIN_FAVORITES_KEY,JSON.stringify(next));
-      setStorageAvailable(true);window.dispatchEvent(new Event(eventName));return true;
-    }catch{setStorageAvailable(false);return false;}
+    const saved=writeDevicePinnedFavorites(storage,next);
+    setFavorites(next);setStorageAvailable(saved);
+    window.dispatchEvent(new Event(eventName));
+    return saved;
   }
   return {favorites,toggle,storageAvailable};
 }
-type PlacementAction=Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'}>;
+type PlacementAction=Extract<EditorIntent,{kind:'ASSIGN_COMPONENT'|'CLEAR_SLOT'|'MOVE_SECTION'|'MOVE_SECTION_BEFORE'}>;
 type PlacementReview={head:EditorHead;key:string;pin?:string;kind:'replace'|'clear'};
 type PlacementDrag={head:EditorHead;kind:'pin'|'section';id:string};
 function placementRule(snapshot:PortfolioSnapshot,key:string,pin:string):'empty'|'replace'|'owned'|'same'|'incompatible'{
@@ -1159,10 +1294,15 @@ function placementRule(snapshot:PortfolioSnapshot,key:string,pin:string):'empty'
   if(item.state!=='S0')return 'incompatible';
   return item.componentId===pin?'same':'replace';
 }
-function adjacentSectionDirection(ids:readonly string[],source:string,target:string):'up'|'down'|null{
-  const from=ids.indexOf(source),to=ids.indexOf(target);
-  if(from<0||to<0||ids.lastIndexOf(source)!==from||ids.lastIndexOf(target)!==to)return null;
-  return to===from-1?'up':to===from+1?'down':null;
+/** Mirror the engine's no-op/unique-destination check; the transaction still
+ * validates the whole current manifest and revision before changing anything. */
+function canReorderBefore(ids:readonly string[],source:string,before:string|null):boolean{
+  if(new Set(ids).size!==ids.length||!ids.includes(source)||source===before||
+    (before!==null&&!ids.includes(before)))return false;
+  const rest=ids.filter(id=>id!==source);
+  const to=before===null?rest.length:rest.indexOf(before);
+  rest.splice(to,0,source);
+  return rest.some((id,index)=>id!==ids[index]);
 }
 /** This board is mounted by the existing LayoutTools owner-gated panel.
  * Every committed change delegates to the same typed editor transaction as
@@ -1170,17 +1310,35 @@ function adjacentSectionDirection(ids:readonly string[],source:string,target:str
 function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:boolean;apply:(intent:PlacementAction)=>boolean}){
   const {favorites,toggle,storageAvailable}=usePinnedCatalogueFavorites();
   const [favoritesOnly,setFavoritesOnly]=useState(false);
+  const [compatibleOnly,setCompatibleOnly]=useState(false);
   const [search,setSearch]=useState('');
   const [category,setCategory]=useState('All');
   const [pin,setPin]=useState('');
   const [target,setTarget]=useState('');
+  const [orderSource,setOrderSource]=useState('');
+  const [orderBefore,setOrderBefore]=useState('');
   const [review,setReview]=useState<PlacementReview|null>(null);
   const [dragging,setDragging]=useState<PlacementDrag|null>(null);
   const [message,setMessage]=useState('');
   const drag=useRef<PlacementDrag|null>(null);
   const running=useRef(false);
   const reviewHeading=useRef<HTMLHeadingElement>(null);
-  useLayoutEffect(()=>{if(review)reviewHeading.current?.focus();},[review]);
+  const reviewTrigger=useRef<HTMLElement|null>(null);
+  const hadReview=useRef(false);
+  const boardSummary=useRef<HTMLElement>(null);
+  const targetSelect=useRef<HTMLSelectElement>(null);
+  useLayoutEffect(()=>{
+    if(review)reviewHeading.current?.focus();
+    else if(hadReview.current){
+      const trigger=reviewTrigger.current;
+      if(trigger?.isConnected&&!trigger.matches(':disabled'))trigger.focus();
+      else if(targetSelect.current&&!targetSelect.current.disabled)targetSelect.current.focus();
+      else boardSummary.current?.focus();
+      reviewTrigger.current=null;
+    }
+    hadReview.current=!!review;
+  },[review]);
+  function cancelReview(){setReview(null);setMessage('Placement review cancelled; no transaction was submitted.');}
   const sections=canvasSections(head.snapshot);
   const ids=sections.map(section=>section.id);
   const targets=sections.flatMap(section=>section.slots.map(name=>({
@@ -1190,6 +1348,7 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
   const selectedRule=chosen&&pin?placementRule(head.snapshot,chosen.key,pin):'incompatible';
   const reviewed=review&&sameWorkingHead(review.head,head)?ownAssignment(head.snapshot,review.key):undefined;
   const visible=PLACEMENT_PINS.filter(item=>(!favoritesOnly||favorites.includes(item.pin))&&
+    (!compatibleOnly||!!chosen&&placementRule(head.snapshot,chosen.key,item.pin)!=='incompatible')&&
     (category==='All'||category===item.category)&&
     (!search.trim()||[item.label,item.pin].some(value=>value.toLowerCase().includes(search.trim().toLowerCase()))));
   function toggleFavorite(id:string){
@@ -1206,16 +1365,20 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
     }catch{setMessage('The transaction could not be applied. No successful change is claimed.');return false;}
     finally{running.current=false;}
   }
-  function place(selectedPin:string,key:string){
-    if(blocked||!targets.some(item=>item.key===key))return;
+  function place(selectedPin:string,key:string,trigger?:HTMLElement){
+    if(blocked||review||!targets.some(item=>item.key===key))return;
     const rule=placementRule(head.snapshot,key,selectedPin);
     setTarget(key);setPin(selectedPin);setReview(null);
     if(rule==='empty')submit({kind:'ASSIGN_COMPONENT',slotKey:key,componentId:selectedPin},'Component added to the empty slot.');
-    else if(rule==='replace'||rule==='owned')setReview({head,key,pin:selectedPin,kind:'replace'});
+    else if(rule==='replace'||rule==='owned'){
+      reviewTrigger.current=trigger??targetSelect.current;
+      setReview({head,key,pin:selectedPin,kind:'replace'});
+    }
     else setMessage(rule==='same'?'This pristine component is already assigned.':'This component does not fit that slot. No change was made.');
   }
-  function clear(){
-    if(blocked||!chosen||ownAssignment(head.snapshot,chosen.key)?.state==='EMPTY')return;
+  function clear(trigger:HTMLElement){
+    if(blocked||review||!chosen||!ownAssignment(head.snapshot,chosen.key)||ownAssignment(head.snapshot,chosen.key)?.state==='EMPTY')return;
+    reviewTrigger.current=trigger;
     setReview({head,key:chosen.key,kind:'clear'});
   }
   function confirm(){
@@ -1241,31 +1404,57 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
   function finishDrag(){drag.current=null;setDragging(null);}
   function pinDrop(event:DragEvent<HTMLElement>,key:string){
     const item=drag.current;finishDrag();
-    if(!item||item.kind!=='pin'||!sameWorkingHead(item.head,head)||blocked)return;
-    event.preventDefault();event.stopPropagation();place(item.id,key);
-  }
-  function sectionDrop(event:DragEvent<HTMLElement>,id:string){
-    const item=drag.current;finishDrag();
-    if(!item||item.kind!=='section'||!sameWorkingHead(item.head,head)||blocked)return;
+    if(!item||item.kind!=='pin')return;
     event.preventDefault();event.stopPropagation();
-    const direction=adjacentSectionDirection(ids,item.id,id);
-    if(direction)submit({kind:'MOVE_SECTION',sectionId:item.id,direction},'Section reordered by one position.');
-    else setMessage('Drop onto an adjacent section for one undoable move. No change was made.');
+    if(blocked||review||!sameWorkingHead(item.head,head))return;
+    const rule=placementRule(head.snapshot,key,item.id);
+    if(rule!=='empty'&&rule!=='replace'&&rule!=='owned'){
+      setMessage('This live drag is not compatible with that target. No change was made.');return;
+    }
+    place(item.id,key);
   }
-  const liveDrag=dragging&&sameWorkingHead(dragging.head,head)&&!blocked?dragging:null;
+  function moveBefore(source:string,before:string|null){
+    if(blocked||review||!canReorderBefore(ids,source,before))return false;
+    const ok=submit({kind:'MOVE_SECTION_BEFORE',sectionId:source,beforeSectionId:before,expectedRevision:head.revision},
+      'Section moved to the chosen position.');
+    if(ok){setOrderSource('');setOrderBefore('');}
+    return ok;
+  }
+  function sectionDrop(event:DragEvent<HTMLElement>,id:string|null){
+    const item=drag.current;finishDrag();
+    if(!item||item.kind!=='section'||!sameWorkingHead(item.head,head)||blocked||review)return;
+    event.preventDefault();event.stopPropagation();
+    if(!moveBefore(item.id,id))setMessage('Choose a different valid section position. No move was applied.');
+  }
+  function currentDrag():PlacementDrag|null{
+    const item=drag.current;
+    return item&&sameWorkingHead(item.head,head)&&!blocked&&!review?item:null;
+  }
+  const liveDrag=dragging&&sameWorkingHead(dragging.head,head)&&!blocked&&!review?dragging:null;
+  // Keep the source and destination within the same visible row; moving
+  // between independently scrollable lists must not scroll the source out
+  // of the editor pane before the browser emits its first native dragstart.
+  const pairedListStyle:CSSProperties={height:'12rem',maxHeight:'12rem',margin:0,overflow:'auto',overflowWrap:'anywhere',alignContent:'start'};
   return <details>
-    <summary>Component placement, Favorites and ordering</summary>
-    <section aria-label="Pinned component placement">
+    <summary ref={boardSummary}>Component placement, Favorites and ordering</summary>
+    <section aria-label="Pinned component placement" onKeyDown={event=>{
+      if(event.key==='Escape'&&review){event.preventDefault();event.stopPropagation();cancelReview();}
+    }}>
       <p>Drag a pinned block to a compatible slot below, or select a component and target using the keyboard. All changes use the private draft transaction.</p>
       <label>Search placement library<input type="search" maxLength={120} value={search} onChange={event=>setSearch(event.target.value)}/></label>
       <label>Placement category<select aria-label="Placement category" value={category} onChange={event=>setCategory(event.target.value)}>
         {['All','Text','Links','Work'].map(value=><option key={value}>{value}</option>)}
       </select></label>
       <label><input type="checkbox" checked={favoritesOnly} onChange={event=>setFavoritesOnly(event.target.checked)}/> Device favorites only</label>
+      <label><input type="checkbox" checked={compatibleOnly} disabled={!chosen}
+        onChange={event=>setCompatibleOnly(event.target.checked)}/> Compatible with selected placement target only</label>
+      {compatibleOnly&&!chosen&&<p role="status">Choose a placement target or clear the filters.</p>}
       <p>Favorites contain only public pinned component IDs on this device; they are not account-synced.{storageAvailable===false?' Device storage is unavailable; changes may last only for this visit.':''}</p>
-      <ul className="ws-editor-slots">{visible.map(item=><li key={item.pin}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,alignItems:'start'}} role="group" aria-label="Component placement drag workspace">
+        <div style={{minWidth:0}}><h4>Components</h4>
+      <ul className="ws-editor-slots" aria-label="Pinned component drag sources" style={pairedListStyle}>{visible.map(item=><li key={item.pin}>
         <button type="button" aria-pressed={pin===item.pin} draggable={!blocked&&!review}
-          disabled={blocked} onClick={()=>{setPin(item.pin);setReview(null);}}
+          disabled={blocked||!!review} onClick={()=>{setPin(item.pin);}}
           onDragStart={event=>beginDrag(event,'pin',item.pin)} onDragEnd={finishDrag}>
           {item.label} · {item.pin}
         </button>
@@ -1273,27 +1462,38 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
           {favorites.includes(item.pin)?'Remove favorite':'Favorite'} · {item.label}
         </button>
       </li>)}</ul>
-      {!visible.length&&<p>No pinned blocks match these filters.</p>}
-      <label>Placement target<select aria-label="Placement target" value={chosen?.key??''} disabled={blocked}
-        onChange={event=>{setTarget(event.target.value);setReview(null);}}>
-        <option value="">Choose a slot</option>{targets.map(item=><option key={item.key} value={item.key}>{item.label} · {head.snapshot.slots[item.key]?.state}</option>)}
-      </select></label>
-      <button type="button" className="ws-primary" disabled={blocked||!chosen||!pin||selectedRule==='incompatible'||selectedRule==='same'}
-        onClick={()=>chosen&&place(pin,chosen.key)}>Place selected pinned block</button>
-      <button type="button" className="ws-secondary" disabled={blocked||!chosen||head.snapshot.slots[chosen.key]?.state==='EMPTY'}
-        onClick={clear}>Move selected assignment to Unplaced</button>
-      <p>{chosen&&pin?(selectedRule==='incompatible'?'Incompatible target.':selectedRule==='owned'?'Protected owned source needs explicit review.':selectedRule==='same'?'Already assigned.':'Compatible target.'):'Choose a component and slot.'}</p>
-      <ul className="ws-editor-slots" aria-label="Declared component drop targets">{targets.map(item=>{
+        </div>
+        <div style={{minWidth:0}}><h4>Declared slots</h4>
+      <ul className="ws-editor-slots" aria-label="Declared component drop targets" style={pairedListStyle}>{targets.map(item=>{
         const rule=liveDrag?.kind==='pin'?placementRule(head.snapshot,item.key,liveDrag.id):null;
         const fit=rule==='empty'||rule==='replace'||rule==='owned';
         return <li key={item.key} data-drop-fit={fit?'compatible':undefined}
           style={fit?{outline:'2px dashed currentColor',outlineOffset:'2px'}:undefined}
-          onDragOver={event=>{if(liveDrag?.kind==='pin'){event.preventDefault();event.dataTransfer.dropEffect=fit?'move':'none';}}}
+          onDragOver={event=>{const current=currentDrag();if(current?.kind==='pin'){
+            const rule=placementRule(head.snapshot,item.key,current.id);
+            event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect=rule==='empty'||rule==='replace'||rule==='owned'?'move':'none';
+          }}}
           onDrop={event=>pinDrop(event,item.key)}>
-          <button type="button" aria-pressed={target===item.key} disabled={blocked}
-            onClick={()=>{setTarget(item.key);setReview(null);}}>{item.label} · {head.snapshot.slots[item.key]?.state==='EMPTY'?'EMPTY':head.snapshot.slots[item.key]?.state}</button>
+          <button type="button" aria-pressed={target===item.key} disabled={blocked||!!review}
+            onClick={()=>{setTarget(item.key);}}>{item.label} · {head.snapshot.slots[item.key]?.state==='EMPTY'?'EMPTY':head.snapshot.slots[item.key]?.state}</button>
         </li>;
       })}</ul>
+        </div>
+      </div>
+      {!targets.length&&<p>No unambiguous declared placement targets. Add a section or review the current manifest.</p>}
+      {!visible.length&&<p>No pinned blocks match these filters.</p>}
+      {(search||category!=='All'||favoritesOnly||compatibleOnly)&&
+        <button type="button" className="ws-secondary" onClick={()=>{setSearch('');setCategory('All');setFavoritesOnly(false);setCompatibleOnly(false);}}>Clear placement filters</button>}
+      {pin&&<PinnedComponentPreview pin={pin}/>}
+      <label>Placement target<select ref={targetSelect} aria-label="Placement target" value={chosen?.key??''} disabled={blocked||!!review}
+        onChange={event=>{setTarget(event.target.value);}}>
+        <option value="">Choose a slot</option>{targets.map(item=><option key={item.key} value={item.key}>{item.label} · {head.snapshot.slots[item.key]?.state}</option>)}
+      </select></label>
+      <button type="button" className="ws-primary" disabled={blocked||!!review||!chosen||!pin||selectedRule==='incompatible'||selectedRule==='same'}
+        onClick={event=>chosen&&place(pin,chosen.key,event.currentTarget)}>Place selected pinned block</button>
+      <button type="button" className="ws-secondary" disabled={blocked||!!review||!chosen||head.snapshot.slots[chosen.key]?.state==='EMPTY'}
+        onClick={event=>clear(event.currentTarget)}>Move selected assignment to Unplaced</button>
+      <p>{chosen&&pin?(selectedRule==='incompatible'?'Incompatible target.':selectedRule==='owned'?'Protected owned source needs explicit review.':selectedRule==='same'?'Already assigned.':'Compatible target.'):'Choose a component and slot.'}</p>
       {review&&<section aria-label="Pinned placement impact">
         <h4 ref={reviewHeading} tabIndex={-1}>Review placement impact</h4>
         {!reviewed?<p role="alert">The working revision changed. Cancel this review; no assignment was changed.</p>:<>
@@ -1305,14 +1505,29 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
             {review.kind==='clear'?'Confirm move to Unplaced':'Confirm replace and stash'}
           </button>
         </>}
-        <button type="button" className="ws-secondary" onClick={()=>setReview(null)}>Cancel placement review</button>
+        <button type="button" className="ws-secondary" onClick={cancelReview}>Cancel placement review</button>
       </section>}
     </section>
     <section aria-label="Section ordering controls">
       <h3>Section order</h3>
-      <p>Drag a section onto an adjacent section, or move up/down. Each move is one transaction.</p>
+      <p>Drop a section before another section or at the end. Keyboard controls offer the same destinations. Each move is one transaction.</p>
+      <label>Section to move<select value={orderSource} disabled={blocked||!!review}
+        onChange={event=>{setOrderSource(event.target.value);setOrderBefore('');}}>
+        <option value="">Choose a section</option>{sections.map(section=><option key={section.id} value={section.id}>{section.renderId} · {section.id}</option>)}
+      </select></label>
+      <label>Move before<select value={orderBefore} disabled={blocked||!!review||!ids.includes(orderSource)}
+        onChange={event=>setOrderBefore(event.target.value)}>
+        <option value="">Choose destination</option>{sections.filter(section=>canReorderBefore(ids,orderSource,section.id)).map(section=>
+          <option key={section.id} value={section.id}>{section.renderId} · {section.id}</option>)}
+        {canReorderBefore(ids,orderSource,null)&&<option value=":end">End of page</option>}
+      </select></label>
+      <button type="button" className="ws-primary"
+        disabled={blocked||!!review||!orderBefore||!canReorderBefore(ids,orderSource,orderBefore===':end'?null:orderBefore)}
+        onClick={()=>moveBefore(orderSource,orderBefore===':end'?null:orderBefore)}>Move section to chosen position</button>
       <ol>{sections.map((section,index)=><li key={section.id}
-        onDragOver={event=>{if(liveDrag?.kind==='section'){event.preventDefault();event.dataTransfer.dropEffect=adjacentSectionDirection(ids,liveDrag.id,section.id)?'move':'none';}}}
+        data-drop-fit={liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,section.id)?'compatible':undefined}
+        style={liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,section.id)?DROP_OUTLINE:undefined}
+        onDragOver={event=>{const current=currentDrag();if(current?.kind==='section'){event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect=canReorderBefore(ids,current.id,section.id)?'move':'none';}}}
         onDrop={event=>sectionDrop(event,section.id)}>
         <span draggable={!blocked&&!review} onDragStart={event=>beginDrag(event,'section',section.id)}
           onDragEnd={finishDrag}>{section.renderId} · {section.id}</span>{' '}
@@ -1320,12 +1535,39 @@ function PinnedPlacementBoard({head,blocked,apply}:{head:EditorHead;blocked:bool
           aria-label={'Move '+section.id+' one position up'} onClick={()=>submit({kind:'MOVE_SECTION',sectionId:section.id,direction:'up'},'Section reordered by one position.')}>Up</button>
         <button type="button" disabled={blocked||index===sections.length-1||!!review}
           aria-label={'Move '+section.id+' one position down'} onClick={()=>submit({kind:'MOVE_SECTION',sectionId:section.id,direction:'down'},'Section reordered by one position.')}>Down</button>
-      </li>)}</ol>
+      </li>)}{ids.length>1&&new Set(ids).size===ids.length&&
+        <li data-drop-fit={liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,null)?'compatible':undefined}
+          style={liveDrag?.kind==='section'&&canReorderBefore(ids,liveDrag.id,null)?DROP_OUTLINE:{minHeight:36}}
+          onDragOver={event=>{const current=currentDrag();if(current?.kind==='section'){
+            event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect=canReorderBefore(ids,current.id,null)?'move':'none';
+          }}}
+          onDrop={event=>sectionDrop(event,null)}>Drop at end of page</li>}</ol>
     </section>
     {message&&<p role="status">{message}</p>}
   </details>;
 }
 
+/** Only a compatibility projection for an uncommitted, proposed manifest.
+ * No draft files are written. The authoritative planner still checks the
+ * complete mapping, quota, collisions, and provenance on confirmation. */
+function proposedLayoutTargets(snapshot:PortfolioSnapshot,sectionId:string,layout:string):PortfolioSnapshot|null{
+  const manifest=portfolioLayout(layout);
+  if(!manifest)return null;
+  const slots:PortfolioSnapshot['slots']={};
+  for(const name of manifest.slots){
+    const key=layoutSlotKey(sectionId,name);
+    if(!usableLayoutKey(key)||Object.hasOwn(slots,key))return null;
+    slots[key]={state:'EMPTY',content:{}};
+  }
+  return {...snapshot,slots,files:{...snapshot.files,'pages/home.page.json':JSON.stringify({sections:[{id:sectionId,layout}]})}};
+}
+function transferFits(snapshot:PortfolioSnapshot,from:string,to:string,assignment:Assignment|undefined):boolean{
+  if(!assignment||assignment.state==='EMPTY'||typeof assignment.componentId!=='string')return false;
+  if(from!==to&&ownedAssignment(assignment)&&(!assignment.sourcePath?.endsWith('.tsx')||!Object.hasOwn(snapshot.files,assignment.sourcePath)))return false;
+  return assignment.componentId==='image@1'?
+    assignment.state==='S0'&&canPlacePrivateImage(snapshot,to):
+    canAssignCompatibleComponent(snapshot,to,assignment.componentId);
+}
 export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:LayoutToolsProps){
   const [draft,setDraft]=useState<MappingDraft|null>(null);
   const [review,setReview]=useState<MappingReview|null>(null);
@@ -1354,6 +1596,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   const sourceSection=draft?canvasSections(draft.head.snapshot).find(item=>item.id===draft.sectionId):undefined;
   const sourceSlots=sourceSection?sourceSection.slots.map(name=>({name,key:layoutSlotKey(sourceSection.id,name)})):[];
   const targetManifest=draft?portfolioLayout(draft.targetLayout):undefined;
+  const proposedTargets=draft?proposedLayoutTargets(draft.head.snapshot,draft.sectionId,draft.targetLayout):null;
   const targetSlots=draft?(targetManifest?.slots??[]).
     map(name=>({name,key:layoutSlotKey(draft.sectionId,name),required:targetManifest?.required.includes(name)===true})):[];
   const assignedKeys=sourceSlots.filter(item=>{
@@ -1376,7 +1619,8 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   const restoreCurrent=!!restore&&sameWorkingHead(restore.head,head);
   const restoration=restoreCurrent&&restore?entries.find(item=>item.key===restore.fromSlotKey&&
     item.index===restore.stashIndex):undefined;
-  const restoreTarget=restoreCurrent&&restore?emptyTargets.find(item=>item.key===restore.toSlotKey):undefined;
+  const compatibleRestoreTargets=restore&&restoration?emptyTargets.filter(item=>transferFits(head.snapshot,restore.fromSlotKey,item.key,restoration.assignment)):[];
+  const restoreTarget=restoreCurrent&&restore?compatibleRestoreTargets.find(item=>item.key===restore.toSlotKey):undefined;
   const restoreMovesOwned=!!restoration&&!!restore&&restore.fromSlotKey!==restore.toSlotKey&&
     ownedAssignment(restoration.assignment);
   const restoreLegacy=restoreMovesOwned&&!restoration?.assignment.sourcePath?.endsWith('.tsx');
@@ -1390,8 +1634,9 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
   },[restore]);
 
   function mappingDestinationAllowed(from:string,to:string){
-    return !!draft&&draftCurrent&&!blocked&&assignedKeys.includes(from)&&
-      (to===C10_STASH||(targetSlots.some(item=>item.key===to)&&
+    return !!draft&&draftCurrent&&!blocked&&!review&&assignedKeys.includes(from)&&
+      (to===C10_STASH||(!!proposedTargets&&targetSlots.some(item=>item.key===to)&&
+        transferFits(proposedTargets,from,to,ownAssignment(draft.head.snapshot,from))&&
         !assignedKeys.some(other=>other!==from&&draft.choices[other]===to)));
   }
   function startMappingDrag(event:DragEvent<HTMLElement>,key:string){
@@ -1424,13 +1669,13 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
     setDraft({head,sectionId:section.id,expectedLayout:section.layout,targetLayout,choices:{}});
   }
   function chooseDestination(from:string,to:string){
-    if(blocked||!draftCurrent||!draft||!assignedKeys.includes(from)||(to!==''&&!mappingDestinationAllowed(from,to)))return;
+    if(blocked||review||!draftCurrent||!draft||!assignedKeys.includes(from)||(to!==''&&!mappingDestinationAllowed(from,to)))return;
     resetReview();setMessage('');
     setDraft({...draft,choices:{...draft.choices,[from]:to}});
   }
   function reviewMapping(){
     if(blocked||!draftCurrent||!draft||!mappings||submitting.current)return;
-    resetReview();setMessage('');
+    endMappingDrag();resetReview();setMessage('');
     const request={sectionId:draft.sectionId,expectedLayout:draft.expectedLayout,
       targetLayout:draft.targetLayout,mappings};
     try{
@@ -1552,7 +1797,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
         <p>Drag and keyboard destination controls revise this proposed mapping only. The authoritative planner validates compatibility before any transaction.</p>
         {requiredUnfilled.length>0&&<p role="status">Required target slots not yet mapped: {requiredUnfilled.map(item=>item.name).join(', ')}. A draft may retain empty slots, but release needs separate preflight.</p>}
         <p>Slot structure comparison only. Responsive appearance and static export must be checked after the layout transaction; no source is executed here.</p>
-        <fieldset disabled={blocked}>
+        <fieldset disabled={blocked||!!review}>
           <legend>Map outgoing assignments</legend>
           {assignedKeys.length===0&&<p>No filled slots to map. The new layout starts empty.</p>}
           {assignedKeys.map(key=>{
@@ -1563,7 +1808,7 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
                 <option value="">Choose a destination</option>
                 <option value={C10_STASH}>Unplaced — stash complete assignment</option>
                 {targetSlots.map(item=><option key={item.key} value={item.key}
-                  disabled={assignedKeys.some(other=>other!==key&&draft.choices[other]===item.key)}>{item.name} ({item.key})</option>)}
+                  disabled={!proposedTargets||!transferFits(proposedTargets,key,item.key,assignment)||assignedKeys.some(other=>other!==key&&draft.choices[other]===item.key)}>{item.name} ({item.key})</option>)}
               </select></label>
               {choice&&choice!==C10_STASH&&choice!==key&&ownedAssignment(assignment)&&
                 <p>Cross-slot owned source: requires explicit relocation. Legacy CSS and unsupported source cannot be moved.</p>}
@@ -1627,10 +1872,10 @@ export function LayoutTools({head,sectionId,blocked,planLayout,applyLayout}:Layo
           setRestore({...restore,toSlotKey:event.target.value});setRestoreReviewed(false);setRestoreRelocation(false);setMessage('');
         }}>
           <option value="">Choose an empty slot</option>
-          {emptyTargets.map(item=><option key={item.key} value={item.key}>{item.label}</option>)}
+          {compatibleRestoreTargets.map(item=><option key={item.key} value={item.key}>{item.label}</option>)}
         </select></label>
-        {!emptyTargets.length&&<p>No empty declared slots. Clear or add a compatible slot first.</p>}
-        <p>Only declared empty slots are offered. The transaction engine checks actual component compatibility and source restrictions before restoring.</p>
+        {!compatibleRestoreTargets.length&&<p>No compatible empty declared slot. Clear or add a compatible slot first; this stashed assignment is preserved.</p>}
+        <p>Only compatible declared empty slots are offered. The transaction engine repeats compatibility and source restrictions before restoring.</p>
         {restoreLegacy&&<p role="alert">Cross-slot relocation of this legacy or unsupported source is not available. Restore to its original compatible slot instead.</p>}
         <button ref={restoreButton} type="button" className="ws-secondary" disabled={blocked||!restoreTarget||restoreLegacy} onClick={reviewRestore}>Review restore impact</button>
         <button type="button" className="ws-secondary" onClick={cancelRestore}>Cancel restore</button>
@@ -1658,31 +1903,37 @@ function OwnerAssetBytesPreview({port,asset,epoch}:{port:SupabaseBrowserAuthPort
   const mounted=useRef(false);
   const activeUrl=useRef<string|null>(null);
   const flight=useRef(false);
+  const generation=useRef(0);
   function release(){
     if(activeUrl.current){URL.revokeObjectURL(activeUrl.current);activeUrl.current=null;}
   }
   useLayoutEffect(()=>{
-    mounted.current=true;
+    mounted.current=true;++generation.current;flight.current=false;release();setState({status:'idle'});
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
-      mounted.current=false;release();setState({status:'failed'});
+      mounted.current=false;++generation.current;flight.current=false;release();setState({status:'failed'});
     });
-    return()=>{mounted.current=false;unsubscribe();release();};
+    return()=>{mounted.current=false;++generation.current;flight.current=false;unsubscribe();release();};
   },[port,epoch]);
   async function load(){
     if(flight.current||!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+    const started=++generation.current;
+    const live=()=>mounted.current&&generation.current===started&&port.reconcileOwnerSessionEpoch()===epoch;
     flight.current=true;release();setState({status:'pending'});
     try{
       const reply=await port.readOwnerPrivateAsset(asset.projectId,asset.id,epoch);
-      if(!mounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
+      if(!live())return;
       const data=reply.data;
       if(reply.error||!validOwnerPreview(asset,data)){
         setState({status:'failed'});return;
       }
+      const verified=await matchesPreviewBytes(data.bytes,asset.mime,data.integrity.computedSha256);
+      if(!live())return;
+      if(!verified){setState({status:'failed'});return;}
       const url=URL.createObjectURL(data.bytes);
       activeUrl.current=url;setState({status:'ready',url,pinned:data.serverAttestation==='SERVER_HASH_PINNED'});
     }catch{
-      if(mounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setState({status:'failed'});
-    }finally{flight.current=false;}
+      if(live())setState({status:'failed'});
+    }finally{if(generation.current===started)flight.current=false;}
   }
   return <section aria-label="Owner-private image byte preview">
     {state.status==='ready'?<>
@@ -1716,7 +1967,11 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const [projectId,setProjectId]=useState('');
   const [collection,setCollection]=useState('');
   const [selectedAssetId,setSelectedAssetId]=useState('');
-  const [targetKey,setTargetKey]=useState('');
+  const [targetKey,setTargetKey]=useState<string|null>(null);
+  const [dragAsset,setDragAsset]=useState<string|null>(null);
+  const assetDrag=useRef<{snapshot:PortfolioSnapshot;asset:AssetPreviewRecord;port:SupabaseBrowserAuthPort;epoch:number;generation:number}|null>(null);
+  const recordGeneration=useRef(0);
+  const placementField=useRef<HTMLTextAreaElement>(null);
   const [placementAlt,setPlacementAlt]=useState('');
   const [placing,setPlacing]=useState(false);
   const placementFlight=useRef(false);
@@ -1731,6 +1986,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   useLayoutEffect(()=>{
     let active=true;
     const epoch=port.reconcileOwnerSessionEpoch();
+    ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
     const sameBinding=recordsBinding.current?.port===port&&recordsBinding.current?.epoch===epoch;
     recordsFlight.current=true;setRecordsPending(true);setRecordsError('');
     if(!sameBinding){setAssets(null);setProjects(null);recordsBinding.current=null;}
@@ -1741,7 +1997,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     };
     const unsubscribe=port.subscribeOwnerSessionEpoch(()=>{
       if(!active)return;
-      active=false;setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
+      active=false;++recordGeneration.current;assetDrag.current=null;setDragAsset(null);setError('');setNotice('');finish('Owner session changed. Reload verified private asset records.');
     });
     if(active)void Promise.all([port.listOwnerAssets(),port.listOwnerProjects()]).then(([assetReply,projectReply])=>{
       if(!active||port.reconcileOwnerSessionEpoch()!==epoch)return;
@@ -1755,6 +2011,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
     return ()=>{active=false;unsubscribe();};
   },[port,refresh]);
   function reloadRecords(){
+    ++recordGeneration.current;assetDrag.current=null;setDragAsset(null);
     recordsFlight.current=true;setRecordsPending(true);setRefresh(n=>n+1);
   }
   const recordsReady=!recordsPending&&!recordsError&&assets!==null&&projects!==null&&recordsBinding.current?.port===port;
@@ -1762,11 +2019,44 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
   const visible=assets?.filter(item=>!collection||item.projectId===collection)??[];
   const selected=visible.find(item=>item.id===selectedAssetId);
   // Explicitly selected target disappearing must not redirect a placement.
-  const target=targets.find(item=>item.key===(targetKey||selectedSlot));
+  const target=targets.find(item=>item.key===(targetKey===null?selectedSlot:targetKey));
+  const candidateTargets=targets.filter((item,index,all)=>all.filter(other=>other.key===item.key).length===1&&
+    Object.hasOwn(snapshot.slots,item.key)&&snapshot.slots[item.key]?.state===item.state&&
+    (item.state==='EMPTY'||(item.state==='S0'&&snapshot.slots[item.key]?.componentId==='image@1')));
+  const allowPlacement=active&&recordsReady&&!recordsPending&&!placementDisabled&&!busy&&!placing;
+  function finishAssetDrag(){assetDrag.current=null;setDragAsset(null);}
+  useLayoutEffect(()=>{finishAssetDrag();},[snapshot,active,port,collection]);
+  function currentAssetDrag(){
+    const drag=assetDrag.current;
+    return drag&&allowPlacement&&!recordsFlight.current&&drag.snapshot===snapshot&&drag.port===port&&
+      drag.generation===recordGeneration.current&&drag.epoch===recordsBinding.current?.epoch&&
+      visible.some(item=>item===drag.asset)?drag:null;
+  }
+  function beginAssetDrag(event:DragEvent<HTMLElement>,asset:AssetPreviewRecord){
+    if(!allowPlacement||recordsFlight.current||!candidateTargets.length||!visible.some(item=>item===asset)){
+      event.preventDefault();return;
+    }
+    const epoch=port.reconcileOwnerSessionEpoch();
+    if(epoch!==recordsBinding.current?.epoch){event.preventDefault();return;}
+    assetDrag.current={snapshot,asset,port,epoch,generation:recordGeneration.current};
+    setDragAsset(asset.id);event.dataTransfer.effectAllowed='copy';
+    // Marker only: private metadata/URLs/IDs never enter DataTransfer.
+    event.dataTransfer.setData('text/plain','kadmeion-private-image-selection');
+  }
+  function selectPlacement(asset:AssetPreviewRecord,key:string){
+    setSelectedAssetId(asset.id);setPlacementAlt(asset.altText);setTargetKey(key);setUploadOpen(false);setError('');
+    setNotice('Image and target selected. Review the alt text, then confirm the placement. No assignment has changed.');
+  }
+  function dropAsset(event:DragEvent<HTMLElement>,key:string){
+    const drag=currentAssetDrag();finishAssetDrag();
+    if(!drag||!candidateTargets.some(item=>item.key===key)||port.reconcileOwnerSessionEpoch()!==drag.epoch)return;
+    event.preventDefault();event.stopPropagation();
+    selectPlacement(drag.asset,key);
+  }
   const uses=selected?Object.entries(snapshot.slots).filter(([,assignment])=>
     assignment.state!=='EMPTY'&&assignment.content.asset_id===selected.id):[];
   async function place(){
-    if(!recordsReady||recordsFlight.current||!selected||!target||placing||busy||placementFlight.current||uploadFlight.current||placementDisabled||!placementAlt.trim()||placementAlt.length>300)return;
+    if(!allowPlacement||recordsFlight.current||!selected||!target||!candidateTargets.some(item=>item.key===target.key)||placementFlight.current||uploadFlight.current||!placementAlt.trim()||placementAlt.length>300)return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
     placementFlight.current=true;setPlacing(true);setNotice('');
@@ -1775,11 +2065,13 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
       if(!assetMounted.current||port.reconcileOwnerSessionEpoch()!==epoch)return;
       setNotice(placed?'Private image reference applied. Save draft to persist the assignment; media bytes have not been attested.':
         'Image placement was not completed. Existing assignment and selected image were retained.');
+    }catch{
+      if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setError('Image placement was not confirmed. Review the current draft before retrying.');
     }finally{placementFlight.current=false;if(assetMounted.current&&port.reconcileOwnerSessionEpoch()===epoch)setPlacing(false);}
   }
   async function upload(event:import('react').FormEvent<HTMLFormElement>){
     event.preventDefault();
-    if(!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
+    if(!active||!recordsReady||recordsFlight.current||busy||uploadFlight.current||placementFlight.current||!file||!selectedProject||!alt.trim())return;
     const epoch=port.reconcileOwnerSessionEpoch();
     if(recordsBinding.current?.epoch!==epoch)return;
     uploadFlight.current=true;setBusy(true);setError('');setNotice('');
@@ -1837,12 +2129,26 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
       </div>}
       {visible.length>0&&<ul className="ws-asset-gallery">{visible.map(asset=><li key={asset.id}>
-        <button type="button" aria-pressed={selectedAssetId===asset.id}
+        <button type="button" aria-pressed={selectedAssetId===asset.id} draggable={allowPlacement&&candidateTargets.length>0}
+          onDragStart={event=>beginAssetDrag(event,asset)} onDragEnd={finishAssetDrag}
+          disabled={!active||!recordsReady||placing||busy}
           onClick={()=>{setSelectedAssetId(asset.id);setPlacementAlt(asset.altText);setUploadOpen(false);}}>
           <span className="ws-asset-gallery-icon" aria-hidden="true">▧</span>
           <strong>{asset.altText}</strong><small>{asset.mime} · {Math.ceil(asset.size/1024)} KB</small>
           <small>Private metadata · No public image URL</small>
         </button></li>)}</ul>}
+      {allowPlacement&&candidateTargets.length>0&&visible.length>0&&<section aria-label="Compatible private image drop targets">
+        <h3>Choose an image destination</h3>
+        <p>Drag a private image here, or select it and use the destination buttons. Placement still requires explicit confirmation and valid alt text.</p>
+        <ul className="ws-editor-slots">{candidateTargets.map(item=><li key={item.key}
+          data-drop-fit={dragAsset?'compatible':undefined} style={dragAsset?DROP_OUTLINE:undefined}
+          onDragOver={event=>{if(currentAssetDrag()){event.preventDefault();event.dataTransfer.dropEffect='copy';}}}
+          onDrop={event=>dropAsset(event,item.key)}>
+          <button type="button" disabled={!selected||!allowPlacement} onClick={()=>{if(selected){selectPlacement(selected,item.key);placementField.current?.focus();}}}>
+            Choose {item.label} · {item.state==='EMPTY'?'EMPTY':'Review image replacement'}
+          </button>
+        </li>)}</ul>
+      </section>}
       {assets?.length===100&&<p className="ws-asset-limits">At most 100 recent private records returned; older records may exist.</p>}
       {recordsReady&&assets?.length!==0&&<div className="ws-asset-add">
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Open private uploader</button>
@@ -1870,7 +2176,7 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
               Failed registration may leave private bytes needing administrator cleanup.
               A registered asset is not SHA-attested or publishable.</p>
             <button className="ws-primary" type="submit"
-              disabled={busy||!recordsReady||!file||!selectedProject||!alt.trim()}>
+              disabled={!active||busy||!recordsReady||!file||!selectedProject||!alt.trim()}>
               {busy?'Registering private image…':'Upload private image'}</button>
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={()=>setUploadOpen(false)}>Cancel uploader</button>
@@ -1888,16 +2194,17 @@ export function AssetList({port,back,snapshot,targets,selectedSlot,placementDisa
           <div><dt>Focal point</dt><dd>Not stored</dd></div>
         </dl>
         <p className="ws-asset-protection">Place only a verified owner-private registration into an actual compatible slot. Replacing a pristine image stashes its previous assignment; historical asset bytes are not deleted. No public URL or digest is fabricated.</p>
-        {targets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
-          <label>Compatible image slot<select value={target?.key??''} onChange={event=>setTargetKey(event.target.value)}>
+        {candidateTargets.length===0?<p>No compatible empty/pristine image slot is available in this verified editor. Add a suitable section or select a different slot.</p>:<>
+          <label>Compatible image slot<select value={candidateTargets.some(item=>item.key===target?.key)?target?.key??'':''} disabled={!allowPlacement}
+            onChange={event=>setTargetKey(event.target.value)}>
             <option value="">Choose an image-compatible slot</option>
-            {targets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
+            {candidateTargets.map(item=><option key={item.key} value={item.key}>{item.label} · {item.state==='EMPTY'?'Empty':'Replace image'}</option>)}
           </select></label>
-          <label>Placement alt text<textarea rows={3} value={placementAlt}
+          <label>Placement alt text<textarea ref={placementField} rows={3} value={placementAlt} disabled={!allowPlacement}
             aria-invalid={!placementAlt.trim()||placementAlt.length>300}
             onChange={event=>setPlacementAlt(event.target.value)}/></label>
           <p>Use 1–300 characters. No automatic truncation of existing alt text.</p>
-          <button type="button" className="ws-primary" disabled={!recordsReady||!target||placementDisabled||busy||placing||!placementAlt.trim()||placementAlt.length>300}
+          <button type="button" className="ws-primary" disabled={!allowPlacement||!target||!candidateTargets.some(item=>item.key===target.key)||!placementAlt.trim()||placementAlt.length>300}
             onClick={()=>void place()}>{placing?'Verifying placement…':target?.state==='S0'?'Replace image and stash previous':'Assign image to selected slot'}</button>
         </>}
         <button type="button" className="ws-secondary" onClick={()=>setUploadOpen(true)}>Register another image</button>

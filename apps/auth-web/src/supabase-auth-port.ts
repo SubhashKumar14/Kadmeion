@@ -34,6 +34,8 @@ type PendingAccountExitContinuation = AccountExitContinuation & {epoch:number;au
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 type Json = Record<string, unknown>;
 type StoredSession = { access_token: string; refresh_token: string; expires_at: number; user: AuthUser };
+export type OwnerRecoveryBinding=Readonly<{ownerId:string;epoch:number}>;
+type PendingRecoveryBinding=OwnerRecoveryBinding & {session:StoredSession;attempt:number};
 
 /** Auth-state invalidation broadcasts never carry access tokens or identity claims. */
 type OwnerSessionWriteNotice = (storage: StorageLike, source: SupabaseBrowserAuthPort, notice:object) => void;
@@ -123,7 +125,7 @@ function mediaHttpError(status:number,payload:unknown,attestation=false,storage=
     ['ResourceAlreadyExists','KeyAlreadyExists'].includes(storageCode))
     return mediaError(attestation?'INTEGRITY':'CONFLICT',attestation?'Private asset attestation did not verify.':
       'This project changed while you were editing. Load the latest revision before saving again.',status);
-  if(code==='22023'&&(row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE'||row?.message==='PRIVATE_ASSET_PIN_INTEGRITY'))
+  if(code==='22023'&&(row?.message==='PRIVATE_THUMBNAIL_UNAVAILABLE'||row?.message==='PRIVATE_ASSET_PIN_INTEGRITY'||row?.message==='PRIVATE_STORAGE_OBJECT_NOT_VERIFIED'))
     return mediaError('INTEGRITY','Private thumbnail could not be verified.',status);
   if(code==='22023'||(attestation&&status===400)||['InvalidMimeType','InvalidKey','InvalidRequest'].includes(storageCode))
     return mediaError('VALIDATION','Invalid private media request.',status);
@@ -144,6 +146,16 @@ export type OwnerProjectThumbnailAsset = Readonly<{
 }>;
 export type OwnerProjectThumbnail = Readonly<{
   projectId:string;revision:number;asset:OwnerProjectThumbnailAsset|null;publicDeliveryAllowed:false;
+}>;
+export type OwnerProfileAvatarAsset = Readonly<{
+  id:string;scope:'PROFILE';mime:OwnerPrivateImageMime;size:number;altText:string;createdAt:string;
+}>;
+export type OwnerProfileAvatar = Readonly<{
+  revision:number;asset:OwnerProfileAvatarAsset|null;publicDeliveryAllowed:false;
+}>;
+export type OwnerProfileAvatarUpload = Readonly<{
+  id:string;scope:'PROFILE';mime:OwnerPrivateImageMime;size:number;altText:string;
+  verifiedMetadata:true;publicDeliveryAllowed:false;
 }>;
 export type NewPrivateProject = {
   title: string; slug: string; summary: string; repositoryUrl: string | null; liveUrl: string | null;
@@ -207,6 +219,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   private session: StoredSession | null = null;
   private refreshPromise: Promise<StoredSession | null> | null = null;
   private ownerSessionEpoch = 0;
+  private pendingRecovery:PendingRecoveryBinding|null=null;
+  private recoveryWrite:object|null=null;
   private accountExitContinuation:PendingAccountExitContinuation|null = null;
   private accountExitGeneration=0;
   private accountExitRecovery:{
@@ -259,6 +273,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   private invalidateOwnerSessionEpoch(continuation:AccountExitContinuation|null=null):void {
+    this.pendingRecovery=null;
+    this.recoveryWrite=null;
     this.clearAccountExitContinuation();
     ++this.ownerSessionEpoch;
     // Only an explicitly verified account-exit password rotation can carry a
@@ -377,13 +393,14 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const headers: Record<string, string> = { apikey: this.publishableKey, 'Content-Type': 'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
     const ownerVerification=boundedOwnerGet&&method==='GET'&&path==='/user'&&typeof token==='string';
+    const corePasswordExchange=method==='POST'&&(path.startsWith('/signup?redirect_to=')||path==='/token?grant_type=password');
     const requestUrl=this.origin+'/auth/v1'+path;
     let response: Response;
     try {
       response = await this.fetcher(requestUrl, {
         method,headers,body:body===undefined?undefined:JSON.stringify(body),
         cache:'no-store',credentials:'omit',redirect:'error',
-        ...(ownerVerification?{signal:AbortSignal.timeout(10_000)}:{})
+        ...(ownerVerification?{signal:AbortSignal.timeout(10_000)}:corePasswordExchange?{signal:AbortSignal.timeout(20_000)}:{})
       });
     } catch {
       if(ownerVerification)throw new AuthTransientUserReadError();
@@ -391,9 +408,15 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }
     if(ownerVerification&&(response.redirected||(response.url&&response.url!==requestUrl)||
        response.status>=500))throw new AuthTransientUserReadError();
+    if(corePasswordExchange&&(response.redirected||(response.url&&response.url!==requestUrl))){
+      void response.body?.cancel().catch(()=>{});
+      throw new Error('Authentication response origin could not be verified.');
+    }
     const strictSignupResend = method === 'POST' && path.startsWith('/resend?redirect_to=') && body?.type === 'signup';
     const strictRecovery = method === 'POST' && path.startsWith('/recover?redirect_to=');
     const payload: unknown = await response.json().catch(() => undefined);
+    if(corePasswordExchange&&response.ok&&(!payload||typeof payload!=='object'||Array.isArray(payload)))
+      throw new Error('Authentication response could not be verified.');
     if(ownerVerification&&response.ok&&(!payload||typeof payload!=='object'||Array.isArray(payload)))
       throw new AuthTransientUserReadError();
     if (response.ok && (strictSignupResend || strictRecovery) &&
@@ -481,6 +504,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signUp({ email, password, options }: { email: string; password: string; options: { data: Record<string, string> } }): Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>> {
     return this.outcome(async () => {
+      this.reconcileOwnerSessionEpoch();
       const attempt=++this.authAttempt;
       const response = await this.request('/signup?redirect_to=' + encodeURIComponent(this.appOrigin + '/auth/callback'), 'POST', {
         email, password, data: options.data
@@ -504,6 +528,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   signInWithPassword({ email, password }: { email: string; password: string }): Promise<AuthOutcome<{ user: AuthUser | null; session: AuthSession | null }>> {
     return this.outcome(async () => {
+      this.reconcileOwnerSessionEpoch();
       const attempt=++this.authAttempt;
       const response = await this.request('/token?grant_type=password', 'POST', { email, password });
       this.assertCurrentAuthAttempt(attempt);
@@ -741,6 +766,59 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       this.clearAccountExitContinuation();
   }
 
+  /** In-memory continuation for the initiating provider-verified email session.
+   * It is not a replacement for GoTrue authorization, and is never persisted. */
+  private installRecoveryBinding(kind:string,session:StoredSession,attempt:number):void{
+    this.pendingRecovery=null;
+    if(kind!=='recovery'&&kind!=='invite')return;
+    this.assertCurrentAuthAttempt(attempt);
+    if(!this.isCurrentSession(session))throw new Error('Recovery session changed.');
+    this.pendingRecovery={ownerId:session.user.id,epoch:this.ownerSessionEpoch,session,attempt};
+  }
+
+  private currentRecovery(binding:OwnerRecoveryBinding):PendingRecoveryBinding{
+    const grant=this.pendingRecovery;
+    const epoch=this.reconcileOwnerSessionEpoch();
+    if(!grant||this.pendingRecovery!==grant||grant.attempt!==this.authAttempt||
+      epoch!==grant.epoch||binding.ownerId!==grant.ownerId||binding.epoch!==grant.epoch||
+      !this.isCurrentSession(grant.session))
+      throw new Error('Recovery session changed. Request a new link.');
+    return grant;
+  }
+
+  readVerifiedRecoveryBinding():OwnerRecoveryBinding|null{
+    const grant=this.pendingRecovery;
+    if(!grant)return null;
+    try{this.currentRecovery(grant);return {ownerId:grant.ownerId,epoch:grant.epoch};}
+    catch{return null;}
+  }
+
+  /** Use the initiating grant's verified bearer, not a replacement session.
+   * Refresh/owner change/another Auth action invalidates this continuation. */
+  updateRecoveryPassword(password:string,binding:OwnerRecoveryBinding):Promise<AuthOutcome<{user:AuthUser}>>{
+    const expected={...binding};
+    return this.outcome(async()=>{
+      if(typeof password!=='string'||!password)throw new Error('A new password is required.');
+      const grant=this.currentRecovery(expected);
+      if(this.recoveryWrite)throw new Error('A recovery password update is already pending.');
+      const flight={};
+      this.recoveryWrite=flight;
+      try{
+        const checked=await this.verifyLiveSession();
+        if(this.currentRecovery(expected)!==grant||checked.session!==grant.session||
+          checked.user.id!==grant.ownerId||checked.epoch!==grant.epoch||this.recoveryWrite!==flight)
+          throw new Error('Recovery session changed. Request a new link.');
+        const payload=await this.request('/user','PUT',{password},grant.session.access_token);
+        const updated=userFrom(payload.user??payload);
+        if(this.currentRecovery(expected)!==grant||this.recoveryWrite!==flight||
+          !updated||updated.id!==grant.ownerId)
+          throw new Error('Password update could not be confirmed for the recovery account.');
+        this.pendingRecovery=null;
+        return {user:updated};
+      }finally{if(this.recoveryWrite===flight)this.recoveryWrite=null;}
+    });
+  }
+
   updateUser({ password }: { password: string }): Promise<AuthOutcome<{ user: AuthUser | null }>> {
     return this.outcome(async () => {
       // Password updates must not silently adopt a different persisted owner.
@@ -862,8 +940,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.assertCurrentAuthAttempt(attempt);
     const user = userFrom(userPayload);
     if (!user) throw new Error('Could not validate the invitation session.');
-    this.storeEmailSession({ access_token, refresh_token,
-      expires_at: Math.floor(Date.now() / 1000) + expires_in, user });
+    const session={access_token,refresh_token,expires_at:Math.floor(Date.now()/1000)+expires_in,user};
+    this.storeEmailSession(session);
+    this.installRecoveryBinding(kind,session,attempt);
     return kind === 'invite' ? 'invite' : kind === 'recovery' ? 'recovery' : 'confirmation';
   }
 
@@ -882,7 +961,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     this.assertCurrentAuthAttempt(attempt);
     if (!verified || verified.id !== session.user.id)
       throw new Error('Email link was not verified for the active account.');
-    this.storeEmailSession({...session, user:verified});
+    const verifiedSession={...session,user:verified};
+    this.storeEmailSession(verifiedSession);
+    this.installRecoveryBinding(type,verifiedSession,attempt);
     return type === 'invite' ? 'invite' : type === 'recovery' ? 'recovery' : 'confirmation';
   }
 
@@ -1505,26 +1586,50 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   }
 
   /** Parse one bounded JSON stream; distinguish invalid data from interrupted transport. */
-  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+  private async readBoundedOwnerMedia(response:Response,session:StoredSession,epoch:number,max:number,timeoutMs:number):Promise<Uint8Array>{
+    if(!Number.isSafeInteger(max)||max<1||max>5242880)
+      throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
     const reader=response.body?.getReader();
     if(!reader)throw mediaError('INTEGRITY','Private media response could not be verified.');
-    const parts:Uint8Array[]=[];let size=0;
+    const buffer=new Uint8Array(max);
+    let size=0,empty=0,chunks=0,timer:ReturnType<typeof setTimeout>|undefined;
+    const deadline=performance.now()+timeoutMs;
+    const expiry=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.')),timeoutMs);
+    });
     try{
       for(;;){
+        if(performance.now()>=deadline)throw mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.');
         let part:ReadableStreamReadResult<Uint8Array>;
-        try{part=await reader.read();}
-        catch{throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');}
+        try{part=await Promise.race([reader.read(),expiry]);}
+        catch(error){
+          if(error instanceof OwnerMediaError)throw error;
+          throw mediaError('PROVIDER_UNAVAILABLE','Private media response stream was interrupted.');
+        }
         this.assertOwnerImageEpoch(session,epoch);
+        if(performance.now()>=deadline)throw mediaError('PROVIDER_UNAVAILABLE','Private media response timed out.');
         if(part.done)break;
-        size+=part.value.byteLength;
-        if(size>max)throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
-        parts.push(part.value);
+        if(!(part.value instanceof Uint8Array)||++chunks>16384||part.value.byteLength>max-size)
+          throw mediaError('INTEGRITY','Private media response exceeds its verified bounds.');
+        if(part.value.byteLength===0){
+          if(++empty>=16)throw mediaError('INTEGRITY','Private media response made no progress.');
+          continue;
+        }
+        empty=0;buffer.set(part.value,size);size+=part.value.byteLength;
       }
-      const bytes=new Uint8Array(size);let offset=0;
-      for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
-      try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
-      catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
-    }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+      return buffer.subarray(0,size);
+    }finally{
+      if(timer!==undefined)clearTimeout(timer);
+      try{void reader.cancel().catch(()=>{});}catch{/* best effort */}
+      try{reader.releaseLock();}catch{/* pending read cancelled */}
+    }
+  }
+
+  private async readMediaJsonBody(response:Response,session:StoredSession,epoch:number,max:number):Promise<unknown>{
+    const bytes=await this.readBoundedOwnerMedia(response,session,epoch,max,15000);
+    this.assertOwnerImageEpoch(session,epoch);
+    try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+    catch{throw mediaError('INTEGRITY','Private media response could not be verified.');}
   }
 
   private async mediaResponseError(response:Response,session:StoredSession,epoch:number,attestation=false,storage=false):Promise<OwnerMediaError>{
@@ -1550,6 +1655,8 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }catch{throw mediaError(attestation?'ATTESTATION_UNAVAILABLE':'PROVIDER_UNAVAILABLE','Private media service is unavailable.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==this.origin+path))
+        throw mediaError('INTEGRITY','Private media response origin could not be verified.');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,attestation,path.startsWith('/storage/v1/'));
       const raw=await this.readMediaJsonBody(response,session,epoch,65536);
       this.assertOwnerImageEpoch(session,epoch);
@@ -1614,35 +1721,26 @@ export class SupabaseBrowserAuthPort implements AuthPort {
    * Bound streamed bytes before constructing a Blob, and reject stale sessions. */
   private async readOwnerImageBytes(session:StoredSession,epoch:number,path:string,mime:OwnerPrivateImageMime,size:number):Promise<Blob> {
     this.assertOwnerImageEpoch(session,epoch);
+    const url=this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path;
     let response:Response;
     try{
-      response=await this.fetcher(this.origin+'/storage/v1/object/authenticated/kadmeion-private-assets/'+path,{
+      response=await this.fetcher(url,{
         headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token},
         credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
       });
     }catch{throw mediaError('PROVIDER_UNAVAILABLE','Private image bytes could not be read. Retry or use the folder cover.');}
     try{
       this.assertOwnerImageEpoch(session,epoch);
+      if(response.redirected||(response.url&&response.url!==url))
+        throw mediaError('INTEGRITY','Private image response origin could not be verified.');
       const declared=response.headers.get('content-length');
       if(!response.ok)throw await this.mediaResponseError(response,session,epoch,false,true);
       if(response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!==mime||
         (declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==size))||!response.body)
         throw mediaError('INTEGRITY','Private image readback was not verified.');
-      const reader=response.body.getReader();
-      const chunks:BlobPart[]=[];
-      let total=0;
-      try{
-        while(true){
-          const part=await reader.read();
-          this.assertOwnerImageEpoch(session,epoch);
-          if(part.done)break;
-          total+=part.value.byteLength;
-          if(total>size||total>5242880)throw mediaError('INTEGRITY','Private image exceeds its verified size.');
-          chunks.push(new Uint8Array(part.value));
-        }
-      }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
-      if(total!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
-      const blob=new Blob(chunks,{type:mime});
+      const bytes=await this.readBoundedOwnerMedia(response,session,epoch,size,60000);
+      if(bytes.byteLength!==size)throw mediaError('INTEGRITY','Private image size did not match its registered metadata.');
+      const blob=new Blob([new Uint8Array(bytes)],{type:mime});
       await this.validateOwnerRaster(blob,true);
       this.assertOwnerImageEpoch(session,epoch);
       return blob;
@@ -1880,7 +1978,7 @@ export class SupabaseBrowserAuthPort implements AuthPort {
   /** The same owner-authorized Storage info endpoint is used by the trusted worker.
    * Version identity is not a server SHA pin, and absence/mismatch fails closed. */
   private async readPrivateObjectIdentity(session:StoredSession,ownerId:string,epoch:number,
-    binding:{asset:OwnerProjectThumbnailAsset;path:string}){
+    binding:{asset:Pick<OwnerProjectThumbnailAsset,'mime'|'size'>;path:string}){
     const path=binding.path.split('/').map(encodeURIComponent).join('/');
     const raw=await this.mediaJson('/storage/v1/object/info/authenticated/kadmeion-private-assets/'+path,session,epoch);
     const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
@@ -1961,6 +2059,214 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         throw mediaError('INTEGRITY','Private asset attestation receipt could not be verified.');
       await this.confirmBoundProjectAsset(session,userId,expectedEpoch,binding,identity);
       return {assetId:binding.asset.id,status:'WRITE_ONCE_ATTESTED',publicPublishingAllowed:false,accountDeletionAllowed:false};
+    });
+  }
+
+
+  /** Profile assets are separately registered, and never use dummy project IDs. */
+  private async ownerAvatarSession(expectedEpoch:number){
+    if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+      throw mediaError('AUTH_CHANGED','Owner session changed before private avatar access.');
+    if(!this.session)throw mediaError('DENIED','Private avatar access was denied.');
+    let checked:Awaited<ReturnType<SupabaseBrowserAuthPort['verifyLiveSession']>>;
+    try{checked=await this.verifyLiveSession();}
+    catch(error){
+      if(this.reconcileOwnerSessionEpoch()!==expectedEpoch)
+        throw mediaError('AUTH_CHANGED','Owner session changed before private avatar access.');
+      if(error instanceof AuthHttpError)throw mediaHttpError(error.status,null);
+      throw mediaError('PROVIDER_UNAVAILABLE','Owner session could not be verified for private avatar.');
+    }
+    this.assertOwnerImageEpoch(checked.session,expectedEpoch);
+    return {session:checked.session,userId:checked.user.id,epoch:checked.epoch};
+  }
+
+  private canonicalProfileAssetPath(owner:string,path:unknown):path is string{
+    if(!PROJECT_ID_PATTERN.test(owner)||typeof path!=='string')return false;
+    const prefix=owner+'/profile/';
+    const file=path.slice(prefix.length);
+    return path.startsWith(prefix)&&file.endsWith('.img')&&
+      PROJECT_ID_PATTERN.test(file.slice(0,-4))&&file===file.toLowerCase();
+  }
+
+  private parseOwnerAvatar(raw:unknown,ownerId:string):{value:OwnerProfileAvatar;path:string|null}{
+    const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+    if(!row||Object.keys(row).length!==4||row.ownerUserId!==ownerId||
+      typeof row.revision!=='number'||!Number.isSafeInteger(row.revision)||row.revision<0||
+      row.publicDeliveryAllowed!==false)
+      throw mediaError('INTEGRITY','Private avatar selection could not be verified.');
+    if(row.asset===null)return {value:{revision:row.revision,asset:null,publicDeliveryAllowed:false},path:null};
+    const a=row.asset&&typeof row.asset==='object'&&!Array.isArray(row.asset)?row.asset as Json:null;
+    if(!a||Object.keys(a).length!==7||a.scope!=='PROFILE'||
+      typeof a.id!=='string'||!PROJECT_ID_PATTERN.test(a.id)||a.id!==a.id.toLowerCase()||
+      typeof a.mime!=='string'||!['image/png','image/jpeg','image/webp'].includes(a.mime)||
+      typeof a.size!=='number'||!Number.isSafeInteger(a.size)||a.size<12||a.size>5242880||
+      typeof a.altText!=='string'||a.altText!==a.altText.trim()||!a.altText||a.altText.length>500||
+      typeof a.createdAt!=='string'||!Number.isFinite(Date.parse(a.createdAt))||
+      !this.canonicalProfileAssetPath(ownerId,a.objectPath))
+      throw mediaError('INTEGRITY','Private avatar metadata could not be verified.');
+    const asset:OwnerProfileAvatarAsset={id:a.id,scope:'PROFILE',mime:a.mime as OwnerPrivateImageMime,
+      size:a.size,altText:a.altText,createdAt:a.createdAt};
+    return {value:{revision:row.revision,asset,publicDeliveryAllowed:false},path:a.objectPath};
+  }
+  private async readOwnerAvatarBound(session:StoredSession,ownerId:string,epoch:number){
+    const raw=await this.mediaJson('/rest/v1/rpc/read_private_profile_avatar',session,epoch,{});
+    return this.parseOwnerAvatar(raw,ownerId);
+  }
+
+  private async readProfileAssetPin(session:StoredSession,ownerId:string,epoch:number,
+    asset:{id:string;mime:OwnerPrivateImageMime;size:number},identity:{id:string;version:string}){
+    const raw=await this.mediaJson('/rest/v1/rpc/read_owner_private_asset_pin',session,epoch,{
+      p_scope:'PROFILE',p_asset_id:asset.id,p_project_id:null});
+    const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+    if(!row||Object.keys(row).length!==11||row.scope!=='PROFILE'||row.projectId!==null||
+      row.assetId!==asset.id||row.ownerUserId!==ownerId||row.objectId!==identity.id||
+      row.version!==identity.version||row.mimeType!==asset.mime||row.byteSize!==asset.size||
+      row.publicDeliveryAllowed!==false||
+      !((row.status==='UNPINNED'&&row.expectedSha256===null)||
+        (row.status==='SERVER_HASH_PINNED'&&typeof row.expectedSha256==='string'&&/^[0-9a-f]{64}$/.test(row.expectedSha256))))
+      throw mediaError('INTEGRITY','Private profile asset pin could not be verified.');
+    return {status:row.status as 'UNPINNED'|'SERVER_HASH_PINNED',expectedSha256:row.expectedSha256 as string|null};
+  }
+
+  async readOwnerProfileAvatar(expectedEpoch:number):Promise<OwnerMediaOutcome<OwnerProfileAvatar>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      const {session,userId}=await this.ownerAvatarSession(expectedEpoch);
+      return (await this.readOwnerAvatarBound(session,userId,expectedEpoch)).value;
+    });
+  }
+
+  /** Upload is a two-phase owner reservation and immutable registration.
+   * An uncertain upload or registered replay succeeds only on exact byte readback.
+   * This does not attach, publish or delete the asset. */
+  async uploadOwnerProfileAvatar(file:File,altText:string,context:OwnerPrivateImageUploadContext):
+    Promise<OwnerMediaOutcome<OwnerProfileAvatarUpload>>{
+    const operationId=context?.operationId,expectedEpoch=context?.expectedEpoch;
+    if(!Number.isSafeInteger(expectedEpoch)||typeof operationId!=='string')
+      return {data:null as unknown as OwnerProfileAvatarUpload,error:{code:'VALIDATION',message:'A stable avatar upload operation is required.'}};
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!PROJECT_ID_PATTERN.test(operationId)||!(file instanceof File)||typeof altText!=='string'||
+        altText.trim().length<1||altText.length>500)
+        throw mediaError('VALIDATION','Choose a private image and descriptive alt text.');
+      const description=altText.trim(),operation=operationId.toLowerCase();
+      const format=await this.validateOwnerRaster(file);
+      const {session,userId}=await this.ownerAvatarSession(expectedEpoch);
+      const path=userId+'/profile/'+operation+'.img';
+      const raw=await this.mediaJson('/rest/v1/rpc/reserve_private_profile_asset',session,expectedEpoch,{
+        p_operation_id:operation,p_mime_type:format.mime,p_byte_size:file.size,p_alt_text:description});
+      const reserve=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+      if(!reserve||Object.keys(reserve).length!==8||reserve.ownerUserId!==userId||reserve.scope!=='PROFILE'||
+        typeof reserve.assetId!=='string'||!PROJECT_ID_PATTERN.test(reserve.assetId)||reserve.assetId!==reserve.assetId.toLowerCase()||
+        reserve.objectPath!==path||reserve.mime!==format.mime||reserve.size!==file.size||
+        reserve.altText!==description||(reserve.state!=='PENDING_UPLOAD'&&reserve.state!=='REGISTERED'))
+        throw mediaError('INTEGRITY','Private avatar reservation could not be verified.');
+      const assetId=reserve.assetId;
+      let accepted=reserve.state==='REGISTERED',ambiguous=false;
+      if(reserve.state==='PENDING_UPLOAD'){
+        const uploadUrl=this.origin+'/storage/v1/object/kadmeion-private-assets/'+path;
+        let response:Response|null=null;
+        try{
+          response=await this.fetcher(uploadUrl,{
+            method:'POST',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+              'Content-Type':format.mime,'x-upsert':'false','Cache-Control':'no-store'},
+            body:file,credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(60_000)
+          });
+        }catch{/* ambiguous, recover by exact bounded bytes */}
+        let rejection:OwnerMediaError|null=null;
+        try{
+          this.assertOwnerImageEpoch(session,expectedEpoch);
+          if(response&&(response.redirected||(response.url&&response.url!==uploadUrl)))
+            throw mediaError('INTEGRITY','Private avatar upload response origin could not be verified.');
+          accepted=response?.ok===true;
+          if(response&&!accepted)rejection=await this.mediaResponseError(response,session,expectedEpoch,false,true);
+          ambiguous=!response||rejection?.code==='CONFLICT'||
+            (rejection?.code==='PROVIDER_UNAVAILABLE'&&(response.status===400||response.status>=500));
+          if(!accepted&&!ambiguous)throw rejection??mediaError('PROVIDER_UNAVAILABLE','Private avatar upload was not confirmed.');
+        }finally{void response?.body?.cancel().catch(()=>{});}
+      }
+      // Never treat an existing path or metadata-only receipt as byte equivalence.
+      const binding={asset:{id:assetId,mime:format.mime,size:file.size},path};
+      let before:Awaited<ReturnType<SupabaseBrowserAuthPort['readPrivateObjectIdentity']>>,stored:Blob;
+      try{
+        before=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+        stored=await this.readOwnerImageBytes(session,expectedEpoch,path,format.mime,file.size);
+      }catch(error){
+        if(ambiguous&&!accepted&&error instanceof OwnerMediaError&&error.code==='DENIED')
+          throw mediaError('PROVIDER_UNAVAILABLE','Private avatar upload was not confirmed. Retry the same operation.');
+        throw error;
+      }
+      const [actual,selected]=await Promise.all([stored.arrayBuffer(),file.arrayBuffer()]);
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      const a=new Uint8Array(actual),b=new Uint8Array(selected);
+      if(a.length!==b.length||a.some((v,i)=>v!==b[i]))
+        throw mediaError('CONFLICT','This avatar operation refers to different bytes. Choose a new operation.');
+      const registered=await this.mediaJson('/rest/v1/rpc/register_private_profile_asset',session,expectedEpoch,{p_asset_id:assetId});
+      const row=registered&&typeof registered==='object'&&!Array.isArray(registered)?registered as Json:null;
+      if(!row||Object.keys(row).length!==11||row.assetId!==assetId||row.ownerUserId!==userId||
+        row.scope!=='PROFILE'||row.state!=='REGISTERED'||row.objectPath!==path||row.mime!==format.mime||
+        row.size!==file.size||row.altText!==description||row.publicDeliveryAllowed!==false||
+        typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||
+        typeof row.registeredAt!=='string'||!Number.isFinite(Date.parse(row.registeredAt)))
+        throw mediaError('INTEGRITY','Private avatar registration could not be verified.');
+      const after=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+      if(after.id!==before.id||after.version!==before.version||after.modified!==before.modified)
+        throw mediaError('INTEGRITY','Private avatar identity changed before registration.');
+      const pin=await this.readProfileAssetPin(session,userId,expectedEpoch,binding.asset,after);
+      if(pin.status==='SERVER_HASH_PINNED'){
+        const digest=await crypto.subtle.digest('SHA-256',actual);
+        if(Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('')!==pin.expectedSha256)
+          throw mediaError('INTEGRITY','Private avatar bytes do not match the trusted pin.');
+      }
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      return {id:assetId,scope:'PROFILE',mime:format.mime,size:file.size,altText:description,
+        verifiedMetadata:true,publicDeliveryAllowed:false};
+    });
+  }
+
+  async setOwnerProfileAvatar(baseRevision:number,assetId:string|null,operationId:string,expectedEpoch:number):
+    Promise<OwnerMediaOutcome<OwnerProfileAvatar>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!Number.isSafeInteger(baseRevision)||baseRevision<0||!PROJECT_ID_PATTERN.test(operationId)||
+        (assetId!==null&&!PROJECT_ID_PATTERN.test(assetId)))
+        throw mediaError('VALIDATION','Invalid private avatar change.');
+      const {session,userId}=await this.ownerAvatarSession(expectedEpoch);
+      const desired=assetId?.toLowerCase()??null;
+      const raw=await this.mediaJson('/rest/v1/rpc/set_private_profile_avatar',session,expectedEpoch,{
+        p_base_revision:baseRevision,p_asset_id:desired,p_operation_id:operationId.toLowerCase()});
+      const receipt=this.parseOwnerAvatar(raw,userId);
+      const acceptedRevision=receipt.value.revision===baseRevision||
+        (baseRevision<Number.MAX_SAFE_INTEGER&&receipt.value.revision===baseRevision+1);
+      if(!acceptedRevision||(receipt.value.asset?.id??null)!==desired)
+        throw mediaError('INTEGRITY','Private avatar change was not confirmed.');
+      const current=await this.readOwnerAvatarBound(session,userId,expectedEpoch);
+      if(current.path!==receipt.path||JSON.stringify(current.value)!==JSON.stringify(receipt.value))
+        throw mediaError('CONFLICT','Private avatar changed after the save. Reload the current selection.');
+      return current.value;
+    });
+  }
+
+  async readOwnerProfileAvatarImage(assetId:string,expectedEpoch:number):Promise<OwnerMediaOutcome<Blob>>{
+    return this.mediaOutcome(expectedEpoch,async()=>{
+      if(!PROJECT_ID_PATTERN.test(assetId))throw mediaError('VALIDATION','Private avatar is unavailable.');
+      const {session,userId}=await this.ownerAvatarSession(expectedEpoch);
+      const before=await this.readOwnerAvatarBound(session,userId,expectedEpoch);
+      if(!before.path||before.value.asset?.id!==assetId.toLowerCase())
+        throw mediaError('CONFLICT','The selected avatar changed. Reload the private profile.');
+      const binding={asset:before.value.asset,path:before.path};
+      const object=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+      const pin=await this.readProfileAssetPin(session,userId,expectedEpoch,binding.asset,object);
+      const bytes=await this.readOwnerImageBytes(session,expectedEpoch,binding.path,binding.asset.mime,binding.asset.size);
+      const digest=await crypto.subtle.digest('SHA-256',await bytes.arrayBuffer());
+      const latest=await this.readOwnerAvatarBound(session,userId,expectedEpoch);
+      if(latest.path!==before.path||JSON.stringify(latest.value)!==JSON.stringify(before.value))
+        throw mediaError('CONFLICT','Private avatar changed during verified image readback.');
+      const newObject=await this.readPrivateObjectIdentity(session,userId,expectedEpoch,binding);
+      const newPin=await this.readProfileAssetPin(session,userId,expectedEpoch,binding.asset,newObject);
+      if(JSON.stringify(newObject)!==JSON.stringify(object)||JSON.stringify(newPin)!==JSON.stringify(pin)||
+        (pin.status==='SERVER_HASH_PINNED'&&
+          Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('')!==pin.expectedSha256))
+        throw mediaError('INTEGRITY','Private avatar identity, digest or pin changed.');
+      this.assertOwnerImageEpoch(session,expectedEpoch);
+      return bytes;
     });
   }
 
@@ -2095,7 +2401,9 @@ export class SupabaseBrowserAuthPort implements AuthPort {
 
   async ownerSettings() {
     return this.outcome(async () => {
-      const {userId,epoch} = await this.ownerSession();
+      const {session,userId,epoch} = await this.ownerSession();
+      const isCurrentOwner=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
       const token=this.ownerEpochToken(userId,epoch);
       const [identity, notifications, trash, account, data] = await Promise.all([
         import('../../../packages/contracts/src/private-identity-service.ts'),
@@ -2104,9 +2412,10 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         import('../../../packages/contracts/src/private-account-erasure-service.ts'),
         import('../../../packages/storage-adapters/src/private-account-data-export.ts')
       ]);
+      if(!isCurrentOwner())throw new Error('Owner session changed while preparing private settings.');
       return {
-        identity: new identity.SupabasePrivateIdentityService(this.origin, this.publishableKey, token, this.fetcher),
-        notifications: new notifications.SupabasePrivateNotificationsService(this.origin, this.publishableKey, userId, token, this.fetcher),
+        identity: new identity.SupabasePrivateIdentityService(this.origin, this.publishableKey, token, this.fetcher, userId, isCurrentOwner),
+        notifications: new notifications.SupabasePrivateNotificationsService(this.origin, this.publishableKey, userId, token, this.fetcher, isCurrentOwner),
         trash: new trash.SupabasePrivateTrashService(this.origin, this.publishableKey, token, this.fetcher),
         account: new account.SupabasePrivateAccountErasureService(this.origin, this.publishableKey, token, this.fetcher),
         data: new data.SupabasePrivateAccountDataExporter(this.origin, this.publishableKey, token, this.fetcher)
