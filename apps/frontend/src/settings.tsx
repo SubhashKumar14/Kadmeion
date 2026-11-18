@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import type { PrivateNotification, PrivateNotificationPage, NotificationPreferenceState, NotificationPreferenceChange, NotificationPreferenceInput } from '../../../packages/contracts/src/private-notifications-service.ts';
-import type { AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
+import type { AccountErasureReceipt, AccountExitPreflight, AccountExitReauthChallenge, AccountExitReauthVerification, PrivateAccountErasureEntry } from '../../../packages/contracts/src/private-account-erasure-service.ts';
 import type { PrivateTrashEntry, PrivateTrashKind } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateTrashError } from '../../../packages/contracts/src/private-trash-service.ts';
 import { PrivateNotificationsError } from '../../../packages/contracts/src/private-notifications-service.ts';
@@ -632,7 +632,10 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
     let active=true;reading.current=true;setLoading(true);
     void service.list().then(rows=>{
       if(active&&current()){
-        setItems(rows);readbackRequired.current=false;setNeedsReadback(false);
+        setItems(rows);setNow(Date.now());
+        const visibleKeys=new Set(rows.map(row=>row.item_type+':'+row.item_id+':'+row.trashed_at));
+        setExpiredByServer(previous=>new Set([...previous].filter(key=>visibleKeys.has(key))));
+        readbackRequired.current=false;setNeedsReadback(false);
         setMessage(uncertainRestore.current?{error:false,text:'Trash refreshed. The previous restore was not acknowledged; verify your private library before retrying.'}:null);
         uncertainRestore.current=false;
       }
@@ -666,7 +669,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
 
   async function restore(item: PrivateTrashEntry) {
     const key = item.item_type+':'+item.item_id+':'+item.trashed_at;
-    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key))return;
+    if(inFlight.current||busy||reading.current||readbackRequired.current||!current()||expiredByServer.has(key)||
+      !items?.some(row=>row.item_type===item.item_type&&row.item_id===item.item_id&&row.trashed_at===item.trashed_at))return;
     if (Date.parse(item.restore_until)<=Date.now()) {
       setNow(Date.now());
       setMessage({error:true,text:'The restore deadline has passed.'});
@@ -696,7 +700,8 @@ function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['t
   return <div className="ws-settings-grid"><SettingsCard title="Recoverable items">
     <Status message={message}/>
     {loading&&<p role="status">Loading Trash…</p>}
-    {needsReadback&&!loading&&<button type="button" className="ws-secondary" onClick={refreshTrash}>{items?'Refresh confirmed Trash':'Retry Trash'}</button>}
+    {!loading&&(items!==null||needsReadback)&&<button type="button" className="ws-secondary" disabled={busy} onClick={refreshTrash}>{needsReadback?(items?'Refresh confirmed Trash':'Retry Trash'):'Refresh Trash'}</button>}
+    {needsReadback&&items!==null&&<p>Showing the last confirmed records. Restore remains unavailable until refresh succeeds.</p>}
     {items?.length===0&&!loading&&!needsReadback&&<p>Trash is empty.</p>}
     {items?.length===100&&<p>Showing up to 100 loaded Trash records, not an account-wide total.</p>}
     <ul className="ws-settings-records">{items?.map(item => {
@@ -965,6 +970,16 @@ function ExportCenter({port, services}: {port: SupabaseBrowserAuthPort; services
   </div></>;
 }
 
+// A successful transport receipt is not sufficient to show success if the
+// subsequent authoritative history disagrees or a different request is active.
+const confirmedExit: (receipt:AccountErasureReceipt,history:PrivateAccountErasureEntry[],requestId:string|null)=>boolean = (receipt,history,requestId)=> {
+  const matching=history.find(row=>row.id===receipt.requestId);
+  if(requestId===null)
+    return receipt.status==='REQUESTED_BLOCKED'&&matching?.status==='REQUESTED_BLOCKED'&&
+      history.filter(row=>row.status==='REQUESTED_BLOCKED').length===1;
+  return receipt.requestId===requestId&&receipt.status==='WITHDRAWN'&&matching?.status==='WITHDRAWN';
+};
+
 function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Services['account']}) {
   // The shell mounts this consumer only after live owner verification.
   // Capture the mount's epoch: never adopt a newer one from an old handler.
@@ -977,6 +992,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   const [confirmation, setConfirmation] = useState('');
   const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
+  const inFlight=useRef(false);
   const operation = useRef<{key:string;id:string} | null>(null);
   const challenge = useRef<AccountExitReauthChallenge|null>(null);
   const challengeOperation = useRef<string|null>(null);
@@ -1075,8 +1091,8 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
   }, [reauth,port,epoch]);
 
   async function check() {
-    if (busy || recovery !== 'ready' || !current()) return;
-    setBusy(true);
+    if (inFlight.current || busy || recovery !== 'ready' || !current()) return;
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     discardProof();
     challenge.current=null;
@@ -1089,50 +1105,64 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
       if (!current()) return;
       setInventory(result);
       setRequests(history);
+      // Only abandon an ambiguous command when the fresh history confirms
+      // the target state. A missing record alone never permits a new UUID.
+      if(operation.current&&(operation.current.key==='request'?
+        history.some(row=>row.status==='REQUESTED_BLOCKED'):
+        history.some(row=>row.id===operation.current?.key&&row.status==='WITHDRAWN')))
+        operation.current=null;
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function changeRequest(requestId: string | null) {
-    if (busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
+    if (inFlight.current || busy || recovery !== 'ready' || !inventory || !requests || !current()) return;
     if (requestId ? activeRequest?.id!==requestId : !!activeRequest || confirmation!=='DELETE MY ACCOUNT') return;
     discardProof();
     challenge.current=null;
     challengeOperation.current=null;
     const key = requestId ?? 'request';
     if (operation.current?.key!==key) operation.current={key,id:crypto.randomUUID()};
-    setBusy(true);
+    const command=operation.current;
+    inFlight.current=true;setBusy(true);
     setMessage(null);
+    // Do not allow reauthentication or another destructive intent while the
+    // outcome of an account request remains unknown.
+    setRequests(null);setConfirmation('');
     try {
-      if (requestId) await service.withdraw(requestId,operation.current.id);
-      else await service.request(operation.current.id,'DELETE MY ACCOUNT');
+      const receipt=requestId?await service.withdraw(requestId,command.id):
+        await service.request(command.id,'DELETE MY ACCOUNT');
       if (!current()) return;
-      // Hide old actions until a fresh read confirms the current request state.
-      setRequests(null);
-      setConfirmation('');
-      operation.current=null;
       const history=await service.list();
       if (!current()) return;
       setRequests(history);
+      if(!confirmedExit(receipt,history,requestId)){
+        if(history.some(row=>row.id===receipt.requestId&&row.status==='WITHDRAWN'))operation.current=null;
+        setMessage({error:true,text:'The account request changed or could not be confirmed by current history. Review the prerequisites before retrying.'});
+        return;
+      }
+      operation.current=null;
       setMessage({error:false,text:requestId?'Account deletion request withdrawn.':'Deletion request recorded. No data has been erased.'});
     } catch (error) {
-      if (current()) setMessage(failure(error));
+      if (current()) setMessage({error:true,text:'The account request was not confirmed. Review deletion prerequisites to refresh the current state before retrying.'});
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function verifyIdentity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || recovery !== 'ready' || !activeRequest || !current()) return;
+    if (inFlight.current || busy || recovery !== 'ready' || !activeRequest || !current()) return;
     const form=event.currentTarget;
     const password=new FormData(form).get('current-password');
     if (typeof password!=='string' || !password) return;
     form.reset();
-    setBusy(true);
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     discardProof();
     try {
@@ -1161,20 +1191,21 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
 
   async function withdrawAppContent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
+    if (inFlight.current || busy || recovery !== 'ready' || !activeRequest || !reauth || !current() || withdrawConfirmation!=='WITHDRAW PUBLIC CONTENT') return;
     if (Date.parse(reauth.expiresAt)<=Date.now()) {
       discardProof();
       setMessage({error:true,text:'Identity verification expired. Sign in again to withdraw content.'});
       return;
     }
     withdrawalOperation.current ??= crypto.randomUUID();
-    setBusy(true);
+    inFlight.current=true;setBusy(true);
     setMessage(null);
     try {
       const receipt=await service.withdrawPublicContent(activeRequest.id,reauth.challengeId,
@@ -1186,6 +1217,7 @@ function AccountExit({port,service}: {port: SupabaseBrowserAuthPort; service: Se
     } catch (error) {
       if (current()) setMessage(failure(error));
     } finally {
+      inFlight.current=false;
       if (current()) setBusy(false);
     }
   }
