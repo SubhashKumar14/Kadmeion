@@ -147,6 +147,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     return ()=>{routeEpoch.current+=1;historySelectionEpoch.current+=1;};
   },[port,id,mode]);
   const base='/app/portfolios/'+id;
+  const readsBusy=busy||historySelectionPending||readPhase!==null;
+  const retryPrivateReads=()=>setRetry(value=>value+1);
 
   // Reset only when the owner/route identity changes, not on Retry. A retry
   // must preserve the frozen request and its idempotency key after an
@@ -692,8 +694,10 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <dt>Prepared candidate request</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateRequestId}</code></dd>
             <dt>Candidate manifest fingerprint</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateManifestSha256}</code></dd>
           </dl>}
-          {revisionError&&<p role="alert">{revisionError}</p>}
+          {revisionError&&<><p role="alert">{revisionError}</p><button type="button" className="ws-secondary" disabled={readsBusy}
+            onClick={retryPrivateReads}>Retry saved revisions</button></>}
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
+            onRetry={retryPrivateReads} retryDisabled={readsBusy}
             onSelect={request=>void selectFrozenRequest(request)}
             selectionDisabled={busy||historySelectionPending}
             activeRequestId={frozen?.requestId}
@@ -712,7 +716,9 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
         </> : <>
           <h2>{mode==='staging'?'Prepare a frozen reviewer revision':'Inspect a saved revision'}</h2>
           <p>Freeze a selected immutable saved revision with its content digest. Unsaved editor changes are not included.</p>
-          {revisionError && <p role="alert">{revisionError}</p>}
+          {revisionError && <><p role="alert">{revisionError}</p><button type="button" className="ws-secondary" disabled={readsBusy}
+            onClick={retryPrivateReads}>Retry saved revisions</button></>}
+          {revisions===null&&!revisionError&&readPhase==='revisions'&&<ReleasePending label="Loading saved revisions…" />}
           <label>Saved revision
             <select aria-label="Saved revision" value={selectedRevision??''} disabled={busy||historySelection!==null||!!frozen||!revisions?.length}
               onChange={event=>{
@@ -762,10 +768,12 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                 }}>Choose another saved revision or visibility intent</button>}
           </div>}
           <FrozenRequestHistory requests={frozenRequests} error={frozenListError} pending={readPhase==='history'}
+            onRetry={retryPrivateReads} retryDisabled={readsBusy}
             onSelect={request=>void selectFrozenRequest(request)}
             selectionDisabled={busy||historySelectionPending}
             activeRequestId={frozen?.requestId} />
           {historySelection && <div className="ws-release-action" role="group" aria-label="Historical frozen pin verification">
+            {mode==='publish'&&historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the exact private frozen revision…" />}
             {historySelectionError && <p role="alert">{historySelectionError}</p>}
             {historySelectionError && !historySelectionPending &&
               historySelection.portfolioId===id&&historySelection.status==='FROZEN'&&
@@ -779,7 +787,8 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           {mode==='staging' && <section className="ws-release-action" role="group" aria-labelledby="reviewer-history-title">
             <h3 id="reviewer-history-title">Registered reviewer grants</h3>
             <p>Owner-only metadata can be recovered after a reload. Raw reviewer credentials are never returned in this list.</p>
-            {grantListError && <p role="alert">{grantListError}</p>}
+            {grantListError && <><p role="alert">{grantListError}</p><button type="button" className="ws-secondary" disabled={readsBusy}
+              onClick={retryPrivateReads}>Retry reviewer grant history</button></>}
             {grants===null && !grantListError && readPhase==='grants' && <ReleasePending label="Loading private reviewer grant records…" />}
             {grants?.length===0 && <p>No reviewer grants have been registered.</p>}
             {!!grants?.length && <ul className="ws-release-grant-list">{grants.map(item=><li key={item.grantId}>
@@ -919,15 +928,16 @@ function ReleasePending({label,detail=false}:{label:string;detail?:boolean}) {
   </div></>;
 }
 
-function FrozenRequestHistory({requests,error,pending,onSelect,activeRequestId,selectionDisabled,candidateRequestId}:{
-  requests:OwnerFrozenRequest[]|null;error:string;pending:boolean;
+function FrozenRequestHistory({requests,error,pending,onRetry,retryDisabled,onSelect,activeRequestId,selectionDisabled,candidateRequestId}:{
+  requests:OwnerFrozenRequest[]|null;error:string;pending:boolean;onRetry:()=>void;retryDisabled:boolean;
   onSelect?:(request:OwnerFrozenRequest)=>void;activeRequestId?:string;
   selectionDisabled?:boolean;candidateRequestId?:string
 }) {
   return <section className="ws-release-action" role="group" aria-labelledby="frozen-history-title">
     <h3 id="frozen-history-title">Frozen private requests</h3>
     <p>Immutable owner-only revision pins. These records do not prove reviewer delivery, public hosting, release history or rollback.</p>
-    {error && <p role="alert">{error}</p>}
+    {error && <><p role="alert">{error}</p><button type="button" className="ws-secondary" disabled={retryDisabled}
+      onClick={onRetry}>Retry frozen request history</button></>}
     {requests===null&&!error&&pending&&<ReleasePending label="Loading frozen private requests…" />}
     {requests?.length===0&&<p>No private revisions have been frozen.</p>}
     {!!requests?.length&&<ol className="ws-release-grant-list">{requests.map(request=>
