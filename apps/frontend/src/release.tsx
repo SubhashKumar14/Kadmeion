@@ -119,6 +119,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   const [pinnedPreviewError,setPinnedPreviewError]=useState('');
   const [pinReadRetry,setPinReadRetry]=useState(0);
   const [historySelection,setHistorySelection]=useState<OwnerFrozenRequest|null>(null);
+  const [ackSelection,setAckSelection]=useState<PrivateReleaseAcknowledgement|null>(null);
   const [historySelectionPending,setHistorySelectionPending]=useState(false);
   const [historySelectionError,setHistorySelectionError]=useState('');
   const [result,setResult]=useState<SafePreviewResult|null>(null);
@@ -159,7 +160,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
   // acknowledgement may have been lost over the network.
   useEffect(()=>{
     historySelectionEpoch.current+=1;
-    setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
+    setHistorySelection(null);setAckSelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
     setPinReadRetry(0);
     setReadPhase(null);setRecord(null);setRevisions(null);setFrozenRequests(null);setFrozenListError('');
     setSelectedRevision(null);setRevisionError('');setPointer(null);
@@ -504,6 +505,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
    * Reuse an older request only after checking the exact owner-RPC frozen pin. */
   async function selectFrozenRequest(request:OwnerFrozenRequest){
     if (busy||historySelectionPending) return;
+    setAckSelection(null);
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     const visible=revisions?.find(item=>item.revision===request.revision);
     if (request.portfolioId!==id||request.status!=='FROZEN'||
@@ -548,9 +550,44 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
     }
   }
 
+  /** A DB ACK identifies a request but is not itself an immutable pin or proof
+   * of current delivery. Read the real owner pin even if its row is older than
+   * the bounded frozen-request catalogue. The loader checks exact request ID.
+   */
+  async function selectAcknowledgedRequest(row:PrivateReleaseAcknowledgement){
+    if(mode!=='releases'||readsBusy||row.portfolioId!==id)return;
+    const epoch=++historySelectionEpoch.current;
+    setHistorySelection(null);setAckSelection(row);setHistorySelectionPending(true);setHistorySelectionError('');
+    setFrozen(null);setPinnedPreviewReceipt(null);setPinnedPreviewError('');setResult(null);
+    setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
+    setGrant(null);setConfirmRevoke(false);setError('');setNotice('');
+    try{
+      const response=await port.loadOwnerFrozenRelease(row.requestId);
+      if(epoch!==historySelectionEpoch.current)return;
+      const pin=response.data;
+      if(!pin||pin.frozen.portfolioId!==id||!matchesFrozenPin(pin,pin.frozen)||
+         revisions?.some(item=>item.revision===pin.loadedRevision&&item.snapshotSha256!==pin.loadedSnapshotSha256)){
+        setHistorySelectionError('The acknowledged frozen request could not be verified. No current draft was substituted.');
+        return;
+      }
+      setSelectedRevision(pin.loadedRevision);setVisibility(pin.frozen.visibilityIntent);
+      setFrozen({requestId:row.requestId,portfolioId:id,revision:pin.loadedRevision,
+        snapshotSha256:pin.loadedSnapshotSha256,visibilityIntent:pin.frozen.visibilityIntent,
+        status:'FROZEN',publicUrl:null,alreadyFrozen:true});
+      setAckSelection(null);setHistorySelectionError('');
+      operation.current=null;grantOperation.current=null;
+      setNotice('Exact owner-private frozen revision verified from the historical acknowledgement. Current delivery remains unverified.');
+    }catch{
+      if(epoch===historySelectionEpoch.current)
+        setHistorySelectionError('The acknowledged frozen request could not be loaded. Retry the exact owner read.');
+    }finally{
+      if(epoch===historySelectionEpoch.current)setHistorySelectionPending(false);
+    }
+  }
+
   function cancelHistoricalSelection(){
     historySelectionEpoch.current+=1;
-    setHistorySelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
+    setHistorySelection(null);setAckSelection(null);setHistorySelectionPending(false);setHistorySelectionError('');
     setComparison(null);setEditableConsent(null);setSourceArchiveSha(null);setStaticArchiveSha(null);
     // Returning to the saved draft requires an explicit, listed selection;
     // do not leave an older absent-in-list revision silently selected.
@@ -696,7 +733,7 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
           <h3>Release history and rollback</h3>
           <p>Review private freeze records, historical database acknowledgements and the candidate pointer. Current public delivery and rollback require separate verification.</p>
           <ReleaseAcknowledgementHistory port={port} portfolioId={id} frozenRequests={frozenRequests}
-            onSelect={request=>void selectFrozenRequest(request)} selectionDisabled={readsBusy} />
+            onSelect={row=>void selectAcknowledgedRequest(row)} selectionDisabled={readsBusy} />
           {pointer?.candidateRequestId && <dl className="ws-release-facts">
             <dt>Prepared candidate request</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateRequestId}</code></dd>
             <dt>Candidate manifest fingerprint</dt><dd><code style={{overflowWrap:'anywhere'}}>{pointer.candidateManifestSha256}</code></dd>
@@ -717,6 +754,14 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
                 onClick={()=>void selectFrozenRequest(historySelection)}>Retry historical owner pin</button>}
             <button type="button" className="ws-secondary" disabled={busy}
               onClick={cancelHistoricalSelection}>Cancel frozen pin selection</button>
+          </div>}
+          {ackSelection&&<div className="ws-release-action" role="group" aria-label="Acknowledged frozen pin verification">
+            <p>Frozen request <code style={{overflowWrap:'anywhere'}}>{ackSelection.requestId}</code></p>
+            {historySelectionPending&&!historySelectionError&&<ReleasePending label="Verifying the acknowledged frozen revision…" />}
+            {historySelectionError&&<p role="alert">{historySelectionError}</p>}
+            {historySelectionError&&!historySelectionPending&&<button type="button" className="ws-secondary" disabled={readsBusy}
+              onClick={()=>void selectAcknowledgedRequest(ackSelection)}>Retry acknowledged owner pin</button>}
+            <button type="button" className="ws-secondary" disabled={busy} onClick={cancelHistoricalSelection}>Cancel acknowledged pin selection</button>
           </div>}
           <button type="button" className="ws-secondary" disabled>Public rollback unavailable — host proof required</button>
           <p className="ws-field-hint">A rollback requires a previously host-attested live release, a guarded pointer change and new GET/HEAD plus media verification. None is inferred from a private frozen request.</p>
@@ -963,7 +1008,7 @@ function mergeReleaseAcknowledgements(portfolioId:string,previous:readonly Priva
  */
 function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect,selectionDisabled}:{
   port:SupabaseBrowserAuthPort;portfolioId:string;frozenRequests:OwnerFrozenRequest[]|null;
-  onSelect:(request:OwnerFrozenRequest)=>void;selectionDisabled:boolean;
+  onSelect:(row:PrivateReleaseAcknowledgement)=>void;selectionDisabled:boolean;
 }){
   const candidate=port as Partial<ReleaseHistoryPort>;
   const available=typeof candidate.listOwnerReleaseAcknowledgements==='function';
@@ -1010,9 +1055,11 @@ function ReleaseAcknowledgementHistory({port,portfolioId,frozenRequests,onSelect
           <p><time dateTime={row.verifiedAt}>{new Date(row.verifiedAt).toLocaleString()}</time></p>
           <p>Intent <code style={{overflowWrap:'anywhere'}}>{row.intentId}</code></p>
           <p>Frozen request <code style={{overflowWrap:'anywhere'}}>{row.requestId}</code></p>
-        </div>{request?<button type="button" className="ws-secondary" disabled={selectionDisabled||pending}
-          onClick={()=>onSelect(request)}>Inspect matching frozen revision {request.revision}</button>:
-          <p className="ws-field-hint">Matching frozen request is not in the loaded catalogue.</p>}</li>;
+        </div><div>
+          <button type="button" className="ws-secondary" disabled={selectionDisabled||pending}
+            onClick={()=>onSelect(row)}>{request?'Inspect matching frozen revision '+request.revision:'Inspect acknowledged frozen request'}</button>
+          {!request&&<p className="ws-field-hint">Outside the loaded catalogue; the exact owner pin will be checked before inspection.</p>}
+        </div></li>;
       })}</ol>}
       <div className="ws-release-actions">
         <button type="button" className="ws-secondary" disabled={pending||selectionDisabled}
