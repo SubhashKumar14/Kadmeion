@@ -327,7 +327,7 @@ async function digestHtml(indexable:boolean,route:URL,
 /** Trusted worker only. The configured origin must come from server configuration. */
 export async function verifyActivatedUnlistedRelease(
   activation: Activation,
-  {origin, rpc, http = fetch, requirePublicAliasProof=false,publicAuthority}: VerificationPorts,
+  {origin, rpc, http = fetch, publicAuthority}: VerificationPorts,
   policy: 'RECOVER_UNVERIFIED_ACTIVATION' | 'CHECK_ACKNOWLEDGED_ONLY' = 'RECOVER_UNVERIFIED_ACTIVATION'
 ): Promise<DeliveryVerification> {
   const {portfolioId, intentId, htmlSha256, publicPath} = activation;
@@ -343,7 +343,11 @@ export async function verifyActivatedUnlistedRelease(
   }
   const route = new URL(publicPath ?? '/api/unlisted', host);
   if (publicPath === undefined) route.searchParams.set('portfolioId', portfolioId);
-  if(publicPath!==undefined&&publicAuthority!==undefined){
+  if(publicPath!==undefined){
+    // C11: PUBLIC never falls through to the legacy UNLISTED ACK/recovery.
+    // Require the frozen request AND explicit owner operation even on replay.
+    if(typeof publicAuthority!=='function'||!uuid(activation.requestId)||!uuid(activation.operationId))
+      throw new Error('Authoritative public delivery consent is required.');
     const releaseGeneration=activation.releaseGeneration;
     if(typeof releaseGeneration!=='number'||!Number.isSafeInteger(releaseGeneration)||releaseGeneration<1)
       throw new Error('Invalid authoritative release generation.');
@@ -365,53 +369,21 @@ export async function verifyActivatedUnlistedRelease(
         observedMediaManifest:sample.mediaManifest,observedAssetHashes:sample.assetHashes,
         observedHttpRequests:sample.observedHttpRequests}};
   }
-  const strictPublic=requirePublicAliasProof&&publicPath!==undefined;
-  if(strictPublic&&(typeof activation.releaseGeneration!=='number'||
-      !Number.isSafeInteger(activation.releaseGeneration)||activation.releaseGeneration<1))
-    throw new Error('Invalid trusted release generation.');
-  const checkHost = async(indexable:boolean):Promise<DeliverySample|null>=>{
-    try {
-      return await digestHtml(indexable,route,host,http,htmlSha256,strictPublic);
-    }catch{return null;}
+  // Genuine UNLISTED retains its existing nonindexable GET/HEAD contract,
+  // legacy service acknowledgement, and scoped failure recovery.
+  const checkHost = async():Promise<DeliverySample|null>=>{
+    try{return await digestHtml(false,route,host,http,htmlSha256);}
+    catch{return null;}
   };
-  // A newly activated PUBLIC route serves a noindex canary UNTIL the
-  // database records a trusted same-byte host acknowledgment. Verify the
-  // canary as non-indexable; an already acknowledged PUBLIC route must be
-  // indexable and match the same immutable source digest.
-  const publicRoute=publicPath!==undefined;
-  const initialIndexable=publicRoute&&policy==='CHECK_ACKNOWLEDGED_ONLY';
-  const acknowledgment=(sample:DeliverySample):DeliveryVerification=>{
-    if(!strictPublic)return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256};
-    if(!sample.apiPath||sample.htmlSha256!==htmlSha256||!publicPath||
-       activation.releaseGeneration===undefined)
-      throw new Error('Incomplete public alias observation.');
-    return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256,observedPublicDelivery:{
-      portfolioId,intentId,preparedReleaseGeneration:activation.releaseGeneration,
-      canonicalPath:publicPath,apiPath:sample.apiPath,servedHtmlSha256:sample.servedHtmlSha256,
-      observedMediaManifest:sample.mediaManifest,observedAssetHashes:sample.assetHashes,
-      observedHttpRequests:sample.observedHttpRequests
-    }};
-  };
-  const actualDigest=await checkHost(initialIndexable);
-  if (actualDigest?.htmlSha256 === htmlSha256) {
-    if (policy === 'CHECK_ACKNOWLEDGED_ONLY')
-      return acknowledgment(actualDigest);
-    const ack = await rpc('service_acknowledge_unlisted_release', {
-      p_portfolio_id: portfolioId, p_intent_id: intentId, p_html_sha256: htmlSha256
+  const actualDigest=await checkHost();
+  if(actualDigest?.htmlSha256===htmlSha256){
+    if(policy==='CHECK_ACKNOWLEDGED_ONLY')
+      return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256};
+    const ack=await rpc('service_acknowledge_unlisted_release',{
+      p_portfolio_id:portfolioId,p_intent_id:intentId,p_html_sha256:htmlSha256
     });
-    if (ack !== true) throw new Error('Release delivery acknowledgment was not confirmed.');
-    // Indexing changes the delivered robots marker; prove the AFTER-ack
-    // response, not merely the preceding private noindex canary. A failure
-    // cannot roll back a now-acknowledged live pointer on this read.
-    if(publicRoute){
-      const postAck=await checkHost(true);
-      if(postAck?.htmlSha256!==htmlSha256||
-         (strictPublic&&(postAck.mediaManifest!==actualDigest.mediaManifest||
-          postAck.assetHashes.join(',')!==actualDigest.assetHashes.join(','))))
-        throw new Error('Acknowledged public release failed its indexable HTTP verification.');
-      return acknowledgment(postAck);
-    }
-    return acknowledgment(actualDigest);
+    if(ack!==true)throw new Error('Release delivery acknowledgment was not confirmed.');
+    return {status:'DELIVERY_ACKNOWLEDGED',htmlSha256};
   }
 
   // A transient outage of an already-acknowledged release must not
@@ -540,6 +512,11 @@ export async function publishConsentedUnlistedRelease(
     publicPath = '/' + publicHandle + '/' + publicSlug;
   }
   if(consent)matchFrozenPublicationConsent(consent,portfolioId,publicPath);
+  // Even a caller using the old generic helper cannot activate PUBLIC
+  // through an implicit consent or an absent authority port.
+  if(publicPath!==undefined&&(consent?.visibility!=='PUBLIC'||
+     typeof ports.publicAuthority!=='function'||!uuid(consent.operationId)))
+    throw new Error('Authoritative public publication consent is required.');
   switch (prepared.status) {
     case 'ACKNOWLEDGED':
       return verifyActivatedUnlistedRelease(
