@@ -1,4 +1,4 @@
-import {cancelRpcBody, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
+import {cancelRpcBody, withDeliveryRpc, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 /**
  * Candidate Vercel Node function for PRIVATE reviewer staging, NOT publication.
  * Deliberately disabled unless the operator explicitly proves the host, sets
@@ -112,7 +112,7 @@ export async function handleReviewerRequest(req,res,{
   }
   let upstream;
   try{
-    upstream=await http(cfg.origin+'/rest/v1/rpc/'+(media?'service_read_frozen_release_png':'read_private_reviewer_stage_artifact'),{
+    upstream=await withDeliveryRpc(http,cfg.origin+'/rest/v1/rpc/'+(media?'service_read_frozen_release_png':'read_private_reviewer_stage_artifact'),{
       method:'POST',headers:{
         'apikey':cfg.secret,'Authorization':'Bearer '+cfg.secret,
         'Content-Type':'application/json','Accept':'application/json',
@@ -120,19 +120,18 @@ export async function handleReviewerRequest(req,res,{
       },
       body:JSON.stringify({p_grant_id:grantId,p_raw_token:token,...media}),
       cache:'no-store',credentials:'omit',redirect:'error',
-      signal:AbortSignal.timeout(5000)
+    },async response=>{
+      if(!response.ok){cancelRpcBody(response.body);return {ok:false,body:null};}
+      return {ok:true,body:media?await readFrozenPng(response,media.p_sha):await readBoundedRpcJson(response)};
     });
   }catch{
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
   if(!upstream.ok){
-    cancelRpcBody(upstream.body);
     respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);
     return;
   }
-  let receipt;
-  try{receipt=media?await readFrozenPng(upstream,media.p_sha):await readBoundedRpcJson(upstream);}
-  catch{respond(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
+  const receipt=upstream.body;
   if(receipt===null){
     respond(res,404,'Not found','text/plain; charset=utf-8',method);return;
   }

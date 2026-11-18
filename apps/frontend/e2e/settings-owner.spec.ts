@@ -179,9 +179,14 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   await expect(page.getByRole('checkbox',{name:'Publishing activity'})).toBeChecked();
   const syncPreference=page.getByRole('checkbox',{name:'Draft sync activity'});
   await expect(syncPreference).not.toBeChecked();
-  const preferencesRpc='**/rest/v1/rpc/owner_set_notification_preferences';
+  // The old admitted API and atomic C08 candidate have distinct write
+  // semantics. Observe the actual endpoint, never infer CAS from a badge.
+  const preferenceWrites:{atomic:boolean;body:Record<string,unknown>}[]=[];
+  const preferencesRpc=(url:URL)=>url.origin===localApi&&
+    ['/rest/v1/rpc/owner_set_notification_preferences','/rest/v1/rpc/change_owner_notification_preferences'].includes(url.pathname);
   const rejectedWrite=Promise.withResolvers<void>();
   await page.route(preferencesRpc,async route=>{
+    preferenceWrites.push({atomic:new URL(route.request().url()).pathname.endsWith('/change_owner_notification_preferences'),body:route.request().postDataJSON()});
     await rejectedWrite.promise;
     await route.fulfill({status:503,json:{message:'Fixture preference outage'}});
   },{times:1});
@@ -198,9 +203,24 @@ test('F5 owner settings 41-47 reflow in real light/dark authenticated workspace'
   }
   await expect(page.getByRole('alert')).toContainText('Could not confirm the change.');
   await expect(syncPreference).not.toBeChecked();
-  await expect(syncPreference).toBeFocused();
-  await syncPreference.press('Space');
-  await expect(page.getByText('Notification preferences saved.')).toBeVisible();
+  expect(preferenceWrites).toHaveLength(1);
+  if(preferenceWrites[0]!.atomic){
+    await expect(syncPreference).toBeDisabled();
+    const first=preferenceWrites[0]!.body;
+    expect(Number.isSafeInteger(first.p_expected_version)).toBe(true);
+    expect(first.p_expected).toBeNull();
+    expect(first.p_desired).toEqual({reviewerEnabled:true,publishEnabled:true,syncEnabled:true});
+    expect(typeof first.p_operation_id==='string'&&/^[0-9a-f-]{36}$/.test(first.p_operation_id)).toBe(true);
+    let retryBody:unknown;
+    await page.route(preferencesRpc,async route=>{retryBody=route.request().postDataJSON();await route.continue();},{times:1});
+    await page.getByRole('button',{name:'Retry preference change'}).click();
+    await expect(page.getByText('Notification preferences saved.')).toBeVisible();
+    expect(retryBody).toEqual(first);
+  }else{
+    await expect(syncPreference).toBeFocused();
+    await syncPreference.press('Space');
+    await expect(page.getByText('Notification preferences saved.')).toBeVisible();
+  }
   await page.reload();
   await expect(page.getByRole('checkbox',{name:'Reviewer activity'})).toBeChecked();
   await expect(page.getByRole('checkbox',{name:'Publishing activity'})).toBeChecked();
@@ -323,8 +343,23 @@ test('B16 WF-045 stale preference intent compares real saved row before writing'
   const panel=page.locator('section.ws-setting-card').filter({has:page.getByRole('heading',{name:'Optional in-app notifications',exact:true})});
   const reviewer=panel.getByRole('checkbox',{name:'Reviewer activity'}), publishing=panel.getByRole('checkbox',{name:'Publishing activity'});
   await expect(reviewer).toBeChecked();await expect(publishing).toBeChecked();
-  let writes=0;
-  page.on('request',request=>{if(new URL(request.url()).pathname==='/rest/v1/rpc/owner_set_notification_preferences'&&request.method()==='POST')writes++;});
+  const paths:string[]=[];
+  const casBodies:Record<string,unknown>[]=[];
+  const conflicts:{status:number;code:string|null}[]=[];
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.origin!==localApi||request.method()!=='POST')return;
+    if(url.pathname==='/rest/v1/rpc/owner_set_notification_preferences'||url.pathname==='/rest/v1/rpc/change_owner_notification_preferences'){
+      paths.push(url.pathname);
+      if(url.pathname.endsWith('/change_owner_notification_preferences'))casBodies.push(request.postDataJSON());
+    }
+  });
+  page.on('response',async response=>{
+    const url=new URL(response.url());
+    if(url.origin!==localApi||!url.pathname.endsWith('/change_owner_notification_preferences')||response.ok())return;
+    const payload=await response.json().catch(()=>null);
+    conflicts.push({status:response.status(),code:typeof payload?.code==='string'?payload.code:null});
+  });
   const other=await page.context().newPage();
   try{
     await other.goto('/app/notifications');
@@ -333,13 +368,32 @@ test('B16 WF-045 stale preference intent compares real saved row before writing'
     await expect(other.getByText('Notification preferences saved.',{exact:true})).toBeVisible();
     await reviewer.uncheck();
     await expect(panel.getByRole('alert')).toContainText('Saved notification preferences changed.');
-    expect(writes).toBe(0);
+    const atomic=casBodies.length>0;
+    if(atomic){
+      expect(paths).toHaveLength(1);
+      await expect.poll(()=>conflicts.length).toBe(1);
+      expect([409,500]).toContain(conflicts[0]!.status);
+      expect(conflicts[0]!.code).toBe('40001');
+      await expect(reviewer).toBeChecked();
+      await expect(reviewer).toBeDisabled();
+      // The failed stale operation must not overwrite the other tab's data.
+      await expect(toggle).not.toBeChecked();
+      await panel.getByRole('button',{name:'Reload confirmed preferences'}).click();
+      await expect(reviewer).toBeEnabled();
+    }else expect(paths).toHaveLength(0);
     await expect(reviewer).toBeChecked();await expect(publishing).not.toBeChecked();
     await reviewer.uncheck();
     await expect(panel.getByText('Notification preferences saved.',{exact:true})).toBeVisible();
-    expect(writes).toBe(1);
+    expect(paths).toHaveLength(atomic?2:1);
+    if(atomic){
+      expect(casBodies[1]!.p_expected_version).toBe(Number(casBodies[0]!.p_expected_version)+1);
+      expect(casBodies[1]!.p_operation_id).not.toBe(casBodies[0]!.p_operation_id);
+      expect(casBodies[1]!.p_expected).toEqual({reviewerEnabled:true,publishEnabled:false,syncEnabled:false});
+      expect(casBodies[1]!.p_desired).toEqual({reviewerEnabled:false,publishEnabled:false,syncEnabled:false});
+    }
     await page.reload();
     await expect(reviewer).not.toBeChecked();await expect(publishing).not.toBeChecked();
-    await expect(panel.getByText(/may still race until an atomic conditional-write contract is available/)).toBeVisible();
+    if(atomic)await expect(panel.getByText(/Changes are conditional on the last confirmed version/)).toBeVisible();
+    else await expect(panel.getByText(/may still race until an atomic conditional-write contract is available/)).toBeVisible();
   }finally{await other.close();}
 });
