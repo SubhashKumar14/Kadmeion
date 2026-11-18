@@ -715,11 +715,14 @@ test('real owner onboarding and project revision are private across browser sess
     baseURL: testInfo.project.use.baseURL,
     viewport: {width:960, height:540},
     isMobile:true, hasTouch:true,
-    storageState: await page.context().storageState(),
+    // Authenticate the same owner independently. Cloning storageState copies
+    // the desktop refresh credential into a non-coordinating browser context.
+    // Token rotation could otherwise invalidate the desktop session mid-journey.
     permissions:['clipboard-read','clipboard-write']
   });
   try {
     const phone=await touch.newPage();
+    await signIn(phone,owner);
     await phone.goto(editorPath);
     await expect(phone.getByRole('heading',{name:'Continue on a larger screen.'})).toBeVisible();
     await expect(phone.getByRole('button',{name:'Save draft'})).toHaveCount(0);
