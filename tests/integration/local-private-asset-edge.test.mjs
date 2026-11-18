@@ -137,7 +137,7 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
         body:{email,password,email_confirm:true,user_metadata:{display_name:'Local profile fixture'}}}),'Provision disposable user');
       const signed=success(await call('/auth/v1/token?grant_type=password',{body:{email,password}}),'Sign in disposable user');
       assert.equal(signed.user.id,created.id);assert.ok(typeof signed.access_token==='string');
-      return {id:created.id,token:signed.access_token};
+      return {id:created.id,token:signed.access_token,email,password};
     };
     const owner=await createOwner(),foreign=await createOwner();
     const rpc=(name,body={},actor=owner)=>call('/rest/v1/rpc/'+name,{body,token:actor.token});
@@ -210,6 +210,33 @@ test('C05 real local standalone PROFILE storage, registration, avatar CAS and re
     wantDenied(await gateway(owner,{assetId:registry.assetId}));
     wantDenied(await gateway(owner,{...body,expectedSha256:digest}));
     assert.deepEqual(success(await rpc('read_owner_private_asset_pin',pin),'No foreign or legacy pin'),unpinned);
+
+    // A revoked real password session cannot create a server pin on an
+    // otherwise valid registered PROFILE object. A fresh session must observe
+    // UNPINNED before doing any new trusted write.
+    const expiredOwner=await createOwner();
+    const expiredRegistry=success(await rpc('reserve_private_profile_asset',{
+      ...reserve,p_operation_id:randomUUID(),p_alt_text:'Revoked-session test avatar'
+    },expiredOwner),'Reserve separate owner avatar');
+    success(await upload(expiredRegistry.objectPath,expiredOwner),'Upload exact revoked-session fixture PNG');
+    success(await rpc('register_private_profile_asset',{p_asset_id:expiredRegistry.assetId},expiredOwner),
+      'Register revoked-session fixture');
+    const expiredPin={p_scope:'PROFILE',p_asset_id:expiredRegistry.assetId,p_project_id:null};
+    const beforeLogout=success(await rpc('read_owner_private_asset_pin',expiredPin,expiredOwner),
+      'Actual registered fixture before logout');
+    assert.equal(beforeLogout.status,'UNPINNED');
+    success(await call('/auth/v1/logout?scope=local',{token:expiredOwner.token}),
+      'Revoke actual local GoTrue session');
+    wantDenied(await gateway(expiredOwner,{assetId:expiredRegistry.assetId,scope:'PROFILE'}));
+    const relogin=success(await call('/auth/v1/token?grant_type=password',{
+      body:{email:expiredOwner.email,password:expiredOwner.password}
+    }),'Fresh password session after rejected stale pin');
+    assert.equal(relogin.user.id,expiredOwner.id);
+    const renewed={...expiredOwner,token:relogin.access_token};
+    const sessionId=token=>JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8')).session_id;
+    assert.notEqual(sessionId(renewed.token),sessionId(expiredOwner.token));
+    assert.deepEqual(success(await rpc('read_owner_private_asset_pin',expiredPin,renewed),
+      'Stale session did not persist a trusted digest'),beforeLogout);
     const receipt=success(await gateway(owner,body),'Actual PROFILE owner Edge computes trusted pin');
     assert.deepEqual(receipt,{assetId:registry.assetId,scope:'PROFILE',status:'WRITE_ONCE_ATTESTED',
       publicPublishingAllowed:false,accountDeletionAllowed:false});
