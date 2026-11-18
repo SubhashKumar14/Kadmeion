@@ -90,6 +90,45 @@ function receipt(raw:unknown,portfolioId:string,kind:'PREPARE'|'BLOCK',
     publicServingEnabled:false,publicUrl:null,hostRevocationVerified:false
   };
 }
+const POINTER_RPC_TIMEOUT_MS=10_000;
+const MAX_POINTER_RPC_BYTES=16_384;
+function cancelPointerBody(body:{cancel:()=>Promise<void>}|null|undefined):void{
+  try{void body?.cancel().catch(()=>{});}catch{}
+}
+async function readPointerJson(response:Response,signal:AbortSignal):Promise<unknown>{
+  let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+  const stop=()=>cancelPointerBody(reader??response.body);
+  signal.addEventListener('abort',stop,{once:true});
+  try{
+    if(signal.aborted)return null;
+    const mime=response.headers.get('content-type')??'';
+    const length=response.headers.get('content-length');
+    if(!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(mime)||
+       (length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_POINTER_RPC_BYTES))||
+       !response.body)return null;
+    reader=response.body.getReader();
+    const bytes=new Uint8Array(MAX_POINTER_RPC_BYTES);
+    let size=0,count=0;
+    for(;;){
+      const part=await reader.read();
+      if(signal.aborted)return null;
+      if(part.done)break;
+      if(!(part.value instanceof Uint8Array)||++count>1024||
+         size+part.value.byteLength>bytes.length)return null;
+      bytes.set(part.value,size);size+=part.value.byteLength;
+    }
+    const encoding=response.headers.get('content-encoding');
+    if(length!==null&&(!encoding||encoding.toLowerCase()==='identity')&&Number(length)!==size)
+      return null;
+    return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)));
+  }catch{return null;}
+  finally{
+    signal.removeEventListener('abort',stop);
+    stop();
+    try{reader?.releaseLock();}catch{}
+  }
+}
+
 export class SupabasePrivateReleasePointerService {
   private readonly origin:string;
   private readonly key:string;
@@ -111,40 +150,59 @@ export class SupabasePrivateReleasePointerService {
     this.origin=url.origin;this.key=publishableKey;this.token=accessToken;this.http=http;
   }
   private async call(rpc:string,payload:Record<string,unknown>):Promise<unknown>{
-    const jwt=await this.token();
-    if(!jwt)throw new PrivatePointerError('AUTH_EXPIRED','Sign in to manage a private release.');
-    let response:Response;
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const unavailable=()=>new PrivatePointerError('PROVIDER_UNAVAILABLE',
+      'Private pointer update was not acknowledged; check state before retrying.');
     try{
-      response=await this.http(this.origin+'/rest/v1/rpc/'+rpc,{
-        method:'POST',headers:{apikey:this.key,Authorization:'Bearer '+jwt,
-          'Content-Type':'application/json',Accept:'application/json'},
-        body:JSON.stringify(payload),credentials:'omit',cache:'no-store',redirect:'error'
+      const attempt=(async()=>{
+        const jwt=await this.token();
+        if(controller.signal.aborted)throw unavailable();
+        if(!jwt)throw new PrivatePointerError('AUTH_EXPIRED','Sign in to manage a private release.');
+        const target=this.origin+'/rest/v1/rpc/'+rpc;
+        const response=await this.http(target,{
+          method:'POST',headers:{apikey:this.key,Authorization:'Bearer '+jwt,
+            'Content-Type':'application/json',Accept:'application/json'},
+          body:JSON.stringify(payload),credentials:'omit',cache:'no-store',redirect:'error',
+          signal:controller.signal
+        });
+        if(controller.signal.aborted||response.redirected||(response.url!==''&&response.url!==target)){
+          cancelPointerBody(response.body);throw unavailable();
+        }
+        const body=await readPointerJson(response,controller.signal);
+        if(controller.signal.aborted)throw unavailable();
+        return {ok:response.ok,status:response.status,body};
+      })();
+      const deadline=new Promise<never>((_,reject)=>{
+        timer=setTimeout(()=>{reject(unavailable());controller.abort();},POINTER_RPC_TIMEOUT_MS);
       });
-    }catch{
-      throw new PrivatePointerError('PROVIDER_UNAVAILABLE',
-        'Private pointer update was not acknowledged; check state before retrying.');
+      const response=await Promise.race([attempt,deadline]);
+      if(!response.ok){
+        const message=record(response.body)?response.body.message:null;
+        if(response.status===401)
+          throw new PrivatePointerError('AUTH_EXPIRED','Session expired.');
+        if(response.status===403||message==='PRIVATE_PORTFOLIO_NOT_FOUND')
+          throw new PrivatePointerError('FORBIDDEN','Private portfolio is unavailable.');
+        if(message==='PRIVATE_FROZEN_REQUEST_UNAVAILABLE')
+          throw new PrivatePointerError('REVISION_UNAVAILABLE','Frozen revision is unavailable.');
+        if(message==='UNLISTED_INTENT_QUOTA_REACHED')
+          throw new PrivatePointerError('QUOTA_EXCEEDED','The publishing request limit has been reached.');
+        if(response.status===409||message==='PRIVATE_POINTER_CONFLICT'||
+          message==='UNLISTED_POINTER_CONFLICT'||message==='UNLISTED_OPERATION_REUSED'||
+          message==='PRIVATE_POINTER_OPERATION_REUSED')
+          throw new PrivatePointerError('CONFLICT','Private pointer changed; read current state.');
+        if(message==='INVALID_PRIVATE_POINTER_PREPARE'||message==='INVALID_PRIVATE_POINTER_BLOCK'||
+          message==='INVALID_PRIVATE_POINTER_READ')
+          throw new PrivatePointerError('VALIDATION','Invalid private pointer operation.');
+        throw new PrivatePointerError('PROVIDER_UNAVAILABLE','Private pointer operation was not confirmed.');
+      }
+      return response.body;
+    }catch(error){
+      if(error instanceof PrivatePointerError)throw error;
+      throw unavailable();
+    }finally{
+      clearTimeout(timer);controller.abort();
     }
-    if(!response.ok){
-      const problem:unknown=await response.json().catch(()=>null);
-      const message=record(problem)?problem.message:null;
-      if(response.status===401)
-        throw new PrivatePointerError('AUTH_EXPIRED','Session expired.');
-      if(response.status===403||message==='PRIVATE_PORTFOLIO_NOT_FOUND')
-        throw new PrivatePointerError('FORBIDDEN','Private portfolio is unavailable.');
-      if(message==='PRIVATE_FROZEN_REQUEST_UNAVAILABLE')
-        throw new PrivatePointerError('REVISION_UNAVAILABLE','Frozen revision is unavailable.');
-      if(message==='UNLISTED_INTENT_QUOTA_REACHED')
-        throw new PrivatePointerError('QUOTA_EXCEEDED','The publishing request limit has been reached.');
-      if(response.status===409||message==='PRIVATE_POINTER_CONFLICT'||
-        message==='UNLISTED_POINTER_CONFLICT'||message==='UNLISTED_OPERATION_REUSED'||
-        message==='PRIVATE_POINTER_OPERATION_REUSED')
-        throw new PrivatePointerError('CONFLICT','Private pointer changed; read current state.');
-      if(message==='INVALID_PRIVATE_POINTER_PREPARE'||message==='INVALID_PRIVATE_POINTER_BLOCK'||
-        message==='INVALID_PRIVATE_POINTER_READ')
-        throw new PrivatePointerError('VALIDATION','Invalid private pointer operation.');
-      throw new PrivatePointerError('PROVIDER_UNAVAILABLE','Private pointer operation was not confirmed.');
-    }
-    return response.json().catch(()=>null);
   }
   async read(portfolioId:string):Promise<PrivatePointerSnapshot>{
     if(!uuid(portfolioId))throw new PrivatePointerError('VALIDATION','Invalid portfolio ID.');
