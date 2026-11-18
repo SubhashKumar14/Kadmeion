@@ -2,6 +2,13 @@ import {createHash} from 'node:crypto';
 import {readBoundedRpcJson, cancelRpcBody} from './_bounded-rpc-json.mjs';
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const slugPattern = /^(?=.{3,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Static, source-derived public shell tokens; never interpolate owner data into CSS.
+// A hash authorizes this one stylesheet without permitting arbitrary inline CSS.
+const projectionCss = `:root{color-scheme:light;font-family:Inter,"Helvetica Neue",Arial,system-ui,sans-serif;--surface:#fafaf9;--ink:#0b1a21;--body:#536b7b;--line:#dbe1e4;--accent:#a55229;--focus:#2869b0;background:var(--surface);color:var(--ink)}
+*,*::before,*::after{box-sizing:border-box}body{margin:0;line-height:1.65}a{color:var(--accent);text-decoration-thickness:.08em;text-underline-offset:.18em;overflow-wrap:anywhere}a:focus-visible{outline:3px solid var(--focus);outline-offset:4px}.skip{position:absolute;left:1rem;top:-8rem;padding:.7rem 1rem;background:var(--ink);color:#fff}.skip:focus{top:1rem;z-index:10}.shell{border-bottom:1px solid var(--line);padding:.8rem clamp(1rem,5vw,4rem)}.shell nav{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.5rem;max-width:80rem;margin:auto}.shell a{display:inline-flex;align-items:center;min-height:44px;padding:.25rem;color:var(--ink)}.shell .home{font-weight:750;margin-right:auto}main{max-width:72rem;margin:auto;padding:clamp(2rem,7vw,6rem) clamp(1rem,5vw,4rem);overflow-wrap:anywhere}main:focus-visible{outline:3px solid var(--focus);outline-offset:-4px}.eyebrow{display:block;font-size:.78rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--body);margin-bottom:1rem}h1,h2{font-family:Georgia,"Times New Roman",serif;font-weight:500;letter-spacing:-.025em;line-height:1.12}h1{font-size:clamp(2.15rem,6vw,4.7rem);margin:0 0 1.5rem}h2{font-size:clamp(1.45rem,3vw,2.2rem);margin:0 0 1rem}p{max-width:68ch;color:var(--body);font-size:1.05rem;margin:0 0 1.1rem}section{padding:1.6rem 0;border-top:1px solid var(--line);margin-top:1.6rem}.projection-links{display:flex;flex-wrap:wrap;gap:.75rem 1.25rem;margin:1.5rem 0}.projection-links a{display:inline-flex;min-height:44px;align-items:center} @media (max-width:480px){.shell nav{gap:.25rem .7rem}.shell .home{flex-basis:100%;margin-right:0}} @media print{.shell,.skip{display:none}main{padding:0}section{break-inside:avoid}}`;
+const projectionStyleHash = createHash('sha256').update(projectionCss,'utf8').digest('base64');
+const projectionCsp = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; style-src 'sha256-"+projectionStyleHash+"'";
+const publicShell = '<a class="skip" href="#published-content">Skip to content</a><header class="shell"><nav aria-label="Kadmeion navigation"><a class="home" href="/">Kadmeion</a><a href="/explore">Explore</a><a href="/templates">Templates</a></nav></header>';
 const entities = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const textWithin = (value, max) => value === undefined ||
@@ -55,9 +62,10 @@ function render(projection, slug) {
   const name = typeof projection.displayName === 'string' && projection.displayName.trim()
     ? projection.displayName : projection.handle;
   const title = escape(slug ? projection.title : name);
+  const links = slug ? [link('View live project', projection.liveUrl), link('View repository', projection.repositoryUrl)].filter(Boolean) : [];
   const content = slug
     ? paragraph(projection.summary) + paragraph(projection.description) +
-      link('View live project', projection.liveUrl) + ' ' + link('View repository', projection.repositoryUrl) +
+      (links.length ? '<div class="projection-links">' + links.join('') + '</div>' : '') +
       projection.sections.map(section =>
         '<section><h2>' + escape(section.title) + '</h2>' + paragraph(section.body) + '</section>').join('')
     : paragraph(projection.headline) + paragraph(projection.bio);
@@ -76,7 +84,8 @@ function render(projection, slug) {
     (summary ? '<meta property="og:description" content="' + summary + '">' : '');
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title +
-    '</title><meta name="robots" content="noindex,nofollow,noarchive">' + description + shareMetadata + '</head><body><main><h1>' + title + '</h1>' +
+    '</title><meta name="robots" content="noindex,nofollow,noarchive">' + description + shareMetadata + '<style>' + projectionCss + '</style></head><body>' +
+    publicShell + '<main id="published-content" tabindex="-1"><span class="eyebrow">' + (slug?'Project case study':'Developer profile') + '</span><h1>' + title + '</h1>' +
     content + '</main></body></html>';
 }
 
@@ -93,7 +102,7 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    res.setHeader('Content-Security-Policy', status===200 ? projectionCsp : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     res.setHeader('Content-Type', status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8');
     res.end(req.method === 'HEAD' ? '' : body);
   }
