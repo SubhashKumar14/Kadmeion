@@ -1386,3 +1386,17 @@ button.pv-slot:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .ws-home .ws-recent-grid>nav li a{width:100%;justify-content:space-between}
 .ws-home .ws-recent-grid li:last-child{border-bottom:0}
 @media(max-width:720px){.ws-home .ws-recent-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* WORK-01 and WORK-02 — approved LIGHT comparison, real private/empty state. */
+.ws-onboarding-privacy{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;margin-block:22px 0;padding:16px 18px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
+.ws-onboarding-privacy>div{flex:1 1 220px;min-width:0}
+.ws-onboarding-privacy strong{font-size:.9375rem;color:var(--ink)}
+.ws-onboarding-privacy p{font-size:.875rem;color:var(--body);margin:4px 0 0;overflow-wrap:anywhere}
+.ws-onboarding-privacy>a{flex:0 1 auto;max-width:100%;text-align:center;white-space:normal;overflow-wrap:anywhere}
+.ws-home .ws-recent-empty{display:flex;align-items:center;gap:14px;padding:16px;border:1px solid var(--line);border-radius:9px;background:var(--surface-soft)}
+.ws-home .ws-recent-empty>.ws-area-icon{flex:none}
+.ws-home .ws-recent-empty>p{min-width:0;margin:0;font-size:.875rem;overflow-wrap:anywhere}
+.ws-home .ws-recent-empty strong{display:block;color:var(--ink);font-size:.9375rem;margin-bottom:3px}
+.ws-home .ws-recent-grid li a{min-block-size:32px;padding-block:4px}
+@media(pointer:coarse){.ws-home .ws-recent-grid li a{min-block-size:44px}}
+@media(max-width:440px){.ws-onboarding-privacy>a{width:100%}.ws-home .ws-recent-empty{align-items:flex-start}}
