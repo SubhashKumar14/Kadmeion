@@ -5,7 +5,7 @@ import type { AuthOutcome } from '../../../packages/contracts/src/auth-service.t
 import { SupabaseBrowserAuthPort } from '../../auth-web/src/supabase-auth-port.ts';
 import { normalizeExternalHttpsUrl } from '../../../packages/contracts/src/project.ts';
 import { normalizeProjectDraft, type PrivateProjectDraft } from '../../../packages/contracts/src/projects.ts';
-import type { CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
+import { normalizePrivateCaseStudy, type CaseStudySection } from '../../../packages/contracts/src/private-project-case-studies.ts';
 import { Icon } from './landing.tsx';
 import { MoveToTrash } from './settings.tsx';
 
@@ -53,6 +53,9 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [pageError,setPageError]=useState('');
   const [loadingMore,setLoadingMore]=useState(false);
   const requestEpoch=useRef(0);
+  const ownerEpoch=useRef(port.getOwnerSessionEpoch());
+  const ownerExpired=useRef(false);
+  const currentOwner=()=>!ownerExpired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
   const pageInFlight=useRef(false);
   const [search,setSearch]=useState('');
   const [view,setView]=useState<'gallery'|'list'>('gallery');
@@ -64,12 +67,21 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const [saving,setSaving]=useState(false);
   const creationInFlight=useRef(false);
   const creationAttempt=useRef(0);
+  const [unconfirmed,setUnconfirmed]=useState<NewPrivateProject|null>(null);
+  const uncertainCreate=useRef<NewPrivateProject|null>(null);
+  const scanCursor=useRef<ProjectCursor|null>(null);
+  const scanSeen=useRef(new Set<string>());
+  const [confirmedProject,setConfirmedProject]=useState<string|null>(null);
+  const [existingProject,setExistingProject]=useState<string|null>(null);
+  function clearUncertain(){uncertainCreate.current=null;setUnconfirmed(null);scanCursor.current=null;scanSeen.current.clear();setExistingProject(null);}
+  function markUncertain(value:NewPrivateProject){clearUncertain();uncertainCreate.current=value;setUnconfirmed(value);}
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const modal=useRef<HTMLDialogElement>(null);
   const opener=useRef<HTMLButtonElement>(null);
   const topOpener=useRef<HTMLButtonElement>(null);
   function invalidateOwner() {
+    ownerExpired.current=true;
     creationAttempt.current++;
     creationInFlight.current=false;
     setSaving(false);
@@ -84,20 +96,26 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     setDraft(freshDraft());
     setCustomSlug(false);
     setError('');
-    setNotice('');
+    setNotice('');setConfirmedProject(null);clearUncertain();
     modal.current?.close();
     setState({status:'error',message:accountChangedMessage});
   }
   useEffect(()=>{
     let active=true;
     const epoch=++requestEpoch.current;
+    ownerEpoch.current=port.getOwnerSessionEpoch();ownerExpired.current=false;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next!==ownerEpoch.current&&!ownerExpired.current)invalidateOwner();
+    });
+    const current=()=>active&&epoch===requestEpoch.current&&currentOwner();
+    if(!current())return ()=>{active=false;unsubscribe();};
     pageInFlight.current=false;
     setLoadingMore(false);
     setPageError('');
     setState({status:'loading'});
     const load=async()=>{
       const identity=await port.getUser();
-      if (!active || epoch!==requestEpoch.current) return;
+      if (!current()) return;
       const ownerId=identity.data?.user?.id;
       if (identity.error || !ownerId) {
         invalidateOwner();
@@ -109,9 +127,9 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       const reply=await pageReader.call(port,PAGE_SIZE,null);
-      if (!active || epoch!==requestEpoch.current) return;
+      if (!current()) return;
       const check=await port.getUser();
-      if (!active || epoch!==requestEpoch.current) return;
+      if (!current()) return;
       if (check.error || check.data?.user?.id!==ownerId) {
         invalidateOwner();
       } else if (!reply.data || reply.error) {
@@ -123,10 +141,10 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       }
     };
     void load().catch(()=>{
-      if(active && epoch===requestEpoch.current)
+      if(current())
         setState({status:'error',message:'The private project service is unavailable. Retry securely.'});
     });
-    return ()=>{active=false;requestEpoch.current++;};
+    return ()=>{active=false;requestEpoch.current++;unsubscribe();};
   },[port,reload]);
 
   useEffect(()=>()=>{
@@ -169,62 +187,52 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
     };
   },[port,state.status,state.status==='ready'?state.ownerId:null]);
 
-  async function loadMore() {
-    if(state.status!=='ready' || !state.nextCursor || pageInFlight.current) return;
+  // Load one page or an explicitly requested bounded batch for search/sort.
+  // This is not a server-side snapshot: concurrent edits may move keyset rows.
+  async function loadMore(batch=false) {
+    if(!currentOwner()||state.status!=='ready'||!state.nextCursor||pageInFlight.current)return;
     const {ownerId,nextCursor}=state;
     const epoch=requestEpoch.current;
+    const current=()=>epoch===requestEpoch.current&&currentOwner();
     const pageReader=(port as ProjectPagePort).listOwnerProjectsPage;
-    if(typeof pageReader!=='function') {
-      setPageError('Private project pagination is unavailable. Retry later.');
-      return;
-    }
-    pageInFlight.current=true;
-    setLoadingMore(true);
-    setPageError('');
-    const rejectStaleOwner=()=>{
-      if(epoch===requestEpoch.current) invalidateOwner();
-    };
-    try {
+    if(typeof pageReader!=='function'){setPageError('Private project pagination is unavailable. Retry later.');return;}
+    pageInFlight.current=true;setLoadingMore(true);setPageError('');
+    let cursor:ProjectCursor|null=nextCursor;
+    const seenCursors=new Set<string>();
+    const key=(value:ProjectCursor)=>JSON.stringify([value.updatedAt,value.id]);
+    try{
       const startIdentity=await port.getUser();
-      if(epoch!==requestEpoch.current)return;
-      if(startIdentity.error || startIdentity.data?.user?.id!==ownerId) {
-        rejectStaleOwner();return;
-      }
-      const reply=await pageReader.call(port,PAGE_SIZE,nextCursor);
-      if(epoch!==requestEpoch.current)return;
-      const currentIdentity=await port.getUser();
-      if(epoch!==requestEpoch.current)return;
-      if(currentIdentity.error || currentIdentity.data?.user?.id!==ownerId) {
-        rejectStaleOwner();return;
-      }
-      if(reply.error || !reply.data) {
-        setPageError(reply.error?.message??'More private projects could not be loaded. Your earlier pages remain visible.');
-        return;
-      }
-      if(!validProjectPage(reply.data,ownerId,nextCursor)) {
-        setPageError('The next page failed validation. Previously loaded projects were kept.');
-        return;
-      }
-      setState(old=>{
-        if(old.status!=='ready' || old.ownerId!==ownerId ||
-           old.nextCursor?.id!==nextCursor.id ||
-           old.nextCursor?.updatedAt!==nextCursor.updatedAt) return old;
-        const seen=new Set(old.items.map(project=>project.id));
-        const added=reply.data!.items.filter(project=>{
-          if(seen.has(project.id))return false;
-          seen.add(project.id);return true;
+      if(!current())return;
+      if(startIdentity.error||startIdentity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      for(let index=0;cursor&&index<(batch?10:1);index++){
+        const requested:ProjectCursor=cursor;
+        if(seenCursors.has(key(requested))){
+          setPageError('The project cursor repeated. Refresh before loading more.');return;
+        }
+        seenCursors.add(key(requested));
+        const reply:AuthOutcome<ProjectPage>=await pageReader.call(port,PAGE_SIZE,requested);
+        if(!current())return;
+        const identity=await port.getUser();
+        if(!current())return;
+        if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(reply.error||!reply.data){
+          setPageError(reply.error?.message??'More projects could not be loaded. Earlier pages remain available.');return;
+        }
+        const page:ProjectPage=reply.data;
+        if(!validProjectPage(page,ownerId,requested)||(page.nextCursor&&seenCursors.has(key(page.nextCursor)))){
+          setPageError('The next page failed validation. Previously loaded projects were kept.');return;
+        }
+        setState(previous=>{
+          if(previous.status!=='ready'||previous.ownerId!==ownerId||
+            previous.nextCursor?.id!==requested.id||previous.nextCursor?.updatedAt!==requested.updatedAt)return previous;
+          const seen=new Set(previous.items.map(project=>project.id));
+          const added=page.items.filter(project=>{if(seen.has(project.id))return false;seen.add(project.id);return true;});
+          return {...previous,items:[...previous.items,...added],nextCursor:page.nextCursor};
         });
-        return {...old,items:[...old.items,...added],nextCursor:reply.data!.nextCursor};
-      });
-    } catch {
-      if(epoch===requestEpoch.current)
-        setPageError('More private projects could not be loaded. Your earlier pages remain visible.');
-    } finally {
-      if(epoch===requestEpoch.current) {
-        pageInFlight.current=false;
-        setLoadingMore(false);
+        cursor=page.nextCursor;
       }
-    }
+    }catch{if(current())setPageError('More private projects could not be loaded. Your earlier pages remain visible.');}
+    finally{if(current()){pageInFlight.current=false;setLoadingMore(false);}}
   }
   const filtered=useMemo(()=>{
     if(state.status!=='ready')return [];
@@ -249,20 +257,21 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
   const hasFilters=!!search.trim() || linkFilter!=='all'||detailFilter!=='all';
   function clearFilters(){setSearch('');setLinkFilter('all');setDetailFilter('all');setSort('recent');}
   function open(event: MouseEvent<HTMLButtonElement>) {
-    if (!modal.current || modal.current.open) return;
+    if (!currentOwner()||state.status!=='ready'||pageInFlight.current||!modal.current || modal.current.open) return;
     opener.current = event.currentTarget;
     setError('');
     modal.current.showModal();
   }
   async function save(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(creationInFlight.current)return;
+    if(!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current||uncertainCreate.current)return;
     creationInFlight.current=true;
     const attempt=++creationAttempt.current;
     const sessionEpoch=port.getOwnerSessionEpoch();
     const submitted={...draft};
-    const stillCurrent=()=>attempt===creationAttempt.current;
-    setSaving(true);setError('');setNotice('');
+    const stillCurrent=()=>attempt===creationAttempt.current&&currentOwner();
+    setSaving(true);setError('');setNotice('');setConfirmedProject(null);
+    let dispatched=false;
     try {
       const identity=await port.getUser();
       if(!stillCurrent())return;
@@ -273,6 +282,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         invalidateOwner();
         return;
       }
+      dispatched=true;
       const saved=await port.createPrivateProject(submitted);
       if(!stillCurrent())return;
       if(port.getOwnerSessionEpoch()!==sessionEpoch){invalidateOwner();return;}
@@ -283,23 +293,17 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         return;
       }
       if(saved.error||!saved.data) {
-        setError(saved.error?.message||'Private project save was not confirmed. Your form is retained.');
+        markUncertain(submitted);
+        setError(saved.error?.message||'Private project save was not confirmed. Check saved projects before another write.');
         return;
       }
       // Reload the owner-bound first page after a confirmed create. Do not
       // mix an optimistic record with a stale cursor or a previous owner.
-      requestEpoch.current++;
-      pageInFlight.current=false;
-      setState({status:'loading'});
-      setPageError('');
-      setReload(value=>value+1);
-      modal.current?.close();
-      setDraft(freshDraft());setCustomSlug(false);
-      setNotice('Saved privately in your account. This did not publish or connect a repository.');
+      completeCreate(saved.data.id,'Saved privately in your account. This did not publish or connect a repository.');
     } catch {
       if(stillCurrent()) {
         if(port.getOwnerSessionEpoch()!==sessionEpoch) invalidateOwner();
-        else setError('Project creation could not be verified. Your form values are retained.');
+        else {if(dispatched)markUncertain(submitted);setError('Project creation could not be verified. Your form values are retained.');}
       }
     } finally {
       if(stillCurrent()) {
@@ -308,13 +312,60 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       }
     }
   }
+  function completeCreate(id:string,message:string){
+    clearUncertain();setConfirmedProject(id);requestEpoch.current++;pageInFlight.current=false;
+    setState({status:'loading'});setPageError('');setReload(value=>value+1);
+    modal.current?.close();setDraft(freshDraft());setCustomSlug(false);setNotice(message);
+  }
+  async function checkCreatedProject(){
+    const submitted=uncertainCreate.current;
+    if(!submitted||!currentOwner()||state.status!=='ready'||creationInFlight.current||pageInFlight.current)return;
+    const read=(port as ProjectPagePort).listOwnerProjectsPage;
+    if(typeof read!=='function'){setError('The private project lookup is unavailable. Your draft is retained.');return;}
+    const ownerId=state.ownerId,attempt=++creationAttempt.current;
+    const valid=()=>attempt===creationAttempt.current&&currentOwner();
+    creationInFlight.current=true;setSaving(true);setError('');setExistingProject(null);
+    try{
+      const identity=await port.getUser();if(!valid())return;
+      if(identity.error||identity.data?.user?.id!==ownerId){invalidateOwner();return;}
+      for(let index=0;index<10;index++){
+        const cursor:ProjectCursor|null=scanCursor.current;
+        const key=cursor?JSON.stringify([cursor.updatedAt,cursor.id]):'first';
+        if(scanSeen.current.has(key)){setError('The lookup cursor repeated. Refresh the project lookup before retrying.');return;}
+        const response:AuthOutcome<ProjectPage>=await read.call(port,PAGE_SIZE,cursor);
+        if(!valid())return;
+        const owner=await port.getUser();if(!valid())return;
+        if(owner.error||owner.data?.user?.id!==ownerId){invalidateOwner();return;}
+        if(response.error||!response.data||!validProjectPage(response.data,ownerId,cursor)){
+          setError('Saved project lookup could not be verified. Your draft is retained; retry the lookup.');return;
+        }
+        const page:ProjectPage=response.data;
+        const existing=page.items.find(item=>item.slug===submitted.slug.trim());
+        if(existing){
+          const normalizedUrl=(value:string|null)=>value?new URL(value).href:null;
+          let same=false;
+          try{same=existing.revision===0&&existing.title===submitted.title.trim()&&
+            existing.summary===submitted.summary.trim()&&existing.description===''&&
+            existing.repositoryUrl===normalizedUrl(submitted.repositoryUrl)&&existing.liveUrl===normalizedUrl(submitted.liveUrl);}catch{/* do not infer a match */}
+          if(same){completeCreate(existing.id,'The requested private project matches a saved record. No additional write was made.');return;}
+          setExistingProject(existing.id);setError('This private slug is already in use but the saved record differs. Review that record or choose another slug.');return;
+        }
+        scanSeen.current.add(key);scanCursor.current=page.nextCursor;
+        if(!page.nextCursor){
+          clearUncertain();setError('No matching saved project was found in the current pages. Your draft is retained; you may explicitly retry.');return;
+        }
+      }
+      setError('No match in the pages checked yet. Continue checking before another write.');
+    }catch{if(valid())setError('The saved-project lookup failed. Retry without submitting another write.');}
+    finally{if(valid()){creationInFlight.current=false;setSaving(false);}}
+  }
   return <section className="ws-projects ws-owner-page" aria-labelledby="ws-title">
     <div className="ws-project-head">
       <div className="ws-heading"><p className="ws-kicker">WORKSPACE / PROJECT LIBRARY</p>
         <h1 id="ws-title">Project library.</h1>
         <p>Organize your projects and case studies. New project drafts stay private.</p>
       </div>
-      <button type="button" className="ws-primary" ref={topOpener} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
+      <button type="button" className="ws-primary" ref={topOpener} disabled={state.status!=='ready'||loadingMore} onClick={open}>Add project <Icon name="arrow" size={16}/></button>
     </div>
     <div className="ws-project-controls">
       <label className="ws-project-search">Search private projects
@@ -355,10 +406,11 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
         }}>Refresh projects</button>
     </div>
     {state.status==='ready' && <div className="ws-actions">
-      <p>Filters cover loaded private records. Publication status and technology tags are not available in this index.</p>
+      <p>Search, link and description filters cover all loaded private records. Load further pages to search the rest of your library. Publication status and technology tags are not available in this index.</p>
       {(hasFilters||sort!=='recent')&&<button type="button" className="ws-secondary" onClick={clearFilters}>Clear filters</button>}
     </div>}
     {notice&&<p role="status" className="ws-inline-alert">{notice}</p>}
+    {confirmedProject&&<a className="ws-secondary" href={'/app/projects/'+confirmedProject}>Continue editing saved project</a>}
     {state.status==='loading'?<p role="status" className="ws-project-state">Loading your private projects…</p>:
      state.status==='error'?<div role="alert" className="ws-project-state">
        <p>{state.message}</p><button type="button" className="ws-secondary" onClick={()=>{setState({status:'loading'});setReload(value=>value+1);}}>Retry securely</button></div>:
@@ -376,7 +428,7 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <p>{hasFilters?'Change filters or load additional private pages to search older projects.':
             'Add a project title and a short description. You can add links later.'}</p>
           {hasFilters?<button type="button" className="ws-secondary" onClick={clearFilters}>{search&&linkFilter==='all'&&detailFilter==='all'?'Clear search':'Reset project filters'}</button>:
-            <button type="button" className="ws-primary" onClick={open}>Add first project</button>}
+            <button type="button" className="ws-primary" disabled={loadingMore} onClick={open}>Add first project</button>}
         </div>
         {!hasFilters && <aside className="ws-project-aside" aria-labelledby="ws-project-guide">
           <h2 id="ws-project-guide">Show the work behind your code.</h2>
@@ -406,10 +458,12 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
       </ul>}
       {state.nextCursor && <div className="ws-actions">
         <button type="button" className="ws-secondary"
-          disabled={loadingMore} aria-busy={loadingMore}
+          disabled={loadingMore||saving} aria-busy={loadingMore}
           onClick={()=>void loadMore()}>
           {loadingMore?'Loading more…':pageError?'Retry loading more projects':'Load more projects'}
         </button>
+        <button type="button" className="ws-secondary" disabled={loadingMore||saving} onClick={()=>void loadMore(true)}>Load up to 500 more for search</button>
+        <p>Results and sort order update as pages arrive. Repeat until all available pages are loaded; refresh for recent changes.</p>
         {pageError && <p role="alert" className="ws-inline-alert">{pageError}</p>}
       </div>}
     </>}
@@ -422,31 +476,34 @@ export function PrivateProjects({port}:{port:SupabaseBrowserAuthPort}) {
           <button type="button" aria-label="Close project drawer" className="ws-project-close"
             disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>×</button></div>
         <p className="ws-project-privacy"><Icon name="folder" size={16}/> Saved to your private project library.</p>
-        <label>Project title<input disabled={saving} required autoComplete="off" maxLength={120} value={draft.title}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,title:event.target.value,
+        <label>Project title<input disabled={saving||!!unconfirmed} required autoComplete="off" maxLength={120} value={draft.title}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,title:event.target.value,
             slug:customSlug?old.slug:suggestSlug(event.target.value)}));}}/></label>
         <details className="ws-project-slug"><summary>Edit private URL slug</summary>
-        <label>Private URL slug<input disabled={saving} required spellCheck={false} minLength={3} maxLength={64}
+        <label>Private URL slug<input disabled={saving||!!unconfirmed} required spellCheck={false} minLength={3} maxLength={64}
           pattern="[a-z0-9]+(-[a-z0-9]+)*" value={draft.slug}
           onInvalid={event => {
             const disclosure = event.currentTarget.closest('details');
             if (disclosure) disclosure.open = true;
           }}
-          onChange={event=>{if(creationInFlight.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
+          onChange={event=>{if(creationInFlight.current||uncertainCreate.current)return;setCustomSlug(true);setDraft(old=>({...old,slug:event.target.value}));}}/>
           <small>Unique to your account. Lowercase letters, numbers and hyphens.</small></label></details>
-        <label>Summary (optional)<textarea disabled={saving} rows={3} maxLength={360} value={draft.summary}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
-        <label>Repository URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+        <label>Summary (optional)<textarea disabled={saving||!!unconfirmed} rows={3} maxLength={360} value={draft.summary}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,summary:event.target.value}));}}/></label>
+        <label>Repository URL (optional)<input disabled={saving||!!unconfirmed} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/repository" value={draft.repositoryUrl||''}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
-        <label>Live website URL (optional)<input disabled={saving} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,repositoryUrl:event.target.value||null}));}}/></label>
+        <label>Live website URL (optional)<input disabled={saving||!!unconfirmed} type="url" pattern="https://.+" title="Enter an HTTPS address" maxLength={2048}
           placeholder="https://example.com/project" value={draft.liveUrl||''}
-          onChange={event=>{if(!creationInFlight.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
-        {saving&&<p role="status">Saving your private project…</p>}
+          onChange={event=>{if(!creationInFlight.current&&!uncertainCreate.current)setDraft(old=>({...old,liveUrl:event.target.value||null}));}}/></label>
+        {saving&&<p role="status">{unconfirmed?'Checking saved private projects…':'Saving your private project…'}</p>}
+        {unconfirmed&&<div className="ws-actions"><button type="button" className="ws-secondary" disabled={saving} onClick={()=>void checkCreatedProject()}>Check saved project before retry</button>
+          <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{scanCursor.current=null;scanSeen.current.clear();setError('Lookup reset. Check the saved project again.');}}>Restart lookup</button>
+          {existingProject&&<><a href={'/app/projects/'+existingProject}>Review existing private project</a><button type="button" className="ws-secondary" disabled={saving} onClick={()=>{clearUncertain();setCustomSlug(true);setError('Choose a different unique private slug before saving.');}}>Edit a different slug</button></>}</div>}
         {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
         <div className="ws-project-modal-actions">
           <button type="button" className="ws-secondary" disabled={saving} onClick={()=>{if(!creationInFlight.current)modal.current?.close();}}>Cancel</button>
-          <button type="submit" className="ws-primary" disabled={saving}>{saving?'Saving…':'Save project'}</button>
+          <button type="submit" className="ws-primary" disabled={saving||!!unconfirmed}>{saving?'Saving…':'Save project'}</button>
         </div>
       </form>
     </dialog>
@@ -461,8 +518,6 @@ type DetailState =
 // Only confirmed contiguous overview-only receipts can advance the sibling
 // case-study baseline without replacing the user's independent section buffer.
 type RevisionRange = Readonly<{from: number; to: number}>;
-const projectConflict=(message:string)=>message.includes('changed while you were editing') ||
-  message === 'Private workspace conflict. Reload the latest data before trying again.';
 
 type DestinationChange = {label:string;before:string|null;after:string|null};
 type DestinationReview = {changes:DestinationChange[];key:string|null;error:string};
@@ -488,6 +543,7 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{error: boolean; text: string} | null>(null);
   const [latest, setLatest] = useState<OwnerProject | null>(null);
+  const [uncertainOverview,setUncertainOverview]=useState<{from:number;desired:PrivateProjectDraft}|null>(null);
   const [checking, setChecking] = useState(false);
   const [panel, setPanel] = useState<'details' | 'sections'>('details');
   const [openedSections, setOpenedSections] = useState(false);
@@ -504,6 +560,11 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     imagePendingRef.current=pending;setImagePending(pending);
   },[]);
   const overviewPending = useRef(false);
+  const ownerEpoch=useRef(port.getOwnerSessionEpoch());
+  const detailGeneration=useRef(0);
+  const ownerExpired=useRef(false);
+  const currentOwner=()=>!ownerExpired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
+  const currentDetail=(generation:number)=>generation===detailGeneration.current&&currentOwner();
   const casePendingRef = useRef(false);
   const observeRevision = useCallback((revision:number) => {
     setKnownRevision(previous=>Math.max(previous,revision));
@@ -531,19 +592,34 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   const canStartImage=useCallback(()=>!overviewPending.current&&!casePendingRef.current&&!imagePendingRef.current,[]);
 
   useEffect(() => {
-    let active = true;
-    void port.readOwnerProject(projectId).then(result => {
-      if (!active) return;
+    const generation=++detailGeneration.current;
+    ownerEpoch.current=port.getOwnerSessionEpoch();ownerExpired.current=false;
+    overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
+    setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
+    setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
+    setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
+    setOpenedSections(false);setPanel('details');setDetail({status:'loading'});
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next===ownerEpoch.current||ownerExpired.current)return;
+      ownerExpired.current=true;++detailGeneration.current;
+      overviewPending.current=false;casePendingRef.current=false;imagePendingRef.current=false;
+      setSaving(false);setChecking(false);setCasePending(false);setCaseDirty(false);setImagePending(false);
+      setKnownRevision(0);setOverviewAdvance(null);setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
+      setReviewedDestinationChange(null);setConfirmOverviewRebase(false);setFeedback(null);
+      setOpenedSections(false);setPanel('details');setDetail({status:'unavailable'});
+    });
+    if(currentDetail(generation))void port.readOwnerProject(projectId).then(result => {
+      if (!currentDetail(generation)) return;
       if (result.data && !result.error) {
         observeRevision(result.data.revision);
         setDetail({status:'ready',saved:result.data,draft:result.data});
       } else setDetail({status:'unavailable'});
-    }).catch(() => {if (active) setDetail({status:'unavailable'});});
-    return () => { active = false; };
+    }).catch(() => {if(currentDetail(generation))setDetail({status:'unavailable'});});
+    return () => {++detailGeneration.current;unsubscribe();};
   }, [port, projectId, reload, observeRevision]);
 
   function edit(field: keyof PrivateProjectDraft, value: string) {
-    if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    if (!currentOwner()||overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
     if(field==='repositoryUrl'||field==='liveUrl')setReviewedDestinationChange(null);
     setConfirmOverviewRebase(false);
     setDetail(current => current.status === 'ready'
@@ -552,7 +628,8 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
   }
 
   async function compareLatest(baseRevision: number) {
-    if (overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    if (!currentOwner()||overviewPending.current || casePendingRef.current || imagePendingRef.current) return;
+    const generation=detailGeneration.current;
     overviewPending.current=true;
     setReviewedDestinationChange(null);
     setConfirmOverviewRebase(false);
@@ -561,39 +638,52 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     setLatest(null);
     try {
       const {data,error} = await port.readOwnerProject(projectId);
+      if(!currentDetail(generation))return;
       if (!data || error || data.revision < Math.max(baseRevision,knownRevision)) {
         setFeedback({error:true,text:'Could not verify the latest revision. Your edits are still here.'});
         return;
       }
       observeRevision(data.revision);
+      // Readback proves current saved fields, not which request/actor wrote them.
+      // Do not advance the sibling case-study baseline without its own receipt.
+      if(uncertainOverview&&detail.status==='ready'&&data.revision===uncertainOverview.from+1){
+        try{
+          const same=(left:PrivateProjectDraft,right:PrivateProjectDraft)=>
+            JSON.stringify(normalizeProjectDraft(left))===JSON.stringify(normalizeProjectDraft(right));
+          if(same(data,uncertainOverview.desired)&&same(detail.draft,uncertainOverview.desired)){
+            setDetail({status:'ready',saved:data,draft:data});setUncertainOverview(null);
+            setOverviewConflict(false);setLatest(null);
+            setFeedback({error:false,text:'Requested overview matches the current saved revision. No additional write was made.'});return;
+          }
+        }catch{/* Invalid current draft still requires explicit comparison. */}
+      }
       setLatest(data.revision !== baseRevision ? data : null);
       if (data.revision === baseRevision) {
-        setOverviewConflict(false);
+        setUncertainOverview(null);setOverviewConflict(false);
         setFeedback({error:false,text:'You have the latest saved revision.'});
       } else setOverviewConflict(true);
     } catch {
-      setFeedback({error:true,text:'Latest revision check failed. Your private draft is preserved.'});
+      if(currentDetail(generation))setFeedback({error:true,text:'Latest revision check failed. Your private draft is preserved.'});
     } finally {
-      overviewPending.current=false;
-      setChecking(false);
+      if(currentDetail(generation)){overviewPending.current=false;setChecking(false);}
     }
   }
 
   function resolveOverviewComparison(keep:boolean){
-    if(detail.status!=='ready'||!latest||latest.revision<knownRevision||
+    if(!currentOwner()||detail.status!=='ready'||!latest||latest.revision<knownRevision||
       overviewPending.current||casePendingRef.current||imagePendingRef.current||
       (keep&&!confirmOverviewRebase))return;
     // Rebase ONLY the overview baseline. Keep the case-study buffer and its
     // own revision checks intact; changing a baseline is not a server write.
     setDetail({status:'ready',saved:latest,draft:keep?{...detail.draft,slug:latest.slug}:latest});
     setReviewedDestinationChange(null);setConfirmOverviewRebase(false);
-    setOverviewConflict(false);setLatest(null);
+    setOverviewConflict(false);setLatest(null);setUncertainOverview(null);
     setFeedback({error:false,text:keep?'Latest saved revision compared. Your overview edits still need an explicit save.':'Loaded the latest saved draft.'});
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
+    if (!currentOwner()||detail.status !== 'ready' || overviewPending.current || casePendingRef.current || imagePendingRef.current ||
         overviewConflict || knownRevision>detail.saved.revision || latest) return;
     let submitted:PrivateProjectDraft;
     try{submitted=normalizeProjectDraft(detail.draft);}
@@ -605,12 +695,14 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
     overviewPending.current=true;
     setSaving(true);
     setFeedback(null);
-    const from=detail.saved.revision;
+    const from=detail.saved.revision,generation=detailGeneration.current;
     try {
       const result = await port.saveOwnerProject(projectId, from, submitted);
+      if(!currentDetail(generation))return;
       if (!result.data || result.error || result.data.revision!==from+1) {
         const message=result.error?.message ?? 'Save could not be confirmed.';
-        if (projectConflict(message)) {setOverviewConflict(true);setReviewedDestinationChange(null);}
+        // Any unconfirmed receipt requires a fresh compare before another write.
+        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
         setFeedback({error:true,text:message});
         return;
       }
@@ -618,13 +710,15 @@ export function PrivateProjectDetail({port, projectId}: {port: SupabaseBrowserAu
       observeRevision(to);
       setOverviewAdvance(old=>old && old.to===from ? {from:old.from,to} : {from,to});
       setDetail({status:'ready',saved:result.data,draft:result.data});
-      setReviewedDestinationChange(null);
+      setReviewedDestinationChange(null);setUncertainOverview(null);
       setFeedback({error:false,text:'Private draft saved.'});
     } catch {
-      setFeedback({error:true,text:'Project save could not be verified. Your edits remain available.'});
+      if(currentDetail(generation)){
+        setOverviewConflict(true);setReviewedDestinationChange(null);setUncertainOverview({from,desired:submitted});
+        setFeedback({error:true,text:'Project save could not be verified. Check the latest revision before retrying. Your edits remain available.'});
+      }
     } finally {
-      overviewPending.current=false;
-      setSaving(false);
+      if(currentDetail(generation)){overviewPending.current=false;setSaving(false);}
     }
   }
 
@@ -1191,6 +1285,12 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const [loading, setLoading] = useState(true);
   const [needsReload, setNeedsReload] = useState(false);
   const pending = useRef(true);
+  const ownerEpoch=useRef(port.getOwnerSessionEpoch());
+  const generation=useRef(0);
+  const expired=useRef(false);
+  const [uncertain,setUncertain]=useState<{base:number;sections:CaseStudySection[]}|null>(null);
+  const currentOwner=()=>!expired.current&&ownerEpoch.current===port.reconcileOwnerSessionEpoch();
+  const current=(id:number)=>generation.current===id&&currentOwner();
   const minimumRevision=useRef(knownRevision);
   useEffect(()=>{minimumRevision.current=knownRevision;},[knownRevision]);
   const locked = busy || loading;
@@ -1202,22 +1302,36 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   const stale=needsReload || (baseRevision!==undefined && knownRevision>baseRevision);
   const dirty=!!(draft && savedSections && JSON.stringify(draft.sections)!==JSON.stringify(savedSections));
   useEffect(()=>{onDirty(dirty);},[dirty,onDirty]);
+  useEffect(()=>{
+    ownerEpoch.current=port.getOwnerSessionEpoch();expired.current=false;
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next===ownerEpoch.current||expired.current)return;
+      expired.current=true;++generation.current;pending.current=true;
+      setDraft(null);setSavedSections(null);setUncertain(null);setNotice('');
+      setBusy(false);setLoading(false);setNeedsReload(true);
+      setError('Your owner session changed. Reopen this project.');
+    });
+    return()=>{++generation.current;unsubscribe();};
+  },[port,projectId]);
 
   useEffect(() => {
     let active = true;
+    const id=++generation.current;
+    const valid=()=>active&&current(id);
+    if(!valid())return;
     pending.current = true;
     onPending(true);
     setLoading(true);
     const failRead = (message: string) => {
-      if (!active) return;
+      if (!valid()) return;
       setError(message);
       setNeedsReload(true);
     };
     void port.readOwnerCaseStudy(projectId).then(result => {
-      if (!active) return;
+      if (!valid()) return;
       if (result.data && !result.error && result.data.revision>=minimumRevision.current) {
         setDraft(result.data);
-        setSavedSections(result.data.sections);
+        setSavedSections(result.data.sections);setUncertain(null);
         onObserved(result.data.revision);
         setError('');
         setNeedsReload(false);
@@ -1225,7 +1339,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     }).catch(() => {
       failRead('Could not reach your private case study. Your unsaved edits remain available.');
     }).finally(() => {
-      if (active) {
+      if (valid()) {
         pending.current = false;
         setLoading(false);
         onPending(false);
@@ -1235,7 +1349,7 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   }, [port, projectId, version, onObserved, onPending]);
 
   function reloadSections() {
-    if (pending.current) return;
+    if (!currentOwner()||pending.current) return;
     pending.current = true;
     onPending(true);
     setLoading(true);
@@ -1246,14 +1360,14 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
   }
 
   function update(index: number, changes: Partial<CaseStudySection>) {
-    if (pending.current) return;
+    if (!currentOwner()||pending.current) return;
     setDraft(current => current && {...current, sections: current.sections.map((section, position) =>
       index === position ? {...section, ...changes} : section)});
     setNotice('');
   }
 
   function move(index: number, offset: number) {
-    if (pending.current) return;
+    if (!currentOwner()||pending.current) return;
     setDraft(current => {
       if (!current) return current;
       const sections = [...current.sections];
@@ -1268,31 +1382,58 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft || baseRevision===undefined || pending.current || stale) return;
+    if (!currentOwner()||!draft || baseRevision===undefined || pending.current || stale) return;
+    let submitted:CaseStudySection[];
+    try{submitted=normalizePrivateCaseStudy({sections:draft.sections}).sections;}
+    catch(cause){setError(cause instanceof Error?cause.message:'Enter valid case study sections.');return;}
+    const id=generation.current;
     pending.current = true;
     onPending(true);
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const result = await port.saveOwnerCaseStudy(projectId, baseRevision, {sections: draft.sections});
+      const result = await port.saveOwnerCaseStudy(projectId, baseRevision, {sections: submitted});
+      if(!current(id))return;
       if (!result.data || result.error || result.data.revision!==baseRevision+1) {
         const message = result.error?.message ?? 'Case study save could not be confirmed.';
         setError(message);
-        if (projectConflict(message)) setNeedsReload(true);
+        setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
         return;
       }
       setDraft(result.data);
-      setSavedSections(result.data.sections);
+      setSavedSections(result.data.sections);setUncertain(null);
       onSaved(baseRevision,result.data.revision);
       setNotice('Private case study saved.');
     } catch {
-      setError('The case study save could not be verified. Your unsaved sections are retained.');
+      if(current(id)){setNeedsReload(true);setUncertain({base:baseRevision,sections:submitted});
+        setError('The case study save could not be verified. Your unsaved sections are retained.');}
     } finally {
-      pending.current = false;
-      setBusy(false);
-      onPending(false);
+      if(current(id)){pending.current=false;setBusy(false);onPending(false);}
     }
+  }
+
+  async function verifyUncertain(){
+    if(!currentOwner()||pending.current||!uncertain||!draft)return;
+    const id=generation.current;
+    pending.current=true;onPending(true);setBusy(true);setError('');setNotice('');
+    try{
+      const result=await port.readOwnerCaseStudy(projectId);
+      if(!current(id))return;
+      if(result.error||!result.data||result.data.revision<minimumRevision.current){
+        setError('Latest saved sections could not be verified. Your edits are retained.');return;
+      }
+      onObserved(result.data.revision);
+      const same=(left:CaseStudySection[],right:CaseStudySection[])=>
+        JSON.stringify(normalizePrivateCaseStudy({sections:left}))===JSON.stringify(normalizePrivateCaseStudy({sections:right}));
+      if(result.data.revision===uncertain.base+1&&same(result.data.sections,uncertain.sections)&&same(draft.sections,uncertain.sections)){
+        setDraft(result.data);setSavedSections(result.data.sections);setUncertain(null);setNeedsReload(false);
+        setNotice('Requested sections match the current saved revision. No additional write was made.');
+      }else if(result.data.revision===uncertain.base&&savedSections&&same(result.data.sections,savedSections)){
+        setUncertain(null);setNeedsReload(false);setNotice('Saved sections are unchanged. Your edits are retained; save explicitly.');
+      }else setError('The saved case study differs from your attempted save. Your edits are retained; discard and reload only if you choose.');
+    }catch{if(current(id))setError('Saved sections could not be verified. Your edits are retained.');}
+    finally{if(current(id)){pending.current=false;setBusy(false);onPending(false);}}
   }
 
   return <form className="ws-project-fields ws-case-form" onSubmit={event => void save(event)}>
@@ -1303,6 +1444,8 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
     {loading && <p role="status">{draft
       ? 'Loading latest saved sections… Your edits are retained until the read succeeds.'
       : 'Loading case study…'}</p>}
+    {uncertain&&!loading&&<button type="button" className="ws-secondary" disabled={locked}
+      onClick={()=>void verifyUncertain()}>Check latest saved sections</button>}
     {(error || stale || dirty) && !loading && <button type="button" className="ws-secondary"
       disabled={locked} onClick={reloadSections}>{draft ? 'Discard section edits and reload' : 'Retry'}</button>}
     {draft && stale && !loading && <p>Load the latest saved sections before saving again. Your edits are replaced only after a successful read.</p>}
@@ -1324,14 +1467,14 @@ function CaseStudyEditor({port, projectId, overviewAdvance, knownRevision, onObs
           <button type="button" className="ws-secondary" disabled={index === 0} onClick={() => move(index, -1)}>Move up</button>
           <button type="button" className="ws-secondary" disabled={index === draft.sections.length - 1} onClick={() => move(index, 1)}>Move down</button>
           <button type="button" className="ws-secondary" onClick={() => {
-            if (pending.current) return;
+            if (!currentOwner()||pending.current) return;
             setDraft({...draft, sections: draft.sections.filter(item => item.id !== section.id)}); setNotice('');
           }}>Remove from draft</button>
         </div>
       </fieldset>)}
       <div className="ws-actions">
         <button type="button" className="ws-secondary" disabled={locked || draft.sections.length >= 24} onClick={() => {
-          if (pending.current) return;
+          if (!currentOwner()||pending.current) return;
           setDraft({...draft, sections: [...draft.sections, {id: crypto.randomUUID(), kind: 'custom', title: '', body: '', visible: false}]});
           setNotice('');
         }}>Add section</button>

@@ -392,11 +392,8 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       {draft && <div className="ws-project-detail ws-owner-columns">
         <fieldset className="ws-project-fields" disabled={locked}>
           <legend>{panel}</legend>
+          <div hidden={panel!=='Profile'}><PrivateAvatar port={port} initials={initials||'•'} handle={draft.handle}/></div>
           {panel === 'Profile' && <>
-            <div className="ws-profile-avatar"><span aria-hidden="true">{initials || '•'}</span><div>
-              <strong>Profile identity</strong><p>{draft.handle ? '@' + draft.handle : 'A public handle has not been claimed.'}</p>
-              <p>Initials are the current avatar fallback. Private avatar storage and attachment are not available yet.</p>
-            </div></div>
             <label>Display name<input value={draft.displayName} maxLength={80} onChange={event => edit('displayName', event.target.value)} /></label>
             <label>Headline<input value={draft.headline} maxLength={160} onChange={event => edit('headline', event.target.value)} /></label>
             <label>About you<textarea value={draft.bio} rows={4} maxLength={2000} onChange={event => edit('bio', event.target.value)} /></label>
@@ -475,6 +472,184 @@ export function DeveloperProfile({port}: {port: SupabaseBrowserAuthPort}) {
       </div>}
     </form>
     {draft&&openedLinks&&<div hidden={panel!=='Skills & links'}><AuthoredProfileLinks port={port}/><PrivateProfileLinks port={port}/></div>}
+  </section>;
+}
+
+// C05: exact adapter signatures from S1's approved PROFILE scope. This
+// component tolerates an older adapter only by withholding all avatar actions;
+// it never substitutes project storage, an unverified URL or direct RPC writes.
+type AvatarAsset=Readonly<{id:string;scope:'PROFILE';mime:'image/png'|'image/jpeg'|'image/webp';size:number;altText:string;createdAt:string}>;
+type AvatarSelection=Readonly<{revision:number;asset:AvatarAsset|null;publicDeliveryAllowed:false}>;
+type AvatarUpload=Readonly<{id:string;scope:'PROFILE';mime:AvatarAsset['mime'];size:number;altText:string;verifiedMetadata:true;publicDeliveryAllowed:false}>;
+type AvatarOutcome<T>={data:T;error:{code:string;message:string}|null};
+type AvatarPort=SupabaseBrowserAuthPort&{
+  readOwnerProfileAvatar:(epoch:number)=>Promise<AvatarOutcome<AvatarSelection>>;
+  uploadOwnerProfileAvatar:(file:File,altText:string,context:{operationId:string;expectedEpoch:number})=>Promise<AvatarOutcome<AvatarUpload>>;
+  setOwnerProfileAvatar:(base:number,assetId:string|null,operationId:string,epoch:number)=>Promise<AvatarOutcome<AvatarSelection>>;
+  readOwnerProfileAvatarImage:(assetId:string,epoch:number)=>Promise<AvatarOutcome<Blob>>;
+};
+function avatarPort(port:SupabaseBrowserAuthPort):AvatarPort|null{
+  const candidate=port as Partial<AvatarPort>;
+  return typeof candidate.readOwnerProfileAvatar==='function'&&typeof candidate.uploadOwnerProfileAvatar==='function'&&
+    typeof candidate.setOwnerProfileAvatar==='function'&&typeof candidate.readOwnerProfileAvatarImage==='function'?port as AvatarPort:null;
+}
+type AvatarOperation={base:number;before:string|null;operationId:string;uploadId:string;file:File|null;alt:string;assetId:string|null;attachStarted:boolean};
+function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;initials:string;handle:string|null}){
+  const api=avatarPort(port);
+  const [selection,setSelection]=useState<AvatarSelection|null>(null);
+  const [preview,setPreview]=useState<string|null>(null);
+  const [file,setFile]=useState<File|null>(null);
+  const [alt,setAlt]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const [confirmRemove,setConfirmRemove]=useState(false);
+  const [pending,setPending]=useState<AvatarOperation|null>(null);
+  const operation=useRef<AvatarOperation|null>(null);
+  const input=useRef<HTMLInputElement>(null);
+  const epoch=useRef(port.getOwnerSessionEpoch());
+  const generation=useRef(0);
+  const expired=useRef(false);
+  const flight=useRef(false);
+  const url=useRef<string|null>(null);
+  const current=(id:number)=>!expired.current&&generation.current===id&&epoch.current===port.reconcileOwnerSessionEpoch();
+  function clearImage(){if(url.current)URL.revokeObjectURL(url.current);url.current=null;setPreview(null);}
+  function forgetOperation(){operation.current=null;setPending(null);}
+  function clearFile(){setFile(null);setAlt('');if(input.current)input.current.value='';}
+  function remember(value:AvatarOperation){operation.current=value;setPending(value);}
+  function deny(){clearImage();setSelection(null);forgetOperation();clearFile();setConfirmRemove(false);}
+  function failure(result:{code:string;message:string}){
+    if(result.code==='DENIED'||result.code==='AUTH_CHANGED'){deny();setError('Private avatar access could not be verified. Reopen or refresh the profile.');}
+    else setError(result.message||'Private avatar operation was not confirmed.');
+  }
+  async function render(value:AvatarSelection,id:number){
+    if(!api||!current(id))return;
+    clearImage();setSelection(value);
+    if(!value.asset)return;
+    const read=await api.readOwnerProfileAvatarImage(value.asset.id,epoch.current);
+    if(!current(id))return;
+    if(read.error||!read.data){failure(read.error??{code:'INTEGRITY',message:'Private image bytes could not be verified.'});return;}
+    if(read.data.type!==value.asset.mime||read.data.size!==value.asset.size){
+      setError('Private avatar bytes do not match the saved metadata.');return;
+    }
+    const objectUrl=URL.createObjectURL(read.data);
+    if(!current(id)){URL.revokeObjectURL(objectUrl);return;}
+    url.current=objectUrl;setPreview(objectUrl);
+  }
+  async function refresh(){
+    if(!api||flight.current||expired.current)return;
+    const id=generation.current;
+    if(!current(id))return;
+    flight.current=true;setBusy(true);setError('');setNotice('');clearImage();setSelection(null);
+    try{
+      const read=await api.readOwnerProfileAvatar(epoch.current);
+      if(!current(id))return;
+      if(read.error||!read.data){failure(read.error??{code:'INTEGRITY',message:'Private avatar selection could not be verified.'});return;}
+      const value=read.data,op=operation.current,selected=value.asset?.id??null;
+      if(op?.attachStarted){
+        const matched=selected===op.assetId&&(value.revision===op.base+1||
+          (value.revision===op.base&&op.before===op.assetId)||
+          (value.revision===Number.MAX_SAFE_INTEGER&&op.base===value.revision&&op.assetId===null));
+        if(matched){
+          forgetOperation();clearFile();setConfirmRemove(false);
+          setNotice('Requested avatar matches the current saved selection. No additional write was made.');
+        }else if(value.revision!==op.base||selected!==op.before){
+          forgetOperation();clearFile();setConfirmRemove(false);
+          setNotice('The saved avatar changed. Review the current selection before starting a new change. An unused uploaded asset may remain private.');
+        }
+      }else if(op&&(value.revision!==op.base||selected!==op.before)){
+        forgetOperation();clearFile();
+        setNotice('The saved avatar changed during upload. Review it before starting a new change.');
+      }
+      await render(value,id);
+    }catch{if(current(id))setError('Private avatar could not be read. Retry securely.');}
+    finally{if(current(id)){flight.current=false;setBusy(false);}}
+  }
+  useEffect(()=>{
+    epoch.current=port.getOwnerSessionEpoch();expired.current=false;++generation.current;flight.current=false;
+    deny();setBusy(false);setError('');setNotice('');
+    const unsubscribe=port.subscribeOwnerSessionEpoch(next=>{
+      if(next===epoch.current||expired.current)return;
+      expired.current=true;++generation.current;flight.current=false;deny();setBusy(false);setNotice('');
+      setError('Your owner session changed. Reopen the profile.');
+    });
+    if(api)void refresh();
+    return()=>{expired.current=true;++generation.current;flight.current=false;unsubscribe();
+      if(url.current)URL.revokeObjectURL(url.current);url.current=null;operation.current=null;};
+  },[port]);
+  async function apply(remove=false,retry=false){
+    if(!api||flight.current||!selection)return;
+    const id=generation.current;
+    if(!current(id))return;
+    let op=operation.current;
+    if(retry){if(!op||selection.revision!==op.base||(selection.asset?.id??null)!==op.before)return;}
+    else{
+      if(op||(!remove&&(!file||!alt.trim()))||(remove&&(!selection.asset||!confirmRemove)))return;
+      if(!remove&&file&&(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size<12||file.size>5*1024*1024)){
+        setError('Choose a PNG, JPEG or WebP image up to 5 MB.');return;
+      }
+      op={base:selection.revision,before:selection.asset?.id??null,operationId:crypto.randomUUID(),uploadId:crypto.randomUUID(),
+        file:remove?null:file,alt:remove?'':alt.trim(),assetId:null,attachStarted:false};
+      remember(op);
+    }
+    if(!op)return;
+    flight.current=true;setBusy(true);setError('');setNotice('');clearImage();
+    try{
+      if(op.file&&!op.assetId){
+        const uploaded=await api.uploadOwnerProfileAvatar(op.file,op.alt,{operationId:op.uploadId,expectedEpoch:epoch.current});
+        if(!current(id))return;
+        if(uploaded.error||!uploaded.data){failure(uploaded.error??{code:'INTEGRITY',message:'Private avatar upload was not confirmed.'});return;}
+        if(uploaded.data.scope!=='PROFILE'||uploaded.data.publicDeliveryAllowed!==false||uploaded.data.verifiedMetadata!==true||
+          uploaded.data.altText!==op.alt||uploaded.data.size!==op.file.size||uploaded.data.mime!==op.file.type){
+          setError('Private avatar upload receipt did not match the request.');return;
+        }
+        op={...op,assetId:uploaded.data.id};remember(op);
+      }
+      op={...op,attachStarted:true};remember(op);
+      const saved=await api.setOwnerProfileAvatar(op.base,op.assetId,op.operationId,epoch.current);
+      if(!current(id))return;
+      if(saved.error||!saved.data){failure(saved.error??{code:'INTEGRITY',message:'Avatar selection was not confirmed. Check the latest selection.'});return;}
+      const value=saved.data;
+      if(value.publicDeliveryAllowed!==false||(value.asset?.id??null)!==op.assetId||
+        !(value.revision===op.base+1||(value.revision===op.base&&(op.before===op.assetId||
+          (op.base===Number.MAX_SAFE_INTEGER&&op.assetId===null))))){
+        setError('Avatar save receipt could not be verified. Check the latest selection.');return;
+      }
+      forgetOperation();clearFile();setConfirmRemove(false);
+      setNotice(value.asset?'Private avatar selection saved. Not published.':'Avatar detached. Stored private assets have not been permanently deleted.');
+      await render(value,id);
+    }catch{if(current(id))setError('Avatar change was not confirmed. Check the latest selection or retry the exact operation.');}
+    finally{if(current(id)){flight.current=false;setBusy(false);}}
+  }
+  return <section aria-label="Private profile avatar" className="ws-project-fields">
+    <div className="ws-profile-avatar">
+      {preview&&selection?.asset?<img src={preview} alt={selection.asset.altText} width={80} height={80}
+        style={{objectFit:'cover',borderRadius:'50%'}} onError={()=>{clearImage();setError('The verified private image could not be displayed. Refresh to retry.');}}/>:
+        <span aria-hidden="true">{initials}</span>}
+      <div><strong>Profile identity</strong><p>{handle?'@'+handle:'A public handle has not been claimed.'}</p>
+        <p>{api?'Private avatar selection only. This does not publish your image.':'Initials are the current fallback until the private avatar service is available.'}</p></div>
+    </div>
+    {api&&<>
+      {busy&&<p role="status">Checking or saving private avatar…</p>}
+      {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
+      {notice&&<p role="status">{notice}</p>}
+      {selection&&<p>Saved avatar revision {selection.revision}{selection.asset?' · '+selection.asset.altText:' · No selected image'}</p>}
+      <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void refresh()}>Refresh private avatar</button>
+      <label>Avatar image (PNG, JPEG, WebP; up to 5 MB)
+        <input ref={input} type="file" accept="image/png,image/jpeg,image/webp" disabled={busy||!!pending||!selection}
+          onChange={event=>{if(!flight.current&&!operation.current){setFile(event.target.files?.[0]??null);setError('');setNotice('');}}}/></label>
+      <label>Avatar alt text<input value={alt} maxLength={500} disabled={busy||!!pending||!selection}
+        onChange={event=>{if(!flight.current&&!operation.current)setAlt(event.target.value);}}/></label>
+      <button type="button" className="ws-secondary" disabled={busy||!!pending||!selection||!file||!alt.trim()}
+        onClick={()=>void apply()}>Save private avatar</button>
+      {selection?.asset&&<><label className="ws-profile-check"><input type="checkbox" checked={confirmRemove}
+        disabled={busy||!!pending} onChange={event=>setConfirmRemove(event.target.checked)}/> Detach current avatar (does not erase stored files)</label>
+        <button type="button" className="ws-secondary" disabled={busy||!!pending||!confirmRemove} onClick={()=>void apply(true)}>Remove avatar selection</button></>}
+      {pending&&<><p>An avatar operation has not been confirmed. The exact file and operation identifiers are retained while this editor remains open.</p>
+        <button type="button" className="ws-secondary" disabled={busy||!selection||selection.revision!==pending.base||
+          (selection.asset?.id??null)!==pending.before} onClick={()=>void apply(false,true)}>Retry exact avatar change</button>
+        <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void refresh()}>Check saved avatar selection</button></>}
+    </>}
   </section>;
 }
 

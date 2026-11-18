@@ -146,7 +146,7 @@ async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown
     {void response.body?.cancel().catch(()=>{});throw new PrivateNotificationsError('LIMIT_EXCEEDED');}
   if(!response.body)throw new PrivateNotificationsError('INVALID_ACK');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];
-  let count=0;
+  let count=0,chunks=0;
   try{
     for(;;){
       signal.throwIfAborted();
@@ -159,7 +159,9 @@ async function boundedJson(response:Response,signal:AbortSignal):Promise<unknown
       finally{signal.removeEventListener('abort',onAbort);}
       signal.throwIfAborted();const {done,value}=chunk;
       if(done)break;
+      if(++chunks>65_536)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
       if(!(value instanceof Uint8Array))throw new PrivateNotificationsError('INVALID_ACK');
+      if(value.byteLength===0)continue;
       count+=value.byteLength;
       if(count>MAX_RESPONSE)throw new PrivateNotificationsError('LIMIT_EXCEEDED');
       parts.push(value);
@@ -230,11 +232,15 @@ export class SupabasePrivateNotificationsService {
       try{
         guard();signal.throwIfAborted();
         if(!response.ok){
-          if(cas&&response.status===409){
+          if(cas&&(response.status===400||response.status===409||response.status===500)){
             let detail:unknown;
             try{detail=await boundedJson(response,signal);}catch{/* invalid body remains unavailable */}
             guard();signal.throwIfAborted();
-            if(object(detail)&&detail.code==='40001')throw new PrivateNotificationsError('CONFLICT');
+            if(object(detail)){
+              if((response.status===409||response.status===500)&&detail.code==='40001')
+                throw new PrivateNotificationsError('CONFLICT');
+              if(response.status===400&&detail.code==='22023')throw new PrivateNotificationsError('VALIDATION');
+            }
           }
           if(response.status===401)throw new PrivateNotificationsError('AUTH_EXPIRED');
           if(response.status===403)throw new PrivateNotificationsError('FORBIDDEN');

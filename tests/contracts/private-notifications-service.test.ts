@@ -141,6 +141,8 @@ test('C08 notifications exact null state, compare-and-set receipt and conflict w
     await assert.rejects(create(async()=>json(wrong)).changePreferences(request),{code:'INVALID_ACK'});
   }
   await assert.rejects(create(async()=>json({code:'40001',message:'private'},409)).changePreferences(request),{code:'CONFLICT'});
+  await assert.rejects(create(async()=>json({code:'40001',message:'PREFERENCE_CONFLICT'},500)).changePreferences(request),{code:'CONFLICT'});
+  await assert.rejects(create(async()=>json({code:'XX000',message:'private'},500)).changePreferences(request),{code:'PROVIDER_UNAVAILABLE'});
 });
 test('C08 notification terminal absent/null and revoked owner cannot recreate preferences or fetch',async()=>{
   const off={reviewerEnabled:false,publishEnabled:false,syncEnabled:false};

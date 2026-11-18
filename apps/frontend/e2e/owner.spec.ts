@@ -2686,3 +2686,234 @@ test('B16 C10 real trusted static scoped-theme CSS uses measured 600/950 boundar
   head=applyEditorTransaction(head,{operationId:randomUUID(),baseRevision:head.revision,intent:{kind:'UNDO'}});
   expect(head.snapshot).toEqual(before);
 });
+
+test('B16 C06 opt-in autosave coalesces private edits, stops on failure and never confirms withdrawal',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(65_000);
+  const owner=await localUser('S6 profile autosave');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await expect(auto).not.toBeChecked();
+  const writes:Array<{headline:string;withdrawal:boolean}>=[];
+  let deny=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const data=route.request().postDataJSON();
+    writes.push({headline:data.p_draft.headline,withdrawal:data.p_confirm_projection_withdrawal});
+    if(deny)return route.fulfill({status:503,json:{message:'S6 synthetic outage'}});
+    await route.continue();
+  });
+  await headline.fill('Off by default');
+  // Negative observation exceeds the 1200ms documented debounce.
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await auto.check();
+  await headline.fill('Intermediate');
+  await headline.fill('Final private draft');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false}]);
+  await page.reload();
+  await expect(headline).toHaveValue('Final private draft');
+  await expect(auto).not.toBeChecked();
+  deny=true;
+  await auto.check();
+  await headline.fill('Retained after outage');
+  await expect(auto).not.toBeChecked();
+  await expect(headline).toHaveValue('Retained after outage');
+  await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
+  await page.waitForTimeout(1500);
+  expect(writes).toEqual([{headline:'Final private draft',withdrawal:false},{headline:'Retained after outage',withdrawal:false}]);
+});
+
+test('B16 C06 pending skill pauses scheduled autosave until add or clear',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase and S2 pending-skill successor.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 pending skill');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  const skill=page.getByLabel('Add skill',{exact:true});
+  await skill.fill('TypeScript');
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await page.getByRole('button',{name:'Save profile draft'}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Profile',exact:true}).click();
+  const writes:Array<{headline:string;skills:string[];withdrawal:boolean}>=[];
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const body=route.request().postDataJSON();
+    writes.push({headline:body.p_draft.headline,skills:body.p_draft.skills,withdrawal:body.p_confirm_projection_withdrawal});
+    await route.continue();
+  });
+  await auto.check();
+  await headline.fill('Pending skill must pause this save');
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await skill.fill('typescript');
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await expect(page.getByText('This skill is already in your profile.',{exact:true})).toBeVisible();
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await skill.fill('Rust');
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(0);
+  await page.getByRole('button',{name:'Add skill',exact:true}).click();
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([{headline:'Pending skill must pause this save',skills:['TypeScript','Rust'],withdrawal:false}]);
+  await page.getByRole('button',{name:'Profile',exact:true}).click();
+  await headline.fill('Clear pending skill resumes save');
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await skill.fill('Unadded skill');
+  await page.waitForTimeout(1500);
+  expect(writes).toHaveLength(1);
+  await skill.fill('');
+  await expect(page.getByText('Private profile draft autosaved.',{exact:true})).toBeVisible();
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toEqual({headline:'Clear pending skill resumes save',skills:['TypeScript','Rust'],withdrawal:false});
+  await page.reload();
+  await expect(headline).toHaveValue('Clear pending skill resumes save');
+  await expect(auto).not.toBeChecked();
+  await page.getByRole('button',{name:'Skills & links',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Remove Rust'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Remove Unadded skill'})).toHaveCount(0);
+});
+
+
+test('B16 C06 committed autosave with lost acknowledgement reconciles without second write',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(50_000);
+  const owner=await localUser('S6 autosave lost ack');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toBeVisible();
+  let writes=0,committed=false;
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    writes++;
+    const input=route.request().postDataJSON();
+    expect(input.p_confirm_projection_withdrawal).toBe(false);
+    const result=await route.fetch();
+    try{
+      if(writes===1&&result.ok()){committed=true;await route.abort('failed');}
+      else await route.fulfill({response:result});
+    }finally{await result.dispose();}
+  });
+  await auto.check();
+  await headline.fill('Committed but acknowledgement lost');
+  const compare=page.getByRole('button',{name:'Compare latest saved profile'});
+  await expect(compare).toBeEnabled();
+  expect(committed).toBe(true);
+  expect(writes).toBe(1);
+  await expect(auto).not.toBeChecked();
+  await expect(headline).toHaveValue('Committed but acknowledgement lost');
+  await expect(page.getByRole('button',{name:'Save profile draft'})).toBeDisabled();
+  await page.waitForTimeout(1500);
+  expect(writes).toBe(1);
+  await compare.click();
+  await expect(page.getByText('Requested private draft is confirmed saved. No additional write was made.',{exact:true})).toBeVisible();
+  expect(writes).toBe(1);
+  await page.reload();
+  await expect(headline).toHaveValue('Committed but acknowledgement lost');
+  await expect(auto).not.toBeChecked();
+});
+
+
+test('B16 WF-043/047 Settings fail-closed gate retries actual session before privacy and inventory',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires disposable local Supabase.');
+  test.setTimeout(70_000);
+  const owner=await localUser('S6 Settings verification');
+  await signIn(page,owner);
+  let blocked=true,denials=0,verified=0,privateReadsWhileLocked=0;
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(blocked&&url.origin===origin&&url.pathname.startsWith('/rest/v1/'))privateReadsWhileLocked++;
+  });
+  await page.route(url=>url.origin===origin&&url.pathname==='/auth/v1/user',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    if(blocked){denials++;return route.abort('failed');}
+    const response=await route.fetch();
+    try{
+      if(response.ok()){
+        const user=await response.json().catch(()=>null);
+        if(user?.id===owner.id)verified++;
+      }
+      await route.fulfill({response});
+    }finally{await response.dispose();}
+  });
+  await page.goto('/app/settings');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.locator('.ws-shell')).toHaveCount(0);
+  await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
+  expect(denials).toBeGreaterThan(0);
+  expect(privateReadsWhileLocked).toBe(0);
+  blocked=false;
+  await page.getByRole('button',{name:'Retry verification'}).click();
+  await expect(page.getByRole('heading',{name:'Settings',level:1})).toBeVisible();
+  expect(verified).toBeGreaterThan(0);
+  await page.getByRole('link',{name:'Open privacy & sharing'}).click();
+  await expect(page.getByRole('heading',{name:'Privacy & sharing',level:1})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save sharing preferences'})).toBeVisible();
+  await expect(page.getByText('Loading sharing preferences…')).toHaveCount(0);
+  await page.goto('/app/settings/account/delete');
+  await expect(page.getByRole('heading',{name:'Account exit',level:1})).toBeVisible();
+  await page.getByRole('button',{name:'Review deletion prerequisites'}).click();
+  await expect(page.getByRole('heading',{name:'Private inventory',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:/Delete account/i})).toHaveCount(0);
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await page.goto('/app/settings/account/delete');
+  await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Private inventory',exact:true})).toHaveCount(0);
+});
+
+test('B16 C06 real profile autosave cannot silently withdraw existing projection',async({page})=>{
+  test.skip(process.env.KADMEION_LOCAL_BROWSER!=='1','Requires isolated local Supabase only.');
+  test.setTimeout(60_000);
+  const owner=await localUser('S6 withdrawal fixture');
+  // Seed only a disposable trusted publication row, matching existing
+  // consented-public-delivery SQL fixtures. This is not a hosted publish.
+  const handle=runLocalFixtureSql(
+    "update public.profiles set handle='s6_'||substr(replace(:'actor_id','-',''),1,12),headline='Old public headline' where user_id=:'actor_id'::uuid;"+
+    "insert into kadmeion_private.profile_publications(user_id,handle,display_name,headline,bio) "+
+    "select user_id,handle,display_name,headline,bio from public.profiles where user_id=:'actor_id'::uuid;"+
+    "select handle from public.profiles where user_id=:'actor_id'::uuid;",owner.id);
+  expect(/^s6_[0-9a-f]{12}$/.test(handle)).toBe(true);
+  const projected=()=>runLocalFixtureSql(
+    "select coalesce(public.service_read_published_profile_projection((select handle from public.profiles where user_id=:'actor_id'::uuid))->>'headline','ABSENT');",owner.id);
+  expect(projected()).toBe('Old public headline');
+  await signIn(page,owner);
+  await page.goto('/app/profile');
+  const headline=page.getByLabel('Headline',{exact:true});
+  const auto=page.getByRole('checkbox',{name:'Autosave private profile fields'});
+  await expect(headline).toHaveValue('Old public headline');
+  const writes:boolean[]=[];
+  await page.route(url=>url.origin===origin&&url.pathname==='/rest/v1/rpc/owner_save_profile_draft',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    writes.push(route.request().postDataJSON().p_confirm_projection_withdrawal);
+    await route.continue();
+  });
+  await auto.check();
+  await headline.fill('New private headline');
+  const confirm=page.getByRole('checkbox',{name:'Withdraw my current public profile when I save this draft'});
+  await expect(confirm).toBeVisible();
+  await expect(confirm).not.toBeChecked();
+  await expect(auto).not.toBeChecked();
+  expect(writes).toEqual([false]);
+  expect(projected()).toBe('Old public headline');
+  await expect(headline).toHaveValue('New private headline');
+  await confirm.check();
+  await page.getByRole('button',{name:'Save profile draft'}).click();
+  await expect(page.getByText('Private profile draft saved.',{exact:true})).toBeVisible();
+  expect(writes).toEqual([false,true]);
+  expect(projected()).toBe('ABSENT');
+  await page.reload();
+  await expect(headline).toHaveValue('New private headline');
+  await expect(auto).not.toBeChecked();
+});

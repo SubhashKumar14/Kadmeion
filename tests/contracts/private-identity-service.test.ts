@@ -67,6 +67,8 @@ test('C08 identity CAS denies stale, malformed and terminal enable without overw
     await assert.rejects(make(async()=>Response.json(bad)).requestPublicIdentity(request),{code:'INVALID_ACK'});
   }
   await assert.rejects(make(async()=>Response.json({code:'40001',message:'secret'},{status:409})).requestPublicIdentity(request),{code:'CONFLICT'});
+  await assert.rejects(make(async()=>Response.json({code:'40001',message:'PREFERENCE_CONFLICT'},{status:500})).requestPublicIdentity(request),{code:'CONFLICT'});
+  await assert.rejects(make(async()=>Response.json({code:'XX000',message:'private'},{status:500})).requestPublicIdentity(request),{code:'PROVIDER_UNAVAILABLE'});
   let calls=0;
   const deny=make(async()=>{calls++;return Response.json({});});
   await assert.rejects(deny.requestPublicIdentity({...request,desired:{...off,publicationRequested:true}}),{code:'VALIDATION'});

@@ -22,6 +22,8 @@ import {PrivateServerAssetByteAttestor} from '../../packages/storage-adapters/sr
 import {SupabasePortfolioRevisionStore} from '../../packages/storage-adapters/src/supabase-portfolio-revisions.ts';
 import {SupabaseMyComponentsService} from '../../packages/contracts/src/private-my-components-service.ts';
 import {SupabasePrivateGoalsService} from '../../packages/contracts/src/private-goals-service.ts';
+import {SupabasePrivateNotificationsService} from '../../packages/contracts/src/private-notifications-service.ts';
+import {SupabasePrivateIdentityService} from '../../packages/contracts/src/private-identity-service.ts';
 
 
 function localSupabaseCredentials() {
@@ -2199,6 +2201,17 @@ test('C08 actual owner preference CAS: two real sessions, absent/default, ACL, r
       assert.deepEqual(restored.preferences,captured.preferences);
       deniedConflict(await preferenceRpc(owner,d.change,make(captured,d.off)));
       deniedConflict(await preferenceRpc(owner,d.change,win));
+      // A real PostgREST 40001 must map to typed CONFLICT at the consumer,
+      // regardless of whether the gateway selects 409 or 500 for SQLSTATE.
+      // No retry or stale state mutation is permissible.
+      const stale={expected:captured,desired:d.off,operationId:randomUUID()};
+      const client=d.table==='private_notification_preferences'
+        ?new SupabasePrivateNotificationsService(cfg.origin,cfg.anon,owner.id,async()=>owner.token,fetch,()=>true)
+        :new SupabasePrivateIdentityService(cfg.origin,cfg.anon,async()=>owner.token,fetch,owner.id,()=>true);
+      await assert.rejects(d.table==='private_notification_preferences'
+        ?client.changePreferences(stale):client.requestPublicIdentity(stale),{code:'CONFLICT'});
+      assert.equal((await exactRead(owner,d)).version,3);
+
       for(const method of ['POST','PATCH','DELETE']){
         const body=method==='DELETE'?undefined:{[d.ownerKey]:owner.id};
         const result=await send('/rest/v1/'+d.table+(method==='POST'?'':'?'+d.ownerKey+'=eq.'+owner.id),
@@ -2211,4 +2224,77 @@ test('C08 actual owner preference CAS: two real sessions, absent/default, ACL, r
     }
     assert.ok(!(await preferenceRpc(owner,'owner_set_notification_preferences',{
       p_reviewer_enabled:true,p_publish_enabled:true,p_sync_enabled:true})).ok,'Legacy unconditional setter still callable');
+  });
+
+test('C08 physical terminal ledger, privacy reduction, tombstone and expired-session denial',
+  {timeout:120_000},async()=>{
+    const actor=await adminUser('c08-terminal'),other=await adminUser('c08-terminal-other');
+    const raw=execFileSync('supabase',['status','-o','env'],{encoding:'utf8',timeout:20000});
+    const match=raw.match(/^(?:export )?DB_URL=(.+)$/m);
+    assert.ok(match,'Disposable local DB URL required');
+    const db=new URL(match[1].trim().replace(/^["']|["']$/g,''));
+    assert.equal(db.protocol,'postgresql:');assert.ok(['127.0.0.1','localhost'].includes(db.hostname));
+    assert.equal(db.port,'54322');assert.equal(db.username,'postgres');
+    const pg=new Client({host:db.hostname,port:Number(db.port),database:'postgres',
+      user:'postgres',password:decodeURIComponent(db.password),ssl:false});
+    const max=Number.MAX_SAFE_INTEGER;
+    const on={shareDisplayName:true,shareHeadline:true,shareBio:false,publicationRequested:true};
+    const withdrawn={...on,publicationRequested:false};
+    const reduced={...withdrawn,shareHeadline:false};
+    const allOff={reviewerEnabled:false,publishEnabled:false,syncEnabled:false};
+    const noteOn={...allOff,publishEnabled:true};
+    const read=(who,name)=>preferenceRpc(who,name);
+    const mutate=(who,name,expected,desired,operationId=randomUUID())=>preferenceRpc(who,name,{
+      p_expected_version:expected.version,p_expected:expected.preferences,p_desired:desired,p_operation_id:operationId
+    });
+    const assertConflict=r=>{assert.ok(!r.ok);assert.equal(r.data?.code,'40001');};
+    const sread='read_owner_profile_sharing_state',schange='change_owner_profile_sharing';
+    const nread='read_owner_notification_preferences_state',nchange='change_owner_notification_preferences';
+    const first=successful(await setPreferenceFixture(actor,'sharing',on),'Initialize sharing');
+    const firstNote=successful(await setPreferenceFixture(actor,'notification',noteOn),'Initialize notifications');
+    assert.equal(first.version,1);assert.equal(firstNote.version,1);
+    try{
+      await pg.connect();
+      // Privileged fixtures are restricted to generated disposable users. Jump the
+      // ledger counter without billions of writes; clear the previous replay binding.
+      const jumped=await pg.query('UPDATE kadmeion_private.owner_preference_cas_state SET version=$2::bigint,last_operation_id=NULL,last_expected_version=NULL,last_expected=NULL,last_desired=NULL WHERE owner_user_id=$1::uuid',[actor.id,String(max-1)]);
+      assert.equal(jumped.rowCount,2);
+      const s=successful(await read(actor,sread),'Read sharing near exhaustion');
+      const n=successful(await read(actor,nread),'Read notifications near exhaustion');
+      assert.deepEqual(s,{ownerUserId:actor.id,version:max-1,preferences:on});
+      assert.deepEqual(n,{ownerUserId:actor.id,version:max-1,preferences:noteOn});
+      assertConflict(await mutate(actor,schange,s,{...on,shareBio:true}));
+      assertConflict(await mutate(actor,nchange,n,{...noteOn,syncEnabled:true}));
+      const operation=randomUUID();
+      const held=successful(await mutate(actor,schange,s,withdrawn,operation),'Privacy withdrawal reaches terminal');
+      assert.deepEqual(held,{status:'APPLIED',ownerUserId:actor.id,version:max,preferences:withdrawn});
+      assertConflict(await mutate(actor,schange,s,withdrawn,operation));
+      const redact=successful(await mutate(actor,schange,held,reduced),'Further privacy reduction at M');
+      assert.deepEqual(redact,{status:'APPLIED',ownerUserId:actor.id,version:max,preferences:reduced});
+      assertConflict(await mutate(actor,schange,redact,withdrawn));
+      assert.deepEqual(successful(await mutate(actor,schange,redact,reduced),'Terminal no change'),
+        {...redact,status:'NO_CHANGE'});
+      const disabled=successful(await mutate(actor,nchange,n,allOff),'Disable notifications at M');
+      assert.deepEqual(disabled,{status:'APPLIED',ownerUserId:actor.id,version:max,preferences:allOff});
+      assertConflict(await mutate(actor,nchange,disabled,noteOn));
+      assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1 AND (last_operation_id IS NOT NULL OR last_expected_version IS NOT NULL OR last_expected IS NOT NULL OR last_desired IS NOT NULL)',[actor.id])).rows[0].n,0);
+      // Internal deletion is not a public setter; retain its terminal tombstone.
+      assert.equal((await pg.query('DELETE FROM public.profile_sharing_preferences WHERE user_id=$1',[actor.id])).rowCount,1);
+      assert.equal((await pg.query('DELETE FROM public.private_notification_preferences WHERE owner_user_id=$1',[actor.id])).rowCount,1);
+      const tombstone={ownerUserId:actor.id,version:max,preferences:null};
+      assert.deepEqual(successful(await read(actor,sread),'Terminal sharing tombstone'),tombstone);
+      assert.deepEqual(successful(await read(actor,nread),'Terminal notification tombstone'),tombstone);
+      assertConflict(await mutate(actor,schange,tombstone,reduced));
+      assertConflict(await mutate(actor,nchange,tombstone,allOff));
+      assert.equal(successful(await read(other,sread),'Other user unaffected').ownerUserId,other.id);
+      const claims=JSON.parse(Buffer.from(actor.token.split('.')[1],'base64url').toString('utf8'));
+      assert.equal(claims.sub,actor.id);assert.match(claims.session_id,/^[0-9a-f-]{36}$/i);
+      assert.equal((await pg.query("UPDATE auth.sessions SET not_after=clock_timestamp()-interval '1 minute' WHERE id=$1 AND user_id=$2",[claims.session_id,actor.id])).rowCount,1);
+      for(const name of [sread,nread]){
+        const denied=await read(actor,name);assert.ok(!denied.ok,'Expired real owner session reached CAS state');
+      }
+      // Cascade must not recreate a private ledger or block real account cleanup.
+      assert.equal((await pg.query('DELETE FROM auth.users WHERE id=$1',[actor.id])).rowCount,1);
+      assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.owner_preference_cas_state WHERE owner_user_id=$1',[actor.id])).rows[0].n,0);
+    }finally{await pg.end();}
   });
