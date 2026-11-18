@@ -481,6 +481,17 @@ function avatarPort(port:SupabaseBrowserAuthPort):AvatarPort|null{
   return typeof candidate.readOwnerProfileAvatar==='function'&&typeof candidate.uploadOwnerProfileAvatar==='function'&&
     typeof candidate.setOwnerProfileAvatar==='function'&&typeof candidate.readOwnerProfileAvatarImage==='function'?port as AvatarPort:null;
 }
+function validAvatarSelection(value:AvatarSelection|null|undefined):value is AvatarSelection {
+  if(!value||value.publicDeliveryAllowed!==false||!Number.isSafeInteger(value.revision)||value.revision<0)return false;
+  if(value.asset===null)return true;
+  const asset=value.asset;
+  return !!asset&&asset.scope==='PROFILE'&&typeof asset.id==='string'&&
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(asset.id)&&
+    ['image/png','image/jpeg','image/webp'].includes(asset.mime)&&Number.isSafeInteger(asset.size)&&
+    asset.size>=12&&asset.size<=5*1024*1024&&typeof asset.altText==='string'&&
+    !!asset.altText.trim()&&asset.altText.length<=500&&typeof asset.createdAt==='string'&&
+    Number.isFinite(Date.parse(asset.createdAt));
+}
 type AvatarOperation={base:number;before:string|null;operationId:string;uploadId:string;file:File|null;alt:string;assetId:string|null;attachStarted:boolean};
 function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;initials:string;handle:string|null}){
   const api=avatarPort(port);
@@ -512,12 +523,13 @@ function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;init
   }
   async function render(value:AvatarSelection,id:number){
     if(!api||!current(id))return;
+    if(!validAvatarSelection(value)){clearImage();setSelection(null);setError('The private avatar selection failed validation. Refresh before making another change.');return;}
     clearImage();setSelection(value);
     if(!value.asset)return;
     const read=await api.readOwnerProfileAvatarImage(value.asset.id,epoch.current);
     if(!current(id))return;
     if(read.error||!read.data){failure(read.error??{code:'INTEGRITY',message:'Private image bytes could not be verified.'});return;}
-    if(read.data.type!==value.asset.mime||read.data.size!==value.asset.size){
+    if(!(read.data instanceof Blob)||read.data.type!==value.asset.mime||read.data.size!==value.asset.size){
       setError('Private avatar bytes do not match the saved metadata.');return;
     }
     const objectUrl=URL.createObjectURL(read.data);
@@ -533,7 +545,9 @@ function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;init
       const read=await api.readOwnerProfileAvatar(epoch.current);
       if(!current(id))return;
       if(read.error||!read.data){failure(read.error??{code:'INTEGRITY',message:'Private avatar selection could not be verified.'});return;}
-      const value=read.data,op=operation.current,selected=value.asset?.id??null;
+      const value=read.data;
+      if(!validAvatarSelection(value)){clearImage();setSelection(null);setError('The private avatar selection failed validation. Refresh to retry.');return;}
+      const op=operation.current,selected=value.asset?.id??null;
       if(op?.attachStarted){
         const matched=selected===op.assetId&&(value.revision===op.base+1||
           (value.revision===op.base&&op.before===op.assetId)||
@@ -581,13 +595,16 @@ function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;init
       remember(op);
     }
     if(!op)return;
-    flight.current=true;setBusy(true);setError('');setNotice('');clearImage();
+    // Keep only the last verified private preview during a non-security failure.
+    // An unconfirmed operation is labelled pending, never represented as a new selection.
+    flight.current=true;setBusy(true);setError('');setNotice('');
     try{
       if(op.file&&!op.assetId){
         const uploaded=await api.uploadOwnerProfileAvatar(op.file,op.alt,{operationId:op.uploadId,expectedEpoch:epoch.current});
         if(!current(id))return;
         if(uploaded.error||!uploaded.data){failure(uploaded.error??{code:'INTEGRITY',message:'Private avatar upload was not confirmed.'});return;}
         if(uploaded.data.scope!=='PROFILE'||uploaded.data.publicDeliveryAllowed!==false||uploaded.data.verifiedMetadata!==true||
+          typeof uploaded.data.id!=='string'||! /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(uploaded.data.id)||
           uploaded.data.altText!==op.alt||uploaded.data.size!==op.file.size||uploaded.data.mime!==op.file.type){
           setError('Private avatar upload receipt did not match the request.');return;
         }
@@ -598,7 +615,7 @@ function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;init
       if(!current(id))return;
       if(saved.error||!saved.data){failure(saved.error??{code:'INTEGRITY',message:'Avatar selection was not confirmed. Check the latest selection.'});return;}
       const value=saved.data;
-      if(value.publicDeliveryAllowed!==false||(value.asset?.id??null)!==op.assetId||
+      if(!validAvatarSelection(value)||(value.asset?.id??null)!==op.assetId||
         !(value.revision===op.base+1||(value.revision===op.base&&(op.before===op.assetId||
           (op.base===Number.MAX_SAFE_INTEGER&&op.assetId===null))))){
         setError('Avatar save receipt could not be verified. Check the latest selection.');return;
@@ -621,7 +638,7 @@ function PrivateAvatar({port,initials,handle}:{port:SupabaseBrowserAuthPort;init
       {busy&&<p role="status">Checking or saving private avatar…</p>}
       {error&&<p role="alert" className="ws-inline-alert">{error}</p>}
       {notice&&<p role="status">{notice}</p>}
-      {selection&&<p>Saved avatar revision {selection.revision}{selection.asset?' · '+selection.asset.altText:' · No selected image'}</p>}
+      {selection&&<p>{pending?'Last verified avatar revision ':'Saved avatar revision '}{selection.revision}{selection.asset?' · '+selection.asset.altText:' · No selected image'}</p>}
       <button type="button" className="ws-secondary" disabled={busy} onClick={()=>void refresh()}>Refresh private avatar</button>
       <label>Avatar image (PNG, JPEG, WebP; up to 5 MB)
         <input ref={input} type="file" accept="image/png,image/jpeg,image/webp" disabled={busy||!!pending||!selection}
