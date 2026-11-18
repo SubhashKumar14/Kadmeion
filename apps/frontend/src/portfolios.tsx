@@ -505,7 +505,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
   const [folderNotice,setFolderNotice]=useState('');
   const [portableNotice,setPortableNotice]=useState('');
   const [portableComparison,setPortableComparison]=useState<{snapshot:PortfolioSnapshot;baseSnapshot:PortfolioSnapshot;
-    ownerKey:string;cloudRevision:number;format:'json'|'zip';archiveSha256:string;
+    ownerKey:string;cloudRevision:number;format:'json'|'zip';archiveSha256:string;archiveBytes:number;
     changedFiles:string[];changedSlots:string[]}|null>(null);
   const [portableFile,setPortableFile]=useState('');
   const [folderComparison,setFolderComparison]=useState<{directory:FolderDirectory;folderHead:EditorHead;
@@ -1223,13 +1223,116 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
          !['NOT_VERIFIED','SERVER_HASH_PINNED'].includes(data.serverAttestation)||data.publicDeliveryAllowed!==false){
         setError('Owner-private image bytes could not be verified. Retry from Assets; existing assignment was kept.');return false;
       }
+      // The transport receipt is necessary, but a registration or matching
+      // header alone is not a decodable image. Verify the exact immutable
+      // bytes and decode locally before committing the slot transaction.
+      const bound=()=>draftCurrent(view)&&latestRecovery.current?.tool==='Assets'&&!latestRecovery.current.preview;
+      const buffer=await data.bytes.arrayBuffer();
+      if(!bound())return false;
+      const bytes=new Uint8Array(buffer);
+      const png=bytes.length>=8&&[137,80,78,71,13,10,26,10].every((value,index)=>bytes[index]===value);
+      const jpeg=bytes.length>=3&&bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
+      const webp=bytes.length>=12&&[82,73,70,70].every((value,index)=>bytes[index]===value)&&
+        [87,69,66,80].every((value,index)=>bytes[index+8]===value);
+      if(bytes.byteLength!==asset.size||!(asset.mime==='image/png'?png:asset.mime==='image/jpeg'?jpeg:webp)){
+        setError('Image bytes do not match the verified raster format. Existing assignment was kept.');return false;
+      }
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),value=>value.toString(16).padStart(2,'0')).join('');
+      if(!bound())return false;
+      if(digest!==data.integrity.computedSha256){
+        setError('Image bytes do not match the verified digest. Existing assignment was kept.');return false;
+      }
+      const probe=new Image();
+      const url=URL.createObjectURL(data.bytes);
+      let deadline:number|undefined;
+      try{
+        probe.src=url;
+        await Promise.race([probe.decode(),new Promise<never>((_,reject)=>{
+          deadline=window.setTimeout(()=>reject(new Error('Image decode timed out.')),10000);
+        })]);
+        if(!bound())return false;
+        if(!Number.isSafeInteger(probe.naturalWidth)||!Number.isSafeInteger(probe.naturalHeight)||
+          probe.naturalWidth<1||probe.naturalHeight<1)throw new Error('Empty image decode.');
+      }catch{
+        if(bound())setError('The private raster could not be decoded. Existing assignment was kept.');
+        return false;
+      }finally{
+        if(deadline!==undefined)window.clearTimeout(deadline);
+        probe.removeAttribute('src');
+        URL.revokeObjectURL(url);
+      }
+      if(!bound())return false;
+      const old=view.head.snapshot.slots[target];
+      if(old?.state==='S0'&&old.content.asset_id===asset.id&&old.content.source_sha256&&
+         (old.content.source_sha256!==digest||data.serverAttestation!=='SERVER_HASH_PINNED')){
+        setError('The stored image pin no longer matches a verified server pin. Existing assignment was kept.');return false;
+      }
       recoveryLock.current=false;
       if(!apply({kind:'PLACE_PRIVATE_IMAGE',slotKey:target,assetId:asset.id,altText}))return false;
-      setSlot(target);setNotice('Private image reference applied after owner-byte verification. Save draft to persist it; no publication pin or release authority was granted.');
+      setSlot(target);setNotice('Private image reference applied after exact byte verification and raster decoding. Save draft to persist it; no publication pin or release authority was granted.');
       return true;
     }catch{
       if(scopeCurrent(view))setError('Asset validation failed. No slot was changed.');
       return false;
+    }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
+  }
+  /** Bind a source reference only to an independently verified write-once
+   * server pin. The owner transport checks the server hash both before and
+   * after reading storage, and rejects a computed digest that disagrees.
+   * A local preview digest or successful upload alone is never sufficient.
+   * This draft field does not authorize publication; release rechecks it. */
+  async function bindServerImagePin(target:string,requestAttestation:boolean){
+    const view=captureRecovery(),assignment=view?.head?.snapshot.slots[target];
+    if(!view?.head||!view.owner||view.tool!=='Content'||view.preview||recoveryLock.current||
+       pendingFields||sourceDirty||target!==slot||assignment?.state!=='S0'||
+       assignment.componentId!=='image@1'||!canPlacePrivateImage(view.head.snapshot,target))return;
+    const assetId=assignment.content.asset_id;
+    if(!assetId)return;
+    if(requestAttestation&&!window.confirm('Request trusted server verification of this privately registered image? This may create a write-once private hash pin. It does not publish anything.'))return;
+    if(!draftCurrent(view))return;
+    recoveryLock.current=true;setRecoveryBusy(true);setError('');setNotice('');
+    const bound=()=>draftCurrent(view)&&latestRecovery.current?.tool==='Content'&&!latestRecovery.current.preview;
+    try{
+      const list=await view.port.listOwnerAssets();
+      if(!bound())return;
+      const assets=list.data?.filter(row=>row.id===assetId);
+      const asset=assets?.length===1?assets[0]:undefined;
+      if(list.error||!asset||!['image/png','image/jpeg','image/webp'].includes(asset.mime))
+        throw new Error('Owner image registration could not be verified.');
+      if(requestAttestation){
+        const receipt=await view.port.requestOwnerPrivateAssetAttestation(asset.projectId,asset.id,view.owner.epoch);
+        if(!bound())return;
+        if(receipt.error||receipt.data?.assetId!==asset.id||receipt.data.status!=='WRITE_ONCE_ATTESTED'||
+          receipt.data.publicPublishingAllowed!==false||receipt.data.accountDeletionAllowed!==false)
+          throw new Error(receipt.error?.message??'Trusted server attestation was not confirmed.');
+      }
+      const read=await view.port.readOwnerPrivateAsset(asset.projectId,asset.id,view.owner.epoch);
+      if(!bound())return;
+      const data=read.data;
+      if(read.error||!data||data.asset.id!==asset.id||data.asset.projectId!==asset.projectId||
+         data.asset.mime!==asset.mime||data.asset.size!==asset.size||data.publicDeliveryAllowed!==false||
+         data.serverAttestation!=='SERVER_HASH_PINNED'||data.integrity.status!=='OWNER_BYTES_VERIFIED'||
+         !(data.bytes instanceof Blob)||data.bytes.type!==asset.mime||data.bytes.size!==asset.size||
+         !Number.isSafeInteger(asset.size)||asset.size<1||asset.size>5*1024*1024)
+        throw new Error('No verified write-once server pin is available for this image.');
+      const bytes=await data.bytes.arrayBuffer();
+      if(!bound())return;
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+      if(!bound())return;
+      if(bytes.byteLength!==asset.size||digest!==data.integrity.computedSha256)
+        throw new Error('The server-pinned bytes disagree with the exact readback.');
+      if(assignment.content.source_sha256&&assignment.content.source_sha256!==digest)
+        throw new Error('The existing frozen source pin differs. Replace the private image explicitly; no pin was overwritten.');
+      if(assignment.content.source_sha256===digest){
+        setNotice('Existing image source pin matches the verified server hash. No draft change.');return;
+      }
+      // UPDATE_CONTENT records the reference only, as an ordinary undoable
+      // working transaction. Neither this client nor this field is authority.
+      recoveryLock.current=false;
+      if(apply({kind:'UPDATE_CONTENT',slotKey:target,content:{source_sha256:digest}}))
+        setNotice('Verified server image pin bound to the working slot. Save draft before freezing. Publication remains subject to independent release checks.');
+    }catch(cause){
+      if(bound())setError(cause instanceof Error?cause.message:'Server image pin could not be verified.');
     }finally{recoveryLock.current=false;if(scopeCurrent(view))setRecoveryBusy(false);}
   }
   // The explicit folder backup is a separate persistence destination and
@@ -1327,7 +1430,11 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           const archive=exportPortfolioSourceZip(view.head.snapshot);
           if(!sameDraftSnapshot(importPortfolioSourceZip(archive),view.head.snapshot))throw new Error('Source ZIP round-trip failed.');
           data=new Blob([new Uint8Array(archive).buffer],{type:'application/zip'});
-        }else data=new Blob([exportPortableSnapshot(view.head.snapshot)],{type:'application/json'});
+        }else{
+          const json=exportPortableSnapshot(view.head.snapshot);
+          if(!sameDraftSnapshot(importPortableSnapshot(json),view.head.snapshot))throw new Error('Source JSON round-trip failed.');
+          data=new Blob([json],{type:'application/json'});
+        }
         if(!draftCurrent(view))return;
         const url=URL.createObjectURL(data);
         const link=document.createElement('a');
@@ -1350,7 +1457,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       if(action==='compare'){
         const bytes=await file!.arrayBuffer();
         if(!draftCurrent(view))return;
-        if(bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid snapshot byte length.');
+        if(bytes.byteLength!==file!.size||bytes.byteLength<1||bytes.byteLength>sizeLimit)throw new Error('Invalid or incomplete snapshot byte length.');
         let snapshot:PortfolioSnapshot;
         if(format==='zip'){
           const {importPortfolioSourceZip}=await import('../../../packages/storage-adapters/src/portable-source-archive.ts');
@@ -1368,7 +1475,7 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
         setPortableFile(difference.changedFiles[0]??'');
         setPortableComparison({snapshot,baseSnapshot:fresh.data.snapshot,
           ownerKey:JSON.stringify([view.owner!.id,view.owner!.epoch,view.id]),
-          format,cloudRevision:fresh.data.revision,archiveSha256,...difference});
+          format,cloudRevision:fresh.data.revision,archiveSha256,archiveBytes:bytes.byteLength,...difference});
         setPortableNotice((format==='zip'?'Private source ZIP verified and compared.':'Private project JSON parsed and compared.')+
           ' This is user-provided data, not proof of asset access or trusted code. No draft was changed.');return;
       }
@@ -1688,7 +1795,8 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
       {portableNotice&&<p role="status">{portableNotice}</p>}
       {portableComparison&&<div aria-label="Portable snapshot comparison">
         <p>Compared to saved cloud revision {portableComparison.cloudRevision}: {portableComparison.changedFiles.length} different files and {portableComparison.changedSlots.length} different slot/stash keys.</p>
-        <p>Input file SHA-256: <code style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code>. This fingerprint identifies the compared bytes; it is not a signature or publication approval.</p>
+        <p>Reviewed local {portableComparison.format.toUpperCase()} · {portableComparison.archiveBytes} bytes</p>
+        <p>Reviewed file SHA-256: <code aria-label="Reviewed file SHA-256" style={{overflowWrap:'anywhere'}}>{portableComparison.archiveSha256}</code>. This fingerprint identifies the compared bytes; it is not a signature or publication approval.</p>
         {portableComparison.changedFiles.length>0&&<section aria-label="Exact source comparison">
           <label>Changed source file<select value={portableFile} onChange={event=>setPortableFile(event.currentTarget.value)}>
             <option value="">Select a changed file</option>{portableComparison.changedFiles.map(path=><option key={path} value={path}>{path}</option>)}
@@ -1964,6 +2072,13 @@ export function PortfolioEditor({port,id,verifiedOwner}: {
           {canPlacePrivateImage(head.snapshot,slot)&&<div className="ws-editor-tool">
             {active.componentId==='image@1'&&<p>Private image reference · {active.content.alt_text||'No alt text'}.
               {active.content.source_sha256?' Stored pin; release verification required.':' Metadata only; release blocked until trusted byte attestation.'}</p>}
+            {active.state==='S0'&&active.componentId==='image@1'&&active.content.asset_id&&verifiedOwner&&<>
+              <button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+                onClick={()=>void bindServerImagePin(slot,false)}>Verify and bind server image pin</button>
+              {!active.content.source_sha256&&<button type="button" className="ws-secondary" disabled={saving||recoveryBusy||pendingFields||sourceDirty}
+                onClick={()=>void bindServerImagePin(slot,true)}>Request private image attestation</button>}
+              <p>Only the verified server pin can bind a frozen source reference. The release builder independently checks media eligibility and bytes.</p>
+            </>}
             <button type="button" className="ws-secondary" disabled={saving||recoveryBusy}
               onClick={()=>{setOpenedAssets(true);setTool('Assets');}}>{active.state==='EMPTY'?'Choose private image':'Replace private image'}</button>
           </div>}
@@ -2151,28 +2266,43 @@ function PrivateShareDialog({onClose}:{onClose:()=>void}) {
   </dialog>;
 }
 
-export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
-  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
-  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
+/** Saved preview is a separate authenticated read, never a public release
+ * or a continuation of mutable editor state. Invalidate the entire receipt
+ * on observed owner/epoch changes, including an in-flight read and share UI. */
+function useSavedPrivatePreview(port:SupabaseBrowserAuthPort,id:string,attempt:number){
+  const [loaded,setLoaded]=useState<{port:SupabaseBrowserAuthPort;id:string;epoch:number;record:PortfolioRecord}|null>(null);
   const [error,setError]=useState('');
+  useLayoutEffect(()=>{
+    let active=true;
+    setLoaded(null);setError('');
+    const epoch=port.reconcileOwnerSessionEpoch();
+    const invalidate=()=>{
+      if(!active)return;
+      active=false;setLoaded(null);setError('The saved private revision could not be verified.');
+    };
+    const unsubscribe=port.subscribeOwnerSessionEpoch(invalidate);
+    void port.readOwnerPortfolio(id).then(reply=>{
+      if(!active)return;
+      if(port.reconcileOwnerSessionEpoch()!==epoch){invalidate();return;}
+      if(!reply.error&&reply.data?.snapshot&&reply.data.id===id&&
+         Number.isSafeInteger(reply.data.revision)&&reply.data.revision>0){
+        setLoaded({port,id,epoch,record:reply.data});return;
+      }
+      setError(reply.error?.message??'A saved private portfolio revision is not available.');
+    }).catch(()=>{if(active)setError('The saved private revision could not be verified.');});
+    return ()=>{active=false;unsubscribe();};
+  },[port,id,attempt]);
+  const receipt=loaded?.port===port&&loaded.id===id&&loaded.epoch===port.getOwnerSessionEpoch()?loaded:null;
+  return {record:receipt?.record??null,error,privateMedia:receipt?
+    {port,ownerKey:JSON.stringify(['saved-owner-preview',receipt.epoch,id,receipt.record.revision])}:undefined};
+}
+export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id:string}){
   const [view,setView]=useState<'author'|'visitor'>('visitor');
   const [device,setDevice]=useState<0|390|768>(0);
   const [attempt,setAttempt]=useState(0);
   const [shareOpen,setShareOpen]=useState(false);
-  useEffect(()=>{
-    let active=true;
-    setLoadedPreview(null);setError('');setShareOpen(false);
-    const epoch=port.reconcileOwnerSessionEpoch();
-    void port.readOwnerPortfolio(id).then(reply=>{
-      if(!active)return;
-      if(port.reconcileOwnerSessionEpoch()!==epoch){setError('The saved private revision could not be verified.');return;}
-      if(reply.data?.snapshot&&reply.data.id===id){setLoadedPreview({port,id,record:reply.data});return;}
-      setError(reply.error?.message??'A saved private portfolio revision is not available.');
-    }).catch(()=>{
-      if(active)setError('The saved private revision could not be verified.');
-    });
-    return ()=>{active=false;};
-  },[port,id,attempt]);
+  const {record,error,privateMedia}=useSavedPrivatePreview(port,id,attempt);
+  useLayoutEffect(()=>{setView('visitor');setShareOpen(false);},[port,id,attempt,privateMedia?.ownerKey]);
   return <section className="ws-portfolio-preview" aria-labelledby="ws-preview-title">
     <header className="ws-project-head ws-preview-header">
       <div className="ws-heading">
@@ -2226,11 +2356,11 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
         </div>
         <div className="ws-preview-stage">
           <PortfolioCanvas snapshot={record.snapshot} title={record.title}
-            simulation={view==='visitor'} width={device||undefined}/>
+            simulation={view==='visitor'} privateMedia={view==='author'?privateMedia:undefined} width={device||undefined}/>
         </div>
         <p className="ws-preview-caution" role="status">{view==='visitor'
           ? 'Appearance-only simulation. This is not a published or visitor-accessible URL, and no external code or images are executed.'
-          : 'Private author preview. Empty slots may be indicated; no draft is published from this page.'}</p>
+          : 'Private author preview of the saved revision. Verified owner-private images may be shown; empty slots may be indicated. No draft is published from this page.'}</p>
       </div>
       <aside className="ws-preview-checklist" aria-label="Private release checklist">
         <p className="ws-kicker">PREVIEW CHECKLIST</p>
@@ -2255,26 +2385,9 @@ export function PortfolioPreviewModes({port,id}:{port:SupabaseBrowserAuthPort;id
 }
 
 export function FullscreenPortfolioPreview({port, id}: {port: SupabaseBrowserAuthPort; id: string}) {
-  const [loadedPreview,setLoadedPreview]=useState<{port:SupabaseBrowserAuthPort;id:string;record:PortfolioRecord}|null>(null);
-  const record=loadedPreview?.port===port&&loadedPreview.id===id?loadedPreview.record:null;
-  const [error,setError]=useState(false);
   const [attempt,setAttempt]=useState(0);
-
-  useEffect(()=>{
-    let active=true;
-    setLoadedPreview(null);setError(false);
-    const epoch=port.reconcileOwnerSessionEpoch();
-    void port.readOwnerPortfolio(id).then(result=>{
-      if(!active)return;
-      if(port.reconcileOwnerSessionEpoch()!==epoch||!result.data?.snapshot||result.data.id!==id){
-        setError(true);return;
-      }
-      setLoadedPreview({port,id,record:result.data});
-    }).catch(()=>{if(active)setError(true);});
-    return ()=>{active=false;};
-  },[port,id,attempt]);
-
+  const {record,error,privateMedia}=useSavedPrivatePreview(port,id,attempt);
   if(error)return <main className="ws-gate"><h1>Portfolio unavailable.</h1><button type="button" className="ws-secondary" onClick={()=>setAttempt(v=>v+1)}>Retry private preview</button><a href={STUDIO}>Return to portfolio library</a></main>;
   if(!record)return <main className="ws-gate"><p role="status">Loading saved portfolio preview…</p><div className="glyph-skeleton" aria-hidden="true"><span className="glyph-skeleton-line is-title"/><span className="glyph-skeleton-line is-medium"/><span className="glyph-skeleton-line is-short"/></div></main>;
-  return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone/>;
+  return <PortfolioCanvas snapshot={record.snapshot} title={record.title} standalone privateMedia={privateMedia}/>;
 }
