@@ -622,8 +622,9 @@ export function MoveToTrash({port, kind, id, title, disabled, onMoved}: {
 function currentTrashGeneration(rows:PrivateTrashEntry[],item:PrivateTrashEntry,now:number):boolean {
   if(rows.length>100||!Number.isFinite(now))return false;
   const same=rows.filter(row=>row.item_type===item.item_type&&row.item_id.toLowerCase()===item.item_id.toLowerCase());
-  return same.length===1&&same[0].trashed_at===item.trashed_at&&same[0].restore_until===item.restore_until&&
-    Date.parse(same[0].restore_until)>now;
+  const match=same[0];
+  return same.length===1&&!!match&&match.trashed_at===item.trashed_at&&match.restore_until===item.restore_until&&
+    Date.parse(match.restore_until)>now;
 }
 
 function Trash({port,service}: {port:SupabaseBrowserAuthPort;service:Services['trash']}) {
