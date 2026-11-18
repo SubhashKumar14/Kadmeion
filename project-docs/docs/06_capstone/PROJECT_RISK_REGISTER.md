@@ -7,7 +7,7 @@
 | Public JS sandbox escape | High consequence / P0 | iframe self-navigation, unexpected egress | Static-only public source; release blocked until hostile origin tests | Technical project lead |
 | RLS leak | P0 | another user's foreign ID returns draft | Owner-scoped policies, direct negative API tests | Backend lead |
 | Public unpublish fails | P0 | cached original route or raw asset remains reachable | Strong resolver, cache tests; don't claim revocation | Hosting lead |
-| Email recovery cannot send free | P0 | Brevo sender/domain rejected | Verify before signup; if no legitimate free sender, demo restriction needs approval | Auth lead |
+| Email recovery cannot send free | P0 | Brevo sender/domain rejected | Verify delivery before enabling recovery or confirmation resend | Auth lead |
 | Theme/code roundtrip corruption | P0 | layout swap modifies opaque files | One writer, before-image, golden bytes, Unplaced tray | Editor lead |
 | Repository ingestion creeps into project model | P1 | source fetched/imported on entering URL | Treat repo/live URLs as links; manual project forms | Product lead |
 | Template budget hard-coded | P1 | `maxTemplates=5` in schema/UI | Extensible catalogue, initial five content only | Editor lead |

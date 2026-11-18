@@ -1,3 +1,40 @@
+## 16 November 2026 — F1 implementation and browser verification
+
+- **Scope:** One phase per response. F1 screens 01–11 received a full implementation and comparison pass on [PR #3](https://github.com/SubhashKumar14/Kadmeion/pull/3). Verified code SHA [`f78fee91ef99dad330dac05647d6c61a330b6816`](https://github.com/SubhashKumar14/Kadmeion/commit/f78fee91ef99dad330dac05647d6c61a330b6816).
+- **Code and decisions:** Use the approved mark and wordmark in the light/dark runtime shells. Improve public composition, reversible auth layout, skip-link focus and reduced-motion behavior. Bind password updates to the active session before the provider call. Preserve mobile sign-out and owner access controls. Use real glyph-text loading, recovery guidance and private recent-work links. Explore stays illustrative pending public delivery proof. Signup takes a candidate handle and does not expose private account presence through guest availability queries.
+- **CI at the exact code SHA:** [Frontend #112](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43819836296) success, 16 public Chromium tests. [Application and Database #855](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43819836277) success, 504 root tests, 511 pgTAP assertions and all three isolated Chromium scenarios. Both typechecks, frontend build and production dependency audits passed. Existing Vite ineffective dynamic import warning and 261/200 source-file variance recorded. Hosted inspection matched 57 migration versions and three active Edge Functions.
+- **Design review:** 11/11 source PNG hashes and matching viewport captures compared. All references were retained. The 06 capture uses the actual shared recovery-verification screen. Hosted Google OAuth and Brevo inbox proof, visual parity, full accessibility and owner UAT remain open. No production promotion or hosted configuration changes were made.
+- **Next phase F2:** Review and hash originals 12–17, starting with WORK-03 profile edit and privacy preview. Exercise the owner draft update and stale revision path before working through project create/edit, quick add, portfolio library and template choice. Keep F1 visual and provider gaps visible in the source register for acceptance.
+
+### Visual comparison
+
+Mean absolute RGB channel error on the 0–255 scale against each approved LIGHT source. Lower is closer. The historical 07–09 captures used a different viewport, and 06, 08 and 09 showed different auth states. These measurements support layout review and do not certify parity.
+
+| Screen | Route surface | F0 capture | F1 capture | Captured state |
+| --- | --- | ---: | ---: | --- |
+| 01 | Landing | 29.53 | 28.66 | Public browser capture. |
+| 02 | Explore portfolios | 30.85 | 25.12 | Public browser capture. |
+| 03 | Public template explorer | 20.55 | 19.27 | Public browser capture. |
+| 04 | Sign in | 25.06 | 16.45 | Unconfigured capture. Verified owner sign-in tested with isolated GoTrue. |
+| 05 | Sign up | 23.45 | 19.69 | Registration shows the delivery gate in the public capture. |
+| 06 | OAuth callback | 32.21 | 27.43 | Shared verification UI while a real recovery grant is checked. F0 captured an error. |
+| 07 | Password recovery request | 21.89 | 17.85 | Public capture shows the delivery gate. The isolated browser submitted a real recovery request. |
+| 08 | Password reset | 23.18 | 20.63 | Verified recovery grant. F0 captured an invalid or absent grant. |
+| 09 | Recovery outcome | 24.18 | 24.91 | Real local recovery request outcome. F0 captured direct neutral status. |
+| 10 | Welcome & onboarding | 16.06 | 13.45 | Isolated owner. Keyboard choice and persisted skip tested. |
+| 11 | Workspace home | 17.14 | 13.83 | Isolated owner. 390 px reflow, mobile sign-out access, and restricted route denials tested. |
+
+### Implementation chronology
+
+- `a3bb334` introduced shared keyboard, responsive, auth and workspace corrections and isolated GoTrue/Mailpit browser coverage.
+- `e8bf6ee` waits for React to mount the skip target before the first Tab. Public Chromium passed, and the local recovery flow passed. The authenticated mobile run exposed a horizontal overflow.
+- `38f9f95` constrained the mobile account header and owner email and exposed recovery retry. Both CI workflows passed.
+- `f78fee9` refined shared callback and recovery composition and grouped authentic recent work with next-step controls. Both same-SHA workflows passed. The isolated browser changed a password and then signed in with the new credential.
+
+---
+
+## 15 November 2026 — Historical implementation notes
+
 # Kadmeion frontend F1 — audited React/Vite implementation (15 Nov 2026)
 
 ## Source and approval status

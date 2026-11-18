@@ -6,7 +6,7 @@ type ConceptCategory = 'All'|'Full-Stack'|'Frontend'|'AI / ML'|'Product';
 type Concept = {id:string;title:string;field:Exclude<ConceptCategory,'All'>;description:string;tags:string[];type:string;year:string;tone:string;initials:string};
 const concepts:readonly Concept[]=[
   {id:'bidhub',title:'BidHub',field:'Full-Stack',description:'A collaborative project-bidding platform concept.',tags:['Web','Marketplace'],type:'Product example',year:'2025',tone:'bidhub',initials:'B'},
-  {id:'streamflix',title:'StreamFlix',field:'Frontend',description:'A film discovery and recommendation app concept.',tags:['React','Media'],type:'Project example',year:'2025',tone:'streamflix',initials:'▶'},
+  {id:'streamflix',title:'StreamFlix',field:'Frontend',description:'A film discovery and recommendation app concept.',tags:['React','Media'],type:'Project example',year:'2025',tone:'streamflix',initials:'S'},
   {id:'aegis-ai',title:'Aegis AI',field:'AI / ML',description:'Applied AI systems and software tooling concept.',tags:['AI / ML','Tools'],type:'Project example',year:'2025',tone:'aegis',initials:'A'},
   {id:'kadmeion',title:'Kadmeion',field:'Product',description:'The developer identity platform now being built.',tags:['Portfolio','Identity'],type:'Platform concept',year:'2026',tone:'kadmeion',initials:'K'}
 ];
@@ -39,12 +39,12 @@ export function ExplorePortfolios(){
           <a className="header-signin" href={getAuthHref()}><Icon name="user" size={15}/> Sign in</a>
         </div>
       </header>
-      <main id="explore-main" className="explore-main">
+      <main id="explore-main" tabIndex={-1} className="explore-main">
         <section className="explore-hero" aria-labelledby="explore-title">
           <div className="explore-copy">
-            <p className="eyebrow"><span/> Public Showcase</p>
-            <h1 id="explore-title">Explore developer<br/><em>portfolios.</em></h1>
-            <p>Discover how real work and thoughtful developer identities could be showcased on Kadmeion.</p>
+            <p className="eyebrow"><span/> Portfolio concepts</p>
+            <h1 id="explore-title">Explore developer<br/><em>portfolio ideas.</em></h1>
+            <p>Browse illustrative presentation ideas for developer work. These examples are not published Kadmeion accounts.</p>
             <div className="hero-actions"><ActionLink href="/templates">Explore Templates</ActionLink>
               <ActionLink href={getAuthHref()} kind="outline">Create Your Portfolio</ActionLink></div>
           </div>
@@ -60,16 +60,13 @@ export function ExplorePortfolios(){
           </div>
         </section>
         <section aria-labelledby="browse-title" className="explore-browse">
-          <div className="explore-browse-top"><div>
-            <p className="eyebrow"><span/> Preview Gallery</p>
-            <h2 id="browse-title">Browse layout examples.</h2>
-            <p className="explore-disclosure">Example cards from the approved visual design, not live published accounts, verified developers or publicly accessible portfolios.</p>
-          </div></div>
+          <h2 id="browse-title" className="sr-only">Browse layout examples</h2>
+          <p className="explore-disclosure">The verified public directory is not connected to this gallery. Its availability and listing count are unconfirmed. The search and filters below apply only to illustrative layouts—not live published accounts or verified project ownership.</p>
           <form className="explore-filters" role="search" onSubmit={event=>event.preventDefault()}>
             <label className="sr-only" htmlFor="explore-search">Search concept examples</label>
             <div className="template-query"><Icon name="target" size={18}/>
               <input id="explore-search" type="search" value={query} onChange={event=>setQuery(event.target.value)}
-                placeholder="Search portfolios, projects, or skills..."/></div>
+                placeholder="Search illustrative project examples..."/></div>
             <label className="sr-only" htmlFor="explore-category">Category</label>
             <select id="explore-category" value={category} onChange={event=>setCategory(event.target.value as ConceptCategory)}>
               <option>All</option><option>Full-Stack</option><option>Frontend</option><option>AI / ML</option><option>Product</option>
@@ -83,7 +80,7 @@ export function ExplorePortfolios(){
             {(['All','Full-Stack','Frontend','AI / ML','Product'] as const).map(item=>
               <button key={item} type="button" aria-pressed={category===item} onClick={()=>setCategory(item)}>{item}</button>)}
           </div>
-          <p className="showcase-result-count" role="status">{filtered.length} illustrative {filtered.length===1?'example':'examples'} match. Public-directory results are not yet connected.</p>
+          <p className="showcase-result-count" role="status">{filtered.length} illustrative {filtered.length===1?'example':'examples'} match.</p>
           {filtered.length===0?<div className="no-template-results">
             <h2>No matching concepts</h2><p>Clear the search or try another category.</p>
             <button type="button" className="outline-small" onClick={()=>{setQuery('');setCategory('All');setOrder('Featured');}}>Clear filters</button>

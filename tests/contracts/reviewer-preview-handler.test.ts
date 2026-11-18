@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {createServer} from 'node:http';
+import {once} from 'node:events';
+import {verifyReviewerHostWithdrawal} from '../../packages/storage-adapters/src/host-revocation-probe.ts';
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
 
 const grant='30000000-0000-4000-8000-000000000005';
@@ -184,4 +187,63 @@ test('reviewer rejects duplicate or crawler-specific robot directives',async()=>
     const {res}=await run({data});
     assert.equal(res.statusCode,503,'The private head must not contain a conflicting robots policy');
   }
+});
+
+test('reviewer PNG requests recheck the grant on both GET and HEAD',async()=>{
+  const png=Buffer.from('89504e470d0a1a0a','hex');
+  const asset=createHash('sha256').update(png).digest('hex');
+  const manifest='e'.repeat(64);
+  const url='/api/reviewer?review='+grant+'.'+token+'&manifest='+manifest+'&asset='+asset;
+  for(const method of ['GET','HEAD']){
+    const allowed=await run({url,method,data:{png:png.toString('base64')}});
+    assert.equal(allowed.res.statusCode,200);
+    assert.deepEqual(allowed.res.body,method==='HEAD'?'':png);
+    assert.equal(allowed.res.headers.get('content-type'),'image/png');
+    assert.equal(allowed.res.headers.get('cache-control'),'private, no-store, max-age=0, must-revalidate');
+    assert.equal(allowed.sent.length,1);
+    assert.match(allowed.sent[0].url,/\/service_read_frozen_release_png$/);
+    assert.deepEqual(JSON.parse(String(allowed.sent[0].init?.body)),{
+      p_grant_id:grant,p_raw_token:token,p_manifest:manifest,p_sha:asset
+    });
+
+    const revoked=await run({url,method,data:null});
+    assert.equal(revoked.res.statusCode,404);
+    assert.equal(revoked.res.body,method==='HEAD'?'':'Not found');
+    assert.equal(revoked.sent.length,1);
+    assert.equal(revoked.res.headers.get('cache-control'),'private, no-store, max-age=0, must-revalidate');
+    const corrupt=await run({url,method,data:{png:Buffer.concat([png,Buffer.from([0])]).toString('base64')}});
+    assert.equal(corrupt.res.statusCode,503);
+    assert.equal(corrupt.res.body,method==='HEAD'?'':'Temporarily unavailable');
+  }
+});
+
+
+test('real loopback HTTP through reviewer handler verifies grant revocation on both URL forms',
+  {timeout:15000},async()=>{
+  let revoked=false;
+  let privateReads=0;
+  const server=createServer((req,res)=>{
+    void handleReviewerRequest(req,res,{
+      env,
+      http:async()=>{
+        privateReads++;
+        return Response.json(revoked?null:receipt);
+      }
+    }).catch(()=>{res.statusCode=500;res.end('Unavailable');});
+  });
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try{
+    const port=(server.address() as {port:number}).port;
+    const verified=await verifyReviewerHostWithdrawal({
+      origin:'http://127.0.0.1:'+port,
+      allowLocal:true,grantId:grant,rawToken:token,expectedServedHtmlSha256:digest
+    },async()=>{revoked=true;});
+    assert.equal(verified.status,'REVIEWER_REVOKED_ON_SCOPED_PATHS');
+    assert.equal(verified.observedHttpRequests,8);
+    assert.equal(verified.directPathsChecked,1);
+    assert.equal(verified.liveMediaVerified,0);
+    assert.equal(privateReads,8,'every external GET and HEAD must recheck the grant');
+    assert.ok(!JSON.stringify(verified).includes(token));
+  }finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

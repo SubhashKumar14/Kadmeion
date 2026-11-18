@@ -80,6 +80,30 @@ test('unacknowledged public canary stays noindex until the same trusted release 
     assert.equal(invalid.res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   }
 });
+test('GET and HEAD reject a missing or conflicting robots directive in the release head', async () => {
+  const invalidHtml = [
+    html.replace(marker, '').replace('</body>', marker + '</body>'),
+    html.replace(marker, '<template>' + marker + '</template>'),
+    html.replace(marker, '<title>' + marker + '</title>'),
+    html.replace(marker, marker + '<meta name="googlebot" content="index,follow">'),
+    html.replace(marker, '<meta name="robots" content="NOINDEX">')
+      .replace('</body>', marker + '</body>')
+  ];
+  for (const invalid of invalidHtml) {
+    for (const method of ['GET', 'HEAD']) {
+      for (const indexable of [true, false]) {
+        const {res} = await invoke(handlePublicPortfolio, {
+          method, data: {...payload(invalid), indexable}
+        });
+        assert.equal(res.statusCode, 503, invalid);
+        assert.equal(res.body, method === 'HEAD' ? '' : 'Temporarily unavailable');
+        assert.equal(res.headers.get('x-robots-tag'), 'noindex, nofollow, noarchive');
+        assert.equal(res.headers.get('cache-control'), 'private, no-store');
+        assert.equal(res.headers.has('x-kadmeion-served-sha256'), false);
+      }
+    }
+  }
+});
 test('public HEAD produces no content and still checks publication',async()=>{
   const {res,calls}=await invoke(handlePublicPortfolio,{method:'HEAD'});
   assert.equal(res.statusCode,200);assert.equal(res.body,'');assert.equal(calls.length,1);
@@ -260,7 +284,18 @@ test('media delivery rewrites only pinned PNGs and reauthorizes every direct rea
   assert.ok(direct.calls[0].url.endsWith('service_read_frozen_release_png'));
   assert.deepEqual(JSON.parse(String(direct.calls[0].options.body)),
     {p_handle:'sample_user',p_slug:'sample-site',p_manifest:manifest,p_sha:sha});
-  assert.equal((await invoke(handlePublicPortfolio,{url:asset,data:null})).res.statusCode,404);
+  const head=await invoke(handlePublicPortfolio,{url:asset,method:'HEAD',data:{png:png.toString('base64')}});
+  assert.equal(head.res.statusCode,200);
+  assert.equal(head.res.body,'');
+  assert.equal(head.calls[0].url,direct.calls[0].url);
+  assert.equal(head.calls[0].options.body,direct.calls[0].options.body);
+  for(const method of ['GET','HEAD']){
+    const withdrawn=await invoke(handlePublicPortfolio,{url:asset,method,data:null});
+    assert.equal(withdrawn.res.statusCode,404);
+    assert.equal(withdrawn.res.body,method==='HEAD'?'':'Not found');
+    assert.equal(withdrawn.res.headers.get('cache-control'),'private, no-store');
+    assert.equal(withdrawn.calls.length,1);
+  }
   assert.equal((await invoke(handlePublicPortfolio,{url:asset,data:{png:'aGVsbG8='}})).res.statusCode,503);
   assert.equal((await invoke(handlePublicPortfolio,{url:asset+'&asset='+sha})).calls.length,0);
   assert.equal((await invoke(handlePublicPortfolio,{data:{...release,assetHashes:[manifest]}})).res.statusCode,503);
@@ -281,4 +316,72 @@ test('HTML5 slash-separated executable attributes are refused despite matching d
     assert.equal(res.body,'Temporarily unavailable');
     assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   }
+});
+
+test('B16 SSR rejects non-origin-form, normalized or shadow identity paths before privileged RPC',async()=>{
+  for(const [handler,base,data] of [
+    [handlePublicPortfolio,path,payload(html)],
+    [handlePublishedIdentity,identityPath,{handle:'sample_user',displayName:'Visible'}]
+  ] as const){
+    for(const url of [
+      'https://attacker.invalid'+base,'//attacker.invalid'+base,
+      '/x/..'+base,'/x/%2e%2e'+base,base+'#fragment',
+      '/\\attacker.invalid'+base,base+'\n',base+'%00',
+      base+'&handle=other_user'
+    ]){
+      const {res,calls}=await invoke(handler,{url,data});
+      assert.equal(res.statusCode,404);
+      assert.equal(calls.length,0,'Malformed request must not reach a privileged resolver');
+      assert.equal(res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+    }
+  }
+});
+test('B16 consented identity SSR emits digest of exact escaped bytes, bodyless HEAD and no inferred canonical claims',async()=>{
+  const data={handle:'sample_user',displayName:'<Owner & "Visible">',headline:'Public <headline>',bio:'Selected biography'};
+  const hostileHeaders={host:'evil.invalid','x-forwarded-host':'evil.invalid','x-forwarded-proto':'https',
+    'x-kadmeion-verified':'1'};
+  const get=await invoke(handlePublishedIdentity,{url:'/u/sample_user',data,requestHeaders:hostileHeaders});
+  const head=await invoke(handlePublishedIdentity,{url:identityPath,data,method:'HEAD',requestHeaders:hostileHeaders});
+  assert.equal(get.res.statusCode,200);assert.equal(head.res.statusCode,200);
+  const body=String(get.res.body),sha=digest(body);
+  assert.equal(get.res.headers.get('x-kadmeion-served-sha256'),sha);
+  assert.equal(head.res.headers.get('x-kadmeion-served-sha256'),sha);
+  assert.equal(head.res.body,'');
+  assert.equal(get.res.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  assert.equal(head.res.headers.get('cache-control'),'private, no-store');
+  assert.match(body,/property="og:title" content="&lt;Owner &amp; &quot;Visible&quot;&gt;"/);
+  assert.match(body,/property="og:description" content="Public &lt;headline&gt;"/);
+  assert.doesNotMatch(body,/evil\.invalid|og:url|og:image|rel="canonical"|<Owner/);
+  assert.equal(get.calls.length,1);assert.equal(head.calls.length,1);
+  assert.deepEqual(JSON.parse(String(get.calls[0].options.body)),{p_handle:'sample_user'});
+  assert.equal(head.calls[0].options.body,get.calls[0].options.body);
+  for(const extra of [{avatarUrl:'https://example.com/p.png'},{ownerId:'hidden'},{verified:true},{private_links:[]}]) {
+    const denied=await invoke(handlePublishedIdentity,{url:identityPath,data:{...data,...extra}});
+    assert.equal(denied.res.statusCode,503);
+    assert.equal(denied.res.headers.has('x-kadmeion-served-sha256'),false);
+  }
+});
+test('B16 bounded upstream body denial cannot hang on unread clone sibling or stalled stream',{timeout:12000},async()=>{
+  const bad=new Response('invalid',{headers:{'content-type':'text/html'}});
+  const sibling=bad.clone();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const watchdog=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('cancel blocked')),1000);});
+    const out=await Promise.race([invoke(handlePublishedIdentity,{url:identityPath,httpResponse:bad}),watchdog]);
+    assert.equal(out.res.statusCode,503);
+  }finally{if(timer!==undefined)clearTimeout(timer);void sibling.body?.cancel().catch(()=>{});}
+  let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
+  let cancelled=false,deadline:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const upstream=new Response(new ReadableStream<Uint8Array>({
+      start(c){controller=c;c.enqueue(new TextEncoder().encode('{"handle":'));},
+      cancel(){cancelled=true;}
+    }),{headers:{'content-type':'application/json'}});
+    const watchdog=new Promise<never>((_,reject)=>{deadline=setTimeout(()=>reject(Error('body deadline exceeded')),7000);});
+    const out=await Promise.race([invoke(handlePublishedIdentity,{url:identityPath,httpResponse:upstream}),watchdog]);
+    assert.equal(out.res.statusCode,503);
+    assert.equal(out.res.body,'Temporarily unavailable');
+    assert.equal(out.res.headers.has('x-kadmeion-served-sha256'),false);
+    assert.equal(cancelled,true);
+  }finally{if(deadline!==undefined)clearTimeout(deadline);try{controller?.close();}catch{}}
 });

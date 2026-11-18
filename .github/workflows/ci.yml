@@ -1,11 +1,10 @@
 name: Application and Database CI
 
 on:
-  # One CI run per feature change via PR synchronization (no duplicate push job).
   pull_request:
-  # Validate the merged result, too, after an explicitly approved merge.
+  # The ongoing feature branch must also be checked after PR #1 closed.
   push:
-    branches: [main]
+    branches: [main, 'feat/b0-backend-foundation']
   workflow_dispatch:
 
 permissions:
@@ -17,11 +16,66 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # pinned B16 file-budget baseline must be available
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Report B16 counted files and enforce exact authorized paths
+        run: npm run check:file-budget
+      - name: Verify DECISION-B16-002 with isolated Git index and test-only reservations
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync, spawnSync } from 'node:child_process';
+          import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          import assert from 'node:assert/strict';
+          const temp=mkdtempSync(join(tmpdir(),'kadmeion-budget-'));
+          const env={...process.env,GIT_INDEX_FILE:join(temp,'index')};
+          const git=(args,options={})=>execFileSync('git',args,{env,encoding:'utf8',...options}).trim();
+          const gate='scripts/check-file-budget.mjs';
+          const source=readFileSync(gate,'utf8');
+          const marker='const authorizedAdditionPaths = [';
+          assert.equal(source.split(marker).length,2);
+          const counted=p=>p!=='README.md'&&!['project-docs/','node_modules/','dist/','coverage/'].some(x=>p.startsWith(x));
+          const run=(file,ok,pattern)=>{
+            const r=spawnSync(process.execPath,[file],{env,encoding:'utf8',timeout:10000});
+            assert.equal(r.error,undefined);
+            assert.equal(r.status,ok?0:1,r.stdout+r.stderr);
+            assert.match(r.stdout+r.stderr,pattern);
+            console.log((ok?'PASS ':'EXPECTED DENIAL ')+r.stdout.trim()+(ok?'':' '+r.stderr.trim()));
+          };
+          const fixture=(name,paths)=>{
+            const file=join(temp,name+'.mjs');
+            writeFileSync(file,source.replace(marker,marker+'\n'+paths.map(p=>JSON.stringify(p)+',').join('\n')));
+            return file;
+          };
+          try{
+            git(['read-tree','HEAD']);
+            const baseline=git(['ls-files','--cached']).split('\n').filter(counted);
+            const extras=Array.from({length:Math.max(16,281-baseline.length)},(_,i)=>`tests/__b16_budget_fixture__/case-${i}.test.ts`);
+            const excluded='project-docs/__b16_budget_fixture__/excluded.txt';
+            const blob=git(['hash-object','-w','--stdin'],{input:''});
+            const add=p=>git(['update-index','--add','--cacheinfo','100644,'+blob+','+p]);
+            run(gate,true,/Numerical thresholds are informational/);
+            add(excluded);
+            run(gate,true,new RegExp('files: '+baseline.length+' /'));
+            for(const p of extras)add(p);
+            const total=baseline.length+extras.length;
+            assert.ok(total>280);
+            run(gate,false,/Unreserved counted additions/);
+            // Only the scratch copy has synthetic authorization; never change the real allowlist.
+            run(fixture('authorized-over-former-ceiling',extras),true,new RegExp('files: '+total+' /'));
+            run(fixture('duplicate-authorization',[...extras,extras[0]]),false,/Colliding counted-path authorizations/);
+            run(fixture('baseline-collision',[...extras,gate]),false,/Colliding counted-path authorizations/);
+            console.log('DECISION-B16-002: 6/6 isolated index checks passed, real allowlist unchanged.');
+          }finally{rmSync(temp,{recursive:true,force:true});}
+          NODE
+      - name: Mandatory C03 method-aware delivery and bounded cancellation regressions
+        run: node --experimental-strip-types --test --test-timeout=30000 tests/editor/unlisted-release-verification.test.ts
       - name: Audit installed production dependency tree for high-severity advisories
         run: npm audit --omit=dev --audit-level=high
       - name: Reject syntax errors in public delivery adapters
@@ -34,12 +88,21 @@ jobs:
         env:
           VITE_SUPABASE_URL: https://scyooqjitjzjdxgtanso.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_test_only
+      - name: Focused batch04 independent successor contract suites
+        id: focused_successors
+        run: node --experimental-strip-types --test --test-timeout=90000 tests/auth-web/supabase-auth-port.test.ts tests/contracts/private-goals-service.test.ts tests/contracts/private-moderation-service.test.ts tests/editor/host-revocation-probe.test.ts tests/editor/private-account-data-export.test.ts
+        env:
+          KADMEION_REQUIRE_REAUTH_CANDIDATE: '1'
       - run: npm test
+        if: ${{ success() || (!cancelled() && steps.focused_successors.outcome == 'failure') }}
+        env:
+          KADMEION_REQUIRE_REAUTH_CANDIDATE: '1'
       - name: Validate D01-D90, UI, workflow, case and proof evidence indexes
         run: node scripts/verify-backend-traceability.mjs
       - name: Audit 52 approved LIGHT references and corrected full-screen preview
         run: npm run verify:approved-light
-      - run: npm run check:file-budget
+      - name: Validate F0 source to owner-action and brand contract
+        run: npm run verify:f0
       # B07 release smoke uses no JWTs, accounts, secrets or mutating RPCs.
       # PR-only: main's isolated code CI remains independent of paused free hosting.
       - name: Hosted B07 Edge deny-by-default HTTP smoke
@@ -85,6 +148,13 @@ jobs:
       - uses: supabase/setup-cli@v3
         with:
           version: 3.1.0
+      - name: Reserve local Supabase ports on the ephemeral runner
+        shell: bash
+        run: |
+          # Supabase publishes fixed ports inside Linux's ephemeral range.
+          # Preserve any existing reservations on this GitHub-hosted runner.
+          reserved=$(sysctl -n net.ipv4.ip_local_reserved_ports)
+          sudo sysctl -q -w "net.ipv4.ip_local_reserved_ports=${reserved:+$reserved,}54320-54329"
       - name: Start isolated Supabase, retry one port collision
         shell: bash
         run: |
@@ -97,8 +167,12 @@ jobs:
             fi
             cat "$log"
             result=$(<"$log")
-            if [[ "$attempt" == 2 || "$result" != *"address already in use"* ||
+            if [[ "$result" != *"address already in use"* ||
                   "$result" != *"failed to bind host port"* ]]; then
+              exit 1
+            fi
+            sudo ss -ltnp | awk '$4 ~ /:5432[0-9]$/'
+            if [[ "$attempt" == 2 ]]; then
               exit 1
             fi
             # Only this ephemeral CI project. Remove partially started
@@ -115,6 +189,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+        id: isolated_db_ready
       - name: Exercise authenticated React workflows against the isolated Supabase stack
         run: |
           npm ci --prefix apps/frontend --ignore-scripts --no-fund
@@ -125,39 +200,49 @@ jobs:
           test -n "$KADMEION_TEST_SERVICE_ROLE_KEY"
           export VITE_SUPABASE_PUBLISHABLE_KEY KADMEION_TEST_SERVICE_ROLE_KEY
           unset credentials
-          npm run test:e2e --prefix apps/frontend -- owner.spec.ts
+          npm run test:e2e --prefix apps/frontend -- owner.spec.ts settings-owner.spec.ts
         env:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           KADMEION_LOCAL_BROWSER: '1'
+          VITE_KADMEION_EMAIL_DELIVERY_VERIFIED: 'true'
           KADMEION_BROWSER_CAPTURE_DIR: /tmp/kadmeion-owner-captures
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: kadmeion-owner-browser-captures
-          path: /tmp/kadmeion-owner-captures/*.png
+          path: |
+            /tmp/kadmeion-owner-captures/*.png
+            /tmp/kadmeion-owner-captures/*.a11y.json
+            /tmp/kadmeion-owner-captures/*.route-diagnostics.json
           if-no-files-found: ignore
           retention-days: 1
       - name: Test real GoTrue + PostgREST + private Storage over HTTP
+        if: ${{ !cancelled() && steps.isolated_db_ready.outcome == 'success' }}
         run: node --experimental-strip-types --test tests/integration/local-supabase-http.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
       - name: Smoke test real local Supabase Deno Edge attestation gateway
+        if: ${{ !cancelled() && steps.isolated_db_ready.outcome == 'success' }}
         run: node --test tests/integration/local-private-asset-edge.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
       - name: Smoke test real owner-JWT publication Edge gateway
+        if: ${{ !cancelled() && steps.isolated_db_ready.outcome == 'success' }}
         run: node --test tests/integration/local-publish-edge.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
-      - name: Test local signup confirmation and recovery through Mailpit
+      - name: Test local immediate signup and recovery through Mailpit
+        if: ${{ !cancelled() && steps.isolated_db_ready.outcome == 'success' }}
         run: node --test tests/integration/local-auth-email.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
       - name: Test restricted direct PostgreSQL artifact binding (local only)
+        if: ${{ !cancelled() && steps.isolated_db_ready.outcome == 'success' }}
         run: node --experimental-strip-types --test tests/integration/local-postgres-binding.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'
       - name: Test operator moderation hold against real pg.Pool races (local only)
+        if: ${{ !cancelled() && steps.isolated_db_ready.outcome == 'success' }}
         run: node --experimental-strip-types --test tests/integration/local-moderation-binding-race.test.mjs
         env:
           KADMEION_LOCAL_INTEGRATION: '1'

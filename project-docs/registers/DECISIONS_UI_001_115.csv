@@ -16,7 +16,7 @@ UI-014,A,"Use Supabase-supported verified identity rules, no arbitrary automatic
 UI-015,B,Inline auth error and focus management; switching sign-in/signup adds no browser-history entries,Authentication,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record
 UI-016,A,Landing primary Create Your Portfolio; secondary Explore Portfolios,Public landing / onboarding,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record
 UI-017,A,Curved hero then asymmetric interlocking showcase then editorial project grid,Public landing / onboarding,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record
-UI-018,CUSTOM A,"Landing sequence hero, problem, solution/value, showcase, templates, how it works, sign-in/create/analytics entry, FAQ, CTA; selectable growth platforms",Public landing / onboarding,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record
+UI-018,CUSTOM A,"Landing order: hero, social proof, problem statement, solution or value, how it works, FAQ, CTA. Templates under value; optional connections in FAQ.",Public landing / onboarding,OWNER_APPROVED,Owner clarification 16 November 2026; Notion decision record
 UI-019,A,"Hero emphasizes developer identity and storytelling, then explaining building and publishing portfolios",Public landing / onboarding,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record
 UI-020,CUSTOM,"Timed hero demonstration rotates editor, published sample portfolio and dashboard",Public landing / onboarding,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record
 UI-021,A,"Restrained reveal/section animations, responsive CTA, static approved brand patterns",Public landing / onboarding,OWNER_APPROVED,Conversation rounds A1–G2; Notion decision record

@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortfolioPresetDraft, type PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
+import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import { ActionLink, Brand, Icon, useTheme, getAuthHref } from './landing.tsx';
 
 type PresetCategory = 'All categories' | 'Showcase' | 'Editorial' | 'Minimal';
 type LayoutFilter = 'All layouts' | 'Single page' | 'Project focused' | 'Modular';
 type Preset = {
   id: string;
+  presetId: Exclude<PortfolioPresetId, 'blank'>;
   title: string;
   description: string;
   category: Exclude<PresetCategory, 'All categories'>;
@@ -14,11 +16,11 @@ type Preset = {
   tags: string[];
 };
 export const PRESET_PREVIEWS: readonly Preset[] = [
-  {id:'curved-hero',title:'Curved Hero',description:'A bold, focused intro with fluid geometry.',category:'Showcase',layout:'Single page',tone:'curved',tags:['Portfolio','Single page']},
-  {id:'interlocking-showcase',title:'Interlocking Showcase',description:'A dynamic composition that emphasizes real work.',category:'Showcase',layout:'Project focused',tone:'interlocking',tags:['Portfolio','Project-focused']},
-  {id:'editorial-grid',title:'Editorial Grid',description:'A content-forward grid for work, writing and more.',category:'Editorial',layout:'Modular',tone:'editorial',tags:['Portfolio','Editorial']},
-  {id:'modular-portfolio',title:'Modular Portfolio',description:'A flexible block layout with room to grow.',category:'Editorial',layout:'Modular',tone:'modular',tags:['Portfolio','Modular']},
-  {id:'stepped-minimal',title:'Stepped Minimal',description:'A clean hierarchy that puts your work first.',category:'Minimal',layout:'Single page',tone:'stepped',tags:['Portfolio','Minimal']}
+  {id:'curved-hero',presetId:'arc',title:'Curved Hero',description:'A bold, focused intro with fluid geometry.',category:'Showcase',layout:'Single page',tone:'curved',tags:['Portfolio','Single page']},
+  {id:'interlocking-showcase',presetId:'collage',title:'Interlocking Showcase',description:'A dynamic composition that emphasizes real work.',category:'Showcase',layout:'Project focused',tone:'interlocking',tags:['Portfolio','Project-focused']},
+  {id:'editorial-grid',presetId:'editorial',title:'Editorial Grid',description:'A content-forward grid for work, writing and more.',category:'Editorial',layout:'Modular',tone:'editorial',tags:['Portfolio','Editorial']},
+  {id:'modular-portfolio',presetId:'studio',title:'Modular Portfolio',description:'A flexible block layout with room to grow.',category:'Editorial',layout:'Modular',tone:'modular',tags:['Portfolio','Modular']},
+  {id:'stepped-minimal',presetId:'stairs',title:'Stepped Minimal',description:'A clean hierarchy that puts your work first.',category:'Minimal',layout:'Single page',tone:'stepped',tags:['Portfolio','Minimal']}
 ] as const;
 export function filterPresets(items: readonly Preset[],query:string,category:PresetCategory,layout:LayoutFilter,order:'Featured'|'A–Z'):Preset[] {
   const term=query.trim().toLocaleLowerCase('en');
@@ -35,6 +37,67 @@ export function TemplateGraphic({tone}:{tone:string}){
     <span className="template-faux-geometry"/>
   </div>;
 }
+// Public, deterministic demo of the actual editor preset. These values are not
+// read from a user, saved, applied to drafts, or passed to the publish pipeline.
+// Leave EMPTY media slots untouched; sample copy cannot attest an image or URL.
+const demoSectionTitles: Readonly<Record<string,string>> = {
+  'arc-hero':'Introduce your work', 'collage-hero':'Introduce your work',
+  'stepped-hero':'Introduce your work', 'project-showcase':'Selected work',
+  'editorial-bento':'Project stories', 'skills':'Skills', 'experience':'Experience',
+  'contact':'Contact'
+};
+export function createPublicPresetDemo(presetId:Preset['presetId']):PortfolioSnapshot {
+  const snapshot=createPortfolioPresetDraft(presetId);
+  for (const [slotKey,slot] of Object.entries(snapshot.slots)) {
+    if(slot.state!=='S0')continue;
+    const section=slotKey.slice(0,slotKey.lastIndexOf('-'));
+    switch(slot.componentId){
+      case 'title-stacked@1': slot.content={title:demoSectionTitles[section]??'Section title'};break;
+      case 'body-copy@1': slot.content={text:'Describe your work, responsibilities and what you learned here.'};break;
+      case 'external-link@1': slot.content={label:'Example action (inactive)'};break;
+      case 'project-card@1': slot.content={title:'Example project',summary:'Add an authored project story.'};break;
+      case 'skills-list@1': slot.content={items:'Add your own skills or experience.'};break;
+      case 'technology-tag@1': slot.content={text:'Technology label'};break;
+      // Never invent metrics or imply that a real provider verified demo content.
+      default: break;
+    }
+  }
+  return snapshot;
+}
+
+type DemoCanvas=typeof import('./portfolio-tools.tsx').PortfolioCanvas;
+function ActualPresetPreview({preset}:{preset:Preset}){
+  const snapshot=useMemo(()=>createPublicPresetDemo(preset.presetId),[preset.presetId]);
+  const [Canvas,setCanvas]=useState<DemoCanvas|null>(null);
+  const [failed,setFailed]=useState(false);
+  const [width,setWidth]=useState<number|undefined>(undefined);
+  useEffect(()=>{
+    let active=true;
+    // Reuse the actual escaped React canvas and its layout styles; do not load
+    // the authenticated workspace or instantiate an auth/service client.
+    void Promise.all([import('./portfolio-tools.tsx'),import('./workspace.css')]).then(
+      ([module])=>{if(active)setCanvas(()=>module.PortfolioCanvas);},
+      ()=>{if(active)setFailed(true);}
+    );
+    return ()=>{active=false;};
+  },[]);
+  const page=JSON.parse(snapshot.files['pages/home.page.json']!) as {header:{layout:string}|null;sections:{id:string;layout:string}[]};
+  return <section aria-label={'Demo of '+preset.title+' preset'}>
+    <p>Demo content only. The shared editor canvas uses the real preset section order. Its author-preview labels do not indicate a saved or published portfolio. Media and example actions are inactive.</p>
+    <p>Included sections: {page.sections.map(section=>demoSectionTitles[section.id]??section.layout).join(' · ')}</p>
+    <p>Preset header: {page.header?.layout.split('@')[0]?.replace(/^header-/,'').replace(/-/g,' ')??'None'}. The shared canvas currently uses a common header preview.</p>
+    <fieldset>
+      <legend>Preview width</legend>
+      <p>Width comparison only; responsive breakpoints follow your actual browser viewport.</p>
+      <button type="button" className="outline-small" aria-pressed={width===undefined} onClick={()=>setWidth(undefined)}>Fit</button>{' '}
+      <button type="button" className="outline-small" aria-pressed={width===390} onClick={()=>setWidth(390)}>390 px (phone width)</button>
+    </fieldset>
+    {failed?<p role="alert">The preset renderer could not load. Close the preview and reload this page to try again.</p>:
+      Canvas?<div data-public-preset={preset.presetId}><Canvas snapshot={snapshot} title={preset.title+' — demo'} simulation width={width} keyboardScroll/></div>:
+      <p role="status">Loading preset layout…</p>}
+  </section>;
+}
+
 function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
   const dialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{
@@ -48,12 +111,12 @@ function PreviewDialog({preset,onClose}:{preset:Preset,onClose:()=>void}) {
     // not be interpreted as a user request to dismiss the React preview state.
     onCancel={event=>{event.preventDefault();onClose();}} aria-labelledby="template-dialog-title">
     <div className="template-dialog-top">
-      <p className="eyebrow"><span/> Concept preview</p>
+      <p className="eyebrow"><span/> Preset preview</p>
       <button type="button" className="dialog-close" onClick={onClose} aria-label="Close template preview">×</button>
     </div>
     <h2 id="template-dialog-title">{preset.title}</h2>
-    <p>{preset.description} This is a visual concept, not an exported or published website.</p>
-    <TemplateGraphic tone={preset.tone}/>
+    <p>{preset.description} This is an in-app layout demo, not an exported or published website.</p>
+    <ActualPresetPreview preset={preset}/>
     <div className="template-dialog-actions"><button type="button" onClick={onClose} className="outline-small">Back to templates</button>
       <ActionLink href={getAuthHref()}>Sign in to begin</ActionLink></div>
   </dialog>;
@@ -91,14 +154,14 @@ export function TemplateExplorer(){
           <a className="header-signin" href={getAuthHref()}>Sign in <Icon name="arrow" size={15}/></a>
         </div>
       </header>
-      <main id="templates-main" className="templates-main">
+      <main id="templates-main" tabIndex={-1} className="templates-main">
         <section className="templates-hero" aria-labelledby="templates-title">
           <div className="templates-geometry" aria-hidden="true"/>
           <p className="eyebrow"><span/> Templates</p>
           <h1 id="templates-title">Portfolio Templates</h1>
           <p className="templates-intro">Professional, developer-focused compositions to start from. Explore how your work can look, then sign in to build your own.</p>
           <div className="template-facts">
-            <div><Icon name="layers" size={24}/><p><strong>5 planned presets</strong><span>Curated starting points; production renderer acceptance pending.</span></p></div>
+            <div><Icon name="layers" size={24}/><p><strong>5 initial presets</strong><span>Curated starting layouts; published renderer acceptance pending.</span></p></div>
             <div><Icon name="arrow" size={23}/><p><strong>Built to extend</strong><span>A template system designed to grow with your work.</span></p></div>
           </div>
         </section>
@@ -119,7 +182,7 @@ export function TemplateExplorer(){
             <option value="Featured">Sort: Featured</option><option value="A–Z">Sort: A–Z</option>
           </select>
         </form>
-        <p className="template-results" role="status">{available.length} template design {available.length===1?'concept':'concepts'} shown. These are previews, not live published portfolios.</p>
+        <p className="template-results" role="status">{available.length} template design {available.length===1?'concept':'concepts'} shown. Open Preview to view the corresponding editor layout with demo content. Nothing is applied or published.</p>
         {available.length===0 ?
           <div className="no-template-results"><h2>No matching templates</h2><p>Try another search or choose a broader category.</p>
             <button className="outline-small" type="button" onClick={()=>{setQuery('');setCategory('All categories');setLayout('All layouts');setSort('Featured');}}>Clear filters</button></div>
@@ -134,13 +197,13 @@ export function TemplateExplorer(){
             </div>
             <div className="template-card-actions">
               <button type="button" className="outline-small" onClick={event=>{previewOpener.current=event.currentTarget;setPreview(item);}}>Preview</button>
-              <a className="header-signin" href={getAuthHref()}>Use Template <Icon name="arrow" size={16}/></a>
+              <a className="header-signin" href={getAuthHref()} aria-label={'Sign in to build — ' + item.title + ' concept preview'}>Sign in to build <Icon name="arrow" size={16}/></a>
             </div>
           </article>)}</div>}
         <section className="template-signin-note" aria-labelledby="template-note-title">
           <span className="strip-icon"><Icon name="user" size={24}/></span><div>
             <h2 id="template-note-title">Explore templates, then sign in to author.</h2>
-            <p>You can preview concepts publicly; creating, editing and publishing require an authenticated account and verified backend workflow.</p></div>
+            <p>Preview preset layouts publicly. Sign in, then choose an available preset in your workspace; this gallery does not silently apply or reserve a template.</p></div>
           <ActionLink href={getAuthHref()}>Sign in to get started</ActionLink>
         </section>
       </main>

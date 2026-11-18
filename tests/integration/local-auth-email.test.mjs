@@ -1,5 +1,5 @@
 /**
- * Disposable, real local GoTrue -> Mailpit confirmation and recovery proof.
+ * Disposable, real GoTrue instant signup and Mailpit recovery proof.
  * No Brevo/API-domain proof is inferred. Never logs addresses, passwords,
  * links, OAuth codes or access/refresh tokens.
  */
@@ -41,11 +41,11 @@ async function mailbox(path) {
   return response.json();
 }
 const pause=(ms)=>new Promise(resolve=>setTimeout(resolve,ms));
-async function messageFor(email,excluded=new Set()) {
+async function messageFor(email) {
   for(let attempt=0;attempt<40;attempt++){
     const list=await mailbox('/api/v1/messages?limit=100');
     const match=(list.messages??[]).find(m=>
-      !excluded.has(m.ID)&&m.To?.some(to=>to.Address?.toLowerCase()===email.toLowerCase()));
+      m.To?.some(to=>to.Address?.toLowerCase()===email.toLowerCase()));
     if(match)return mailbox('/api/v1/message/'+encodeURIComponent(match.ID));
     await pause(150);
   }
@@ -66,51 +66,34 @@ function verifyLink(mail) {
   throw new Error('Captured local Auth email did not contain an allowlisted verification link.');
 }
 
-test('local Auth email confirmation and password recovery via Mailpit are real, not Brevo proof',
+test('local Auth signs up without an email challenge and recovers through Mailpit',
   {timeout:60_000},async t=>{
     const email='kadmeion-ci-'+randomUUID()+'@testing.invalid';
     const firstPassword='LocalOnly-Alpha-'+randomUUID();
     const nextPassword='LocalOnly-Beta-'+randomUUID();
-    const confirmationIds=new Set();
-    await t.test('signup stays pending until the captured confirmation URL is consumed',async()=>{
+    await t.test('signup issues an immediate owner session',async()=>{
       const signup=await go('/auth/v1/signup',{email,password:firstPassword,
         data:{display_name:'Local Auth Email CI'}});
       assert.equal(signup.ok,true,'Local signup API unavailable');
-      // GoTrue /signup returns the user directly when confirmation is required.
-      assert.ok(signup.data?.id ?? signup.data?.user?.id);
-      assert.equal(signup.data?.access_token??null,null,
-        'Confirmed-email mode unexpectedly created immediate session');
-      const before=await go('/auth/v1/token?grant_type=password',{
-        email,password:firstPassword});
-      assert.ok(!before.ok,'Unconfirmed signup authenticated');
-      const initial=await messageFor(email);
-      confirmationIds.add(initial.ID);
-      await pause(1100);
-      const resend=await go('/auth/v1/resend?redirect_to='+
-        encodeURIComponent('http://localhost:3000/auth/callback'),{type:'signup',email});
-      assert.equal(resend.ok,true,'Local signup resend request failed');
-      const mail=await messageFor(email,confirmationIds);
-      confirmationIds.add(mail.ID);
-      const link=verifyLink(mail);
-      assert.equal(link.searchParams.get('type'),'signup');
-      const response=await fetch(link.toString(),{
-        redirect:'manual',signal:AbortSignal.timeout(15_000)});
-      assert.ok([302,303].includes(response.status),
-        'GoTrue confirmation did not redirect to the local allowlisted callback');
-      const next=new URL(response.headers.get('location')??'/',api.origin);
-      assert.ok(['localhost','127.0.0.1'].includes(next.hostname));
+      assert.ok(typeof signup.data?.access_token==='string','Signup did not issue an immediate session');
+      const user=await go('/auth/v1/user',undefined,signup.data.access_token);
+      assert.equal(user.ok,true,'New session could not be verified');
+      assert.ok(user.data?.id);
+      assert.equal(user.data.id,signup.data.user?.id);
       const signed=await go('/auth/v1/token?grant_type=password',{
         email,password:firstPassword});
-      assert.equal(signed.ok,true,'Confirmed user could not sign in');
-      assert.ok(typeof signed.data?.access_token==='string');
+      assert.equal(signed.ok,true,'The new account could not sign in');
+      assert.equal(signed.data?.user?.id,user.data.id);
+      const inbox=await mailbox('/api/v1/messages?limit=100');
+      assert.equal((inbox.messages??[]).some(m=>m.To?.some(to=>to.Address===email)),false,
+        'Instant signup sent unexpected confirmation email');
     });
     await t.test('recovery mail is separate and permits password rotation',async()=>{
-      await pause(1100); // Respect GoTrue per-address email frequency guard.
       // Local test deliberately sends no email to an external inbox.
       const recovery=await go('/auth/v1/recover?redirect_to='+
         encodeURIComponent('http://localhost:3000/reset-password'),{email});
       assert.equal(recovery.ok,true,'Local password-recovery request failed');
-      const mail=await messageFor(email,confirmationIds);
+      const mail=await messageFor(email);
       const link=verifyLink(mail);
       assert.equal(link.searchParams.get('type'),'recovery');
       const response=await fetch(link.toString(),{

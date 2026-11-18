@@ -46,12 +46,14 @@ See [all 52 screen surfaces](docs/02_design/SCREEN_CATALOG.md) and [53 feature w
 
 ## 3. Visual expression, layout and content strategy
 
+**Owner clarification, 16 November 2026.** Apply the approved LIGHT images as visual references. Carry their brand, emphasis, composition cues and intent into responsive product layouts. Choose type sizes, gutters, spacing, section height and layout from content and task needs at each viewport. Screens may scroll vertically. Review readability, visual hierarchy, focus, and workflow usability with browser captures at relevant widths. Historical pixel-difference figures are diagnostic records only.
+
 **Expressive brand mode:** public landing, sign-in/up, empty states and milestone panels. Use approved K source geometry and **sparse** geometric crop/arc/diagonal pattern; large editorial hierarchy. Do not transplant unrelated SaaS palette/screens or overuse random glassmorphism. All hero artwork must correspond to Kadmeion's real tools/portfolios, with illustrative data explicitly labeled.
 
 **Restrained productivity mode:** sidebar/workspace/editor/settings, where legibility and task completion outweigh decorative motion. Controls are flat enough to identify affordances and information groups. Avoid nested decorative cards, vague primary buttons, empty charts and generic motivational numbers.
 
 **Page composition mapping:**
-- Landing: curved hero → problem → solution/value → asymmetric interlocking project showcase → templates → how it works → account/creation or analytics introduction → FAQ → final CTA. The three-view product preview rotates about **7 seconds** with manual controls and pause (UI-18/20/26).
+- Landing, as clarified by the owner on 16 November 2026 (UI-18): Hero → Social proof → Problem statement → Solution or value → How it works → FAQ → CTA. Independent project source links may demonstrate types of developer work. User adoption and testimonials require their own evidence. Templates belong under value, and optional developer connections can be explained in the FAQ. The three-view product preview rotates about **7 seconds** with manual controls and pause (UI-20/26).
 - Developer identity: large asymmetric editorial portrait/identity, supporting skills and approved work; serves as hub for multiple independently designed portfolios (UI-27/28/108).
 - Projects: distinct folder-inspired covers with live-site image when safe, author role, year/type, stack, verified-if-proven links. Details are **product-style hero + modular optional expandable sections** (UI-29–32/42).
 - Builder: **five initial complete presets (not ceiling)** built from eight initial section layouts L1–L8, plus Blank. Template chooser large preview + details (UI-46).

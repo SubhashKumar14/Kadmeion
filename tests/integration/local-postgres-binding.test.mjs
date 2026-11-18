@@ -233,8 +233,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       method:'POST',jwt:cfg.service,key:cfg.service,
       body:{p_grant_id:reviewer.grantId,p_raw_token:reviewer.rawToken}});
     const reviewerPath='/r/'+reviewer.grantId+'.'+reviewer.rawToken;
-    async function serveReviewer(url,headers){
-      const request={method:'GET',url,headers};
+    async function serveReviewer(url,headers,method='GET'){
+      const request={method,url,headers};
       const response={
         statusCode:0,body:null,headers:new Map(),
         setHeader(name,value){this.headers.set(name.toLowerCase(),value);},
@@ -576,22 +576,50 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     const mediaQuery='&manifest='+stagedMedia.manifestSha256+'&asset='+imageHash;
     const reviewerImage='/api/reviewer?review='+newGrant.grantId+'.'+newGrant.rawToken+mediaQuery;
     assert.equal((await serveReviewer('/r/'+newGrant.grantId+'.'+newGrant.rawToken,{})).statusCode,200);
-    const trustedImage=await serveReviewer(reviewerImage,{});
-    assert.equal(trustedImage.statusCode,200);
-    assert.deepEqual(trustedImage.body,Buffer.from(secondPublicArtifact.files[1].bytes));
+    for(const method of ['GET','HEAD']){
+      const trustedImage=await serveReviewer(reviewerImage,{},method);
+      assert.equal(trustedImage.statusCode,200);
+      assert.match(trustedImage.headers.get('cache-control'),/no-store/);
+      assert.deepEqual(trustedImage.body,method==='HEAD'?'':Buffer.from(secondPublicArtifact.files[1].bytes));
+    }
     ok(await api('/rest/v1/rpc/revoke_private_reviewer_grant',{
       method:'POST',jwt:owner.jwt,body:{p_grant_id:newGrant.grantId}
     }),'Revoke scoped media reviewer');
-    assert.equal((await serveReviewer(reviewerImage,{})).statusCode,404);
+    for(const method of ['GET','HEAD'])
+      assert.equal((await serveReviewer(reviewerImage,{},method)).statusCode,404,'Revoked reviewer media');
+
+    const expiringGrant=ok(await api('/rest/v1/rpc/issue_private_reviewer_grant',{
+      method:'POST',jwt:owner.jwt,body:{p_request_id:replacementFrozen.requestId,
+        p_operation_id:randomUUID(),p_valid_minutes:15}
+    }),'Issue media reviewer for expiry test');
+    const expiringImage='/api/reviewer?review='+expiringGrant.grantId+'.'+expiringGrant.rawToken+mediaQuery;
+    assert.equal((await serveReviewer(expiringImage,{})).statusCode,200);
+    const expired=dbQuery(String.raw`update public.private_reviewer_grants
+      set created_at=now()-interval '16 minutes', expires_at=now()-interval '1 minute'
+      where id=:'grant_id'::uuid and revoked_at is null returning id;`,
+      {vars:{grant_id:expiringGrant.grantId}});
+    assert.equal(expired,expiringGrant.grantId);
+    for(const method of ['GET','HEAD']){
+      const denied=await serveReviewer(expiringImage,{},method);
+      assert.equal(denied.statusCode,404,'Expired reviewer media');
+      assert.match(denied.headers.get('cache-control'),/no-store/);
+    }
     const replacementConsent=await pointer.requestPublicPublication(replacementFrozen.requestId,
       replacementPointer.generation,randomUUID(),'PUBLISH PUBLIC');
     assert.equal((await publishConsentedUnlistedRelease(replacementConsent.intentId,verificationPorts)).status,
       'DELIVERY_ACKNOWLEDGED');
     assert.match(await (await fetch(canonical)).text(),/Replacement verified content/);
     const directImage=deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+slug+mediaQuery;
-    const publicImage=await fetch(directImage);
-    assert.equal(publicImage.status,200);
-    assert.deepEqual(Buffer.from(await publicImage.arrayBuffer()),Buffer.from(secondPublicArtifact.files[1].bytes));
+    const staleManifest=new URL(directImage);
+    staleManifest.searchParams.set('manifest',publicArtifact.manifestSha256);
+    for(const method of ['GET','HEAD']){
+      const publicImage=await fetch(directImage,{method});
+      assert.equal(publicImage.status,200);
+      assert.match(publicImage.headers.get('cache-control'),/no-store/);
+      const bytes=Buffer.from(await publicImage.arrayBuffer());
+      assert.deepEqual(bytes,method==='HEAD'?Buffer.alloc(0):Buffer.from(secondPublicArtifact.files[1].bytes));
+      assert.equal((await fetch(staleManifest,{method})).status,404,'Stale manifest cannot read replacement media');
+    }
     await assert.rejects(outsiderPointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
       replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC'),{code:'FORBIDDEN'});
     const publicRollback=await pointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
@@ -614,7 +642,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     const revoked=await verifyReleaseWithdrawal({origin:deliveryOrigin,
       canonicalPath:'/'+handle+'/'+slug,candidateDirectPaths:['/'+handle+'/'+slug+'/assets/secret.png'],
       allowLocal:true},servedPublicSha,()=>changeHandle('changed_'+handle));
-    assert.equal(revoked.observedHttpRequests,5);
+    assert.equal(revoked.observedHttpRequests,6);
+    // Canonical live GET+HEAD plus canonical/direct denial GET+HEAD.
     for (const nextHandle of ['changed_'+handle,handle]) {
       if(nextHandle===handle)await changeHandle(handle);
       assert.equal((await fetch(canonical)).status, 404);

@@ -38,6 +38,13 @@ export interface OperatorModerationCase {
   status: ModerationCaseStatus;
   createdAt: string;
 }
+export interface OperatorAppealEvidence {
+  caseId:string;
+  reasonCode:ModerationReason;
+  summary:string;
+  statement:string;
+  submittedAt:string;
+}
 /** Operator-only private intake. Evidence is untrusted plain text; never render as HTML. */
 export interface OperatorPortfolioAbuseReport {
   id:string;target_path:string;reason_code:ModerationReason;
@@ -147,7 +154,9 @@ async function readModerationJson(response:Response):Promise<unknown> {
       parts.push(part.value);
     }
   }catch{
-    await reader.cancel().catch(()=>{});
+    // Cancellation of a cloned/teed body can wait for an unread sibling.
+    // Fail closed immediately; best-effort cleanup must not block recovery.
+    void reader.cancel().catch(()=>{});
     throw new PrivateModerationError('INVALID_ACK','Moderation response stream was interrupted.');
   }finally{reader.releaseLock();}
   const encoding=response.headers.get('content-encoding');
@@ -300,11 +309,13 @@ export class SupabasePrivateModerationService {
     });
     if(!Array.isArray(raw)||raw.length>max)
       throw new PrivateModerationError('INVALID_ACK','Invalid abuse queue response.');
-    const seen=new Set<string>();
+    // PostgreSQL UUID order matches canonical lowercase hex lexicographic order.
+    // Reject duplicate, regressing and cursor-inclusive pages before exposing evidence.
+    let previous=after?.toLowerCase()??null;
     return raw.map((entry:unknown):OperatorPortfolioAbuseReport=>{
       if(!isRecord(entry)||Object.keys(entry).sort().join(',')!==
         'created_at,evidence,id,reason_code,target_path'||
-        !isUUID(entry.id)||seen.has(entry.id)||
+        !isUUID(entry.id)||(previous!==null&&entry.id.toLowerCase()<=previous)||
         !isPublicPortfolioPath(entry.target_path)||
         !isEnum(entry.reason_code,REASONS)||
         typeof entry.evidence!=='string'||
@@ -312,7 +323,7 @@ export class SupabasePrivateModerationService {
         encoder.encode(entry.evidence).byteLength>2000||
         /[\u0000-\u001f\u007f]/.test(entry.evidence)||!isDate(entry.created_at))
         throw new PrivateModerationError('INVALID_ACK','Untrusted abuse queue data.');
-      seen.add(entry.id);
+      previous=entry.id.toLowerCase();
       return {id:entry.id,target_path:entry.target_path,reason_code:entry.reason_code,
         evidence:entry.evidence,created_at:entry.created_at};
     });
@@ -351,6 +362,16 @@ export class SupabasePrivateModerationService {
       return {caseId:entry.caseId,targetUserId:entry.targetUserId,
         reasonCode:entry.reasonCode,status:entry.status,createdAt:entry.createdAt};
     });
+  }
+  async readAppealEvidence(caseId:string):Promise<OperatorAppealEvidence> {
+    const raw=await this.request('rpc/operator_read_appeal_evidence',{p_case_id:requireUUID(caseId)});
+    if (!isRecord(raw) || raw.caseId!==caseId || !isEnum(raw.reasonCode,REASONS) ||
+        !isDate(raw.submittedAt) || typeof raw.summary!=='string' || typeof raw.statement!=='string' ||
+        raw.summary.trim().length<20 || raw.summary.length>500 ||
+        raw.statement.trim().length<20 || raw.statement.length>2000)
+      throw new PrivateModerationError('INVALID_ACK','Appeal evidence could not be verified.');
+    return {caseId,reasonCode:raw.reasonCode,summary:raw.summary,
+      statement:raw.statement,submittedAt:raw.submittedAt};
   }
   async listOwnerCases(): Promise<OwnerModerationCase[]> {
     const raw = await this.request('private_moderation_cases?select=id,reason_code,summary,status,created_at,updated_at&order=created_at.desc&limit=50');

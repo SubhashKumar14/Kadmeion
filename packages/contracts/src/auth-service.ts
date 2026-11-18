@@ -86,8 +86,6 @@ export class AuthService {
   }
 
   async register(input: { email: string; password: string; displayName: string; handle: string }) {
-    if (!this.config.emailDeliveryVerified)
-      throw new AuthFlowError('PROVIDER_UNAVAILABLE', 'Registration is unavailable until email delivery is verified.');
     const email = validateAuthEmail(input.email);
     passwordForCreation(input.password);
     const handleCandidate = normalizeHandle(input.handle);

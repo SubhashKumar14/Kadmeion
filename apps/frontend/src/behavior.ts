@@ -1,7 +1,7 @@
 /** Isolated, testable interaction contracts for approved public LIGHT screen 01. */
 export type Theme = 'light' | 'dark';
 export const THEME_KEY = 'kadmeion.theme';
-export const DEMO_VIEWS = ['Workspace', 'Portfolio Studio', 'Growth'] as const;
+export const DEMO_VIEWS = ['Portfolio Studio', 'Portfolio preview', 'Workspace'] as const;
 export type DemoView = typeof DEMO_VIEWS[number];
 
 export function parseTheme(value: unknown): Theme { return value === 'dark' ? 'dark' : 'light'; }
@@ -45,4 +45,9 @@ export function authHref(configuredOrigin: unknown, route: '/signin' | '/signup'
       (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback))) return route;
     return url.origin + route;
   } catch { return route; }
+}
+
+/** Source buffers are local and not persisted until a typed editor transaction applies them. */
+export function unappliedSourceBufferCount(buffers:Readonly<Record<string,string>>,files:Readonly<Record<string,string>>):number{
+  return Object.keys(buffers).filter(path=>buffers[path]!==files[path]).length;
 }

@@ -1,4 +1,4 @@
-import {readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
+import {cancelRpcBody, parseDeliveryTarget, readBoundedRpcJson, mediaQuery, renderReleaseHtml, readFrozenPng, hasPrivateNoindexMeta} from './_bounded-rpc-json.mjs';
 /**
  * Disabled-by-default UNLISTED scriptless text-only release HTTP candidate.
  * Business state remains in Supabase; this Vercel/Node adapter only serves
@@ -61,9 +61,8 @@ export async function handleUnlistedRequest(req,res,{env=process.env,http=global
   }
   const cfg=configuration(env);
   if(!cfg){reply(res,404,'Not found','text/plain; charset=utf-8',method);return;}
-  let url;
-  try{url=new URL(req.url??'/', 'https://kadmeion.internal');}
-  catch{reply(res,404,'Not found','text/plain; charset=utf-8',method);return;}
+  const url=parseDeliveryTarget(req.url);
+  if(!url){reply(res,404,'Not found','text/plain; charset=utf-8',method);return;}
   const assetRequest=url.searchParams.has('asset')||url.searchParams.has('manifest');
   const media=assetRequest?mediaQuery(url.searchParams):null;
   if(assetRequest&&(!media||url.pathname!=='/api/unlisted')){
@@ -89,7 +88,7 @@ export async function handleUnlistedRequest(req,res,{env=process.env,http=global
     });
   }catch{reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;}
   if(!upstream.ok){
-    await upstream.body?.cancel().catch(()=>{});
+    cancelRpcBody(upstream.body);
     reply(res,503,'Temporarily unavailable','text/plain; charset=utf-8',method);return;
   }
   let raw;

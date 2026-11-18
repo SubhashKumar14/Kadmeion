@@ -11,11 +11,17 @@ export type EditorSaveResult =
   | { status: 'CLOUD_SAVED'; localRevision: number; cloud: CloudCommitReceipt }
   | { status: 'LOCAL_ONLY'; localRevision: number; reason: string }
   | { status: 'CLOUD_CONFLICT'; localRevision: number; reason: string }
+  | { status: 'LOCAL_CONFLICT'; reason: string }
   | { status: 'LOCAL_FAILED'; reason: string };
 
 export class EditorSaveCoordinator {
   private readonly local: Pick<IndexedDbEditorDraftStore, 'save'>;
   private readonly cloud: Pick<SupabasePortfolioRevisionStore, 'commit'>;
+  // An identical cloud retry is permitted only after THIS coordinator observed
+  // a successful local commit. The map is deliberately volatile: reopening a
+  // browser must re-read and reconcile IndexedDB before any remote retry.
+  private readonly locallyAcknowledged = new Map<string,{revision:number;snapshot:string}>();
+  private static readonly MAX_PENDING_ACKS = 32;
   constructor(
     local: Pick<IndexedDbEditorDraftStore, 'save'>,
     cloud: Pick<SupabasePortfolioRevisionStore, 'commit'>
@@ -54,8 +60,20 @@ export class EditorSaveCoordinator {
     }
     try {
       await this.local.save(ownerId, portfolioId, head, expectedLocalRevision);
-    } catch {
+    } catch (cause) {
+      if ((cause as {code?:string}|null)?.code === 'REVISION_CONFLICT') {
+        return {status:'LOCAL_CONFLICT',reason:'Another local editor revision was saved. Compare before retrying; your buffer remains uncommitted.'};
+      }
       return { status: 'LOCAL_FAILED', reason: 'Local storage did not commit; preserve the editor buffer.' };
+    }
+    const key=JSON.stringify([portfolioId, operationId]);
+    this.locallyAcknowledged.delete(key);
+    this.locallyAcknowledged.set(key,{
+      revision:head.revision,snapshot:JSON.stringify(head.snapshot)
+    });
+    if(this.locallyAcknowledged.size>EditorSaveCoordinator.MAX_PENDING_ACKS){
+      const oldest=this.locallyAcknowledged.keys().next().value;
+      if(oldest!==undefined)this.locallyAcknowledged.delete(oldest);
     }
     return this.commitCloud(portfolioId, operationId, head);
   }
@@ -69,6 +87,12 @@ export class EditorSaveCoordinator {
     validateSnapshot(head.snapshot);
     if (!Number.isSafeInteger(head.revision) || head.revision < 1) {
       return { status: 'LOCAL_ONLY', localRevision: head.revision, reason: 'No committed local revision exists.' };
+    }
+    const acknowledgement=this.locallyAcknowledged.get(JSON.stringify([portfolioId,operationId]));
+    if(!acknowledgement||acknowledgement.revision!==head.revision||
+       acknowledgement.snapshot!==JSON.stringify(head.snapshot)){
+      return {status:'LOCAL_ONLY',localRevision:head.revision,
+        reason:'No matching locally acknowledged revision is available for this retry. Reload and reconcile the private draft before attempting cloud sync.'};
     }
     return this.commitCloud(portfolioId, operationId, head);
   }

@@ -208,7 +208,7 @@ async function main(): Promise<void> {
     if (result.status === 'signed_in') {
       navigate('workspace', 'Account created.');
     } else {
-      navigate('login', 'Check your email for the confirmation link. This may appear in spam.');
+      navigate('login', 'This environment requires email confirmation before sign-in. If the confirmation email arrives, open its link to continue.');
     }
   });
   bind('forgot-form', async input => {

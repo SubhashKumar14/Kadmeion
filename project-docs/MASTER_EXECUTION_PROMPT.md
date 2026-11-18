@@ -25,7 +25,7 @@ Do not invent a completion percentage or claim production readiness from passing
 - Hosted Supabase project `scyooqjitjzjdxgtanso`: **56/56 source migration versions already present**, latest `20261115140000_owner_my_components_library.sql`; **3/3 Edge Functions ACTIVE**. Verify ledger before proposing or applying anything. **Never replay applied migration SQL.** Only new forward-only migrations after genuine code/DB gaps.
 - Current backend evidence register: D01–D90 = **52 PARTIAL; 2 BLOCKED_EXTERNAL (D10/D20); 12 DEFERRED_APPROVED; 24 NOT_APPLICABLE**. All 90 IDs are accounted for, not necessarily implemented. Original evidence inventories: **115 UI selections, 53 workflows, 138 UAT cases and 20 technical proof gates**. New `scripts/verify-backend-traceability.mjs` checks structural integrity, not functional acceptance.
 - Read-only hosted security at checkpoint: 85 app `SECURITY DEFINER` routines fixed-search-path and 0 anon-EXECUTE; 45 authenticated-definer warnings to review individually; 17 service-only RLS-without-policy INFO entries; leaked-password protection warning unresolved. `npm audit`, typecheck, Node suites, pgTAP, local GoTrue/Storage/Edge/Mailpit smoke and GitHub Actions must be independently green for the **same** release SHA.
-- Auth preview and server delivery adapters exist, but these are **not** finished pixel-matched 52-screen frontend and public-host acceptance. Main branch merge, public hosting and real sender delivery were not authorized by the last checkpoint.
+- Auth preview and server delivery adapters exist, but these are **not** completed and owner-accepted 52-screen frontend and public-host acceptance. Main branch merge, public hosting and real sender delivery were not authorized by the last checkpoint.
 - Proposed 200-file source budget is exceeded in the live tree; maintain a truthful count, justified exceptions and a no-file-hiding rule. `project-docs/` is outside the authored application-path count.
 
 ## Next phases — execute in order
@@ -52,7 +52,7 @@ Verify snapshot ownership, private record coverage and truthful distinctions amo
 
 ### R3 · Close B10 and B11 code/security gates
 
-Complete email/password, optional Google OAuth callback/PKCE, resend, recovery, sign-out/rotation and error/identity/rate-limit handling with local Supabase Mailpit tests and no cross-account session switching. Keep registration/recovery gated if sender delivery is unverified. **Brevo DNS/sender credentials and real multi-inbox delivery are deferred owner-manual proof, not a blocker for code implementation.**
+Complete email/password, optional Google OAuth callback/PKCE, resend, recovery, sign-out/rotation and error/identity/rate-limit handling with local Supabase Mailpit tests and no cross-account session switching. Keep email/password registration and sign-in available without an inbox challenge, per the 16 November 2026 owner instruction. Restore mandatory confirmation only on explicit owner instruction. Gate recovery and confirmation resend on verified mail delivery. **Brevo DNS/sender credentials and real multi-inbox delivery are deferred owner-manual proof, not a blocker for code implementation.**
 
 Run same-SHA production dependency audit, TypeScript/build, Node contracts, application+DB CI, pgTAP, local GoTrue/PostgREST/Storage/Edge, media and hostile inputs, permission matrix, integration smoke and all CI error/warning checks. Fix failures instead of treating cancelled/obsolete CI as success. Audit public secrets, source ZIP, image, redirect and CSP gates.
 
@@ -77,13 +77,19 @@ All six relevant source archives exist in ChatGPT Library (not GitHub-hosted fil
 `Kadmeion_LIGHT_Batch09_47-52.zip`.
 Retrieve/mount actual PNGs as needed and verify their checksum prefixes from the Notion register before coding. **Screen 26 uses the corrected `26_EDIT-09_Fullscreen_Portfolio_Only_REVISION_LIGHT.png` (SHA-256 prefix `e13f8330cbc0149a1e11`), NEVER the earlier rejected preview.** Recorded `sandbox:/mnt/data/` addresses in Notion were session-local paths, not permanent HTTPS URLs.
 
-Use Kadmeion's original approved angular layered-K mark, Aether Drift C direction, approved pattern/brand materials with confirmed provenance, and the approved 115 UI decisions. Never use rejected Canva *screen mockups*. A specifically approved Canva **brand asset** is acceptable only with clear owner approval and asset provenance, and must not override the approved screen images. Do not fabricate missing precise palette/font values from compressed reference art: verify masters and font licenses. Code the source images directly when possible; editable Canva/Figma recreation is not a prerequisite.
+Use Kadmeion's original approved angular layered-K mark, Aether Drift C direction, approved pattern/brand materials with confirmed provenance, and the approved 115 UI decisions. Never use rejected Canva *screen mockups*. A specifically approved Canva **brand asset** is acceptable only with clear owner approval and asset provenance, and must not override the approved screen images. Do not fabricate missing precise palette/font values from compressed reference art: verify masters and font licenses. Translate the approved visuals into semantic, responsive components. Use their hierarchy, brand, and composition alongside the screen specifications. Allow real content to set the layout height and actual viewport width to drive reflow.
 
-**Exit:** verified asset/approval-to-screen map, original geometry/tokens/typography, light reference image IDs and per-screen visual test fixtures committed without duplicating giant image assets gratuitously.
+**Exit:** verified asset/approval-to-screen map, verified brand masters and responsive typography/tokens, light reference image IDs and per-screen visual test fixtures committed without duplicating giant image assets gratuitously.
+
+### Responsive review for every screen
+
+Complete one implementation phase per response. For every public, auth, workspace, editor, release, settings, operations, growth, and system screen, read the relevant decision and screen spec, compare with the verified LIGHT reference, and implement the real user task. Exercise controls and verify legibility, feedback, scroll boundaries and reflow on a narrow phone, mid-width viewport, and desktop in light and dark. Reserve desktop and qualifying tablet layout for code/portfolio authoring. Log changed routes, sources, tests, limitations, and the next phase in the GitHub handoff and Notion. Visual reference dimensions and pixel-match scores no longer define acceptance.
+
+Keep PUB-01 in this order: Hero, Social proof, Problem statement, Solution or value, How it works, FAQ, CTA. Keep signup confirmation optional until the owner explicitly requests restoration. Immediate sign-in still requires a real provider session and the matching hosted Supabase setting.
 
 ### F1 · Shared shells, route safety, design system and authentication (01–11)
 
-Build public, auth, workspace and restricted operations shells, accessible controls, theme semantics, navigation, glyph-text skeleton loading without artificial delays, reduced-motion and focus behavior. Implement approved landing/explore/templates (01–03), full reversible auth suite (04–09), welcome and workspace home (10–11) against verified contracts. For each screen compare the rendered browser capture to the **exact approved screenshot**, then check responsive behavior and accessible semantic functionality. Show true email unavailable states rather than a fake success.
+Build public, auth, workspace and restricted operations shells, accessible controls, theme semantics, navigation, glyph-text skeleton loading without artificial delays, reduced-motion and focus behavior. Implement approved landing/explore/templates (01–03), full reversible auth suite (04–09), welcome and workspace home (10–11) against verified contracts. For each screen review rendered browser captures for responsive hierarchy, legibility, and functional accessibility, using the approved visual references and decisions as guidance. Show true email unavailable states rather than a fake success.
 
 **Exit:** 01–11 coded, tested, visually reviewed, real auth guarded and route accessibility demonstrated.
 
@@ -101,19 +107,19 @@ Implement editor workspace, content inspector, section/components, My Components
 
 ### F4 · Staging, publishing, developer identity and sharing (27–34)
 
-Implement reviewer stage/link, preflight, release/rollback, public profile, case study, conditional public portfolio and share controls. Follow the exact 27–34 approved images. Public direct HTML and sanitized PNG assets require no-index/private/public status accuracy, preserved SEO only when legitimately published, and verified host revocation before enabling controls. Where an external gate is still closed, present honest disabled/preview-only/export behavior; never fabricate a live URL.
+Implement reviewer stage/link, preflight, release/rollback, public profile, case study, conditional public portfolio and share controls. Use the approved 27–34 images for visual direction and apply the screen decisions to responsive, usable layouts. Public direct HTML and sanitized PNG assets require no-index/private/public status accuracy, preserved SEO only when legitimately published, and verified host revocation before enabling controls. Where an external gate is still closed, present honest disabled/preview-only/export behavior; never fabricate a live URL.
 
 **Exit:** actual HTTP traces where authorized, safe fail-closed fallbacks elsewhere, 27–34 visual and keyboard tests.
 
 ### F5 · Settings, account security, moderation, system screens and Phase 2 growth (35–52)
 
-Implement core P1 settings/privacy/notifications/security/Trash/export/account exit (41–47), restricted admin users/moderation/appeals (48–50) and unavailable/unsupported-device states (51–52), using the exact approved images and actual permission boundaries. For **35–40** (Growth/Activity/DevScore/Goals/Analytics/Connections), preserve their approved design references while respecting **Phase 2**: build only genuine data-backed elements where permitted/implemented, otherwise honest opt-in/empty/deferred states; never invent scores, API sync or traffic. This sequencing implements P1 before P2 despite numeric screen ordering.
+Implement core P1 settings/privacy/notifications/security/Trash/export/account exit (41–47), restricted admin users/moderation/appeals (48–50) and unavailable/unsupported-device states (51–52), using the approved visual references and actual permission boundaries. For **35–40** (Growth/Activity/DevScore/Goals/Analytics/Connections), preserve their approved design references while respecting **Phase 2**: build only genuine data-backed elements where permitted/implemented, otherwise honest opt-in/empty/deferred states; never invent scores, API sync or traffic. This sequencing implements P1 before P2 despite numeric screen ordering.
 
 **Exit:** 41–52 P1 flow acceptance and P2-specific 35–40 capability status separately documented; no misleading action appears functional.
 
 ### F6 · Full 52-screen acceptance and release decision
 
-Per screen verify light-image visual parity on a known viewport **and** responsive breakpoints, real action state matrix, keyboard + screen reader, 200% zoom/reflow, focus, reduced motion, access control, error/empty/loading, privacy, source provenance and links. Validate published portfolio independence from workspace shell and avoid forcing a universal application theme on authored portfolios. Test Vercel free preview and real-host revocation only when permitted. Preserve the final 115 UI/53 workflow/138 UAT/20 proof statuses with per-case evidence, not green-by-association.
+Per screen verify brand and hierarchy at responsive viewports against the approved visual direction, along with the real action state matrix, keyboard + screen reader, 200% zoom/reflow, focus, reduced motion, access control, error/empty/loading, privacy, source provenance and links. Validate published portfolio independence from workspace shell and avoid forcing a universal application theme on authored portfolios. Test Vercel free preview and real-host revocation only when permitted. Preserve the final 115 UI/53 workflow/138 UAT/20 proof statuses with per-case evidence, not green-by-association.
 
 **Exit:** 52 individually accepted UI implementations (not merely 52 static screenshots), no P0/P1 defects, documented free-tier operational envelope, **separate** approved main merge/production activation.
 
@@ -128,3 +134,12 @@ Per screen verify light-image visual parity on a known viewport **and** responsi
 5. Outstanding owner-gated actions, with Brevo manual sender/inbox proof explicitly **deferred until later**; public host and irreversible operations cannot be silently enabled. State next implementable step; do not stop after reporting if code work remains.
 
 Do not ask repeated questions already answered by owner-approved records. Do not mark source-only, local-only or mocked behavior as production accepted.
+
+
+### F2 checkpoint — 16 November 2026
+
+F2 screens 12–17 have a source-level implementation plus independently green CI at `553406e` ([frontend run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43830366542), [application/database run](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43830366593)). This does **not** certify screenshot fidelity, entire frontend completion or owner visual acceptance. For every F3–F6 screen, explicitly inspect actual rendered viewport hierarchy and interactions, never import reference-frame pixel dimensions into CSS just to match a PNG. Preserve F2 known gaps and continue the next incomplete phase with code before reports. See `FRONTEND_F2_IMPLEMENTATION_NOTES_2026-11-16.md`.
+
+
+### 16 November 2026 — F3 verified editor checkpoint
+The feature-branch application commit `9af4968` passed both [frontend CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43834927446) and [isolated application/database CI](https://github.com/SubhashKumar14/Kadmeion/actions/runs/43834927534). Source-level editor reflow, managed section reorder and owned-source draft-loss recovery have actual tests. Original LIGHT 18–26 hashes were reverified, and true Chromium renders include a runtime dark screenshot. Do not regress to PNG-sized containers, tiny inspector controls or pixel-match scoring; see `FRONTEND_F3_IMPLEMENTATION_NOTES_2026-11-16.md`. The source-level F3 check is green but trusted source customization, owner visual/accessibility acceptance and hosted publication proof remain open. Next phase: F4 27–34 under existing release/production authorization gates.

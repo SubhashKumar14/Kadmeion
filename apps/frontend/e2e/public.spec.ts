@@ -1,4 +1,20 @@
 import { test, expect } from '@playwright/test';
+import { auditAccessibility } from './accessibility.ts';
+
+test('landing follows the seven owner-approved sections in order', async ({page}) => {
+  await page.goto('/');
+  const sections = page.locator('main > section');
+  await expect(sections).toHaveCount(7);
+  await expect(sections.locator('h1, h2')).toHaveText([
+    /^Your Developer Identity/, 'Real Work from Developers.', 'The Challenge',
+    'The Kadmeion Solution', 'Your Portfolio in Three Simple Steps.',
+    'Common Questions.', 'Build Your Developer Identity Today.',
+  ]);
+  const examples = page.getByRole('region', {name:'Real Work from Developers.'});
+  await expect(examples.getByRole('link', {name:'BidHub'})).toHaveAttribute('href','https://github.com/SubhashKumar14/Bid-Hub');
+  await expect(examples.getByRole('link', {name:'StreamFlix'})).toHaveAttribute('href','https://github.com/thandriyalahimaja/Stream-Flix');
+  await expect(page.getByRole('link', {name:'Explore Portfolios', exact:true})).toHaveAttribute('href','/explore');
+});
 
 test('landing respects approved public path, can switch theme and persists preference', async ({ page }) => {
   await page.goto('/');
@@ -15,7 +31,7 @@ test('landing respects approved public path, can switch theme and persists prefe
 
 test('approved vector identity is visible and named in both runtime themes', async ({ page }) => {
   await page.goto('/');
-  const home = page.getByRole('link', { name: 'Kadmeion home', exact: true });
+  const home = page.getByRole('link', { name: 'Kadmeion home, Developer Identity Platform', exact: true });
   const symbol = home.locator('.brand-symbol');
   const letters = home.locator('.brand-letters');
   await expect(home).toBeVisible();
@@ -32,9 +48,11 @@ test('approved vector identity is visible and named in both runtime themes', asy
 
 test('manual carousel, pause and native FAQ are keyboard-operable', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('img', { name: /Workspace illustrative interface concept/ })).toBeVisible();
+  await expect(page.getByRole('img', { name: /Portfolio Studio illustrative interface concept/ })).toBeVisible();
   await page.getByRole('button',{name:'Next product example'}).click();
-  await expect(page.getByRole('img',{name:/Portfolio Studio illustrative interface concept/})).toBeVisible();
+  await expect(page.getByRole('img',{name:/Portfolio preview illustrative interface concept/})).toBeVisible();
+  await page.getByRole('button',{name:'Next product example'}).click();
+  await expect(page.getByRole('img',{name:/Workspace illustrative interface concept/})).toBeVisible();
   await page.getByRole('button',{name:'Pause automatic preview'}).click();
   await expect(page.getByRole('button',{name:'Resume automatic preview'})).toHaveAttribute('aria-pressed','true');
   const question=page.locator('summary').filter({hasText:'Is my work private by default?'});
@@ -87,6 +105,11 @@ test('sign-in and sign-up switch without losing transient form values', async ({
   await page.getByRole('link',{name:/Sign in/}).click();
   await expect(page).toHaveURL(/\/signin$/);
   await expect(page.locator('#signin-password')).toHaveValue('not-a-real-password');
+  expect(await page.evaluate(secret=>[window.location.href,document.cookie,
+    JSON.stringify(localStorage),JSON.stringify(sessionStorage)].some(value=>value.includes(secret)),
+  'not-a-real-password')).toBe(false);
+  await page.reload();
+  await expect(page.locator('#signin-password')).toHaveValue('');
 });
 
 test('OAuth and recovery callbacks scrub tokens and fail closed when backend is unavailable', async ({ page }) => {
@@ -107,7 +130,7 @@ test('direct recovery status never implies a verified session', async ({ page })
   await expect(page.locator('.auth-page')).toHaveAttribute('data-panel', 'left');
 });
 
-test('auth recovery and registration remain disabled until actual sender proof', async ({ page }) => {
+test('recovery is gated by mail delivery and signup explains missing Auth configuration', async ({ page }) => {
   await page.goto('/signin');
   await page.getByRole('link',{name:/Forgot password/}).click();
   await expect(page.getByRole('heading',{name:'Reset your password.'})).toBeVisible();
@@ -120,21 +143,19 @@ test('auth recovery and registration remain disabled until actual sender proof',
   expect(recoveryNotice!.y).toBeGreaterThanOrEqual(recoveryBounds!.y + recoveryBounds!.height);
   await page.goto('/signup');
   await expect(page.getByRole('button',{name:/Create account/})).toBeDisabled();
-  await expect(page.getByText(/until sender delivery is verified/)).toBeVisible();
-  const createButton=await page.getByRole('button',{name:/Create account/}).boundingBox();
-  const deliveryNotice=await page.getByText(/until sender delivery is verified/).boundingBox();
-  expect(createButton).not.toBeNull();
-  expect(deliveryNotice).not.toBeNull();
-  expect(deliveryNotice!.y).toBeGreaterThanOrEqual(createButton!.y+createButton!.height);
+  await expect(page.getByText('Account creation is unavailable in this environment.')).toBeVisible();
+  await expect(page.getByText(/until sender delivery is verified/)).toHaveCount(0);
 });
 
 test('private workspace routes deny unverified access without exposing account data', async ({ page }) => {
-  for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/portfolios/11111111-1111-4111-8111-111111111111/preview', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
+  for (const route of ['/app', '/app/onboarding', '/app/projects', '/app/projects/11111111-1111-4111-8111-111111111111', '/app/portfolios/11111111-1111-4111-8111-111111111111/preview', '/app/operations/users', '/app/operations/moderation', '/app/operations/appeals',
+    '/app/settings', '/app/settings/privacy', '/app/notifications', '/app/settings/security',
+    '/app/trash', '/app/export', '/app/settings/account/delete', '/app/settings/cases', '/app/growth', '/app/growth/activity', '/app/growth/devscore', '/app/growth/goals', '/app/analytics', '/app/integrations']) {
     await page.goto(route);
     await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Owner authentication is not configured');
     await expect(page.getByRole('link',{name:/Go to sign in/})).toHaveAttribute('href','/signin');
-    await expect(page.getByRole('heading',{name:/Shape your portfolio/})).toHaveCount(0);
+    await expect(page.getByRole('heading',{name:'A place for what you build next.'})).toHaveCount(0);
     await expect(page.getByRole('group',{name:'Choose your next step'})).toHaveCount(0);
     await page.getByRole('button',{name:'Retry verification'}).focus();
     await expect(page.getByRole('button',{name:'Retry verification'})).toBeFocused();
@@ -163,7 +184,15 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
   await page.goto('/private-or-expired-example');
   await expect(page.getByRole('heading', { name: 'This page is unavailable.' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('do not confirm whether a private record exists');
+  await expect(page.locator('.sys51-code')).toHaveText('404');
+  await expect(page).toHaveTitle('Page unavailable · Kadmeion');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content','noindex, nofollow, noarchive');
+  await expect(page.locator('.sys51-art')).toBeVisible();
   await expect(page.getByRole('navigation', {name: 'Workspace navigation'})).toHaveCount(0);
+  await page.setViewportSize({width:390,height:844});
+  await expect(page.locator('.system-status-editorial')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth+1)).toBe(true);
+  await page.setViewportSize({width:1600,height:1000});
   const retry = page.getByRole('button', {name: 'Retry this address'});
   await retry.focus();
   await expect(retry).toBeFocused();
@@ -172,11 +201,26 @@ test('SYS-01 fallback does not disclose private records and responds to offline 
     window.dispatchEvent(new Event('offline'));
   });
   await expect(page.getByRole('heading', {name: 'Your browser reports no connection.'})).toBeVisible();
+  await expect(page).toHaveTitle('Offline · Kadmeion');
+  await expect(retry).toBeDisabled();
+  await expect(retry).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', {name: 'Your browser reports no connection.'})).toBeVisible();
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'onLine', {configurable: true, get: () => true});
     window.dispatchEvent(new Event('online'));
   });
   await expect(page.getByRole('heading', {name: 'This page is unavailable.'})).toBeVisible();
+  await expect(page).toHaveTitle('Page unavailable · Kadmeion');
+  await expect(retry).toBeEnabled();
+  await expect(retry).toBeFocused();
+  await Promise.all([
+    page.waitForEvent('domcontentloaded'),
+    page.keyboard.press('Enter')
+  ]);
+  await expect(page.getByRole('heading', {name: 'This page is unavailable.'})).toBeVisible();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content','noindex, nofollow, noarchive');
+  await expect(page.getByRole('link', {name:'Sign in to review your workspace'})).toHaveAttribute('href','/signin');
   await page.getByRole('link', {name: 'Return to home'}).click();
   await expect(page).toHaveURL('/');
 });
@@ -211,4 +255,222 @@ test('reviewer and public candidate addresses disclose no records, no token and 
   await expect(page.getByRole('heading',{name:'Sign in required.'})).toBeVisible();
   await page.goto('/private-or-expired-example');
   await expect(page.getByRole('heading',{name:'This page is unavailable.'})).toBeVisible();
+});
+
+
+test('F4 gated reviewer and public routes preserve theme, reflow, and never reveal private data', async ({page}) => {
+  test.setTimeout(90_000);
+  const token='11111111-1111-4111-8111-111111111111.'+'a'.repeat(64);
+  const routes=[
+    ['/r/'+token,'Reviewer preview unavailable.','28_REVIEWER_GATE'],
+    ['/u/release_owner','Developer identity unavailable.','31_IDENTITY_GATE'],
+    ['/u/release_owner/projects/project-story','Project story unavailable.','32_CASE_STUDY_GATE'],
+    ['/release_owner/portfolio-story','Portfolio page unavailable.','33_PORTFOLIO_GATE']
+  ] as const;
+  await page.goto('/');
+  await page.getByRole('button',{name:'Switch to dark theme'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+
+  for(const width of [320,390,1366]){
+    await page.setViewportSize({width,height:900});
+    for(const [route,heading,label] of routes){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+      await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+        'content','noindex, nofollow, noarchive');
+      await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toHaveCount(0);
+      await expect(page.locator('body')).not.toContainText(token);
+      const widthReport=await page.evaluate(()=>({
+        viewport:document.documentElement.clientWidth,
+        page:document.documentElement.scrollWidth
+      }));
+      expect(widthReport.page,route+' at '+width+'px').toBeLessThanOrEqual(widthReport.viewport+1);
+      if(width!==390)
+        await auditAccessibility(page,label+'_DARK_'+width,process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+    }
+  }
+
+  // Gated screenshots are evidence of unavailable states, NOT captures of
+  // independently delivered published content or approved visual acceptance.
+  await page.goto('/');
+  await page.getByRole('button',{name:'Switch to light theme'}).click();
+  const captureDir=process.env.KADMEION_PUBLIC_CAPTURE_DIR;
+  for(const width of [320,1366]){
+    await page.setViewportSize({width,height:900});
+    for(const [route,heading,label] of routes){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{name:heading})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+      await auditAccessibility(page,label+'_LIGHT_'+width,captureDir);
+      if(captureDir&&width===1366){
+        const {mkdir}=await import('node:fs/promises');
+        await mkdir(captureDir,{recursive:true});
+        await page.screenshot({path:captureDir+'/'+label+'.png',animations:'disabled'});
+      }
+    }
+  }
+});
+
+test('F1 skip links focus the content and auth reflows with reduced motion', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const [route, target] of [
+    ['/', '#main'], ['/explore', '#explore-main'], ['/templates', '#templates-main'],
+    ['/signin', '#auth-main'], ['/signup', '#auth-main'], ['/forgot-password', '#auth-main'],
+  ]) {
+    await page.goto(route!);
+    const skip = page.getByRole('link', { name: /^Skip to / });
+    await expect(skip).toBeAttached();
+    await page.keyboard.press('Tab');
+    await expect(skip).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator(target!)).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), route).toBeLessThanOrEqual(392);
+  }
+  await page.goto('/signin');
+  await page.getByRole('link', { name: /Create an account/ }).click();
+  await expect(page.getByRole('heading', { name: 'Create your account.' })).toBeFocused();
+  await expect(page.locator('.auth-form-panel')).toHaveCSS('transition-property', 'none');
+  await expect(page.locator('.auth-form-content section')).toHaveCSS('animation-name', 'none');
+});
+
+test('public and auth shells span the window across desktop and phone widths',async ({page}) => {
+  test.setTimeout(60_000);
+  const routes = [
+    ['/', '.site-shell'], ['/explore', '.site-shell'], ['/templates', '.site-shell'],
+    ['/signin', '.auth-page'], ['/register', '.auth-page'], ['/forgot-password', '.auth-page'],
+    ['/auth/callback', '.auth-callback'], ['/unavailable-viewport-test', '.system-status-editorial'],
+  ] as const;
+  for (const width of [1920, 1600, 1366, 900, 768, 390, 320]) {
+    await page.setViewportSize({width, height:768});
+    for (const [route, selector] of routes) {
+      await page.goto(route);
+      const layout = await page.locator(selector).evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        return {left:bounds.left, right:bounds.right, viewport:document.documentElement.clientWidth,
+          scrollWidth:document.documentElement.scrollWidth};
+      });
+      expect(layout.left, route + ' at ' + width).toBeLessThanOrEqual(1);
+      expect(layout.right, route + ' at ' + width).toBeGreaterThanOrEqual(layout.viewport - 1);
+      expect(layout.scrollWidth, route + ' at ' + width).toBeLessThanOrEqual(layout.viewport + 1);
+    }
+  }
+});
+
+test('landing keeps its reading scale and controls usable on desktop and narrow phones', async ({page}) => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const captures = process.env.KADMEION_PUBLIC_CAPTURE_DIR;
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({width, height:900});
+    await page.goto('/');
+    await expect(page.getByRole('heading', {level:1})).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const main = document.querySelector('main')!;
+      const hero = main.querySelector('.hero')!;
+      const story = main.querySelector('.landing-value p:not(.landing-lead)')!;
+      return {
+        viewport:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth,
+        heroSize:parseFloat(getComputedStyle(hero.querySelector('h1')!).fontSize),
+        bodySize:parseFloat(getComputedStyle(story).fontSize),
+        controlHeight:hero.querySelector('.demo-controls button')!.getBoundingClientRect().height,
+        copyBottom:hero.querySelector('.hero-copy > p')!.getBoundingClientRect().bottom,
+        artworkTop:hero.querySelector('.hero-decoration')!.getBoundingClientRect().top
+      };
+    });
+    expect(layout.heroSize).toBeGreaterThanOrEqual(width === 1440 ? 64 : 40);
+    expect(layout.bodySize).toBeGreaterThanOrEqual(16);
+    expect(layout.controlHeight).toBeGreaterThanOrEqual(44);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewport + 1);
+    if (width <= 390) expect(layout.artworkTop).toBeGreaterThanOrEqual(layout.copyBottom);
+    if (captures && width !== 320) {
+      await page.screenshot({path:captures + '/01_LANDING_' + width + '_FULL.png', fullPage:true, animations:'disabled'});
+    }
+  }
+});
+
+test('F06 scans public and signed-out surfaces at desktop and phone widths in both themes', async ({page})=>{
+  test.setTimeout(90_000);
+  const states=[
+    ['/','01_LANDING'],['/explore','02_EXPLORE'],['/templates','03_TEMPLATES'],
+    ['/signin','04_SIGN_IN'],['/signup','05_SIGN_UP'],['/auth/callback','06_CALLBACK_FAILURE'],
+    ['/forgot-password','07_RECOVERY'],['/auth/recovery-status','09_RECOVERY_STATUS'],
+    ['/unavailable-f06-test','51_UNAVAILABLE']
+  ] as const;
+  for(const [theme,width] of [['light',1600],['light',320],['dark',1600],['dark',320]] as const){
+    await page.setViewportSize({width,height:900});
+    await page.goto('/');
+    const isDark=await page.locator('html').getAttribute('data-theme')==='dark';
+    if(isDark!==(theme==='dark'))
+      await page.getByRole('button',{name:'Switch to '+theme+' theme'}).click();
+    for(const [route,label] of states){
+      await page.goto(route);
+      await expect(page.getByRole('heading',{level:1})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme',theme);
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth),label+' reflow')
+        .toBeLessThanOrEqual(width+2);
+      await auditAccessibility(page,label+'_'+theme.toUpperCase()+'_'+width,process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+    }
+  }
+});
+
+test('F06 public route titles identify the task and keyboard skip remains visible after scroll', async ({page})=>{
+  await page.goto('/explore');
+  await expect(page).toHaveTitle('Explore portfolios · Kadmeion');
+  await page.goto('/templates');
+  await expect(page).toHaveTitle('Portfolio templates · Kadmeion');
+  await page.evaluate(()=>window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'}));
+  const skip=page.getByRole('link',{name:'Skip to templates'});
+  await page.keyboard.press('Tab');
+  await expect(skip).toBeFocused();
+  await expect(skip).toBeInViewport();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main')).toBeFocused();
+});
+
+
+test('B16 all five public preset demos render actual section order, keyboard return and accessible width comparison',async({page})=>{
+  test.setTimeout(100_000);
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.goto('/templates');
+  const demoCases=[
+    {name:'Curved Hero',id:'arc',order:['L1','L3','L4','L6','L8']},
+    {name:'Interlocking Showcase',id:'collage',order:['L2','L3','L7','L8']},
+    {name:'Editorial Grid',id:'editorial',order:['L4','L3','L6','L8']},
+    {name:'Modular Portfolio',id:'studio',order:['L1','L3','L7','L6','L8']},
+    {name:'Stepped Minimal',id:'stairs',order:['L5','L4','L3','L8']}
+  ];
+  let privateRequests=0;
+  page.on('request',request=>{const path=new URL(request.url()).pathname;if(/^\/(?:auth|rest|storage)\/v1\//.test(path))privateRequests++;});
+  for(const fixture of demoCases){
+    const card=page.getByRole('article').filter({has:page.getByRole('heading',{name:fixture.name,exact:true})});
+    const opener=card.getByRole('button',{name:'Preview',exact:true});
+    await opener.focus();await page.keyboard.press('Enter');
+    const dialog=page.getByRole('dialog',{name:fixture.name});
+    await expect(dialog).toBeVisible();
+    const demo=dialog.locator('[data-public-preset="'+fixture.id+'"]');
+    const canvas=demo.getByRole('region',{name:'Simulated visitor portfolio appearance'});
+    await expect(canvas).toBeVisible();
+    const order=await canvas.locator('.pv-section').evaluateAll(nodes=>nodes.map(node=>[...node.classList].find(x=>/^pv-layout-L\d+$/.test(x))?.slice(10)));
+    expect(order).toEqual(fixture.order);
+    await expect(dialog.getByText(/Demo content only/)).toBeVisible();
+    await expect(canvas.locator('a[href],button,input')).toHaveCount(0);
+    const phone=dialog.getByRole('button',{name:'390 px (phone width)'});
+    await phone.click();await expect(phone).toHaveAttribute('aria-pressed','true');
+    expect(await canvas.evaluate(node=>getComputedStyle(node).maxWidth)).toBe('390px');
+    await dialog.getByRole('button',{name:'Fit',exact:true}).click();
+    await expect(dialog.getByRole('button',{name:'Fit',exact:true})).toHaveAttribute('aria-pressed','true');
+    if(fixture.id==='arc')await auditAccessibility(page,'B16_S8_PRESET_DIALOG',process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+    await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);await expect(opener).toBeFocused();
+  }
+  expect(privateRequests).toBe(0);
+  await page.setViewportSize({width:390,height:844});
+  const opener=page.getByRole('article').filter({has:page.getByRole('heading',{name:'Stepped Minimal',exact:true})}).getByRole('button',{name:'Preview'});
+  await opener.click();
+  const dialog=page.getByRole('dialog',{name:'Stepped Minimal'});
+  await expect(dialog.locator('[data-public-preset="stairs"] .pv-section')).toHaveCount(4);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2)).toBe(true);
+  await auditAccessibility(page,'B16_S8_PRESET_PHONE',process.env.KADMEION_PUBLIC_CAPTURE_DIR);
+  await dialog.getByRole('button',{name:'Close template preview'}).click();
+  await expect(opener).toBeFocused();
 });

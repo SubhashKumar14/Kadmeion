@@ -54,3 +54,13 @@ test('auth routing never trusts credentials, non-root paths or insecure remote o
   assert.equal(authHref('http://untrusted.example/'),'/signin');
   assert.equal(authHref('https://valid.example/?redirect=evil'),'/signin');
 });
+
+test("advanced owned-source buffers distinguish persisted content from unapplied text",async()=>{
+ const {unappliedSourceBufferCount}=await import("./behavior.ts");
+ const saved={"slots/x/owned/main.tsx":"const a = 1;"};
+ assert.equal(unappliedSourceBufferCount({},saved),0);
+ assert.equal(unappliedSourceBufferCount({...saved},saved),0);
+ assert.equal(unappliedSourceBufferCount({"slots/x/owned/main.tsx":"const a = 2;"},saved),1);
+ assert.equal(unappliedSourceBufferCount({"deleted.tsx":"retained"},saved),1);
+ assert.equal(unappliedSourceBufferCount({...saved,"deleted.tsx":"retained"},saved),1);
+});

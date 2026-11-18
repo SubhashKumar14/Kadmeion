@@ -36,6 +36,8 @@ const SHA256=/^[a-f0-9]{64}$/;
 const PNG_PATH=/\/([a-f0-9]{64})\.png$/;
 const CACHE_HEADERS=['cache-control','cdn-cache-control','vercel-cdn-cache-control','surrogate-control'];
 function isUncacheable(headers:Headers):boolean {
+  const age=headers.get('age');
+  if(age!==null&&!/^0+$/.test(age.trim()))return false;
   return CACHE_HEADERS.every((name)=>{
     const value=headers.get(name);
     if(value===null)return name!=='cache-control';
@@ -61,19 +63,22 @@ function trustedOrigin(origin:string,local:boolean):URL {
     throw new HostRevocationProbeError('INVALID_INPUT');
   return u;
 }
+function publicApiAlias(canonicalPath:string):string|undefined {
+  if(UNLISTED.test(canonicalPath))return undefined;
+  const [,handle,slug]=canonicalPath.split('/');
+  return '/api/public-portfolio?'+new URLSearchParams({handle,slug});
+}
 function scopedMediaSha(path:string,canonicalPath:string):string|undefined {
-  const publicRoute=canonicalPath.split('/');
-  const unlisted=UNLISTED.test(canonicalPath);
-  const scope=unlisted?canonicalPath:'/api/public-portfolio?'+
-    new URLSearchParams({handle:publicRoute[1],slug:publicRoute[2]});
-  if(!path.startsWith(scope+'&manifest='))return undefined;
+  const scope=UNLISTED.test(canonicalPath)?canonicalPath:publicApiAlias(canonicalPath);
+  if(!scope||!path.startsWith(scope+'&manifest='))return undefined;
   return /^&manifest=[a-f0-9]{64}&asset=([a-f0-9]{64})$/.exec(path.slice(scope.length))?.[1];
 }
 function pathValid(path:string,canonicalPath:string):boolean {
   if(typeof path!=='string'||path.includes('//')||path.includes('..')||
      path.includes('%')||path.includes('\\')||path.includes('#')||
      path.includes('@')||path.split('/').includes('.'))return false;
-  return DIRECT.test(path)||scopedMediaSha(path,canonicalPath)!==undefined;
+  return DIRECT.test(path)||path===publicApiAlias(canonicalPath)||
+    scopedMediaSha(path,canonicalPath)!==undefined;
 }
 function validatedOrigin(input:HostRevocationProbeInput):URL {
   if(!input||!Array.isArray(input.candidateDirectPaths)||
@@ -85,11 +90,67 @@ function validatedOrigin(input:HostRevocationProbeInput):URL {
   return trustedOrigin(input.origin,input.allowLocal===true);
 }
 
+const PROBE_TIMEOUT_MS=5000;
+const MAX_PROBE_CHUNKS=65536;
+type ProbeErrorCode=HostRevocationProbeError['code'];
+function cancelProbeBody(body:ReadableStream<Uint8Array>|ReadableStreamDefaultReader<Uint8Array>|null|undefined):void {
+  // Cancellation of one tee branch can wait forever for its unread sibling.
+  try{void body?.cancel().catch(()=>{});}catch{}
+}
 async function fetchPath(url:URL,method:'GET'|'HEAD',http:typeof fetch):Promise<Response>{
+  const controller=new AbortController();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  let expired=false;
   try{
-    return await http(url,{method,credentials:'omit',cache:'no-store',redirect:'error',
-      signal:AbortSignal.timeout(5000)});
+    const pending=Promise.resolve().then(()=>http(url,{method,credentials:'omit',cache:'no-store',
+      redirect:'error',signal:controller.signal})).then(response=>{
+        if(expired){cancelProbeBody(response.body);throw new HostRevocationProbeError('HOST_UNAVAILABLE');}
+        return response;
+      });
+    const deadline=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>{
+        expired=true;controller.abort();reject(new HostRevocationProbeError('HOST_UNAVAILABLE'));
+      },PROBE_TIMEOUT_MS);
+    });
+    return await Promise.race([pending,deadline]);
   }catch{throw new HostRevocationProbeError('HOST_UNAVAILABLE');}
+  finally{clearTimeout(timer);}
+}
+/** Read to EOF even for HEAD. An initial zero-length chunk is not bodylessness.
+ * Bound elapsed time, chunks and bytes independently; never await cleanup. */
+async function consumeProbeBody(response:Response,maxBytes:number,code:ProbeErrorCode,
+  onChunk:(bytes:Uint8Array)=>void,allowAbsent=false):Promise<number>{
+  let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  let finished=false,expired=false,size=0,chunks=0;
+  try{
+    if(!response.body){
+      if(allowAbsent)return 0;
+      throw new HostRevocationProbeError(code);
+    }
+    const active=response.body.getReader();reader=active;
+    const drain=async()=>{
+      for(;;){
+        const part=await active.read();
+        if(expired)throw new HostRevocationProbeError(code);
+        if(part.done)break;
+        if(!(part.value instanceof Uint8Array)||++chunks>MAX_PROBE_CHUNKS||
+           (size+=part.value.byteLength)>maxBytes)throw new HostRevocationProbeError(code);
+        onChunk(part.value);
+      }
+    };
+    const deadline=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>{expired=true;reject(new HostRevocationProbeError(code));},PROBE_TIMEOUT_MS);
+    });
+    await Promise.race([drain(),deadline]);
+    finished=true;
+    return size;
+  }catch{throw new HostRevocationProbeError(code);}
+  finally{
+    clearTimeout(timer);
+    if(!finished)cancelProbeBody(reader??response.body);
+    try{reader?.releaseLock();}catch{}
+  }
 }
 function canonicalPathValid(path:unknown):boolean {
   if(typeof path!=='string')return false;
@@ -100,51 +161,31 @@ function canonicalPathValid(path:unknown):boolean {
 }
 async function verifyDenied(response:Response,method:'GET'|'HEAD'):Promise<void> {
   if(response.status!==404&&response.status!==410){
-    await response.body?.cancel();
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('STILL_VISIBLE');
   }
   const h=response.headers;
-  if(response.redirected||!isUncacheable(h)||
-     !/(?:^|,)\s*noindex\s*(?:,|$)/i.test(h.get('x-robots-tag')??'')||
-     h.has('location')||h.has('etag')||
+  const robots=(h.get('x-robots-tag')??'').toLowerCase().split(',').map(x=>x.trim());
+  if(response.redirected||!isUncacheable(h)||!robots.includes('noindex')||
+     robots.includes('index')||h.has('location')||h.has('etag')||
      !/^text\/plain(?:;|$)/i.test(h.get('content-type')??'')){
-    await response.body?.cancel();
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('UNSAFE_HEADERS');
   }
   if(method==='HEAD'){
-    if(response.body){
-      const reader=response.body.getReader();
-      try{
-        const first=await reader.read();
-        if(!first.done&&first.value?.byteLength)
-          throw new HostRevocationProbeError('UNSAFE_BODY');
-      }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
-    }
+    await consumeProbeBody(response,0,'UNSAFE_BODY',()=>{},true);
     return;
   }
-  const reader=response.body?.getReader();
-  if(!reader)throw new HostRevocationProbeError('UNSAFE_BODY');
-  let size=0;
   const chunks:Uint8Array[]=[];
+  const size=await consumeProbeBody(response,4096,'UNSAFE_BODY',part=>chunks.push(part));
   try{
-    for(;;){
-      const next=await reader.read();
-      if(next.done)break;
-      if(!(next.value instanceof Uint8Array))throw new HostRevocationProbeError('UNSAFE_BODY');
-      size+=next.value.byteLength;
-      if(size>4096)throw new HostRevocationProbeError('UNSAFE_BODY');
-      chunks.push(next.value);
-    }
-    // Require an expected generic denial, even when the body is delivered in chunks.
     const content=new Uint8Array(size);
     let offset=0;
     for(const chunk of chunks){content.set(chunk,offset);offset+=chunk.byteLength;}
     const text=new TextDecoder('utf-8',{fatal:true}).decode(content).trim();
     if(text!==''&&text!==(response.status===404?'Not found':'Gone'))
       throw new HostRevocationProbeError('UNSAFE_BODY');
-  }catch{
-    throw new HostRevocationProbeError('UNSAFE_BODY');
-  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  }catch{throw new HostRevocationProbeError('UNSAFE_BODY');}
 }
 export async function probeHostRevocation(
   input:HostRevocationProbeInput,http:typeof fetch=fetch
@@ -169,37 +210,51 @@ export async function probeHostRevocation(
 }
 
 async function verifyLiveBytes(
-  response:Response, mime:RegExp, maxBytes:number, expectedDigest:string
+  response:Response, mime:RegExp, maxBytes:number, expectedDigest:string,
+  inspect?:(bytes:Uint8Array)=>void
 ):Promise<void> {
-  const reader=response.body?.getReader();
-  if(!reader)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  try {
-    if(response.status!==200||response.redirected||response.headers.has('location')||
-       !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers))
-      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-    const digest=createHash('sha256');
-    let size=0;
-    for(;;){
-      const chunk=await reader.read();
-      if(chunk.done)break;
-      size+=chunk.value.byteLength;
-      if(size>maxBytes)throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-      digest.update(chunk.value);
-    }
-    if(size===0||digest.digest('hex')!==expectedDigest)
-      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  } catch {
+  if(response.status!==200||response.redirected||response.headers.has('location')||
+     !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers)){
+    cancelProbeBody(response.body);
     throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
-  } finally {
-    await reader.cancel().catch(()=>{});
-    reader.releaseLock();
+  }
+  const digest=createHash('sha256'),pieces:Uint8Array[]=[];
+  const size=await consumeProbeBody(response,maxBytes,'RELEASE_NOT_OBSERVED',part=>{
+    digest.update(part);
+    if(inspect)pieces.push(part);
+  });
+  if(size===0||digest.digest('hex')!==expectedDigest)
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  if(inspect){
+    const bytes=new Uint8Array(size);let offset=0;
+    for(const part of pieces){bytes.set(part,offset);offset+=part.byteLength;}
+    inspect(bytes);
   }
 }
 
-/** Verify the canonical HTML and manifest media before withdrawing, then check all listed paths for denial. */
+/** Live HEAD must meet the same noncacheable delivery contract as GET and
+ * contain no bytes over the entire independently observed stream. */
+async function verifyLiveHead(response:Response,mime:RegExp):Promise<void>{
+  if(response.status!==200||response.redirected||response.headers.has('location')||
+     !mime.test(response.headers.get('content-type')??'')||!isUncacheable(response.headers)){
+    cancelProbeBody(response.body);
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }
+  await consumeProbeBody(response,0,'RELEASE_NOT_OBSERVED',()=>{},true);
+}
+
+/** Verify exact GET bytes and HEAD metadata for canonical HTML and every
+ * pinned manifest media path before withdrawing; then prove denial. */
 export async function verifyReleaseWithdrawal(
   input:ReleaseWithdrawalInput,expectedServedSha256:string,
   withdraw:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
+  return observeReleaseWithdrawal(input,expectedServedSha256,withdraw,http);
+}
+async function observeReleaseWithdrawal(
+  input:ReleaseWithdrawalInput,expectedServedSha256:string,
+  withdraw:()=>Promise<void>,http:typeof fetch,
+  inspectHtml?:(bytes:Uint8Array)=>void
 ):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
   const origin=validatedOrigin(input);
   if(typeof expectedServedSha256!=='string'||!SHA256.test(expectedServedSha256)||
@@ -218,16 +273,65 @@ export async function verifyReleaseWithdrawal(
     liveAssets.set(asset.path,asset.sha256);
   }
 
-  const html=await fetchPath(new URL(paths.canonicalPath,origin),'GET',http);
-  await verifyLiveBytes(html,/^text\/html(?:;|$)/i,750_000,expectedServedSha256);
+  // A supplied exact public API alias is itself an observable live HTML
+  // representation, not just a path to check after withdrawal.
+  const alias=publicApiAlias(paths.canonicalPath);
+  const htmlPaths=[paths.canonicalPath,...(alias&&paths.candidateDirectPaths.includes(alias)?[alias]:[])];
+  for(const path of htmlPaths){
+    const html=await fetchPath(new URL(path,origin),'GET',http);
+    await verifyLiveBytes(html,/^text\/html(?:;|$)/i,750_000,expectedServedSha256,inspectHtml);
+    await verifyLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),/^text\/html(?:;|$)/i);
+  }
   for(const [path,sha256] of liveAssets){
     const image=await fetchPath(new URL(path,origin),'GET',http);
     await verifyLiveBytes(image,/^image\/png$/i,5*1024*1024,sha256);
+    await verifyLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),/^image\/png$/i);
   }
   await withdraw();
   const after=await probeHostRevocation(paths,http);
   return Object.freeze({...after,liveAssetPathsVerified:liveAssets.size,
-    observedHttpRequests:after.observedHttpRequests+1+liveAssets.size});
+    observedHttpRequests:after.observedHttpRequests+2*htmlPaths.length+2*liveAssets.size});
+}
+
+const PUBLIC_RELEASE_IMG=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
+function matchPublicMediaSet(bytes:Uint8Array,paths:readonly string[]):void{
+  try{
+    const html=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+    const tags=[...html.matchAll(PUBLIC_RELEASE_IMG)];
+    const expected=new Set(paths.map(path=>path.replaceAll('&','&amp;')));
+    const seen=new Set(tags.map(tag=>tag[1]));
+    if((html.match(/<img\b/gi)??[]).length!==tags.length||
+       seen.size!==expected.size||[...seen].some(src=>!expected.has(src)))
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
+}
+
+/**
+ * Strict public withdrawal entry point for a trusted server-provided exact
+ * pre-withdrawal manifest. Derives the canonical API and all scoped media
+ * paths internally; caller cannot substitute another handle or omit aliases.
+ * The older generic probe remains explicitly scoped to paths supplied.
+ */
+export async function verifyCanonicalPublicWithdrawal(
+  input:{origin:string;canonicalPath:string;expectedServedSha256:string;
+    manifestSha256:string;assetHashes:readonly string[];allowLocal?:boolean},
+  withdraw:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<HostRevocationObservation & {liveAssetPathsVerified:number}>{
+  if(!input||!canonicalPathValid(input.canonicalPath)||UNLISTED.test(input.canonicalPath)||
+     typeof input.manifestSha256!=='string'||!SHA256.test(input.manifestSha256)||
+     !Array.isArray(input.assetHashes)||input.assetHashes.length>8||
+     input.assetHashes.some(sha=>typeof sha!=='string'||!SHA256.test(sha))||
+     new Set(input.assetHashes).size!==input.assetHashes.length)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const alias=publicApiAlias(input.canonicalPath)!;
+  const assets=input.assetHashes.map(sha256=>({
+    path:alias+'&manifest='+input.manifestSha256+'&asset='+sha256,sha256
+  }));
+  const assetPaths=assets.map(asset=>asset.path);
+  return observeReleaseWithdrawal({
+    origin:input.origin,canonicalPath:input.canonicalPath,allowLocal:input.allowLocal,
+    candidateDirectPaths:[alias,...assetPaths],liveAssets:assets
+  },input.expectedServedSha256,withdraw,http,bytes=>matchPublicMediaSet(bytes,assetPaths));
 }
 
 const PORTFOLIO_ASSET_QUERY=/^\/api\/public-portfolio\?handle=([a-z][a-z0-9_]{2,29})&slug=([a-z0-9-]{3,64})(?:&manifest=[a-f0-9]{64}&asset=[a-f0-9]{64})?$/;
@@ -276,4 +380,165 @@ export async function attestAccountExitHostDenial(input:{
   });
   if(recorded!==true) throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
   return {status:'APPLICATION_HOST_DENIAL_RECORDED',observedHttpRequests:count};
+}
+
+
+/**
+ * F4 reviewer staging proof. Operator/test harness ONLY: this procedure
+ * deliberately requires an already activated, expiring reviewer grant and
+ * withdraws it through a trusted callback. It never issues a grant, changes
+ * host flags, or publishes a portfolio.
+ *
+ * An application/CDN can prove only the exact routes checked here. Raw token
+ * is used in the outgoing requests by necessity but is NEVER included in
+ * observations, diagnostic messages or logs from this module.
+ */
+export interface ReviewerHostWithdrawalInput {
+  origin:string;
+  grantId:string;
+  rawToken:string;
+  expectedServedHtmlSha256:string;
+  /** Enumerate every PNG presented in the rendered reviewer HTML. */
+  assets?:readonly {manifestSha256:string;sha256:string}[];
+  allowLocal?:boolean;
+}
+export interface ReviewerHostWithdrawalObservation {
+  status:'REVIEWER_REVOKED_ON_SCOPED_PATHS';
+  observedHttpRequests:number;
+  directPathsChecked:number;
+  liveMediaVerified:number;
+  universalCacheErasureVerified:false;
+  thirdPartyArchiveErasureVerified:false;
+}
+const REVIEWER_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const REVIEWER_IMG=/<img loading="lazy" decoding="async" src="([^"<>]+)" alt="[^"<>]*" width="[1-9][0-9]{0,3}" height="[1-9][0-9]{0,3}">/g;
+
+function reviewerHttpHeaders(response:Response,media:boolean):boolean {
+  const h=response.headers;
+  const robots=(h.get('x-robots-tag')??'').toLowerCase().split(',').map(x=>x.trim());
+  const csp=h.get('content-security-policy')??'';
+  const directives=csp.split(';').map(x=>x.trim().split(/\s+/)).filter(x=>x[0]);
+  const requireNone=(name:string)=> {
+    const set=directives.filter(x=>x[0]===name);
+    return set.length===1&&set[0].length===2&&set[0][1]==="'none'";
+  };
+  const overrides=directives.filter(x=>
+    ['script-src-elem','script-src-attr','worker-src','child-src'].includes(x[0]));
+  return response.status===200&&!response.redirected&&!h.has('location')&&
+    !h.has('etag')&&isUncacheable(h)&&
+    robots.includes('noindex')&&!robots.includes('index')&&
+    h.get('referrer-policy')==='no-referrer'&&
+    h.get('x-content-type-options')==='nosniff'&&
+    requireNone('default-src')&&requireNone('script-src')&&
+    overrides.every(d=>d.length===2&&d[1]==="'none'")&&
+    (media? /^image\/png(?:;|$)/i.test(h.get('content-type')??''):
+      /^text\/html(?:;|$)/i.test(h.get('content-type')??''));
+}
+async function reviewerLiveHtml(response:Response,expectedSha:string):Promise<string> {
+  if(!reviewerHttpHeaders(response,false)){
+    cancelProbeBody(response.body);
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }
+  const hash=createHash('sha256'),pieces:Uint8Array[]=[];
+  const length=await consumeProbeBody(response,750_000,'RELEASE_NOT_OBSERVED',part=>{
+    hash.update(part);pieces.push(part);
+  });
+  try{
+    if(length===0||hash.digest('hex')!==expectedSha)
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    const bytes=new Uint8Array(length);
+    let offset=0;
+    for(const part of pieces){bytes.set(part,offset);offset+=part.byteLength;}
+    const html=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+    const head=/^<!doctype html>\s*<html(?:\s[^>]*)?>\s*<head(?:\s[^>]*)?>([\s\S]*?)<\/head>/i.exec(html);
+    const robots=head?.[1].match(/<meta\b[^>]*\bname=["']?(?:robots|googlebot|bingbot)\b/gi)??[];
+    const robotsTag=head?.[1].match(/<meta\s+name="robots"\s+content="(noindex(?:,nofollow(?:,noarchive)?)?)"\s*\/?>/gi)??[];
+    if(!head||robots.length!==1||robotsTag.length!==1)
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    return html;
+  }catch{throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');}
+}
+async function reviewerLiveHead(response:Response,media:boolean):Promise<void>{
+  if(!reviewerHttpHeaders(response,media)){
+    cancelProbeBody(response.body);
+    throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+  }
+  await consumeProbeBody(response,0,'RELEASE_NOT_OBSERVED',()=>{},true);
+}
+function reviewerHostPaths(input:ReviewerHostWithdrawalInput):{
+  origin:URL;htmlPaths:string[];mediaPaths:{path:string;sha256:string}[];
+}{
+  if(!input||typeof input.grantId!=='string'||!REVIEWER_UUID.test(input.grantId)||
+     typeof input.rawToken!=='string'||!SHA256.test(input.rawToken)||
+     typeof input.expectedServedHtmlSha256!=='string'||!SHA256.test(input.expectedServedHtmlSha256)||
+     (input.assets!==undefined&&!Array.isArray(input.assets)))
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const assets=input.assets??[];
+  if(assets.length>8||assets.some(asset=>!asset||!SHA256.test(asset.manifestSha256)||
+    !SHA256.test(asset.sha256))||
+    new Set(assets.map(asset=>asset.sha256)).size!==assets.length||
+    new Set(assets.map(asset=>asset.manifestSha256)).size>1)
+    throw new HostRevocationProbeError('INVALID_INPUT');
+  const origin=trustedOrigin(input.origin,input.allowLocal===true);
+  const credential=input.grantId+'.'+input.rawToken;
+  const query='review='+credential;
+  return {
+    origin,
+    htmlPaths:['/r/'+credential,'/api/reviewer?'+query],
+    mediaPaths:assets.map(asset=>({
+      path:'/api/reviewer?'+query+'&manifest='+asset.manifestSha256+'&asset='+asset.sha256,
+      sha256:asset.sha256
+    }))
+  };
+}
+/** Actual HTTP GET/HEAD lifecycle check, including every referenced immutable PNG.
+ * This observation remains narrower than a guarantee of global cache erasure.
+ */
+export async function verifyReviewerHostWithdrawal(
+  input:ReviewerHostWithdrawalInput,revoke:()=>Promise<void>,http:typeof fetch=fetch
+):Promise<ReviewerHostWithdrawalObservation>{
+  const {origin,htmlPaths,mediaPaths}=reviewerHostPaths(input);
+  if(typeof revoke!=='function')throw new HostRevocationProbeError('INVALID_INPUT');
+  let checks=0;
+  for(const path of htmlPaths){
+    const html=await reviewerLiveHtml(await fetchPath(new URL(path,origin),'GET',http),
+      input.expectedServedHtmlSha256);
+    checks++;
+    // The actual rendered IMG list must match the manifest's ENTIRE declared
+    // media set. Partial coverage cannot produce an accepted revocation proof.
+    const imgs=[...html.matchAll(REVIEWER_IMG)];
+    if((html.match(/<img\b/gi)??[]).length!==imgs.length||
+       imgs.length!==mediaPaths.length||
+       new Set(imgs.map(x=>x[1])).size!==imgs.length||
+       imgs.some((img)=>!mediaPaths.some(asset=>img[1]===asset.path.replaceAll('&','&amp;'))))
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    await reviewerLiveHead(await fetchPath(new URL(path,origin),'HEAD',http),false);
+    checks++;
+  }
+  for(const asset of mediaPaths){
+    const media=await fetchPath(new URL(asset.path,origin),'GET',http);
+    if(!reviewerHttpHeaders(media,true)){
+      cancelProbeBody(media.body);
+      throw new HostRevocationProbeError('RELEASE_NOT_OBSERVED');
+    }
+    await verifyLiveBytes(media,/^image\/png(?:;|$)/i,4_000_000,asset.sha256);
+    checks++;
+    await reviewerLiveHead(await fetchPath(new URL(asset.path,origin),'HEAD',http),true);
+    checks++;
+  }
+  await revoke();
+  for(const path of [...htmlPaths,...mediaPaths.map(x=>x.path)]){
+    for(const method of ['GET','HEAD'] as const){
+      await verifyDenied(await fetchPath(new URL(path,origin),method,http),method);
+      checks++;
+    }
+  }
+  return Object.freeze({
+    status:'REVIEWER_REVOKED_ON_SCOPED_PATHS' as const,
+    observedHttpRequests:checks,
+    directPathsChecked:1+mediaPaths.length,
+    liveMediaVerified:mediaPaths.length,
+    universalCacheErasureVerified:false as const,
+    thirdPartyArchiveErasureVerified:false as const
+  });
 }

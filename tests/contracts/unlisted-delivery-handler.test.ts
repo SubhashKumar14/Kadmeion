@@ -134,3 +134,31 @@ test('unlisted rejects multiple robots directives or a commented-only noindex',a
     assert.equal(response.statusCode,503,'Unlisted HTML must retain exactly one noindex policy');
   }
 });
+
+test('unlisted PNG requests recheck release visibility on both GET and HEAD',async()=>{
+  const png=Buffer.from('89504e470d0a1a0a','hex');
+  const asset=createHash('sha256').update(png).digest('hex');
+  const manifest='e'.repeat(64);
+  const url='/api/unlisted?portfolioId='+id+'&manifest='+manifest+'&asset='+asset;
+  for(const method of ['GET','HEAD']){
+    const allowed=await run({url,method,body:{png:png.toString('base64')}});
+    assert.equal(allowed.response.statusCode,200);
+    assert.deepEqual(allowed.response.body,method==='HEAD'?'':png);
+    assert.equal(allowed.response.headers.get('content-type'),'image/png');
+    assert.equal(allowed.response.headers.get('cache-control'),'private, no-store, max-age=0, must-revalidate');
+    assert.equal(allowed.sent.length,1);
+    assert.match(allowed.sent[0].url,/\/service_read_frozen_release_png$/);
+    assert.deepEqual(JSON.parse(String(allowed.sent[0].init?.body)),{
+      p_portfolio_id:id,p_manifest:manifest,p_sha:asset
+    });
+
+    const revoked=await run({url,method,body:null});
+    assert.equal(revoked.response.statusCode,404);
+    assert.equal(revoked.response.body,method==='HEAD'?'':'Not found');
+    assert.equal(revoked.sent.length,1);
+    assert.equal(revoked.response.headers.get('cache-control'),'private, no-store, max-age=0, must-revalidate');
+    const corrupt=await run({url,method,body:{png:Buffer.concat([png,Buffer.from([0])]).toString('base64')}});
+    assert.equal(corrupt.response.statusCode,503);
+    assert.equal(corrupt.response.body,method==='HEAD'?'':'Temporarily unavailable');
+  }
+});

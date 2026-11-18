@@ -334,3 +334,39 @@ test('moderation provider responses are size-bounded, typed and checked before J
     {status:400}));
   await assert.rejects(failure.listOperatorCases(),{code:'QUOTA_EXCEEDED'});
 });
+
+test('C14 operator report queue requires strict keyset order and no cursor replay',async()=>{
+  const report=(id:string)=>({id,target_path:'/release_owner/release-fixture',
+    reason_code:'SECURITY',evidence:summary,created_at:time});
+  const records=[report(caseId),report(ownerId),report(operationId)];
+  let pages=0;
+  const service=client(async(url,init)=>{
+    assert.ok(String(url).endsWith('/rpc/operator_list_portfolio_abuse_reports'));
+    const args=JSON.parse(String(init?.body));
+    assert.deepEqual(args,pages===0?{p_after:null,p_limit:2}:{p_after:ownerId,p_limit:2});
+    return ok(pages++===0?records.slice(0,2):records.slice(2));
+  });
+  assert.deepEqual(await service.listAbuseReports(null,2),records.slice(0,2));
+  assert.deepEqual(await service.listAbuseReports(ownerId,2),records.slice(2));
+  for(const bad of [[records[1]],[records[2],records[1]],[records[2],records[2]]]){
+    await assert.rejects(client(async()=>ok(bad)).listAbuseReports(ownerId,2),{code:'INVALID_ACK'});
+  }
+});
+test('C14 appeal evidence is limited to the requested case and never establishes public enforcement',async()=>{
+  const statement='Synthetic appeal statement with sufficient evidence';
+  const data={caseId,reasonCode:'ABUSE',summary,statement,submittedAt:time};
+  const approved=client(async(url,init)=>{
+    assert.ok(String(url).endsWith('/rpc/operator_read_appeal_evidence'));
+    assert.deepEqual(JSON.parse(String(init?.body)),{p_case_id:caseId});
+    return ok({...data,privateToken:'not returned',restrictionEnforced:true});
+  });
+  assert.deepEqual(await approved.readAppealEvidence(caseId),data);
+  for(const bad of [{...data,caseId:ownerId},{...data,statement:'short'},
+    {...data,reasonCode:'UNKNOWN'},{...data,submittedAt:'not a timestamp'}]){
+    await assert.rejects(client(async()=>ok(bad)).readAppealEvidence(caseId),{code:'INVALID_ACK'});
+  }
+  await assert.rejects(client(async()=>Response.json({message:'private diagnostic'},{status:403}))
+    .readAppealEvidence(caseId),{code:'FORBIDDEN'});
+  await assert.rejects(client(async()=>{throw Error('unreachable');},null)
+    .readAppealEvidence(caseId),{code:'AUTH_EXPIRED'});
+});

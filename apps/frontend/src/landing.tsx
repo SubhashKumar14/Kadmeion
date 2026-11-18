@@ -34,7 +34,7 @@ export function BrandMark({ stacked = false, label }: { stacked?: boolean; label
 }
 
 export function Brand({ tagline = true }: { tagline?: boolean }) {
-  return <a className="brand" href="/" aria-label="Kadmeion home">
+  return <a className="brand" href="/" aria-label={tagline?'Kadmeion home, Developer Identity Platform':'Kadmeion home'}>
     <BrandMark/>
     {tagline && <span className="brand-subtitle">DEVELOPER IDENTITY PLATFORM</span>}
   </a>;
@@ -57,48 +57,38 @@ export function useTheme(): [Theme, () => void] {
   }, [theme]);
   return [theme, () => setTheme(current => invertTheme(current))];
 }
-const projectCards = [
-  { name: 'BidHub', type: 'Micro-freelance platform', summary: 'Project discovery and collaborative bidding.', tags: ['Product', 'Web'], symbol: 'B', tone: 'blue' },
-  { name: 'StreamFlix', type: 'Movie discovery experience', summary: 'Personalized viewing and recommendations.', tags: ['Media', 'Web'], symbol: '▶', tone: 'coal' },
-  { name: 'Aegis AI', type: 'Applied AI concept', summary: 'AI-assisted analysis and developer tooling.', tags: ['AI / ML', 'Tools'], symbol: 'A', tone: 'teal' },
-  { name: 'Kadmeion', type: 'Developer identity platform', summary: 'The portfolio builder under development.', tags: ['Identity', 'Portfolio'], symbol: 'K', tone: 'copper' }
+const projectExamples = [
+  { name: 'BidHub', summary: 'Project discovery and competitive bidding.', href: 'https://github.com/SubhashKumar14/Bid-Hub' },
+  { name: 'StreamFlix', summary: 'Movie discovery and recommendations.', href: 'https://github.com/thandriyalahimaja/Stream-Flix' }
 ] as const;
 function DemoWorkspace({ view }: { view: DemoView }) {
-  const viewHeading = view === 'Workspace' ? 'A place for what you build next.'
-    : view === 'Portfolio Studio' ? 'Shape your portfolio your way.'
-    : 'See your growth, privately.';
-  return <div className="demo-window" aria-label={view + ' illustrative interface concept'} role="img">
-    <div className="demo-rail">
-      <div className="demo-rail-title">KADMEION</div>
-      <p>YOUR WORKSPACE</p>
-      <div className="demo-rail-item active"><Icon name="folder" size={13} /> Workspace</div>
-      <div className="demo-rail-item"><Icon name="layers" size={13}/> Studio</div>
-      <div className="demo-rail-item"><Icon name="code" size={13}/> Projects</div>
-      <div className="demo-rail-item"><Icon name="activity" size={13}/> Growth</div>
-    </div>
-    <div className="demo-stage">
-      <div className="demo-crumb">Workspace <span>›</span> {view} <span className="demo-dots">◌ &nbsp; ◌</span></div>
-      <div className="demo-stage-body">
-        <div className="demo-stage-head">{viewHeading}</div>
-        <div className="demo-metrics">
-          <div><Icon name="code" size={16}/><span>Projects</span></div>
-          <div><Icon name="layers" size={16}/><span>Portfolios</span></div>
-          <div><Icon name="activity" size={16}/><span>Progress</span></div>
+  return <div className="demo-window" data-view={view} aria-label={view + ' illustrative interface concept'} role="img">
+    <div className="demo-crumb"><Icon name={view === 'Workspace' ? 'folder' : 'layers'} size={16}/><strong>{view}</strong></div>
+    {view === 'Workspace' ? <div className="demo-overview">
+      <p className="demo-stage-head">Your private workspace</p>
+      <div className="demo-rows"><span><Icon name="user"/> Profile</span><span><Icon name="folder"/> Projects</span><span><Icon name="layers"/> Portfolio drafts</span></div>
+    </div> : <div className="demo-document">
+      {view === 'Portfolio Studio' && <div className="demo-rail">
+        <strong>Structure</strong><span className="active">Introduction</span><span>Projects</span><span>Contact</span>
+      </div>}
+      <div className="demo-canvas">
+        <div className="demo-canvas-copy">
+          <p className="demo-canvas-label">Developer portfolio</p>
+          <p className="demo-stage-head">Good work deserves a story.</p>
+          <p className="demo-canvas-note">A selection of projects and what I learned building them.</p>
         </div>
-        <div className="demo-chart">
-          <span>{view === 'Workspace' ? 'Your work, in one place' : view === 'Portfolio Studio' ? 'Build and preview' : 'Goals and activity'}</span>
-          <svg aria-hidden="true" viewBox="0 0 310 54" preserveAspectRatio="none"><path d="M0 48 C32 40 45 44 70 34 S112 41 140 25 S183 36 212 17 S257 27 282 12 S299 18 310 7" fill="none" stroke="#427CB8" strokeWidth="2"/></svg>
-        </div>
-        <span className="demo-truth">Illustrative interface · no account data</span>
+        <div className="demo-art" aria-hidden="true"><span/></div>
       </div>
-    </div>
+    </div>}
   </div>;
 }
 function ProductDemo() {
   const [index,setIndex] = useState(0);
+  const [manualAnnouncement,setManualAnnouncement] = useState('');
   const [reduced,setReduced] = useState(initialReducedMotion);
   const [paused,setPaused] = useState(false);
-  const [interacting,setInteracting] = useState(false);
+  const [hovered,setHovered] = useState(false);
+  const [focused,setFocused] = useState(false);
   const [visible,setVisible] = useState(() => document.visibilityState === 'visible');
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -112,23 +102,30 @@ function ProductDemo() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   },[]);
   useEffect(() => {
-    if (!canAutoAdvance(reduced,paused,interacting,visible)) return;
+    if (!canAutoAdvance(reduced,paused,hovered || focused,visible)) return;
     const timer=window.setInterval(() => setIndex(current=>nextPreviewIndex(current,1)),7000);
     return () => window.clearInterval(timer);
-  },[reduced,paused,interacting,visible]);
-  const change=(step:-1|1) => setIndex(current=>nextPreviewIndex(current,step));
-  return <div className="hero-demo" onMouseEnter={()=>setInteracting(true)} onMouseLeave={()=>setInteracting(false)}
-    onFocusCapture={()=>setInteracting(true)}
-    onBlurCapture={event=>{ if(!event.currentTarget.contains(event.relatedTarget as Node|null))setInteracting(false); }}>
+  },[reduced,paused,hovered,focused,visible]);
+  const change=(step:-1|1) => {
+    const next=nextPreviewIndex(index,step);
+    setIndex(next);
+    setManualAnnouncement(`${DEMO_VIEWS[next]} preview, ${next+1} of ${DEMO_VIEWS.length}`);
+  };
+  return <figure className="hero-demo" onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}
+    onFocusCapture={()=>setFocused(true)}
+    onBlurCapture={event=>{ if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFocused(false); }}>
     <DemoWorkspace view={DEMO_VIEWS[index] ?? DEMO_VIEWS[0]} />
-    <div className="demo-controls">
+    <figcaption className="demo-caption">Illustrative product preview
+    <span className="sr-only" role="status">{manualAnnouncement}</span>
+    <div className="demo-controls" role="group" aria-label="Product preview controls">
       <button type="button" aria-label="Previous product example" onClick={()=>change(-1)}>‹</button>
-      <span aria-label={'Illustrative product view '+(index+1)+' of 3'}>{index+1} / {DEMO_VIEWS.length}</span>
+      <span>{index+1} / {DEMO_VIEWS.length}</span>
       <button type="button" aria-label="Next product example" onClick={()=>change(1)}>›</button>
       <button className="demo-pause" type="button" aria-label={paused?'Resume automatic preview':'Pause automatic preview'}
         aria-pressed={paused} onClick={()=>setPaused(v=>!v)}><Icon name={paused?'play':'pause'} size={13}/></button>
     </div>
-  </div>;
+    </figcaption>
+  </figure>;
 }
 export function ActionLink({children,href,kind='primary'}:{children:ReactNode,href:string,kind?:'primary'|'outline'}) {
   return <a className={'action-link '+kind} href={href}>{children}<Icon name="arrow" size={17}/></a>;
@@ -136,19 +133,19 @@ export function ActionLink({children,href,kind='primary'}:{children:ReactNode,hr
 const faqs=[
   ['What is Kadmeion?', 'Kadmeion is a developer identity and portfolio creation platform. Build a profile, curate your work and prepare independently themed portfolios.'],
   ['Is my work private by default?', 'Yes. Draft profiles, projects and portfolio work remain private until you explicitly choose what to share. A preview is not a public release.'],
-  ['Can I connect existing developer accounts?', 'Optional connections are planned and require provider permissions. An unconnected platform is not evidence of verified activity or achievements.']
+  ['Can I connect existing developer accounts?', 'You can save links to your developer profiles. Automatic activity sync is currently unavailable.']
 ] as const;
 export function Landing() {
   const [theme,toggleTheme]=useTheme();
   return <>
     <a className="skip-link" href="#main">Skip to content</a>
-    <div className="site-shell">
+    <div className="site-shell landing-shell">
       <header className="site-header">
         <Brand/>
         <nav aria-label="Primary navigation" className="site-navigation">
           <a href="/" aria-current="page">Home</a>
           <a href="#showcase">Showcase</a>
-          <a href="#templates">Templates</a>
+          <a href="/templates">Templates</a>
           <a href="https://github.com/SubhashKumar14/Kadmeion/tree/main/project-docs" target="_blank" rel="noopener noreferrer">Docs <span aria-hidden="true">↗</span></a>
         </nav>
         <div className="header-actions">
@@ -160,82 +157,73 @@ export function Landing() {
         </div>
       </header>
 
-      <main id="main">
+      <main id="main" tabIndex={-1}>
         <section className="hero" aria-labelledby="hero-title">
-          <div className="hero-decoration" aria-hidden="true"><span/><span/><span/></div>
+          <div className="hero-decoration" aria-hidden="true"><span/></div>
           <div className="hero-copy">
             <div className="eyebrow"><span/> Build · Showcase · Evolve</div>
-            <h1 id="hero-title">Your Developer Identity,<br/><em>Crafted with Purpose.</em></h1>
-            <p>Create a distinct portfolio, showcase real work, and build your developer presence with intention.</p>
+            <h1 id="hero-title">Your Developer Identity,<br/><em>On your terms.</em></h1>
+            <p>Build a portfolio that shows what you made, how you worked, and what you want to build next.</p>
             <div className="hero-actions">
               <ActionLink href={getAuthHref()}>Create Your Portfolio</ActionLink>
-              <ActionLink href="#showcase" kind="outline">Explore Portfolios</ActionLink>
+              <ActionLink href="/explore" kind="outline">Explore Portfolios</ActionLink>
             </div>
           </div>
           <ProductDemo />
         </section>
 
-        <section className="problem-solution" aria-label="Why Kadmeion">
-          <div className="statement">
-            <span className="statement-icon"><Icon name="target" size={24}/></span>
-            <div><h2>The Challenge</h2><p>Your work lives across platforms, making it harder to present a complete, professional identity.</p></div>
-          </div>
-          <div className="statement">
-            <span className="statement-icon warm"><Icon name="layers" size={24}/></span>
-            <div><h2>The Kadmeion Solution</h2><p>One considered place for projects, skills and the portfolio experiences you choose to share.</p></div>
-          </div>
-        </section>
-
         <section className="showcase section" id="showcase" aria-labelledby="showcase-title">
-          <div className="section-heading"><div><div className="eyebrow"><span/> Showcase</div><h2 id="showcase-title">Make your work the story.</h2></div>
-            <a href="#project-examples" className="inline-link">Explore the showcase <Icon name="arrow" size={16}/></a></div>
-          <p className="example-disclosure">Illustrative project cards from the approved visual concept; not a directory of verified public portfolios.</p>
-          <div className="project-grid" id="project-examples">
-            {projectCards.map(card=><article className="project-card" key={card.name}>
-              <span className={'project-icon '+card.tone} aria-hidden="true">{card.symbol}</span>
+          <div className="section-heading">
+            <h2 id="showcase-title">Real Work from Developers.</h2>
+            <a href="/explore" className="inline-link">Explore the showcase <Icon name="arrow" size={16}/></a>
+          </div>
+          <p className="example-disclosure">Independent projects with public source code.</p>
+          <div className="project-grid">
+            {projectExamples.map(project=><article className="project-card" key={project.name}>
+              <span className="statement-icon"><Icon name="code" size={22}/></span>
               <div className="project-copy">
-                <h3>{card.name}</h3><p className="project-type">{card.type}</p>
-                <p>{card.summary}</p>
-                <div className="tag-row">{card.tags.map(tag=><span className="tag" key={tag}>{tag}</span>)}</div>
+                <h3><a href={project.href}>{project.name} <span aria-hidden="true">↗</span></a></h3>
+                <p>{project.summary}</p>
               </div>
             </article>)}
           </div>
         </section>
 
-        <section className="template-strip" id="templates" aria-labelledby="templates-heading">
-          <span className="strip-icon"><Icon name="layers" size={24}/></span>
-          <div className="template-copy"><h2 id="templates-heading">Start Faster with Templates.</h2>
-            <p>Curated portfolio compositions, with space for your own voice and work.</p></div>
-          <div className="template-thumbnails" aria-label="Illustrative template arrangements">
-            <span className="mini-template one" aria-hidden="true"/><span className="mini-template two" aria-hidden="true"/><span className="mini-template three" aria-hidden="true"/>
+        <section className="landing-problem section" aria-labelledby="problem-title">
+          <div><h2 id="problem-title">The Challenge</h2>
+            <p className="landing-lead">A repository shows the code. Where do you tell the rest of the story?</p></div>
+          <p>Your decisions, responsibilities, demos, and lessons learned can end up across several platforms. Give visitors one place to understand the work and see what you contributed.</p>
+        </section>
+
+        <section className="landing-value section" aria-labelledby="value-title">
+          <div><h2 id="value-title">The Kadmeion Solution</h2>
+            <p className="landing-lead">Give your work a place of its own.</p>
+            <p>Bring your projects, skills, and case studies together. Choose a template, edit privately, and decide what to share.</p>
+            <a id="templates" className="inline-link" href="/templates">Browse templates <Icon name="arrow" size={16}/></a>
           </div>
-          <a className="outline-small" href={getAuthHref()}>Create your portfolio <Icon name="arrow" size={16}/></a>
+          <div className="template-thumbnails" aria-hidden="true">
+            <span className="mini-template demo-template-front"><strong>Selected work</strong><span/></span>
+            <span className="mini-template demo-template-back"><strong>Portfolio</strong><span/></span>
+          </div>
         </section>
 
         <section className="steps section" aria-labelledby="steps-heading">
-          <div><div className="eyebrow"><span/> How it works</div><h2 id="steps-heading">Your Portfolio in Three Simple Steps.</h2></div>
-          <div className="step-grid">
-            <div className="step"><span className="step-icon"><Icon name="user" size={23}/></span><p><strong>1. Set Up</strong><span>Create your private developer profile.</span></p></div>
-            <div className="step"><span className="step-icon warm"><Icon name="layers" size={23}/></span><p><strong>2. Build</strong><span>Add real projects and shape your portfolio.</span></p></div>
-            <div className="step"><span className="step-icon"><Icon name="rocket" size={23}/></span><p><strong>3. Share & Grow</strong><span>Publish only after the release is verified.</span></p></div>
-          </div>
-        </section>
-
-        <section className="connections-strip" aria-label="Developer activity connections">
-          <span className="strip-icon"><Icon name="activity" size={23}/></span>
-          <div><h2>Bring Your Developer Activity Together.</h2><p>Optional platform connections are planned; no account sync is implied here.</p></div>
-          <div className="platform-tags" aria-label="Possible future integrations"><span>GitHub</span><span>LeetCode</span><span>Codeforces</span><span>HackerRank</span><span>Kaggle</span><span>Hugging Face</span></div>
+          <h2 id="steps-heading">Your Portfolio in Three Simple Steps.</h2>
+          <ol className="step-grid">
+            <li className="step"><Icon name="user" size={23}/><div><h3>Set up your profile</h3><p>Write a short introduction and choose which details you want to share.</p></div></li>
+            <li className="step"><Icon name="layers" size={23}/><div><h3>Build your portfolio</h3><p>Add projects, choose a layout, and preview your draft as you go.</p></div></li>
+            <li className="step"><Icon name="rocket" size={23}/><div><h3>Decide what to share</h3><p>Review your work and choose what to publish when it is ready.</p></div></li>
+          </ol>
         </section>
 
         <section className="faq section" aria-labelledby="faq-heading">
-          <div><div className="eyebrow"><span/> FAQ</div><h2 id="faq-heading">Common Questions.</h2></div>
+          <h2 id="faq-heading">Common Questions.</h2>
           <div className="faq-items">{faqs.map(([question,answer])=>
             <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}
           </div>
         </section>
         <section className="closing-cta" aria-labelledby="closing-heading">
-          <div><h2 id="closing-heading">Build Your Developer Identity Today.</h2>
-            <p>Create a portfolio that represents your work, your growth, and what you build next.</p></div>
+          <h2 id="closing-heading">Build Your Developer Identity Today.</h2>
           <ActionLink href={getAuthHref()} kind="outline">Create Your Portfolio</ActionLink>
           <div className="closing-pattern" aria-hidden="true"/>
         </section>

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {attestAccountExitHostDenial,probeHostRevocation,verifyReleaseWithdrawal} from
+import {createServer} from 'node:http';
+import {once} from 'node:events';
+import {attestAccountExitHostDenial,probeHostRevocation,verifyReleaseWithdrawal,verifyReviewerHostWithdrawal} from
   '../../packages/storage-adapters/src/host-revocation-probe.ts';
 
 const input={origin:'https://kadmeion.vercel.app',
@@ -102,14 +104,15 @@ test('release withdrawal proves live bytes first and blocks all paths after the 
   const http:typeof fetch=async(url,options)=>{
     if(!withdrawn){
       assert.equal(new URL(String(url)).pathname,input.canonicalPath);
-      assert.equal(options?.method,'GET');
-      return new Response(html,{headers:{'Content-Type':'text/html','Cache-Control':'no-store'}});
+      assert.ok(options?.method==='GET'||options?.method==='HEAD');
+      return new Response(options?.method==='HEAD'?null:html,
+        {headers:{'Content-Type':'text/html','Cache-Control':'no-store'}});
     }
     return response(404,{},options?.method==='HEAD'?'':'Not found');
   };
   const observation=await verifyReleaseWithdrawal(input,sha,async()=>{withdrawn=true;},http);
   assert.equal(withdrawn,true);
-  assert.equal(observation.observedHttpRequests,7);
+  assert.equal(observation.observedHttpRequests,8);
   assert.equal(observation.directPathsChecked,2);
 });
 
@@ -138,14 +141,15 @@ test('withdrawal also fetches the exact previously reachable PNG bytes on each m
     const current=new URL(String(url)).pathname;
     calls.push((options?.method??'GET')+' '+current);
     if(withdrawn)return response(404,{},options?.method==='HEAD'?'':'Not found');
-    return new Response(current===path?png:html,{headers:{
+    return new Response(options?.method==='HEAD'?null:current===path?png:html,{headers:{
       'Content-Type':current===path?'image/png':'text/html','Cache-Control':'no-store'
     }});
   };
   const result=await verifyReleaseWithdrawal(withMedia,sha(html),async()=>{withdrawn=true;},http);
   assert.equal(result.liveAssetPathsVerified,1);
-  assert.equal(result.observedHttpRequests,10);
-  assert.deepEqual(calls.slice(0,2),['GET '+input.canonicalPath,'GET '+path]);
+  assert.equal(result.observedHttpRequests,12);
+  assert.deepEqual(calls.slice(0,4),['GET '+input.canonicalPath,
+    'HEAD '+input.canonicalPath,'GET '+path,'HEAD '+path]);
   assert.ok(calls.includes('HEAD '+path));
 });
 
@@ -204,4 +208,245 @@ test('account exit records a DB-scoped receipt only after exact canonical and di
     }
     assert.equal(recorded,!visible);
   }
+});
+
+
+const reviewerGrant='71111111-1111-4111-8111-111111111111';
+const reviewerSecret='c'.repeat(64);
+const mediaManifest='d'.repeat(64);
+const png=Buffer.from('89504e470d0a1a0a','hex');
+const pngSha=createHash('sha256').update(png).digest('hex');
+const reviewerCredentials=reviewerGrant+'.'+reviewerSecret;
+const reviewerRoute='/r/'+reviewerCredentials;
+const reviewerApi='/api/reviewer?review='+reviewerCredentials;
+const reviewerMedia=reviewerApi+'&manifest='+mediaManifest+'&asset='+pngSha;
+const reviewerHtml='<!doctype html><html lang="en"><head>'+
+  '<meta name="robots" content="noindex,nofollow,noarchive">'+
+  '<title>Private reviewer revision</title></head><body>'+
+  '<main><h1>Review-only frozen revision</h1>'+
+  '<img loading="lazy" decoding="async" src="'+reviewerMedia.replaceAll('&','&amp;')+
+  '" alt="Case study preview" width="1" height="1"></main></body></html>';
+const reviewerHtmlSha=createHash('sha256').update(reviewerHtml).digest('hex');
+
+async function reviewerHostFixture(options:{
+  keepMediaVisible?:boolean;tamperAlias?:boolean;cacheable?:boolean;invalidHead?:boolean;
+  bareNoindex?:boolean
+}={}) {
+  let revoked=false;
+  const visits:string[]=[];
+  const validHtml=options.bareNoindex
+    ?reviewerHtml.replace('content="noindex,nofollow,noarchive"','content="noindex"')
+    :reviewerHtml;
+  const host=createServer((req,res)=>{
+    const target=req.url??'';
+    const media=target===reviewerMedia;
+    visits.push((req.method??'GET')+' '+(media?'MEDIA':target===reviewerRoute?'FRIENDLY':
+      target===reviewerApi?'ALIAS':'INVALID'));
+    res.setHeader('Cache-Control',options.cacheable?'public, max-age=3600':
+      'private, no-store, max-age=0, must-revalidate');
+    res.setHeader('CDN-Cache-Control','no-store');
+    res.setHeader('Vercel-CDN-Cache-Control','no-store');
+    res.setHeader('Surrogate-Control','no-store');
+    res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+    res.setHeader('Referrer-Policy','no-referrer');
+    res.setHeader('X-Content-Type-Options','nosniff');
+    res.setHeader('Content-Security-Policy',
+      "default-src 'none'; script-src 'none'; object-src 'none'; img-src 'self'; connect-src 'none'");
+    if(target!==reviewerRoute&&target!==reviewerApi&&!media){
+      res.statusCode=500;res.end('Wrong route');return;
+    }
+    if(revoked&&(!media||!options.keepMediaVisible)){
+      res.statusCode=404;
+      res.setHeader('Content-Type','text/plain; charset=utf-8');
+      res.end('Not found');return;
+    }
+    res.statusCode=200;
+    res.setHeader('Content-Type',media?'image/png':'text/html; charset=utf-8');
+    if(options.invalidHead&&req.method==='HEAD')res.setHeader('X-Robots-Tag','index');
+    res.end(media?png:options.tamperAlias&&target===reviewerApi?
+      validHtml.replace('Review-only','Unverified') : validHtml);
+  });
+  host.listen(0,'127.0.0.1');
+  await once(host,'listening');
+  const port=(host.address() as {port:number}).port;
+  const close=()=>new Promise<void>(resolve=>host.close(()=>resolve()));
+  const input={
+    origin:'http://127.0.0.1:'+port,allowLocal:true,
+    grantId:reviewerGrant,rawToken:reviewerSecret,
+    expectedServedHtmlSha256:options.bareNoindex
+      ?createHash('sha256').update(validHtml).digest('hex'):reviewerHtmlSha,
+    assets:[{manifestSha256:mediaManifest,sha256:pngSha}]
+  };
+  return {input,visits,close,revoke:async()=>{revoked=true;},get revoked(){return revoked;}};
+}
+
+test('actual loopback reviewer delivery verifies both aliases, direct PNG, then GET/HEAD denial',
+  {timeout:15000},async()=>{
+  const fixture=await reviewerHostFixture();
+  try {
+    const receipt=await verifyReviewerHostWithdrawal(fixture.input,fixture.revoke);
+    assert.deepEqual(receipt,{
+      status:'REVIEWER_REVOKED_ON_SCOPED_PATHS',
+      observedHttpRequests:12,directPathsChecked:2,liveMediaVerified:1,
+      universalCacheErasureVerified:false,thirdPartyArchiveErasureVerified:false
+    });
+    assert.equal(fixture.revoked,true);
+    assert.deepEqual(fixture.visits,[
+      'GET FRIENDLY','HEAD FRIENDLY','GET ALIAS','HEAD ALIAS',
+      'GET MEDIA','HEAD MEDIA',
+      'GET FRIENDLY','HEAD FRIENDLY','GET ALIAS','HEAD ALIAS',
+      'GET MEDIA','HEAD MEDIA'
+    ]);
+    assert.ok(!JSON.stringify(receipt).includes(reviewerSecret),
+      'Raw reviewer credential must never appear in host proof receipt');
+    assert.ok(!JSON.stringify(receipt).includes(reviewerGrant),
+      'Reviewer grant identity must never appear in host proof receipt');
+  }finally{await fixture.close();}
+});
+
+test('reviewer host proof refuses a still-visible direct image even after page revocation',
+  {timeout:15000},async()=>{
+  const fixture=await reviewerHostFixture({keepMediaVisible:true});
+  try {
+    await assert.rejects(verifyReviewerHostWithdrawal(fixture.input,fixture.revoke),
+      {code:'STILL_VISIBLE'});
+    assert.equal(fixture.revoked,true);
+    assert.ok(fixture.visits.includes('GET MEDIA'));
+  }finally{await fixture.close();}
+});
+
+test('reviewer host refuses mismatched HTML, cacheable responses and invalid HEAD before revocation',
+  {timeout:20000},async()=>{
+  for(const options of [{tamperAlias:true},{cacheable:true},{invalidHead:true}]){
+    const fixture=await reviewerHostFixture(options);
+    try {
+      await assert.rejects(verifyReviewerHostWithdrawal(fixture.input,fixture.revoke),
+        {code:'RELEASE_NOT_OBSERVED'});
+      assert.equal(fixture.revoked,false,'Invalid live baseline must not trigger a destructive revoke');
+    }finally{await fixture.close();}
+  }
+});
+
+test('reviewer withdrawal validates grant, digest, media manifest and local origin before network or revoke',
+  async()=>{
+  const fixture=await reviewerHostFixture();
+  const invalid=[
+    {...fixture.input,grantId:'not-a-grant'},
+    {...fixture.input,rawToken:'a'},
+    {...fixture.input,expectedServedHtmlSha256:'not-a-digest'},
+    {...fixture.input,allowLocal:false},
+    {...fixture.input,assets:[...fixture.input.assets,...fixture.input.assets]},
+    {...fixture.input,assets:[{manifestSha256:'wrong',sha256:pngSha}]},
+    {...fixture.input,assets:[{manifestSha256:mediaManifest,sha256:'e'.repeat(64)}]}
+  ];
+  try{
+    for(const bad of invalid){
+      // Malformed and unverified media paths must be rejected before revoke;
+      // a different well-formed digest can reach the host and will fail there.
+      await assert.rejects(verifyReviewerHostWithdrawal(bad,fixture.revoke),
+        {code:bad===invalid[6]?'RELEASE_NOT_OBSERVED':'INVALID_INPUT'});
+      assert.equal(fixture.revoked,false);
+    }
+  }finally{await fixture.close();}
+});
+
+
+test('reviewer host verifier accepts the existing safe minimal noindex meta variant',
+  {timeout:15000},async()=>{
+  const fixture=await reviewerHostFixture({bareNoindex:true});
+  try{
+    const result=await verifyReviewerHostWithdrawal(fixture.input,fixture.revoke);
+    assert.equal(result.status,'REVIEWER_REVOKED_ON_SCOPED_PATHS');
+    assert.equal(result.liveMediaVerified,1);
+    assert.equal(fixture.revoked,true);
+  }finally{await fixture.close();}
+});
+
+
+test('withdrawal rejects unsafe live HEAD responses before touching the release pointer',async()=>{
+  const html='<!doctype html><title>Live before withdrawal</title>';
+  const digest=createHash('sha256').update(html).digest('hex');
+  const png=Buffer.from('89504e470d0a1a0a','hex');
+  const pngSha=createHash('sha256').update(png).digest('hex');
+  const pngPath='/assets/'+pngSha+'.png';
+  const candidate={...input,candidateDirectPaths:[pngPath],
+    liveAssets:[{path:pngPath,sha256:pngSha}]};
+  let withdrawals=0;
+  for(const failOn of ['CANONICAL_HEAD','MEDIA_HEAD']){
+    let observed=0;
+    const http:typeof fetch=async(url,options)=>{
+      observed++;
+      const isMedia=new URL(String(url)).pathname===pngPath;
+      const isHead=options?.method==='HEAD';
+      const rejected=isHead&&(failOn==='CANONICAL_HEAD'?!isMedia:isMedia);
+      return new Response(isHead?null:isMedia?png:html,{
+        headers:{'Content-Type':isMedia?'image/png':'text/html',
+          'Cache-Control':rejected?'public, max-age=600':'private, no-store'}
+      });
+    };
+    await assert.rejects(verifyReleaseWithdrawal(candidate,digest,async()=>{withdrawals++;},http),
+      {code:'RELEASE_NOT_OBSERVED'});
+    assert.ok(observed>=2);
+  }
+  assert.equal(withdrawals,0,'Unsafe HEAD metadata cannot trigger destructive withdrawal');
+});
+
+test('C11 canonical public API alias and exact media scope are observed; wrong aliases reject before HTTP',async()=>{
+  const alias='/api/public-portfolio?handle=release_owner&slug=release-fixture';
+  const asset=alias+'&manifest='+'a'.repeat(64)+'&asset='+'b'.repeat(64);
+  const calls:string[]=[];
+  const http:typeof fetch=async(url,init)=>{
+    const target=new URL(String(url));calls.push(init?.method+' '+target.pathname+target.search);
+    return response(404,{},init?.method==='HEAD'?'':'Not found');
+  };
+  const result=await probeHostRevocation({...input,candidateDirectPaths:[alias,asset]},http);
+  assert.equal(result.observedHttpRequests,6);
+  assert.deepEqual(calls,[...['GET','HEAD'].map(m=>m+' '+input.canonicalPath),
+    ...['GET','HEAD'].map(m=>m+' '+alias),...['GET','HEAD'].map(m=>m+' '+asset)]);
+  for(const invalid of [alias.replace('release_owner','foreign_owner'),alias+'&slug=another',
+    alias+'&manifest='+'a'.repeat(64)+'&asset='+'b'.repeat(64)+'&asset='+'c'.repeat(64)]){
+    let reached=false;
+    await assert.rejects(probeHostRevocation({...input,candidateDirectPaths:[invalid]},async()=>{
+      reached=true;return response();
+    }),{code:'INVALID_INPUT'});
+    assert.equal(reached,false);
+  }
+});
+test('C11 deny receipt rejects positive Age and a HEAD stream with empty prefix then bytes',async()=>{
+  await assert.rejects(probeHostRevocation(input,async()=>response(404,{Age:'1'})),{code:'UNSAFE_HEADERS'});
+  let calls=0;
+  const valid=()=>response(404);
+  const http:typeof fetch=async(_url,init)=>{
+    calls++;
+    if(init?.method!=='HEAD')return valid();
+    return new Response(new ReadableStream<Uint8Array>({start(c){
+      c.enqueue(new Uint8Array(0));c.enqueue(Uint8Array.of(1));c.close();
+    }}),{status:404,headers:{
+      'Content-Type':'text/plain','Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'
+    }});
+  };
+  await assert.rejects(probeHostRevocation(input,http),{code:'UNSAFE_BODY'});
+  assert.equal(calls,2,'A false HEAD receipt must stop observation before further paths');
+});
+test('C11 stalled HEAD cannot produce a successful revocation or hold observation indefinitely',{timeout:9000},async()=>{
+  let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
+  let canceled=false;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const http:typeof fetch=async(_url,init)=>{
+      if(init?.method!=='HEAD')return response();
+      const body=new ReadableStream<Uint8Array>({
+        start(c){controller=c;c.enqueue(new Uint8Array(0));},
+        cancel(){canceled=true;}
+      });
+      return new Response(body,{status:404,headers:{
+        'Content-Type':'text/plain','Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'
+      }});
+    };
+    const watchdog=new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('Revocation observation exceeded deadline')),7000);
+    });
+    await assert.rejects(Promise.race([probeHostRevocation(input,http),watchdog]),{code:'UNSAFE_BODY'});
+    assert.equal(canceled,true);
+  }finally{if(timer!==undefined)clearTimeout(timer);try{controller?.close();}catch{}}
 });
