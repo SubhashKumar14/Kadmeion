@@ -273,18 +273,22 @@ function base64(bytes:Uint8Array):string {
 }
 // An injected transport can return a stream which ignores fetch abort. Bound
 // the body read as well as the request; never await tee cancellation.
-async function readExportChunk(reader:ReadableStreamDefaultReader<Uint8Array>,
-  signal:AbortSignal):Promise<ReadableStreamReadResult<Uint8Array>>{
+function checkStreamDeadline(signal:AbortSignal,deadline:number):void {
   signal.throwIfAborted();
+  if(performance.now()>=deadline)throw new DOMException('Response deadline exceeded','TimeoutError');
+}
+async function readExportChunk(reader:ReadableStreamDefaultReader<Uint8Array>,
+  signal:AbortSignal,deadline:number):Promise<ReadableStreamReadResult<Uint8Array>>{
+  checkStreamDeadline(signal,deadline);
   let onAbort:()=>void=()=>{};
   const aborted=new Promise<never>((_,reject)=>{
     onAbort=()=>reject(signal.reason);
     signal.addEventListener('abort',onAbort,{once:true});
   });
-  try{const chunk=await Promise.race([reader.read(),aborted]);signal.throwIfAborted();return chunk;}
+  try{const chunk=await Promise.race([reader.read(),aborted]);checkStreamDeadline(signal,deadline);return chunk;}
   finally{signal.removeEventListener('abort',onAbort);}
 }
-async function boundedBytes(response:Response,max:number,signal:AbortSignal):Promise<Uint8Array> {
+async function boundedBytes(response:Response,max:number,signal:AbortSignal,deadline=performance.now()+15_000):Promise<Uint8Array> {
   const length=response.headers.get('content-length');
   requireCondition(response.body!==null,'PROVIDER_UNAVAILABLE','Missing provider response body.');
   const reader=response.body.getReader(),parts:Uint8Array[]=[];
@@ -295,7 +299,7 @@ async function boundedBytes(response:Response,max:number,signal:AbortSignal):Pro
     requireCondition(length===null||Number(length)<=max,'LIMIT_EXCEEDED',
       'Provider response exceeds export limits.');
     while(true){
-      const {done,value}=await readExportChunk(reader,signal);
+      const {done,value}=await readExportChunk(reader,signal,deadline);
       if(done)break;
       requireCondition(++chunks<=65_536,'LIMIT_EXCEEDED','Provider response exceeds export chunk limit.');
       requireCondition(value instanceof Uint8Array,'INTEGRITY','Invalid provider response bytes.');
@@ -340,6 +344,7 @@ export class SupabasePrivateAccountDataExporter {
   private async request(path:string,max:number,body?:Record<string,unknown>):Promise<{bytes:Uint8Array;headers:Headers}> {
     const jwt=await this.accessToken();
     requireCondition(typeof jwt==='string'&&jwt.length>0,'AUTH_EXPIRED','Sign in to export data.');
+    const deadline=performance.now()+15_000;
     const signal=AbortSignal.timeout(15_000);
     let response:Response;
     try {
@@ -359,7 +364,7 @@ export class SupabasePrivateAccountDataExporter {
       else if(path.startsWith('/rest/v1/rpc/')){
         // Never surface arbitrary PostgREST details, and bound error bodies.
         try{
-          const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192,signal)));
+          const raw:unknown=JSON.parse(decoder.decode(await boundedBytes(response,8192,signal,deadline)));
           if(object(raw)&&raw.code==='55000'&&raw.message==='PROFILE_ASSET_EXPORT_VERSION_REQUIRED'){
             code='VERSION_REQUIRED';message='Use the profile-inclusive version 2 export; this legacy scope cannot cover the account.';
           }else if(object(raw)&&raw.code==='54000'&&
@@ -371,7 +376,7 @@ export class SupabasePrivateAccountDataExporter {
       void response.body?.cancel().catch(()=>{});
       throw new PrivateAccountExportError(code,message);
     }
-    return {bytes:await boundedBytes(response,max,signal),headers:response.headers};
+    return {bytes:await boundedBytes(response,max,signal,deadline),headers:response.headers};
   }
   private async json(path:string,max:number,body?:Record<string,unknown>):Promise<unknown> {
     const {bytes}=await this.request(path,max,body);
