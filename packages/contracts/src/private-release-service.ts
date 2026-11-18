@@ -67,6 +67,10 @@ function historyInstant(value:unknown):bigint|null{
   }
   return BigInt(wall-offset*60_000)*1000n+BigInt((m[2]??'').padEnd(6,'0'));
 }
+/** PostgreSQL timestamp syntax without Date.parse calendar normalization. */
+export function isPrivateReleaseTimestamp(value:unknown):value is string{
+  return historyInstant(value)!==null;
+}
 function comesAfter(at:bigint,id:string,previousAt:bigint,previousId:string):boolean{
   return at<previousAt||(at===previousAt&&id>previousId);
 }
@@ -163,6 +167,9 @@ export async function fetchBoundedPrivateReleaseRpc(fetcher:typeof fetch,url:str
       response=received;
       if(controller.signal.aborted||performance.now()>=expiresAt||received.redirected||received.headers.has('location')||
          (received.url&&received.url!==url)){cancelHistory(received.body);throw unavailable();}
+      // PostgREST JSON RPCs return 200 for a complete receipt. Do not
+      // treat a partial (206) or asynchronous (202) response as a commit.
+      if(received.ok&&received.status!==200){cancelHistory(received.body);throw unavailable();}
       const body=await historyJson(received,controller.signal,expiresAt).catch(()=>null);
       if(controller.signal.aborted||performance.now()>=expiresAt)throw unavailable();
       return {ok:received.ok,status:received.status,body};
@@ -203,7 +210,7 @@ export class SupabasePrivateReleaseService {
 
   async freeze(portfolioId: string, operationId: string, revision: number,
       visibilityIntent: FrozenVisibilityIntent): Promise<PrivateFrozenRequest> {
-    if (!UUID.test(portfolioId) || !UUID.test(operationId) ||
+    if (!uuid(portfolioId) || !uuid(operationId) ||
         !Number.isSafeInteger(revision) || revision < 1 ||
         (visibilityIntent !== 'PUBLIC' && visibilityIntent !== 'UNLISTED'))
       throw new ContractError('VALIDATION', 'Invalid pinned release request.');
@@ -231,7 +238,9 @@ export class SupabasePrivateReleaseService {
       throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Freeze could not be confirmed.');
     }
     const ack=response.body;
-    if (!record(ack) || !uuid(ack.requestId) || ack.portfolioId!==portfolioId ||
+    if (!record(ack) || !exactKeys(ack,['requestId','portfolioId','revision','snapshotSha256',
+        'visibilityIntent','status','publicUrl','alreadyFrozen']) ||
+        !canonicalUuid(ack.requestId) || ack.portfolioId!==portfolioId ||
         ack.revision!==revision || typeof ack.snapshotSha256!=='string' || !SHA256.test(ack.snapshotSha256) ||
         ack.visibilityIntent!==visibilityIntent || ack.status!=='FROZEN' ||
         ack.publicUrl!==null || typeof ack.alreadyFrozen!=='boolean')
