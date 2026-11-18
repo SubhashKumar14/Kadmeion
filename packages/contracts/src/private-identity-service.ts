@@ -385,30 +385,48 @@ export class SupabasePrivateIdentityService {
       id?:unknown;email_confirmed_at?:unknown;
       user_metadata?:{handle_candidate?:unknown}|null;
     }|null;
-    if (!raw || typeof raw.id!=='string' || !/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(raw.id))
+    if (!raw || typeof raw.id!=='string' || !UUID.test(raw.id))
       throw new PrivateIdentityError('AUTH_EXPIRED','Unable to verify the current account.');
+    const owner=raw.id;
     const emailVerified=typeof raw.email_confirmed_at==='string' && raw.email_confirmed_at.length>0;
-    const rows=await this.request('/rest/v1/profiles?select=user_id,handle&user_id=eq.'+raw.id,'GET') as
-      Array<{user_id?:unknown;handle?:unknown}>|null;
-    if (!Array.isArray(rows) || rows.length!==1 || rows[0]?.user_id!==raw.id)
-      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record is missing.');
-    if (typeof rows[0].handle==='string')
-      return {status:'claimed',handle:normalizeHandle(rows[0].handle),emailVerified};
+    const profilePath='/rest/v1/profiles?select=user_id,handle&user_id=eq.'+owner;
+    const readHandle=async():Promise<string|null>=>{
+      const rows=await this.request(profilePath,'GET') as Array<{user_id?:unknown;handle?:unknown}>|null;
+      if(!Array.isArray(rows)||rows.length!==1||rows[0]?.user_id!==owner)
+        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record is missing.');
+      const value=rows[0].handle;
+      if(value===null)return null;
+      try{
+        if(typeof value==='string'&&normalizeHandle(value)===value)return value;
+      }catch{/* An invalid stored handle is not an unclaimed profile. */}
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','The private identity record could not be verified.');
+    };
+    const existing=await readHandle();
+    if(existing!==null)return {status:'claimed',handle:existing,emailVerified};
     const candidate=raw.user_metadata?.handle_candidate;
-    if (typeof candidate!=='string')return {status:'needs_handle',emailVerified};
+    if(typeof candidate!=='string')return {status:'needs_handle',emailVerified};
     let handle:string;
     try { handle=normalizeHandle(candidate); }
     catch { return {status:'needs_handle',emailVerified}; }
     try {
-      const confirmed=await this.request('/rest/v1/profiles?user_id=eq.'+raw.id,'PATCH',{handle}) as
+      // The server performs this null-only update atomically. A concurrent
+      // initial claim or explicit rename must never be overwritten by metadata.
+      const confirmed=await this.request('/rest/v1/profiles?user_id=eq.'+owner+'&handle=is.null','PATCH',{handle}) as
         Array<{user_id?:unknown;handle?:unknown}>|null;
-      if (!Array.isArray(confirmed)||confirmed.length!==1||
-          confirmed[0]?.user_id!==raw.id||confirmed[0]?.handle!==handle)
-        throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Handle was not durably acknowledged.');
-      return {status:'claimed',handle,emailVerified};
+      if(Array.isArray(confirmed)&&confirmed.length===1&&
+          confirmed[0]?.user_id===owner&&confirmed[0]?.handle===handle)
+        return {status:'claimed',handle,emailVerified};
+      if(Array.isArray(confirmed)&&confirmed.length===0){
+        const winner=await readHandle();
+        if(winner!==null)return {status:'claimed',handle:winner,emailVerified};
+      }
+      throw new PrivateIdentityError('PROVIDER_UNAVAILABLE','Handle was not durably acknowledged.');
     } catch(error) {
-      if(error instanceof PrivateIdentityError && error.code==='HANDLE_CONFLICT')
+      if(error instanceof PrivateIdentityError && error.code==='HANDLE_CONFLICT'){
+        const winner=await readHandle();
+        if(winner!==null)return {status:'claimed',handle:winner,emailVerified};
         return {status:'handle_conflict',requestedHandle:handle,emailVerified};
+      }
       throw error;
     }
   }
