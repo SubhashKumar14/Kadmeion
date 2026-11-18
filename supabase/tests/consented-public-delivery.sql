@@ -312,7 +312,9 @@ select is(public.collect_portfolio_analytics_view(
  'IGNORED','C13 late disabled receipt cannot recreate aggregate');
 reset role;
 select set_config('request.jwt.claims','{}',true);
-select set_config('request.jwt.claim.role','authenticated',true);
+-- Restore the original service-role JWT claim; the existing C11 test switches
+-- SQL roles after privacy withdrawal but intentionally retains this claim.
+select set_config('request.jwt.claim.role','service_role',true);
 -- End C13 extension; original C11 withdrawal tests continue unchanged.
 
 -- Withdraw just one surface; all old immutable owner portfolio routes must
