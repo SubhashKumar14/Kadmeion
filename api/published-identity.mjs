@@ -102,9 +102,42 @@ function parseIdentityRoute(raw) {
   return {handle, slug};
 }
 
+// Negotiate only a bounded, explicit browser HTML preference. API callers
+// without it continue to receive the existing generic plain-text status.
+function wantsIdentityStatusHtml(req) {
+  const accept = req.headers?.accept;
+  if (typeof accept !== 'string' || accept.length > 2048) return false;
+  return accept.split(',').some(entry => {
+    const [type, ...params] = entry.trim().toLowerCase().split(';');
+    if (type.trim() !== 'text/html') return false;
+    const quality = params.map(value => value.trim()).filter(value => value.startsWith('q='));
+    if (quality.length === 0) return true;
+    return quality.length === 1 && /^q=(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?)$/.test(quality[0]) && Number(quality[0].slice(2)) > 0;
+  });
+}
+
+function renderIdentityStatus(status) {
+  const unavailable = status === 503;
+  const title = unavailable ? 'Public page temporarily unavailable' : 'Public page unavailable';
+  const message = unavailable
+    ? 'The public delivery service could not confirm this page. Retry this address or explore other work.'
+    : 'This address may be private, withdrawn, unpublished or unavailable.';
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title +
+    ' · Kadmeion</title><meta name="robots" content="noindex,nofollow,noarchive"><style>' + projectionCss +
+    '</style></head><body>' + publicShell + '<main id="published-content" tabindex="-1">' +
+    '<span class="eyebrow">Public delivery · Content withheld</span><h1>' + title + '</h1><p>' + message + '</p>' +
+    '<p>For privacy, this response does not confirm whether an account or project exists.</p>' +
+    '<div class="projection-links"><a href="/">Kadmeion home</a><a href="/explore">Explore portfolios</a>' +
+    (unavailable ? '<a href="">Retry this address</a>' : '') + '</div></main></body></html>';
+}
+
 export async function handlePublishedIdentity(req, res, {env = process.env, http = fetch} = {}) {
   function reply(status, body) {
+    const statusHtml = (status === 404 || status === 503) && wantsIdentityStatusHtml(req);
+    if (statusHtml) body = renderIdentityStatus(status);
     res.statusCode = status;
+    res.setHeader('Vary', 'Accept');
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
     res.setHeader('CDN-Cache-Control', 'no-store');
@@ -115,8 +148,8 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
     res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', status===200 ? projectionCsp : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
-    res.setHeader('Content-Type', status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8');
+    res.setHeader('Content-Security-Policy', (status===200 || statusHtml) ? projectionCsp : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+    res.setHeader('Content-Type', (status === 200 || statusHtml) ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8');
     // GET and HEAD attest the same representation; HEAD never sends its body.
     res.setHeader('Content-Length', String(Buffer.byteLength(body, 'utf8')));
     res.end(req.method === 'HEAD' ? '' : body);
@@ -163,7 +196,8 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
         headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
         body: JSON.stringify(slug ? {p_handle: handle, p_slug: slug} : {p_handle: handle}), signal
       });
-      if (expired() || !upstream.ok || upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
+      if (expired() || upstream.status !== 200 || upstream.headers.has('content-range') ||
+          upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
         cancelRpcBody(upstream.body);
         throw Error('Public projection not confirmed');
       }
