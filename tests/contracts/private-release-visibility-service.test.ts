@@ -170,3 +170,49 @@ test('unlisted consent is an owner request with no delivery authority',async()=>
   assert.deepEqual(await client(async()=>Response.json(used)).requestUnlistedPublication(
     request,1,operation,'PUBLISH UNLISTED'),used);
 });
+
+test('C11 pointer receipt parser bounds bytes, chunks and exact declared identity length before acknowledgement',async()=>{
+  const body=JSON.stringify(state);
+  for(const value of [
+    new Response(body,{headers:{'content-type':'text/html'}}),
+    new Response(body,{headers:{'content-type':'application/json','content-length':'1'}}),
+    new Response(body,{headers:{'content-type':'application/json','content-length':'16385'}}),
+    new Response(Uint8Array.of(255),{headers:{'content-type':'application/json'}}),
+    new Response(new Uint8Array(16385),{headers:{'content-type':'application/json'}}),
+    new Response(new ReadableStream<Uint8Array>({start(c){
+      for(let n=0;n<1025;n++)c.enqueue(new Uint8Array());
+      c.enqueue(new TextEncoder().encode(body));c.close();
+    }}),{headers:{'content-type':'application/json'}})
+  ]){
+    let calls=0;
+    await assert.rejects(client(async()=>{calls++;return value}).read(portfolio),{code:'INVALID_ACK'});
+    assert.equal(calls,1);
+  }
+  assert.deepEqual(await client(async()=>new Response(body,{headers:{'content-type':'application/json',
+    'content-length':String(new TextEncoder().encode(body).length)}})).read(portfolio),state);
+});
+test('C11 redirected or wrong final RPC URL cannot acknowledge a pointer change',async()=>{
+  for(const patch of [{redirected:true},{url:'https://other.invalid/rest/v1/rpc/owner_block_private_release_pointer'}]){
+    let calls=0;
+    const response=Response.json(blocked);
+    for(const [name,value] of Object.entries(patch))Object.defineProperty(response,name,{value});
+    await assert.rejects(client(async()=>{calls++;return response}).block(portfolio,operation),{code:'PROVIDER_UNAVAILABLE'});
+    assert.equal(calls,1);
+  }
+});
+test('C11 pointer RPC deadline covers pending token and late body cancellation without duplicate mutation',
+  {timeout:13500},async()=>{
+    let calls=0,canceled=0;
+    const pendingToken=new SupabasePrivateReleasePointerService(base,'publishable',
+      ()=>new Promise<string|null>(()=>{}),async()=>{calls++;return Response.json(blocked)});
+    const pendingBody=client(async()=>{calls++;return new Response(new ReadableStream<Uint8Array>({
+      pull(){return new Promise<void>(()=>{})},
+      cancel(){canceled++;return new Promise<void>(()=>{})}
+    }),{headers:{'content-type':'application/json'}})});
+    const start=Date.now();
+    await Promise.all([
+      assert.rejects(pendingToken.block(portfolio,operation),{code:'PROVIDER_UNAVAILABLE'}),
+      assert.rejects(pendingBody.block(portfolio,operation),{code:'PROVIDER_UNAVAILABLE'})
+    ]);
+    assert.ok(Date.now()-start<12500);assert.equal(calls,1);assert.equal(canceled,1);
+  });
