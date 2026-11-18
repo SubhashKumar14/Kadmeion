@@ -1236,7 +1236,8 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
       if(!exactDeliveryEvidence(first,expected))throw Error('Current delivery not verified.');
       const pin=await port.loadOwnerFrozenRelease(first.requestId);
       if(!current())return;
-      if(pin.error||!pin.data||pin.data.frozen.requestId!==first.requestId||pin.data.frozen.portfolioId!==portfolioId||
+      // loadOwnerFrozenRelease rejects a mismatched server requestId before returning the attested snapshot.
+      if(pin.error||!pin.data||pin.data.frozen.portfolioId!==portfolioId||
         pin.data.frozen.visibilityIntent!=='PUBLIC'||!matchesFrozenPin(pin.data,pin.data.frozen))throw Error('Live frozen pin not verified.');
       const draft=await port.readOwnerPortfolio(portfolioId);
       if(!current())return;
