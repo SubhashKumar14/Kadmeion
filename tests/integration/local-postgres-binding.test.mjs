@@ -33,6 +33,9 @@ import {publishConsentedUnlistedRelease, verifyActivatedUnlistedRelease}
 import {handleReviewerRequest} from '../../api/reviewer.mjs';
 import {handlePublicPortfolio} from '../../api/public-portfolio.mjs';
 import {handleUnlistedRequest} from '../../api/unlisted.mjs';
+import {handleOwnerPublishRelease} from '../../supabase/functions/publish/index.ts';
+import {SupabasePrivateReleaseService} from '../../packages/contracts/src/private-release-service.ts';
+import {SupabasePrivateModerationService} from '../../packages/contracts/src/private-moderation-service.ts';
 
 function localSettings(){
   assert.equal(process.env.KADMEION_LOCAL_INTEGRATION,'1',
@@ -530,8 +533,8 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     // This branch is a disposable integration diagnostic, not an owner branch edit.
     const authorityRpc=(operation,body,credentials={key:cfg.service,jwt:cfg.service})=>
       api('/rest/v1/rpc/'+operation,{method:'POST',...credentials,body});
-    const publishPublic=async(consent,requestId,operationId)=>{
-      const expectedConsent={portfolioId,requestId,operationId,visibility:'PUBLIC'};
+    const publishPublic=async(consent,requestId,operationId,targetPortfolioId=portfolioId)=>{
+      const expectedConsent={portfolioId:targetPortfolioId,requestId,operationId,visibility:'PUBLIC'};
       let acknowledgements=0;
       const result=await publishConsentedUnlistedRelease(consent.intentId,{
         ...verificationPorts,expectedConsent,
@@ -551,20 +554,20 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
             // The exact unacknowledged PUBLIC canary must reject the old ACK,
             // even using the trusted service role; no insecure compatibility path.
             const old=await authorityRpc('service_acknowledge_unlisted_release',{
-              p_portfolio_id:portfolioId,p_intent_id:consent.intentId,p_html_sha256:before.storedHtmlSha256
+              p_portfolio_id:targetPortfolioId,p_intent_id:consent.intentId,p_html_sha256:before.storedHtmlSha256
             });
             assert.equal(old.ok,false,'Legacy PUBLIC ACK is prohibited');
             assert.equal(old.data?.code,'40001');
             for(const credentials of [{key:cfg.anon,jwt:owner.jwt},{key:cfg.anon,jwt:cfg.anon}]){
               const read=await authorityRpc('service_read_current_public_delivery_receipt',{
-                p_portfolio_id:portfolioId,p_intent_id:consent.intentId
+                p_portfolio_id:targetPortfolioId,p_intent_id:consent.intentId
               },credentials);
               assert.equal(read.ok,false,'Authority receipt is service-only');
               const denied=await authorityRpc(operation,body,credentials);
               assert.equal(denied.ok,false,'Authority ACK is service-only');
             }
             assert.deepEqual(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
-              p_portfolio_id:portfolioId,p_intent_id:consent.intentId
+              p_portfolio_id:targetPortfolioId,p_intent_id:consent.intentId
             }),'Read unchanged C11 canary'),before);
             const after=ok(await authorityRpc(operation,body),'C11 atomic acknowledge');
             assert.equal(after.deliveryEpoch,before.deliveryEpoch+1);
@@ -578,14 +581,14 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       assert.equal(result.status,'DELIVERY_ACKNOWLEDGED');
       assert.equal(acknowledgements,1);
       const receipt=result.authoritativePublicReceipt;
-      assert.equal(receipt.portfolioId,portfolioId);
+      assert.equal(receipt.portfolioId,targetPortfolioId);
       assert.equal(receipt.requestId,requestId);
       assert.equal(receipt.operationId,operationId);
       assert.equal(receipt.visibility,'PUBLIC');
       assert.equal(receipt.intentId,consent.intentId);
       assert.equal(result.observedPublicDelivery.observedHttpRequests,4+2*receipt.assetHashes.length);
       assert.deepEqual(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
-        p_portfolio_id:portfolioId,p_intent_id:consent.intentId
+        p_portfolio_id:targetPortfolioId,p_intent_id:consent.intentId
       }),'Read acknowledged authority'),receipt);
       return receipt;
     };
@@ -763,6 +766,45 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
       assert.deepEqual(bytes,method==='HEAD'?Buffer.alloc(0):Buffer.from(secondPublicArtifact.files[1].bytes));
       assert.equal((await fetch(staleManifest,{method})).status,404,'Stale manifest cannot read replacement media');
     }
+
+    // R10 C14 report intake uses the actual local PUBLIC handler and durable RPCs,
+    // not an injected report queue or service-role review of a fabricated row.
+    const operator=await ownerAccount();
+    dbQuery("insert into kadmeion_private.operator_roles(user_id,role) values (:'actor'::uuid,'administrator');",
+      {vars:{actor:operator.id}});
+    const moderation=new SupabasePrivateModerationService(cfg.origin,cfg.anon,async()=>operator.jwt);
+    const ownerModeration=new SupabasePrivateModerationService(cfg.origin,cfg.anon,async()=>owner.jwt);
+    const outsiderModeration=new SupabasePrivateModerationService(cfg.origin,cfg.anon,async()=>outsider.jwt);
+    const evidenceText='Disposable local report about the currently verified portfolio publication.';
+    const reportInput={operationId:randomUUID(),reason:'ABUSE',evidence:evidenceText};
+    const submitReport=body=>fetch(canonical,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body),cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15000)});
+    const received=await submitReport(reportInput);
+    assert.equal(received.status,202);
+    assert.deepEqual(await received.json(),{status:'RECEIVED_FOR_REVIEW'});
+    assert.equal((await submitReport(reportInput)).status,202,'Exact replay accepted only as received');
+    assert.equal((await submitReport({...reportInput,operationId:randomUUID()})).status,202,'Same-content duplicate deduplicates');
+    assert.equal((await submitReport({...reportInput,evidence:evidenceText+' Changed.'})).status,409);
+    assert.equal(dbQuery("select count(*) from kadmeion_private.portfolio_abuse_reports where portfolio_id=:'portfolio'::uuid;",
+      {vars:{portfolio:portfolioId}}),'1');
+    for(let i=1;i<12;i++)assert.equal((await submitReport({operationId:randomUUID(),reason:'SPAM',
+      evidence:'Distinct disposable local quota-review report number '+i})).status,202);
+    assert.equal((await submitReport({operationId:randomUUID(),reason:'SPAM',
+      evidence:'Distinct disposable local quota-review overflow report'})).status,429);
+    await assert.rejects(outsiderModeration.listAbuseReports(null,50),{code:'FORBIDDEN'});
+    const receivedReport=(await moderation.listAbuseReports(null,50)).find(item=>item.evidence===evidenceText);
+    assert.ok(receivedReport,'Report must be visible through the real authorized queue');
+    const reviewReason='Administrator reviewed the documented report; no restriction is implicit.';
+    const reportDecision=await moderation.reviewAbuseReport(receivedReport.id,'CASE_OPENED',reviewReason);
+    assert.ok(reportDecision.caseId);
+    assert.deepEqual(await moderation.reviewAbuseReport(receivedReport.id,'CASE_OPENED',reviewReason),reportDecision);
+    await assert.rejects(moderation.reviewAbuseReport(receivedReport.id,'DISMISSED',reviewReason),{code:'CONFLICT'});
+    assert.equal((await moderation.readAccountSharingRestriction(reportDecision.caseId,owner.id)).status,'CLEAR');
+    assert.equal((await fetch(canonical)).status,200,'Report review alone cannot revoke public sharing');
+    const ownerReportCase=await ownerModeration.readOwnerCase(reportDecision.caseId);
+    assert.equal(ownerReportCase.summary,reviewReason);
+    assert.equal(await outsiderModeration.readOwnerCase(reportDecision.caseId),null);
+    assert.ok(!JSON.stringify(ownerReportCase).includes(evidenceText),'Raw visitor report remains operator-only');
     await assert.rejects(outsiderPointer.requestPublicRollback(publicConsent.intentId,replacementConsent.intentId,
       replacementPointer.generation,randomUUID(),'ROLL BACK PUBLIC'),{code:'FORBIDDEN'});
     const publicRollbackOperation=randomUUID();
@@ -817,9 +859,207 @@ GRANT EXECUTE ON FUNCTION kadmeion_private.store_frozen_media_candidate(
     assert.equal(ok(await authorityRpc('service_read_current_public_delivery_receipt',{
       p_portfolio_id:portfolioId,p_intent_id:publicRollback.intentId
     }),'Read retired rollback authority'),null);
+
+    // The original B4 portfolio has exhausted the actual five-generation
+    // stage cap. Keep every original artifact and denial assertion intact.
+    // A separate disposable portfolio belonging to the SAME owner proves
+    // that the C14 account restriction crosses portfolios, without weakening
+    // the production cap or deleting historical media to manufacture denial.
+    const stageCount=()=>Number(dbQuery(
+      "select count(*) from kadmeion_private.private_reviewer_stage_artifacts where portfolio_id=:'portfolio'::uuid;",
+      {vars:{portfolio:portfolioId}}));
+    assert.equal(stageCount(),5,'Original portfolio reaches its real stage cap');
+    const [{id:freshPortfolioId,slug:freshSlug}]=ok(await api('/rest/v1/portfolios?select=id,slug',{
+      method:'POST',jwt:owner.jwt,body:{owner_user_id:owner.id,
+        slug:'c14-live-'+randomUUID().slice(0,8),title:'C14 live media CI',template_id:'starter'},
+      headers:{Prefer:'return=representation'}
+    }),'Create independent same-owner C14 media portfolio');
+    assert.notEqual(freshPortfolioId,portfolioId);
+    const freshRevision=ok(await api('/rest/v1/rpc/commit_portfolio_revision',{
+      method:'POST',jwt:owner.jwt,body:{p_portfolio_id:freshPortfolioId,
+        p_operation_id:randomUUID(),p_base_revision:0,p_snapshot:updateSnapshot}
+    }),'Commit independent C14 media revision');
+    const freshFrozen=ok(await api('/rest/v1/rpc/freeze_private_release_request',{
+      method:'POST',jwt:owner.jwt,body:{p_portfolio_id:freshPortfolioId,
+        p_operation_id:randomUUID(),p_revision:freshRevision.revision,p_visibility_intent:'PUBLIC'}
+    }),'Freeze independent C14 media revision');
+    const freshFrozenMedia={...await loader.load(freshFrozen.requestId),plan:frozenMedia.plan};
+    const freshArtifact=await createPrivateImmutableMediaCandidateFromFrozenSlots(freshFrozenMedia,reader);
+    const freshPointer=await pointer.prepare(freshPortfolioId,freshFrozen.requestId,
+      freshArtifact.manifestSha256,0,randomUUID());
+    const freshStaged=await storeAttestedFrozenMediaCandidate(mediaPort,{
+      requestId:freshFrozen.requestId,expectedGeneration:freshPointer.generation,input:freshFrozenMedia
+    },reader);
+    assert.equal(freshStaged.status,'STORED_PRIVATE');
+    const freshOperation=randomUUID();
+    const freshConsent=await pointer.requestPublicPublication(freshFrozen.requestId,
+      freshPointer.generation,freshOperation,'PUBLISH PUBLIC');
+    const freshReceipt=await publishPublic(freshConsent,freshFrozen.requestId,freshOperation,freshPortfolioId);
+    const freshImageHash=createHash('sha256').update(freshArtifact.files[1].bytes).digest('hex');
+    assert.equal(freshReceipt.mediaManifest,freshStaged.manifestSha256);
+    assert.deepEqual(freshReceipt.assetHashes,[freshImageHash]);
+    assert.equal(stageCount(),5,'No original stage was removed to make C14 proof pass');
+    const freshCanonicalPath='/'+handle+'/'+freshSlug;
+    const freshCanonical=deliveryOrigin+freshCanonicalPath;
+    const freshScope={canonicalPath:freshCanonicalPath,manifestSha256:freshReceipt.mediaManifest,assetHashes:freshReceipt.assetHashes};
+    const freshMediaQuery='&manifest='+freshReceipt.mediaManifest+'&asset='+freshImageHash;
+    const freshDirect=deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+freshSlug+freshMediaQuery;
+    const liveReviewer=ok(await api('/rest/v1/rpc/issue_private_reviewer_grant',{
+      method:'POST',jwt:owner.jwt,body:{p_request_id:freshFrozen.requestId,
+        p_operation_id:randomUUID(),p_valid_minutes:60}
+    }),'Issue current reviewer before account restriction');
+    const liveReviewerImage='/api/reviewer?review='+liveReviewer.grantId+'.'+liveReviewer.rawToken+freshMediaQuery;
+    for(const method of ['GET','HEAD']){
+      assert.equal((await fetch(canonical,{method})).status,404,'Original renamed/withdrawn route stays denied');
+      assert.equal((await fetch(freshCanonical,{method})).status,200);
+      assert.equal((await fetch(freshDirect,{method})).status,200);
+      assert.equal((await serveReviewer(liveReviewerImage,{},method)).statusCode,200);
+    }
+    const scopeState=await moderation.readAccountSharingRestriction(reportDecision.caseId,owner.id);
+    assert.equal(scopeState.status,'CLEAR');
+    const restrictIntent={caseId:reportDecision.caseId,ownerUserId:owner.id,action:'RESTRICT',
+      expectedVersion:scopeState.version,operationId:randomUUID(),
+      rationale:'Verified administrator restriction of the documented public-sharing case.',
+      confirmation:'RESTRICT PUBLIC SHARING'};
+    const restriction=await moderation.changeAccountSharingRestriction(restrictIntent);
+    assert.equal(restriction.status,'ACTIVE');
+    assert.equal(restriction.hostRevocationVerified,false);
+    assert.equal((await moderation.changeAccountSharingRestriction(restrictIntent)).alreadyRecorded,true);
+    const takedownScopes=[scopeA,scopeB,{...scopeA,canonicalPath:renamed},{...scopeB,canonicalPath:renamed},freshScope];
+    const localTakedown=await probePublicTakedownPlan({origin:deliveryOrigin,allowLocal:true,
+      scopes:takedownScopes});
+    assert.equal(localTakedown.status,'OBSERVED_TAKEDOWN_ON_SCOPED_PATHS');
+    for(const method of ['GET','HEAD']){
+      assert.equal((await fetch(canonical,{method})).status,404);
+      assert.equal((await fetch(freshCanonical,{method})).status,404);
+      assert.equal((await fetch(freshDirect,{method})).status,404);
+      assert.equal((await serveReviewer(liveReviewerImage,{},method)).statusCode,404);
+      assert.equal((await fetch(deliveryOrigin+'/api/unlisted?portfolioId='+portfolioId,{method})).status,404);
+      assert.equal((await fetch(deliveryOrigin+'/api/unlisted?portfolioId='+freshPortfolioId,{method})).status,404);
+    }
+    assert.equal((await submitReport({operationId:randomUUID(),reason:'ABUSE',
+      evidence:'A fresh report cannot target the withdrawn canonical route.'})).status,404);
+    assert.equal((await fetch(freshCanonical,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({operationId:randomUUID(),reason:'ABUSE',evidence:'Report on the restricted same-owner portfolio.'})})).status,404);
+    assert.equal((await pointer.read(portfolioId)).status,'BLOCKED');
+    assert.equal((await pointer.read(freshPortfolioId)).status,'BLOCKED');
+    assert.ok(await loader.load(replacementFrozen.requestId),'Private author retains frozen source access');
+    assert.ok(await loader.load(freshFrozen.requestId),'Same-owner private frozen source remains available');
+    ok(await api('/rest/v1/profiles?user_id=eq.'+owner.id,{method:'PATCH',jwt:owner.jwt,
+      body:{headline:'Private authoring during outward restriction'}}),'Private profile edit during restriction');
+    await ownerModeration.appeal(reportDecision.caseId,randomUUID(),
+      'Disposable owner appeal requests review of the outward-only restriction.');
+    const restoreState=await moderation.readAccountSharingRestriction(reportDecision.caseId,owner.id);
+    assert.ok(restoreState.allowedActions.includes('RESTORE'));
+    const restored=await moderation.changeAccountSharingRestriction({
+      caseId:reportDecision.caseId,ownerUserId:owner.id,action:'RESTORE',expectedVersion:restoreState.version,
+      operationId:randomUUID(),rationale:'Administrator reviewed the appeal; no former publication is revived.',
+      confirmation:'RESTORE PUBLIC SHARING'});
+    assert.equal(restored.status,'CLEAR');
+    assert.equal(restored.publicRepublished,false);
+    assert.equal(stageCount(),5,'Historical immutable stages were retained');
+    assert.equal((await ownerModeration.readOwnerCase(reportDecision.caseId)).status,'CLOSED');
+    for(const method of ['GET','HEAD']){
+      assert.equal((await fetch(canonical,{method})).status,404);
+      assert.equal((await fetch(freshCanonical,{method})).status,404);
+      assert.equal((await fetch(freshDirect,{method})).status,404);
+      assert.equal((await serveReviewer(liveReviewerImage,{},method)).statusCode,404);
+    }
+
+    // R10: exercise the real owner-facing STAGE_PUBLIC handler and client
+    // against live disposable GoTrue, PostgREST, restricted pg and HTTP host.
+    // The fetch adapter routes ONLY the Edge call into its real handler;
+    // all identity, RLS, mutation, storage and host probes stay physical.
+    const stageSlug='r10-stage-'+randomUUID().slice(0,8);
+    const [{id:stagePortfolio}]=ok(await api('/rest/v1/portfolios?select=id',{
+      method:'POST',jwt:owner.jwt,body:{owner_user_id:owner.id,slug:stageSlug,title:'R10 owner staging',template_id:'starter'},
+      headers:{Prefer:'return=representation'}
+    }),'Create isolated R10 portfolio');
+    const stageEnv={KADMEION_RELEASE_WORKER_ENABLED:'true',KADMEION_RELEASE_HOST_APPROVED:'true',
+      KADMEION_RELEASE_HOST_REVOCATION_VERIFIED:'true',KADMEION_RELEASE_HOST_ORIGIN:deliveryOrigin,
+      KADMEION_RELEASE_HOSTNAME:'127.0.0.1',KADMEION_ALLOWED_PUBLISH_ORIGINS:'http://127.0.0.1:5173',
+      SUPABASE_URL:cfg.origin,SUPABASE_ANON_KEY:cfg.anon,SUPABASE_SERVICE_ROLE_KEY:cfg.service,
+      KADMEION_LOCAL_INTEGRATION:'1'};
+    const stageHttp=async(url,init)=>{
+      if(String(url)===cfg.origin+'/functions/v1/publish')
+        return handleOwnerPublishRelease(new Request(url,init),{env:stageEnv,stageWriter:writer,http:fetch});
+      return fetch(url,init);
+    };
+    const stagedOwner=new SupabasePrivateReleaseService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    const stagedOutsider=new SupabasePrivateReleaseService(cfg.origin,cfg.anon,async()=>outsider.jwt,stageHttp);
+    const releaseOwner=new SupabasePrivateReleasePointerService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    async function commitR10(title,baseRevision){
+      const snapshot={formatVersion:1,files:{
+        'kadmeion.json':JSON.stringify({formatVersion:1,preset:'blank',seo:{title,description:'R10 real owner source staging'}}),
+        'pages/home.page.json':JSON.stringify({header:null,sections:[{id:'release-hero',
+          layout:'stepped-hero@1',slotKeys:['title','cta']}]})
+      },slots:{'release-hero-title':{state:'S0',componentId:'title-stacked@1',content:{title}},
+        'release-hero-cta':{state:'EMPTY',content:{}}},stashes:{}};
+      const commit=ok(await api('/rest/v1/rpc/commit_portfolio_revision',{method:'POST',jwt:owner.jwt,
+        body:{p_portfolio_id:stagePortfolio,p_operation_id:randomUUID(),p_base_revision:baseRevision,p_snapshot:snapshot}}),'Commit managed R10 source');
+      const pin=await stagedOwner.freeze(stagePortfolio,randomUUID(),commit.revision,'PUBLIC');
+      return {pin,revision:commit.revision};
+    }
+    const r10A=await commitR10('R10 verified Alpha',0);
+    const r10StageA={portfolioId:stagePortfolio,requestId:r10A.pin.requestId,operationId:randomUUID(),expectedGeneration:0};
+    await assert.rejects(stagedOutsider.stagePublicCandidate(r10StageA));
+    const stageA=await stagedOwner.stagePublicCandidate(r10StageA);
+    assert.equal(stageA.status,'STAGED_PRIVATE');
+    assert.equal(stageA.generation,1);assert.equal(stageA.publicUrl,null);
+    assert.equal(stageA.publicServingEnabled,false);
+    assert.equal((await stagedOwner.stagePublicCandidate(r10StageA)).alreadyStored,true,'Same stage operation replays without extra generation');
+    assert.equal((await releaseOwner.read(stagePortfolio)).generation,1);
+    const actualCanonical=deliveryOrigin+'/'+handle+'/'+stageSlug;
+    assert.equal((await fetch(actualCanonical)).status,404,'Stage never publishes');
+    const opA=randomUUID();
+    const consentA=await releaseOwner.requestPublicPublication(r10A.pin.requestId,stageA.generation,opA,'PUBLISH PUBLIC');
+    const expectA={portfolioId:stagePortfolio,requestId:r10A.pin.requestId,intentId:consentA.intentId,operationId:opA};
+    const receiptA=await releaseOwner.executePublicDelivery(expectA);
+    assert.equal(receiptA.publicUrl,actualCanonical);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Alpha/);
+    const r10B=await commitR10('R10 verified Beta',r10A.revision);
+    const stageB=await stagedOwner.stagePublicCandidate({portfolioId:stagePortfolio,requestId:r10B.pin.requestId,
+      operationId:randomUUID(),expectedGeneration:stageA.generation});
+    assert.equal(stageB.generation,2);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Alpha/,'New stage preserves previously verified release');
+    const opB=randomUUID();
+    const consentB=await releaseOwner.requestPublicPublication(r10B.pin.requestId,stageB.generation,opB,'PUBLISH PUBLIC');
+    const expectB={portfolioId:stagePortfolio,requestId:r10B.pin.requestId,intentId:consentB.intentId,operationId:opB};
+    // Simulate a lost acknowledgement from the browser by discarding the
+    // first result, then build brand-new owner services from persisted RLS.
+    await releaseOwner.executePublicDelivery(expectB);
+    const resumedMetadata=new SupabasePrivateReleaseService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    const resumedOwner=new SupabasePrivateReleasePointerService(cfg.origin,cfg.anon,async()=>owner.jwt,stageHttp);
+    const catalogue=await resumedMetadata.listPublicationIntents(stagePortfolio);
+    const recovered=catalogue.items.find(row=>row.intentId===consentB.intentId);
+    assert.equal(recovered.operationId,opB);assert.equal(recovered.requestId,r10B.pin.requestId);assert.equal(recovered.status,'USED');
+    assert.deepEqual((await stagedOutsider.listPublicationIntents(stagePortfolio)).items,[]);
+    assert.ok((await resumedMetadata.listAcknowledgements(stagePortfolio)).items.some(row=>row.intentId===consentA.intentId&&row.requestId===r10A.pin.requestId));
+    const checkedB=await resumedOwner.checkPublicDelivery(expectB);
+    assert.equal(checkedB.intentId,consentB.intentId);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Beta/);
+    await assert.rejects(resumedOwner.checkPublicDelivery(expectA),'Old intent cannot be presented as current');
+    const rollbackOp=randomUUID();
+    const rollbackConsent=await resumedOwner.requestPublicRollback(consentA.intentId,consentB.intentId,
+      checkedB.pointerGeneration,rollbackOp,'ROLL BACK PUBLIC');
+    const rolled=await resumedOwner.executePublicDelivery({portfolioId:stagePortfolio,requestId:r10A.pin.requestId,
+      intentId:rollbackConsent.intentId,operationId:rollbackOp});
+    assert.equal(rolled.requestId,r10A.pin.requestId);
+    assert.match(await (await fetch(actualCanonical)).text(),/R10 verified Alpha/);
+    await resumedOwner.block(stagePortfolio,randomUUID());
+    assert.equal((await resumedOwner.read(stagePortfolio)).status,'BLOCKED');
+    for(const path of [actualCanonical,deliveryOrigin+'/api/public-portfolio?handle='+handle+'&slug='+stageSlug,
+      deliveryOrigin+'/api/unlisted?portfolioId='+stagePortfolio,
+      actualCanonical+'/assets/never-public.png']){
+      for(const method of ['GET','HEAD'])assert.equal((await fetch(path,{method})).status,404);
+    }
+    await assert.rejects(resumedOwner.checkPublicDelivery({portfolioId:stagePortfolio,requestId:r10A.pin.requestId,
+      intentId:rollbackConsent.intentId,operationId:rollbackOp}),'Blocked route cannot emit authoritative receipt');
+    t.diagnostic('R10 OWNER STAGE/PUBLISH/REPUBLISH/RECOVER/ROLLBACK/WITHDRAW: live local SQL + Edge handler + GET/HEAD complete');
+
     // New generation is never silently revived after Trash.
     const preparedAgain=await pointer.prepare(portfolioId,frozen.requestId,
-      artifact.manifestSha256,replacementPointer.generation,randomUUID());
+      artifact.manifestSha256,(await pointer.read(portfolioId)).generation,randomUUID());
     assert.equal(preparedAgain.status,'PREPARED_PRIVATE');
     const moved=ok(await api('/rest/v1/rpc/trash_private_item',{
       method:'POST',jwt:owner.jwt,body:{p_item_type:'portfolio',p_item_id:portfolioId}}),

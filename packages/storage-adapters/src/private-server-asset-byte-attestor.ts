@@ -129,7 +129,7 @@ export class PrivateServerAssetByteAttestor {
           cancelAttestationBody(response.body);
           throw new PrivateAssetAttestationError('PROVIDER');
         }
-        if(!response.ok||response.redirected){
+        if(!response.ok||response.redirected||(response.url&&response.url!==this.origin+path)){
           cancelAttestationBody(response.body);
           throw new PrivateAssetAttestationError(
             response.status===401||response.status===403?'AUTH':'PROVIDER');
@@ -208,6 +208,63 @@ export class PrivateServerAssetByteAttestor {
   }>{
     const pinned=await this.attestedBytes(assetId,ownerJwt);
     return {assetId:pinned.assetId,status:'WRITE_ONCE_ATTESTED'};
+  }
+
+  /** PROFILE is a distinct namespace; never fall back to a PROJECT asset.
+   * Owner RLS + the live-session pin RPC establish the immutable registration.
+   * Only the trusted server computes and submits the digest. */
+  async attestProfile(assetId:string,ownerJwt:string):Promise<{
+    assetId:string;status:'WRITE_ONCE_ATTESTED';scope:'PROFILE'
+  }>{
+    requireValid(UUID.test(assetId)&&typeof ownerJwt==='string'&&ownerJwt.length>0,'VALIDATION');
+    const {data:user}=await this.get('/auth/v1/user',ownerJwt);
+    requireValid(obj(user)&&typeof user.id==='string'&&UUID.test(user.id)&&user.is_anonymous!==true,'AUTH');
+    const ownerId=user.id;
+    const {data:rows}=await this.get('/rest/v1/profile_assets?select=id,owner_user_id,operation_id,object_path,mime_type,byte_size,state,storage_object_id,storage_version&id=eq.'+
+      encodeURIComponent(assetId)+'&limit=2',ownerJwt);
+    requireValid(Array.isArray(rows)&&rows.length===1&&obj(rows[0]),'AUTH');
+    const a=rows[0] as Json;
+    const path=a.object_path,mime=a.mime_type,size=a.byte_size;
+    requireValid(a.id===assetId&&a.owner_user_id===ownerId&&a.state==='REGISTERED'&&
+      typeof a.operation_id==='string'&&UUID.test(a.operation_id)&&a.operation_id===a.operation_id.toLowerCase()&&
+      typeof path==='string'&&path===ownerId+'/profile/'+a.operation_id+'.img'&&
+      typeof mime==='string'&&['image/png','image/jpeg','image/webp'].includes(mime)&&
+      typeof size==='number'&&Number.isSafeInteger(size)&&size>=12&&size<=MAX_BYTES&&
+      typeof a.storage_object_id==='string'&&UUID.test(a.storage_object_id)&&
+      typeof a.storage_version==='string'&&a.storage_version.length>0&&a.storage_version.length<=128,'INTEGRITY');
+    const readPin=async()=>{
+      const {data:p}=await this.get('/rest/v1/rpc/read_owner_private_asset_pin',ownerJwt,false,
+        {p_scope:'PROFILE',p_asset_id:assetId,p_project_id:null});
+      requireValid(obj(p)&&Object.keys(p).length===11&&p.scope==='PROFILE'&&p.assetId===assetId&&
+        p.ownerUserId===ownerId&&p.projectId===null&&p.objectId===a.storage_object_id&&
+        p.version===a.storage_version&&p.mimeType===mime&&p.byteSize===size&&p.publicDeliveryAllowed===false&&
+        ((p.status==='UNPINNED'&&p.expectedSha256===null)||(p.status==='SERVER_HASH_PINNED'&&
+          typeof p.expectedSha256==='string'&&/^[0-9a-f]{64}$/.test(p.expectedSha256))),'INTEGRITY');
+      return p;
+    };
+    const initial=await readPin();
+    const before=await this.info(path,ownerJwt,ownerId,mime,size);
+    requireValid(before.id===a.storage_object_id&&before.version===a.storage_version,'INTEGRITY');
+    const encoded=path.split('/').map(encodeURIComponent).join('/');
+    const response=await this.get('/storage/v1/object/authenticated/kadmeion-private-assets/'+encoded,ownerJwt);
+    requireValid(response.raw?.length===size&&
+      (response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase()===mime&&
+      plausibleRaster(mime,response.raw),'INTEGRITY');
+    const hash=createHash('sha256').update(response.raw).digest('hex');
+    const after=await this.info(path,ownerJwt,ownerId,mime,size);
+    requireValid(before.id===after.id&&before.version===after.version&&before.modified===after.modified,'INTEGRITY');
+    const latest=await readPin();
+    requireValid((initial.expectedSha256===null||initial.expectedSha256===hash)&&
+      (latest.expectedSha256===null||latest.expectedSha256===hash),'INTEGRITY');
+    const {data:receipt}=await this.get('/rest/v1/rpc/record_private_profile_asset_content_attestation',
+      ownerJwt,true,{p_asset_id:assetId,p_owner_user_id:ownerId,p_storage_object_id:before.id,
+        p_storage_version:before.version,p_expected_sha256:hash});
+    requireValid(obj(receipt)&&Object.keys(receipt).length===5&&receipt.assetId===assetId&&
+      receipt.scope==='PROFILE'&&receipt.status==='WRITE_ONCE_ATTESTED'&&
+      receipt.providerSigned===false&&receipt.deletionAllowed===false,'INTEGRITY');
+    const pinned=await readPin();
+    requireValid(pinned.status==='SERVER_HASH_PINNED'&&pinned.expectedSha256===hash,'INTEGRITY');
+    return {assetId,status:'WRITE_ONCE_ATTESTED',scope:'PROFILE'};
   }
 
   /**

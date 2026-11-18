@@ -42,6 +42,58 @@ export interface PrivateReleaseAcknowledgementPage {
   items:PrivateReleaseAcknowledgement[];
   nextCursor:PrivateReleaseAcknowledgementCursor|null;
 }
+/** C11 owner-RLS intent metadata. No HTML, bearer, route or current-delivery claim. */
+export interface OwnerPublicationIntentRecord {
+  intentId:string;portfolioId:string;requestId:string;operationId:string;
+  status:'AWAITING_HOST'|'USED';createdAt:string;expiresAt:string;
+}
+/** Server staging request is identifier-only. It cannot authorize publishing. */
+export interface OwnerPublicStageRequest {
+  portfolioId:string;requestId:string;operationId:string;expectedGeneration:number;
+}
+export interface OwnerPublicStageReceipt {
+  status:'STAGED_PRIVATE';portfolioId:string;requestId:string;operationId:string;
+  generation:number;manifestSha256:string;htmlSha256:string;alreadyStored:boolean;
+  publicServingEnabled:false;publicUrl:null;
+}
+export function parseOwnerPublicStageReceipt(raw:unknown,request:OwnerPublicStageRequest):OwnerPublicStageReceipt{
+  if(!record(raw)||!exactKeys(raw,['status','portfolioId','requestId','operationId','generation',
+      'manifestSha256','htmlSha256','alreadyStored','publicServingEnabled','publicUrl'])||
+     raw.status!=='STAGED_PRIVATE'||raw.portfolioId!==request.portfolioId||raw.requestId!==request.requestId||
+     raw.operationId!==request.operationId||raw.generation!==request.expectedGeneration+1||
+     typeof raw.manifestSha256!=='string'||!SHA256.test(raw.manifestSha256)||
+     typeof raw.htmlSha256!=='string'||!SHA256.test(raw.htmlSha256)||
+     typeof raw.alreadyStored!=='boolean'||raw.publicServingEnabled!==false||raw.publicUrl!==null)
+    throw new PrivateReleaseError('INVALID_ACK','Private staging was not independently acknowledged.');
+  return {status:'STAGED_PRIVATE',portfolioId:request.portfolioId,requestId:request.requestId,
+    operationId:request.operationId,generation:request.expectedGeneration+1,
+    manifestSha256:raw.manifestSha256,htmlSha256:raw.htmlSha256,alreadyStored:raw.alreadyStored,
+    publicServingEnabled:false,publicUrl:null};
+}
+export interface OwnerPublicationIntentPage {
+  items:OwnerPublicationIntentRecord[];truncated:boolean;
+}
+export function parseOwnerPublicationIntents(raw:unknown,portfolioId:string,limit:number):OwnerPublicationIntentPage {
+  if(!canonicalUuid(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50||
+     !Array.isArray(raw)||raw.length>limit+1)invalidHistory();
+  const seen=new Set<string>(),operations=new Set<string>();
+  let previous:{time:bigint;id:string}|null=null;
+  const items:OwnerPublicationIntentRecord[]=[];
+  for(const row of raw){
+    if(!record(row)||!exactKeys(row,['id','portfolio_id','request_id','operation_id','status','created_at','expires_at'])||
+       !canonicalUuid(row.id)||row.portfolio_id!==portfolioId||!canonicalUuid(row.request_id)||
+       !canonicalUuid(row.operation_id)||seen.has(row.id)||operations.has(row.operation_id)||
+       (row.status!=='AWAITING_HOST'&&row.status!=='USED')||typeof row.created_at!=='string'||
+       typeof row.expires_at!=='string')invalidHistory();
+    const created=historyInstant(row.created_at),expires=historyInstant(row.expires_at);
+    if(created===null||expires===null||expires<=created||
+       (previous&&!comesAfter(created,row.id,previous.time,previous.id)))invalidHistory();
+    seen.add(row.id);operations.add(row.operation_id);previous={time:created,id:row.id};
+    items.push({intentId:row.id,portfolioId,requestId:row.request_id,operationId:row.operation_id,
+      status:row.status,createdAt:row.created_at,expiresAt:row.expires_at});
+  }
+  return {items:items.slice(0,limit),truncated:items.length>limit};
+}
 const HISTORY_BYTES=32*1024;
 const HISTORY_TIMEOUT_MS=8_000;
 const record=(value:unknown):value is Record<string,unknown>=>
@@ -248,6 +300,45 @@ export class SupabasePrivateReleaseService {
     return {requestId:ack.requestId,portfolioId,revision,snapshotSha256:ack.snapshotSha256,
       visibilityIntent,status:'FROZEN',publicUrl:null,alreadyFrozen:ack.alreadyFrozen};
   }
+  /** Private stage through the owner-authorized server entry, not a direct
+   * service-role writer. The same four identifiers must survive any lost ACK. */
+  async stagePublicCandidate(request:OwnerPublicStageRequest):Promise<OwnerPublicStageReceipt>{
+    if(!request||!canonicalUuid(request.portfolioId)||!canonicalUuid(request.requestId)||
+       !canonicalUuid(request.operationId)||!Number.isSafeInteger(request.expectedGeneration)||
+       request.expectedGeneration<0||request.expectedGeneration>=Number.MAX_SAFE_INTEGER-1)
+      throw new ContractError('VALIDATION','Invalid staging request.');
+    const target=Object.freeze({...request});
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateReleaseError('AUTH_EXPIRED','Sign in to stage the frozen revision.');
+    let response:Awaited<ReturnType<typeof fetchBoundedPrivateReleaseRpc>>;
+    try{
+      response=await fetchBoundedPrivateReleaseRpc(this.fetcher,this.endpoint+'/functions/v1/publish',
+        {apikey:this.key,Authorization:'Bearer '+jwt,'Content-Type':'application/json',Accept:'application/json'},
+        {action:'STAGE_PUBLIC',portfolioId:target.portfolioId,requestId:target.requestId,
+          operationId:target.operationId,expectedGeneration:target.expectedGeneration});
+    }catch{throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Stage unconfirmed; retry the same operation.');}
+    if(await this.token()!==jwt)throw new PrivateReleaseError('AUTH_EXPIRED','Owner changed while staging.');
+    if(response.status===401)throw new PrivateReleaseError('AUTH_EXPIRED','Session expired.');
+    if(response.status===403||response.status===404)throw new PrivateReleaseError('FORBIDDEN','Trusted staging is unavailable.');
+    if(!response.ok)throw new PrivateReleaseError('PROVIDER_UNAVAILABLE','Stage unconfirmed; review and retry the same operation.');
+    return parseOwnerPublicStageReceipt(response.body,target);
+  }
+
+  /** C11 supplies the operation_id column grant. RLS restricts the owner's rows.
+   * No empty/failed response is a public-state or ownership assertion. */
+  async listPublicationIntents(portfolioId:string,limit=50):Promise<OwnerPublicationIntentPage>{
+    if(!canonicalUuid(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50)
+      throw new ContractError('VALIDATION','Invalid publication intent page.');
+    const jwt=await this.token();
+    if(!jwt)throw new PrivateReleaseError('AUTH_EXPIRED','Sign in to recover publication intents.');
+    const params=new URLSearchParams({select:'id,portfolio_id,request_id,operation_id,status,created_at,expires_at',
+      portfolio_id:'eq.'+portfolioId,order:'created_at.desc,id.asc',limit:String(limit+1)});
+    const raw=await fetchHistory(this.fetcher,this.endpoint+'/rest/v1/private_unlisted_publication_intents?'+params.toString(),
+      {apikey:this.key,Authorization:'Bearer '+jwt,Accept:'application/json'});
+    if(await this.token()!==jwt)throw new PrivateReleaseError('AUTH_EXPIRED','Session changed during publication recovery.');
+    return parseOwnerPublicationIntents(raw,portfolioId,limit);
+  }
+
   /**
    * Metadata-only read of the four existing owner-RLS granted columns.
    * Callers must first verify the current owner session and portfolio access,

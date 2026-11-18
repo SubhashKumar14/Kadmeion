@@ -220,3 +220,15 @@ test('C11 PUBLIC requires the exact frozen owner operation and cannot accept a l
   assert.ok((await handleOwnerPublishRelease(request(publicRequest),wrongOwner.deps)).status>=400);
   assert.equal(wrongOwner.getPublished(),0);
 });
+
+test('STAGE_PUBLIC rejects client content, absent trusted worker and hosted staging before SQL',async()=>{
+  const target={action:'STAGE_PUBLIC',portfolioId:consent.portfolio_id,requestId,operationId,expectedGeneration:0};
+  const f=fixture();
+  assert.equal((await handleOwnerPublishRelease(request({...target,html:'<p>forbidden</p>'}),f.deps)).status,400);
+  assert.equal((await handleOwnerPublishRelease(request({...target,expectedGeneration:-1}),f.deps)).status,400);
+  assert.equal((await handleOwnerPublishRelease(request(target),f.deps)).status,503);
+  assert.equal(f.calls.length,0);
+  const local=fixture({settings:{KADMEION_LOCAL_INTEGRATION:'1',SUPABASE_URL:'http://127.0.0.1:54321'}});
+  assert.equal((await handleOwnerPublishRelease(request(target),local.deps)).status,503);
+  assert.equal(local.calls.length,0);
+});
