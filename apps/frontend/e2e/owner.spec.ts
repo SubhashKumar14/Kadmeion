@@ -3215,7 +3215,7 @@ test('B16 WF-020/021/023/025 R5 native pinned placement, EMPTY undo, device favo
   await page.getByText('Component placement, Favorites and ordering',{exact:true}).click();
   const board=page.getByRole('region',{name:'Pinned component placement'});
   const order=page.getByRole('region',{name:'Section ordering controls'});
-  const target=board.getByLabel('Placement target');
+  const target=board.getByRole('combobox',{name:'Placement target',exact:true});
   const heading=board.getByRole('button',{name:'Heading · title-stacked@1',exact:true});
   const empty=board.getByRole('button',{name:'L1 · title (arc-hero) · EMPTY',exact:true});
   const starter=board.getByRole('button',{name:'L1 · title (arc-hero) · S0',exact:true});
