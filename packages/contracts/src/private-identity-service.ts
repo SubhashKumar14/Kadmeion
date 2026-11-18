@@ -96,10 +96,11 @@ function validSharingState(value:unknown,owner:string,receipt=false):value is Pr
   return !receipt||value.status==='APPLIED'||value.status==='REPLAYED'||value.status==='NO_CHANGE';
 }
 // JSON.parse silently accepts repeated keys; reject ambiguous acknowledgement
-// fields even when differently escaped. Parse syntax first, then walk tokens.
+// fields even when differently escaped. Check integer lexemes before rounded
+// values can be accepted as a monotonic version. Parse syntax, then walk tokens.
 function parseUniqueSharingJson(raw:string):unknown {
   const parsed:unknown=JSON.parse(raw);
-  const tokens=raw.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]/g)??[];
+  const tokens=raw.match(/"(?:\\[\s\S]|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]:,]/g)??[];
   const stack:(Set<string>|null)[]=[];
   for(let i=0;i<tokens.length;i++){
     const token=tokens[i];
@@ -111,6 +112,9 @@ function parseUniqueSharingJson(raw:string):unknown {
       const key=JSON.parse(token) as string;
       if(!keys||keys.has(key))throw new Error('Duplicate response key');
       keys.add(key);
+    }else if(token&&/^-?\d/.test(token)&&
+      (!/^(?:0|[1-9]\d*)$/.test(token)||!Number.isSafeInteger(Number(token)))){
+      throw new Error('Invalid response integer');
     }
   }
   return parsed;
