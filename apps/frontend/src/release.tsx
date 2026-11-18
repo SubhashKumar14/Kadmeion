@@ -1056,7 +1056,10 @@ function PortfolioReleaseContent({port,id,mode}:{port:SupabaseBrowserAuthPort;id
             <div className="ws-actions">
               {result?.status==='PREVIEW_ONLY' && <button className="ws-primary" type="button" disabled={readsBusy}
                 onClick={()=>void downloadStaticPreview()}>Download offline static preview ZIP</button>}
-              {!publicActionFactory(port)&&<button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>}
+              {(!publicActionFactory(port)||!frozen||frozen.visibilityIntent!=='PUBLIC'||
+                result?.status!=='PREVIEW_ONLY'||result.blockers.length!==1||
+                result.blockers[0]?.code!=='PUBLIC_DELIVERY_UNVERIFIED')&&
+                <button className="ws-secondary" type="button" disabled>Publish unavailable — host proof required</button>}
             </div>
           </div>}
         </>}
@@ -1331,8 +1334,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
     }finally{action.finish();}
   }
   async function run(kind:'publish'|'rollback'|'retry'|'check'|'withdraw'){
-    if(!factory||disabled||stageFlight.current)return;
-    if(kind==='withdraw'&&pending.current)return;
+    if(!factory||disabled||(kind!=='withdraw'&&stageFlight.current))return;
     if(kind==='check'&&pending.current&&!pending.current.intentId)return;
     if(kind!=='withdraw'&&withdrawal.current)return;
     if((kind==='publish'||kind==='rollback')&&pending.current)return;
@@ -1385,6 +1387,9 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
            observed.generation!==work.receipt.generation||observed.revocationGeneration!==observed.generation||
            work.receipt.stillBlocked!==true)throw Error('Current withdrawal not confirmed.');
         withdrawal.current=null;setWithdrawing(false);
+        // A confirmed portfolio-wide block also invalidates pending staging
+        // and consent. Never abandon their identity merely on timeout.
+        retain(null);stageFlight.current=null;setStageAttempt(null);setStaged(null);
         setNotice('Database delivery withdrawn and blocked pointer rechecked. External canonical, alias and media GET/HEAD denial is not independently verified.');
         return;
       }
@@ -1528,7 +1533,7 @@ function AuthoritativePublicDelivery({port,portfolioId,frozen,preflight,disabled
           <option key={item.intentId} value={item.intentId}>Database history · {item.createdAt} · {item.intentId.slice(0,8)}</option>)}</select></label>
     <button type="button" className="ws-secondary" disabled={disabled||!!attempt||withdrawing||!!stageAttempt||!receipt||!rollbackId}
       onClick={()=>void run('rollback')}>Roll back public release</button>
-    <button type="button" className="ws-secondary" disabled={disabled||!!attempt||!!stageAttempt||(!receipt&&!withdrawing&&history.length===0)}
+    <button type="button" className="ws-secondary" disabled={disabled||(!receipt&&!withdrawing&&history.length===0&&!attempt&&!stageAttempt&&pointer?.status!=='PREPARED_PRIVATE')}
       onClick={()=>void run('withdraw')}>{withdrawing?'Recheck or retry same withdrawal':'Withdraw portfolio delivery'}</button>
     <p className="ws-field-hint">Positive receipts here are held only for this mounted owner review. Reload saved consent after a page change and request a fresh check. Historical database acknowledgements alone are not current host evidence. Withdrawal requires independent external denial proof.</p>
   </section>;
