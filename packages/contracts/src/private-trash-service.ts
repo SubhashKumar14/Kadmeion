@@ -8,7 +8,13 @@ export type PrivateTrashResponse = {
   restore_until?: string;
   public_visibility?: 'private';
 };
-export type PrivateTrashGenerationReceipt = {item_type:PrivateTrashKind;item_id:string;status:'restored';public_visibility:'private';trash_id:string};
+export type PrivateTrashGenerationReceipt = {
+  item_type: PrivateTrashKind;
+  item_id: string;
+  status: 'restored';
+  public_visibility: 'private';
+  trash_id: string;
+};
 export type PrivateTrashEntry = {
   id: string;
   item_type: PrivateTrashKind;
@@ -76,11 +82,11 @@ export class SupabasePrivateTrashService {
     this.base = url.origin;
   }
 
-  private requireCurrentOwner():void {
-    if(!this.isCurrentOwner())throw new PrivateTrashError('AUTH_EXPIRED','The private owner session changed.');
+  private requireCurrentOwner(): void {
+    if (!this.isCurrentOwner()) throw new PrivateTrashError('AUTH_EXPIRED','The private owner session changed.');
   }
 
-  private async send(path: string, method: 'GET' | 'POST', input?: unknown): Promise<unknown> {
+  private async send(path: string, method: 'GET' | 'POST', input?: unknown, verifyOwnerAfter = false): Promise<unknown> {
     this.requireCurrentOwner();
     const token = await this.accessToken();
     this.requireCurrentOwner();
@@ -89,7 +95,8 @@ export class SupabasePrivateTrashService {
     try {
       res = await this.fetcher(this.base + path, {
         method,
-        redirect:'error',
+        redirect: 'error',
+        cache: 'no-store',
         headers: {
           apikey: this.publishableKey,
           Authorization: 'Bearer ' + token,
@@ -109,11 +116,16 @@ export class SupabasePrivateTrashService {
       this.requireCurrentOwner();
       if (err?.message === 'PRIVATE_TRASH_EXPIRED')
         throw new PrivateTrashError('TRASH_EXPIRED', 'The 15-day restoration window has ended.');
-      if (err?.code === '40001' || err?.code === '55P03' || err?.message === 'PRIVATE_TRASH_GENERATION_CONFLICT' || err?.message === 'PRIVATE_TRASH_STATE_CONFLICT' || err?.message === 'PRIVATE_TRASH_JOURNAL_MISSING')
+      if (err?.code === '40001' || err?.code === '55P03' || err?.message === 'PRIVATE_TRASH_STATE_CONFLICT' || err?.message === 'PRIVATE_TRASH_JOURNAL_MISSING' ||
+          err?.message === 'PRIVATE_TRASH_GENERATION_CONFLICT' || err?.message === 'PRIVATE_ITEM_NOT_FOUND')
         throw new PrivateTrashError('INVALID_STATE', 'Trash state requires recovery; no data was deleted.');
       throw new PrivateTrashError('PROVIDER_UNAVAILABLE', 'Private Trash request was rejected.');
     }
-    const value=await res.json().catch(() => { throw new PrivateTrashError('INVALID_STATE', 'Invalid Trash response.'); });
+    const value: unknown = await res.json().catch(() => { throw new PrivateTrashError('INVALID_STATE', 'Invalid Trash response.'); });
+    this.requireCurrentOwner();
+    // The mounted factory captures the originating owner epoch in accessToken.
+    if (verifyOwnerAfter && !await this.accessToken())
+      throw new PrivateTrashError('AUTH_EXPIRED', 'The owner session changed; refresh before continuing.');
     this.requireCurrentOwner();
     return value;
   }
@@ -130,31 +142,41 @@ export class SupabasePrivateTrashService {
       {p_item_type:kind,p_item_id:id}),kind,id,['restored']);
   }
 
-  /** Restore exactly the reviewed journal generation; never fall back to item-only restore. */
-  async restoreGeneration(kind:PrivateTrashKind,id:string,expectedTrashId:string):Promise<PrivateTrashGenerationReceipt>{
-    checkTarget(kind,id);checkTarget(kind,expectedTrashId);
-    const raw=await this.send('/rest/v1/rpc/owner_restore_private_item_generation','POST',
-      {p_item_type:kind,p_item_id:id,p_expected_trash_id:expectedTrashId});
-    const ack=validateAck(raw,kind,id,['restored']) as PrivateTrashResponse & {trash_id?:unknown};
-    if(ack.trash_id!==expectedTrashId)throw new PrivateTrashError('INVALID_STATE','The exact Trash generation was not confirmed.');
-    return {item_type:kind,item_id:id,status:'restored',public_visibility:'private',trash_id:expectedTrashId};
+  async restoreGeneration(kind: PrivateTrashKind, id: string, trashId: string): Promise<PrivateTrashGenerationReceipt> {
+    checkTarget(kind,id);
+    if (typeof trashId !== 'string' || !UUID.test(trashId))
+      throw new ContractError('VALIDATION','Invalid Trash journal generation.');
+    const raw = await this.send('/rest/v1/rpc/owner_restore_private_item_generation','POST',
+      {p_item_type:kind,p_item_id:id,p_expected_trash_id:trashId},true);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+      throw new PrivateTrashError('INVALID_STATE','Missing generation-bound Trash acknowledgement.');
+    const ack = raw as PrivateTrashGenerationReceipt;
+    if (Object.keys(ack).length !== 5 || ack.item_type !== kind || ack.item_id !== id ||
+        ack.trash_id !== trashId || ack.status !== 'restored' || ack.public_visibility !== 'private')
+      throw new PrivateTrashError('INVALID_STATE','Private restoration for the reviewed generation was not confirmed.');
+    return {item_type:kind,item_id:id,trash_id:trashId,status:'restored',public_visibility:'private'};
   }
 
   async list(): Promise<PrivateTrashEntry[]> {
-    const raw = await this.send('/rest/v1/private_trash_items?select=id,item_type,item_id,trashed_at,restore_until&restored_at=is.null&order=trashed_at.desc,id.asc&limit=100','GET');
-    if (!Array.isArray(raw) || raw.length>100) throw new PrivateTrashError('INVALID_STATE', 'Invalid Trash list.');
-    const generations=new Set<string>(),targets=new Set<string>();
-    return raw.map((entry: unknown) => {
-      if (!entry || typeof entry !== 'object') throw new PrivateTrashError('INVALID_STATE', 'Invalid Trash entry.');
+    const raw = await this.send('/rest/v1/private_trash_items?select=id,item_type,item_id,trashed_at,restore_until&restored_at=is.null&order=trashed_at.desc,id.desc&limit=101','GET',undefined,true);
+    if (!Array.isArray(raw) || raw.length > 100)
+      throw new PrivateTrashError('INVALID_STATE','Trash review exceeds the supported limit or is invalid.');
+    const journals = new Set<string>(), targets = new Set<string>();
+    return Array.from(raw,(entry: unknown) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+        throw new PrivateTrashError('INVALID_STATE','Invalid Trash entry.');
       const e = entry as PrivateTrashEntry;
       checkTarget(e.item_type,e.item_id);
-      const target=e.item_type+':'+e.item_id.toLowerCase();
-      if(typeof e.id!=='string'||!UUID.test(e.id)||generations.has(e.id.toLowerCase())||targets.has(target))
-        throw new PrivateTrashError('INVALID_STATE','Invalid or ambiguous Trash generation.');
-      generations.add(e.id.toLowerCase());targets.add(target);
-      if (typeof e.trashed_at!=='string'||typeof e.restore_until!=='string'||!Number.isFinite(Date.parse(e.trashed_at)) || !Number.isFinite(Date.parse(e.restore_until)))
-        throw new PrivateTrashError('INVALID_STATE', 'Invalid Trash deadline.');
-      return e;
+      if (typeof e.id !== 'string' || !UUID.test(e.id) ||
+          typeof e.trashed_at !== 'string' || typeof e.restore_until !== 'string' ||
+          !Number.isFinite(Date.parse(e.trashed_at)) || !Number.isFinite(Date.parse(e.restore_until)) ||
+          Date.parse(e.restore_until) < Date.parse(e.trashed_at))
+        throw new PrivateTrashError('INVALID_STATE','Invalid Trash journal or recovery deadline.');
+      const journal=e.id.toLowerCase(), target=e.item_type+':'+e.item_id.toLowerCase();
+      if (journals.has(journal) || targets.has(target))
+        throw new PrivateTrashError('INVALID_STATE','Ambiguous active Trash journal.');
+      journals.add(journal); targets.add(target);
+      return {id:e.id,item_type:e.item_type,item_id:e.item_id,trashed_at:e.trashed_at,restore_until:e.restore_until};
     });
   }
 }
