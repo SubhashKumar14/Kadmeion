@@ -2438,6 +2438,10 @@ test('C12 local owner wire and Edge persist confirmed facts, enforce cooldown, a
   }
   try{
     await pg.connect();await waitGlobal();
+    const stateCount=async()=>Number((await pg.query('SELECT count(*)::int n FROM kadmeion_private.github_provider_state WHERE link_id=$1',[linkId])).rows[0].n);
+    assert.equal(await stateCount(),0);
+    assert.equal(await service.probeLocalCapability(),true);
+    assert.equal(sourceCalls,0);assert.equal(await stateCount(),0,'Capability proof cannot initialize provider state');
     const off=await service.readState(linkId);assert.equal(off.status,'OFF');assert.equal(sourceCalls,0);
     await assert.rejects(ownerService(outsider).readState(linkId));assert.equal(sourceCalls,0);
     const enabled=await service.changeConsent({...op(off.version),action:'ENABLE'});assert.equal(enabled.state.status,'READY');
@@ -2459,8 +2463,24 @@ test('C12 local owner wire and Edge persist confirmed facts, enforce cooldown, a
     const reloaded=await ownerService(actor).readState(linkId);
     assert.equal(reloaded.version,refreshed.state.version);assert.equal(reloaded.facts.publicRepos,8);
     assert.equal(reloaded.ownershipVerified,false);assert.equal(reloaded.facts.observedAt,null);
+    const inventory=successful(await send('/rest/v1/rpc/create_private_account_exit_inventory_v2',{
+      ...json(actor),method:'POST',body:{p_operation_id:randomUUID(),p_request_id:null}
+    }),'Create exact owner inventory for provider annex');
+    assert.equal(inventory.schemaVersion,2);
+    const annex=await service.readExportAnnex(inventory.snapshotId,null);
+    assert.equal(annex.ownerId,actor.id);assert.equal(annex.snapshotId,inventory.snapshotId);
+    assert.equal(annex.requestId,null);assert.equal(annex.sourceMode,'ISOLATED_LOCAL');
+    assert.equal(annex.providerAuthenticityVerified,false);assert.equal(annex.completeAccountExport,false);
+    assert.equal(annex.deletionAllowed,false);assert.equal(annex.states.length,1);
+    assert.equal(annex.states[0].facts.publicRepos,8);
+    await assert.rejects(ownerService(outsider).readExportAnnex(inventory.snapshotId,null));
+    await assert.rejects(service.readExportAnnex(inventory.snapshotId,randomUUID()));
+    assert.equal(sourceCalls,2,'Export annex never invokes upstream');
     const disabled=await service.changeConsent({...op(reloaded.version),action:'DISABLE'});
     assert.equal(disabled.state.status,'OFF');assert.equal(disabled.state.facts,null);
+    const afterRevoke=await service.readExportAnnex(inventory.snapshotId,null);
+    assert.equal(afterRevoke.states.length,1);assert.equal(afterRevoke.states[0].facts,null);
+    assert.equal(afterRevoke.states[0].candidate,null);assert.equal(afterRevoke.states[0].consent,false);
     assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.github_provider_state WHERE link_id=$1 AND ((facts).provider_id IS NOT NULL OR (candidate).provider_id IS NOT NULL)',[linkId])).rows[0].n,0);
     const reenabled=await service.changeConsent({...op(disabled.state.version),action:'ENABLE'});
     await assert.rejects(service.sync({...op(reenabled.state.version),action:'LOOKUP'}),{code:'RATE_LIMITED'});
@@ -2485,6 +2505,8 @@ test('C12 local owner wire and Edge persist confirmed facts, enforce cooldown, a
     const late=await outcome;assert.equal(late.error?.code,'CONFLICT');assert.equal(sourceCalls,4);
     assert.equal((await pg.query('SELECT count(*)::int n FROM kadmeion_private.github_provider_state WHERE link_id=$1',[linkId])).rows[0].n,0);
     await assert.rejects(ownerService(actor).readState(linkId));
+    assert.deepEqual((await service.readExportAnnex(inventory.snapshotId,null)).states,[]);
+    assert.equal(sourceCalls,4,'Deleted provider facts are never restored by export');
     assert.ok((await send('/rest/v1/private_platform_links?select=id',{...bearer(outsider)})).ok);
     assert.equal((await pg.query('SELECT count(*)::int n FROM auth.users WHERE id=$1',[outsider.id])).rows[0].n,1);
   }finally{
