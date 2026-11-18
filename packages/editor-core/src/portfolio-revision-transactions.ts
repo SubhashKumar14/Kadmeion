@@ -554,7 +554,7 @@ export function parseScopedTheme(snapshot:PortfolioSnapshot):ScopedThemeParse{
             }
           }
         }
-        if(!active){issues.push({code:invalid?'UNSUPPORTED_ORPHAN':'ORPHAN_SCOPE',mode:m,scope});continue;}
+        if(!active){issues.push({code:invalid?'UNSUPPORTED_ORPHAN':'ORPHAN_SCOPE',mode:m,scope});if(!invalid)entries.push(entry);continue;}
         if(invalid){issues.push({code:'UNSUPPORTED_ACTIVE_SCOPE',mode:m,scope});blocked=true;continue;}
         entries.push(entry);
       }
@@ -563,6 +563,14 @@ export function parseScopedTheme(snapshot:PortfolioSnapshot):ScopedThemeParse{
   }catch{issues.push({code:'INVALID_SCOPED_GRAPH'});return result('blocked');}
 }
 export function resolveScopedTheme(snapshot:PortfolioSnapshot,target:ScopedThemeTarget):ScopedThemeResolution{
+  return resolveTheme(snapshot,target,false);
+}
+/** Base-only fallback for CSS engines with no container query support.
+ * Does not use a representative responsive bucket or invent default tokens. */
+export function resolveScopedThemeBase(snapshot:PortfolioSnapshot,target:ScopedThemeTarget):ScopedThemeResolution{
+  return resolveTheme(snapshot,target,true);
+}
+function resolveTheme(snapshot:PortfolioSnapshot,target:ScopedThemeTarget,baseOnly:boolean):ScopedThemeResolution{
   const parsed=parseScopedTheme(snapshot);
   const breakpoint=scopedThemeBreakpoint(target.widthPx);
   const tokens:ScopedThemeTokens={},origins:ScopedThemeResolution['origins']={};
@@ -594,7 +602,7 @@ export function resolveScopedTheme(snapshot:PortfolioSnapshot,target:ScopedTheme
     if(target.slotKey!==undefined)scopes.push({kind:'component',id:target.slotKey});
     for(const scope of scopes){
       const row=parsed.entries.find(e=>e.active&&e.mode===target.mode&&themeScopeKey(e.scope)===themeScopeKey(scope));
-      merge(row?.base,scope,'base');merge(row?.breakpoints?.[breakpoint],scope,breakpoint);
+      merge(row?.base,scope,'base');if(!baseOnly)merge(row?.breakpoints?.[breakpoint],scope,breakpoint);
     }
     return result('resolved');
   }catch{return result('blocked');}
@@ -631,7 +639,7 @@ function editScopedTheme(head:EditorHead,next:PortfolioSnapshot,intent:EditScope
   if(source===undefined)return themeError();
   const raw=JSON.parse(source) as Record<string,unknown>;
   if(!isThemeMode(raw.mode)||!themePalette(raw))return themeError();
-  if(!resolveScopedTheme(head.snapshot,{mode:intent.mode,widthPx:768}).tokens.surface)return themeError();
+  if(resolveScopedTheme(head.snapshot,{mode:intent.mode,widthPx:768}).status!=='resolved')return themeError();
   const doc=(raw.scopedTokens??{version:1}) as Record<string,unknown>;
   const list=(doc[intent.mode]??[]) as Record<string,unknown>[];
   let row=list.find(r=>{const s=themeScope(r.scope);return s&&themeScopeKey(s)===themeScopeKey(scope);});
