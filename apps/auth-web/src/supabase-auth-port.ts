@@ -3,7 +3,7 @@ import { normalizePrivateCaseStudy, type PrivateCaseStudy } from '../../../packa
 import type { PortfolioPresetId } from '../../../packages/editor-core/src/managed-project-files.ts';
 import type { PortfolioSnapshot } from '../../../packages/editor-core/src/portfolio-revision-transactions.ts';
 import type { MyComponentInput, MyComponentVersion } from '../../../packages/contracts/src/private-my-components-service.ts';
-import type { FrozenVisibilityIntent, PrivateFrozenRequest } from '../../../packages/contracts/src/private-release-service.ts';
+import type { FrozenVisibilityIntent, PrivateFrozenRequest, PrivateReleaseAcknowledgementCursor, PrivateReleaseAcknowledgementPage } from '../../../packages/contracts/src/private-release-service.ts';
 import type { PrivatePointerSnapshot, PrivatePointerReceipt } from '../../../packages/contracts/src/private-release-visibility-service.ts';
 import type { PrivateReviewerGrant, PrivateReviewerRevocation } from '../../../packages/contracts/src/private-reviewer-service.ts';
 export type OwnerReviewerGrantSummary = {grantId:string;requestId:string;portfolioId:string;expiresAt:string;revokedAt:string|null;createdAt:string};
@@ -131,6 +131,14 @@ function mediaHttpError(status:number,payload:unknown,attestation=false,storage=
     attestation?'Private asset attestation is unavailable.':'Private media service is unavailable.',status);
 }
 export type OwnerPrivateImageUploadContext = Readonly<{operationId:string;expectedEpoch:number}>;
+/** Provider-reported linked identities, not verification badges or password recovery grants. */
+export type OwnerLinkedIdentity = Readonly<{
+  identityId:string;provider:string;createdAt:string|null;lastSignInAt:string|null;
+}>;
+export type OwnerLinkedMethods = Readonly<{
+  ownerUserId:string;source:'GOTRUE_LIVE_USER';identities:readonly OwnerLinkedIdentity[];
+  passwordMethodConfirmed:false;publicVerificationAllowed:false;
+}>;
 export type OwnerProjectThumbnailAsset = Readonly<{
   id:string;projectId:string;mime:OwnerPrivateImageMime;size:number;altText:string;createdAt:string;
 }>;
@@ -167,6 +175,11 @@ class AuthHttpError extends Error {
   readonly status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
+/** Only a transient idempotent owner verification read may retry. */
+class AuthTransientUserReadError extends Error {
+  constructor(){super('Owner verification is temporarily unavailable. Use Retry if it persists.');}
+}
+
 
 function userFrom(value: unknown): AuthUser | null {
   if (!value || typeof value !== 'object') return null;
@@ -360,18 +373,29 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     }
   }
 
-  private async request(path: string, method: string, body?: Json, token?: string): Promise<Json> {
+  private async request(path: string, method: string, body?: Json, token?: string, boundedOwnerGet=false): Promise<Json> {
     const headers: Record<string, string> = { apikey: this.publishableKey, 'Content-Type': 'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
+    const ownerVerification=boundedOwnerGet&&method==='GET'&&path==='/user'&&typeof token==='string';
+    const requestUrl=this.origin+'/auth/v1'+path;
     let response: Response;
     try {
-      response = await this.fetcher(this.origin + '/auth/v1' + path, {
-        method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', credentials: 'omit', redirect: 'error'
+      response = await this.fetcher(requestUrl, {
+        method,headers,body:body===undefined?undefined:JSON.stringify(body),
+        cache:'no-store',credentials:'omit',redirect:'error',
+        ...(ownerVerification?{signal:AbortSignal.timeout(10_000)}:{})
       });
-    } catch { throw new Error('Could not connect to the authentication service.'); }
+    } catch {
+      if(ownerVerification)throw new AuthTransientUserReadError();
+      throw new Error('Could not connect to the authentication service.');
+    }
+    if(ownerVerification&&(response.redirected||(response.url&&response.url!==requestUrl)||
+       response.status>=500))throw new AuthTransientUserReadError();
     const strictSignupResend = method === 'POST' && path.startsWith('/resend?redirect_to=') && body?.type === 'signup';
     const strictRecovery = method === 'POST' && path.startsWith('/recover?redirect_to=');
     const payload: unknown = await response.json().catch(() => undefined);
+    if(ownerVerification&&response.ok&&(!payload||typeof payload!=='object'||Array.isArray(payload)))
+      throw new AuthTransientUserReadError();
     if (response.ok && (strictSignupResend || strictRecovery) &&
         (response.status !== 200 || !payload || typeof payload !== 'object' ||
          Array.isArray(payload) || Object.keys(payload).length !== 0))
@@ -507,19 +531,35 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     const session=await this.refreshed();
     if(!session || !this.isCurrentSession(session))throw new Error('Session expired.');
     const epoch=this.ownerSessionEpoch;
+    const current=()=>this.reconcileOwnerSessionEpoch()===epoch&&this.isCurrentSession(session);
     try{
-      const data=await this.request('/user','GET',undefined,session.access_token);
-      const user=userFrom(data);
-      if(!user || user.id!==session.user.id || !this.isCurrentSession(session) ||
-          this.ownerSessionEpoch!==epoch){
-        if(this.isCurrentSession(session))this.store(null);
-        throw new Error('User verification did not match the active session.');
+      for(let attempt=0;attempt<2;attempt++){
+        if(!current())throw new Error('Owner session changed during verification.');
+        let data:Json;
+        try{data=await this.request('/user','GET',undefined,session.access_token,true);}
+        catch(error){
+          if(error instanceof AuthTransientUserReadError&&attempt===0&&current())continue;
+          throw error;
+        }
+        if(!current())throw new Error('Owner session changed during verification.');
+        const user=userFrom(data);
+        if(!user){
+          if(attempt===0)continue;
+          throw new AuthTransientUserReadError();
+        }
+        if(user.id!==session.user.id){
+          if(current())this.store(null);
+          throw new Error('User verification did not match the active session.');
+        }
+        if(!current())throw new Error('Owner session changed during verification.');
+        return {session,user,epoch};
       }
-      return {session,user,epoch};
+      throw new AuthTransientUserReadError();
     }catch(error){
-      // Keep an otherwise valid session on transient network failures.
+      // A transient read never logs out the legitimate owner; a proven
+      // mismatch or 401/403 still does. No cached identity fallback.
       if(error instanceof AuthHttpError && [401,403].includes(error.status) &&
-          this.isCurrentSession(session)){
+          current()){
         try{this.store(null);}catch{/* storage already failed */}
       }
       throw error;
@@ -1221,6 +1261,39 @@ export class SupabaseBrowserAuthPort implements AuthPort {
     });
   }
 
+  /** Historical DB acknowledgements, not current public delivery or rollback authority. */
+  async listOwnerReleaseAcknowledgements(portfolioId:string,limit=25,
+    after:PrivateReleaseAcknowledgementCursor|null=null):Promise<AuthOutcome<PrivateReleaseAcknowledgementPage>> {
+    return this.outcome(async()=>{
+      if(!PROJECT_ID_PATTERN.test(portfolioId)||!Number.isSafeInteger(limit)||limit<1||limit>50)
+        throw new Error('Invalid release history request.');
+      const id=portfolioId.toLowerCase();
+      const cursor=after===null?null:{...after};
+      const {session,userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      const requireOwned=async()=>{
+        if(!current())throw new Error('Account changed while loading release history.');
+        const params=new URLSearchParams({select:'id,owner_user_id',id:'eq.'+id,
+          owner_user_id:'eq.'+userId,trashed_at:'is.null',limit:'2'});
+        const rows=await this.ownerRest('portfolios?'+params,session.access_token);
+        const row=Array.isArray(rows)&&rows.length===1?rows[0]:null;
+        if(!current()||!row||typeof row!=='object'||Array.isArray(row)||
+          Object.keys(row).length!==2||row.id!==id||row.owner_user_id!==userId)
+          throw new Error('Portfolio release history is unavailable.');
+      };
+      await requireOwned();
+      const {SupabasePrivateReleaseService}=await import('../../../packages/contracts/src/private-release-service.ts');
+      if(!current())throw new Error('Account changed while loading release history.');
+      const service=new SupabasePrivateReleaseService(this.origin,this.publishableKey,
+        async()=>current()?session.access_token:null,this.fetcher);
+      const page=await service.listAcknowledgements(id,limit,cursor);
+      await requireOwned();
+      if(!current())throw new Error('Account changed while loading release history.');
+      return page;
+    });
+  }
+
   async freezeOwnerRelease(id: string, operation: string, revision: number, visibility: FrozenVisibilityIntent):
     Promise<AuthOutcome<PrivateFrozenRequest>> {
     return this.outcome(async () => {
@@ -1912,6 +1985,80 @@ export class SupabaseBrowserAuthPort implements AuthPort {
       const {SupabasePrivateModerationService} = await import('../../../packages/contracts/src/private-moderation-service.ts');
       const token=this.ownerEpochToken(userId,epoch);
       return new SupabasePrivateModerationService(this.origin, this.publishableKey, token, this.fetcher);
+    });
+  }
+
+  /** Refresh-only, owner-bound view of GoTrue identities. Never publishes
+   * identity_data, email addresses or provider subject IDs. A missing
+   * identities property is not evidence of zero linked methods. */
+  async readOwnerLinkedMethods():Promise<AuthOutcome<OwnerLinkedMethods>>{
+    return this.outcome(async()=>{
+      const {session,userId,epoch}=await this.ownerSession();
+      const current=()=>this.reconcileOwnerSessionEpoch()===epoch &&
+        this.isCurrentSession(session) && session.user.id===userId;
+      if(!current())throw new Error('Owner session changed before linked-method read.');
+      const url=this.origin+'/auth/v1/user';
+      let response:Response;
+      try{
+        response=await this.fetcher(url,{
+          method:'GET',headers:{apikey:this.publishableKey,Authorization:'Bearer '+session.access_token,
+            Accept:'application/json'},
+          credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10_000)
+        });
+      }catch{throw new Error('Linked authentication methods are temporarily unavailable.');}
+      try{
+        if(!current()||response.redirected||(response.url&&response.url!==url)||
+          !response.ok||!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type')??'')||
+          !response.body)throw new Error('Linked authentication methods could not be verified.');
+        const length=response.headers.get('content-length');
+        if(length!==null&&(!/^\d+$/.test(length)||Number(length)>32768))
+          throw new Error('Linked authentication response exceeded its verified bounds.');
+        const reader=response.body.getReader();
+        const chunks:Uint8Array[]=[];let size=0;let empty=0;let count=0;
+        try{
+          for(;;){
+            const part=await reader.read();
+            if(!current())throw new Error('Owner session changed during linked-method read.');
+            if(part.done)break;
+            if(++count>128||!(part.value instanceof Uint8Array)||
+              (size+=part.value.byteLength)>32768)throw new Error('Linked authentication response exceeded its verified bounds.');
+            if(part.value.byteLength===0){if(++empty>8)throw new Error('Invalid authentication response stream.');continue;}
+            empty=0;chunks.push(part.value);
+          }
+        }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+        if(length!==null&&size!==Number(length))throw new Error('Linked authentication response length mismatch.');
+        const body=new Uint8Array(size);let offset=0;
+        for(const chunk of chunks){body.set(chunk,offset);offset+=chunk.byteLength;}
+        let raw:unknown;
+        try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(body));}
+        catch{throw new Error('Invalid linked authentication response.');}
+        const row=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:null;
+        if(!row||row.id!==userId||!Array.isArray(row.identities)||row.identities.length>16)
+          throw new Error('Linked authentication methods could not be verified.');
+        const identities:OwnerLinkedIdentity[]=[];const seen=new Set<string>();
+        const date=(value:unknown):string|null=>{
+          if(value===null||value===undefined)return null;
+          if(typeof value!=='string'||value.length>40||!Number.isFinite(Date.parse(value)))
+            throw new Error('Invalid authentication identity timestamp.');
+          return value;
+        };
+        for(const value of row.identities){
+          const identity=value&&typeof value==='object'&&!Array.isArray(value)?value as Json:null;
+          const id=identity?.id;
+          const provider=identity?.provider;
+          if(!identity||(identity.user_id!==undefined&&identity.user_id!==userId)||
+            typeof id!=='string'||!PROJECT_ID_PATTERN.test(id)||id!==id.toLowerCase()||
+            seen.has(id)||typeof provider!=='string'||!/[a-z]/.test(provider)||
+            !/^[a-z][a-z0-9_-]{0,31}$/.test(provider))
+            throw new Error('Linked authentication identity was invalid.');
+          seen.add(id);
+          identities.push({identityId:id,provider,createdAt:date(identity.created_at),
+            lastSignInAt:date(identity.last_sign_in_at)});
+        }
+        if(!current())throw new Error('Owner session changed during linked-method read.');
+        return {ownerUserId:userId,source:'GOTRUE_LIVE_USER' as const,identities,
+          passwordMethodConfirmed:false as const,publicVerificationAllowed:false as const};
+      }finally{void response.body?.cancel().catch(()=>{});}
     });
   }
 
