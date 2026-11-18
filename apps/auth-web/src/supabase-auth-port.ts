@@ -369,7 +369,12 @@ export class SupabaseBrowserAuthPort implements AuthPort {
         method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', credentials: 'omit', redirect: 'error'
       });
     } catch { throw new Error('Could not connect to the authentication service.'); }
-    const payload: unknown = await response.json().catch(() => ({}));
+    const strictSignupResend = method === 'POST' && path.startsWith('/resend?redirect_to=') && body?.type === 'signup';
+    const payload: unknown = await response.json().catch(() => undefined);
+    if (response.ok && strictSignupResend &&
+        (response.status !== 200 || !payload || typeof payload !== 'object' ||
+         Array.isArray(payload) || Object.keys(payload).length !== 0))
+      throw new Error('The authentication server returned an invalid confirmation acknowledgement.');
     if (!response.ok) {
       const data = (payload && typeof payload === 'object' ? payload : {}) as Json;
       const code = typeof data.error_code === 'string' ? data.error_code : '';
