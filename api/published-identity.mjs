@@ -102,6 +102,18 @@ function parseIdentityRoute(raw) {
   return {handle, slug};
 }
 
+// The profile/case RPC returns one scalar JSON value. A 2xx success other
+// than 200 is not a complete representation. PostgREST item-range metadata
+// is allowed for a scalar; byte ranges and multi-item responses are not.
+export function completeIdentityProjectionResponse(response,rpcUrl) {
+  if (!response || response.status!==200 || response.redirected ||
+      (response.url && response.url!==rpcUrl.href)) return false;
+  const unit=response.headers.get('range-unit');
+  const range=response.headers.get('content-range');
+  return (unit===null||unit.toLowerCase()==='items') &&
+    (range===null||range==='0-0/*'||range==='0-0/1'||range==='*/0');
+}
+
 export async function handlePublishedIdentity(req, res, {env = process.env, http = fetch} = {}) {
   function reply(status, body) {
     res.statusCode = status;
@@ -163,7 +175,7 @@ export async function handlePublishedIdentity(req, res, {env = process.env, http
         headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
         body: JSON.stringify(slug ? {p_handle: handle, p_slug: slug} : {p_handle: handle}), signal
       });
-      if (expired() || !upstream.ok || upstream.redirected || (upstream.url && upstream.url !== rpcUrl.href)) {
+      if (expired() || !completeIdentityProjectionResponse(upstream,rpcUrl)) {
         cancelRpcBody(upstream.body);
         throw Error('Public projection not confirmed');
       }
