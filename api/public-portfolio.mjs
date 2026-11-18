@@ -220,9 +220,13 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
         typeof key !== 'string' || !key.startsWith('eyJ') || key.length < 70) {
       return reportResponse(503, 'Temporarily unavailable');
     }
-    const rpc = reporting ? 'service_submit_portfolio_abuse_report' :
-      media ? 'service_read_frozen_release_png' : 'service_read_public_portfolio';
-    const upstream = await withDeliveryRpc(http,new URL('/rest/v1/rpc/' + rpc, origin), {
+    // Only direct canonical document GETs in the disposable local stack can
+    // request the trusted C13 envelope. Aliases/assets/reports/HEAD never do.
+    // Do not infer eligibility or consent from visitor-controlled values.
+    const analyticsEnabled=local&&env.KADMEION_ANALYTICS_COLLECTOR_ENABLED==='true'&&
+      req.method==='GET'&&!rewritten&&!assetRequest&&!reportUi&&
+      reportOrigin(env)!==null;
+    const readRpc=async rpc=>withDeliveryRpc(http,new URL('/rest/v1/rpc/' + rpc, origin), {
       method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit',
       headers: {apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
       body: JSON.stringify({p_handle: handle, p_slug: slug, ...report, ...media})
@@ -231,6 +235,26 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
       if(!response.ok){cancelRpcBody(response.body);return {ok:false,body:null};}
       return {ok:true,body:media?await readFrozenPng(response,media.p_sha):await readBoundedRpcJson(response)};
     });
+    const rpc = reporting ? 'service_submit_portfolio_abuse_report' :
+      media ? 'service_read_frozen_release_png' : 'service_read_public_portfolio';
+    let upstream,analyticsReceipt=null;
+    if(analyticsEnabled){
+      // A single producer snapshot binds release bytes to the exact current
+      // C11 epoch and consent version. Never synthesize a receipt from HTML.
+      try{
+        const result=await readRpc('service_read_public_portfolio_with_analytics');
+        const envelope=result.body;
+        if(result.ok&&envelope===null)upstream=result;
+        else if(result.ok&&envelope&&typeof envelope==='object'&&!Array.isArray(envelope)&&
+           Object.keys(envelope).sort().join(',')==='analytics,release'&&
+           envelope.release!==null&&typeof envelope.release==='object'&&!Array.isArray(envelope.release)){
+          upstream={ok:true,body:envelope.release};
+          analyticsReceipt=envelope.analytics;
+        }
+      }catch{/* Optional collection failure must not break normal delivery. */}
+    }
+    // Fallback remains the same authoritative public reader, not legacy ACK.
+    if(!upstream)upstream=await readRpc(rpc);
     if (reporting) {
       const receipt = upstream.body;
       if (upstream.ok && receipt?.status === 'RECEIVED_FOR_REVIEW' && Object.keys(receipt).length === 1)
@@ -272,6 +296,23 @@ export async function handlePublicPortfolio(req, res, {env = process.env, http =
     res.setHeader('X-Kadmeion-Served-SHA256',
       createHash('sha256').update(published).digest('hex'));
     if(release.indexable)res.setHeader('Link',canonicalPublicLink(handle,slug,env));
+    if(analyticsEnabled&&release.indexable&&analyticsReceipt!==null&&!req.aborted&&!res.destroyed){
+      // Existing S12 module is a deny-only HTTP route with a trusted internal
+      // collector. Load only inside the local opt-in lane; never expose its
+      // receipt, credentials, visitor metadata or result in a response.
+      try{
+        const {collectEligiblePublicView,createLocalAnalyticsRpcCollector}=
+          await import('./portfolio-analytics.mjs');
+        await collectEligiblePublicView({
+          canonicalIngressVerified:true,localIntegration:true,enabled:true,
+          renderedSuccessfully:true,method:'GET',receipt:analyticsReceipt,
+          headers:req.headers,canonicalOrigin:reportOrigin(env),
+          frozenHtmlSha256:release.htmlSha256
+        },{collect:createLocalAnalyticsRpcCollector({
+          localIntegration:true,endpoint:origin.origin,serviceRoleKey:key,http
+        }),timeoutMs:250});
+      }catch{/* Analytics is optional and cannot change the valid response. */}
+    }
     return reply(200, published, undefined, release.indexable, rendered.media);
   } catch {
     if(validatedReportPage)return reply(503,reportResultDocument(503),'text/html; charset=utf-8',false,false,true);
